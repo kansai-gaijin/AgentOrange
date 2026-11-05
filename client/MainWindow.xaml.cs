@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private readonly LocalDatabase _database;
     private readonly ServerConnection _server;
     private readonly DeviceSession _devices;
+    private readonly SyncEngine _sync;
 
     private UpdateInfo? _requiredUpdate;
     private bool _downloading;
@@ -45,6 +46,10 @@ public partial class MainWindow : Window
         ShowServerState();
         Settings.Server = _server;
         Settings.Devices = _devices;
+
+        _sync = new SyncEngine(_database, _server, _devices);
+        _sync.RecordsChanged += RefreshProjects;
+        Settings.Sync = _sync;
 
         // Dev builds aren't installed, so there's nothing for them to update.
         if (_updates.IsInstalled)
@@ -96,6 +101,7 @@ public partial class MainWindow : Window
         _database.CreateProject(name);
         HideNewProjectForm();
         RefreshProjects();
+        _ = _sync.SyncNowAsync();
     }
 
     private void HideNewProjectForm() => NewProjectForm.Visibility = Visibility.Collapsed;

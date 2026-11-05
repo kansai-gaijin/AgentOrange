@@ -15,11 +15,22 @@ public partial class SettingsModal : UserControl
     private readonly record struct Page(string Name, string Icon, Func<UIElement[]> Build);
 
     private ServerConnection _server = null!;
+    private SyncEngine _sync = null!;
     private Action? _refreshServerPage;
 
     public event EventHandler? Closed;
 
     public DeviceSession Devices { get; set; } = null!;
+
+    public SyncEngine Sync
+    {
+        get => _sync;
+        set
+        {
+            _sync = value;
+            _sync.StatusChanged += () => _refreshServerPage?.Invoke();
+        }
+    }
 
     public ServerConnection Server
     {
@@ -333,11 +344,26 @@ public partial class SettingsModal : UserControl
             Row("Status", null, statusHost, reconnect)));
         host.Children.Add(devicesHost);
         host.Children.Add(problem);
+
+        var lastSynced = Value("");
+        var waiting = Value("");
+        var previousRefresh = _refreshServerPage;
+        _refreshServerPage = () =>
+        {
+            previousRefresh();
+            lastSynced.Text = LastSyncedLabel();
+            waiting.Text = Sync.WaitingToSync.ToString();
+        };
+        _refreshServerPage();
+
+        var syncNow = Action("Sync");
+        syncNow.Click += async (_, _) => await Sync.SyncNowAsync();
+
         host.Children.Add(Section("Sync"));
         host.Children.Add(Card(
-            Row("Last synced", "Everything works offline and syncs when it can.", Value("Just now")),
-            Row("Waiting to sync", "Changes made on this PC that the server doesn't have yet.", Value("0")),
-            Row("Sync now", "Send and receive changes now.", Action("Sync"))));
+            Row("Last synced", "Everything works offline and syncs when it can.", lastSynced),
+            Row("Waiting to sync", "Changes made on this PC that the server doesn't have yet.", waiting),
+            Row("Sync now", "Send and receive changes now.", syncNow)));
 
         var devices = await Devices.ListAsync();
 
@@ -368,6 +394,13 @@ public partial class SettingsModal : UserControl
         devicesHost.Children.Add(others.Count == 0
             ? Card(Row("No other devices", "To add one, install Agent Orange on it and enter this server's pairing key."))
             : Card(others.Select(device => Row(device.Name, device.LastSeenLabel, RemoveButton(device, host, problem))).ToArray<FrameworkElement>()));
+    }
+
+    private string LastSyncedLabel()
+    {
+        if (Sync.LastSynced is not { } synced) return "Not yet";
+        var ago = DateTimeOffset.UtcNow - synced;
+        return ago.TotalMinutes < 1 ? "Just now" : ago.TotalHours < 1 ? $"{(int)ago.TotalMinutes} min ago" : $"{(int)ago.TotalHours} hr ago";
     }
 
     private StackPanel ServerStatusView() => Server.State switch

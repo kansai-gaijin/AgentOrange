@@ -1,4 +1,5 @@
 mod devices;
+mod sync;
 
 use std::sync::{Arc, Mutex};
 
@@ -41,6 +42,9 @@ async fn main() {
     devices::create_tables(&db)
         .await
         .expect("could not set up the database");
+    sync::create_tables(&db)
+        .await
+        .expect("could not set up the database");
 
     let state = Arc::new(AppState {
         db,
@@ -51,6 +55,7 @@ async fn main() {
     let app = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/pair", post(devices::pair))
+        .route("/v1/sync", post(sync::sync))
         .route("/v1/devices", get(devices::list))
         .route(
             "/v1/devices/{id}",

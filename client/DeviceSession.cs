@@ -24,6 +24,8 @@ public sealed record DeviceInfo(string Id, string Name, bool Current, double Las
     }
 }
 
+public sealed record SyncResponse(long Cursor, bool HasMore, List<SyncChange> Changes);
+
 /// <summary>This PC's login to the server. It's stored encrypted, per server address.</summary>
 public sealed class DeviceSession(LocalDatabase database, ServerConnection server)
 {
@@ -89,6 +91,21 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
             var response = await SendAsync(HttpMethod.Get, "/v1/devices");
             if (response is null || !response.IsSuccessStatusCode) return null;
             return await response.Content.ReadFromJsonAsync<List<DeviceInfo>>();
+        }
+        catch (Exception error) when (IsNetworkFailure(error))
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Returns null if the sync didn't go through, in which case nothing is lost.</summary>
+    public async Task<SyncResponse?> SyncAsync(long cursor, List<SyncChange> changes)
+    {
+        try
+        {
+            var response = await SendAsync(HttpMethod.Post, "/v1/sync", new { cursor, changes });
+            if (response is null || !response.IsSuccessStatusCode) return null;
+            return await response.Content.ReadFromJsonAsync<SyncResponse>();
         }
         catch (Exception error) when (IsNetworkFailure(error))
         {

@@ -1,0 +1,70 @@
+using System.Windows.Threading;
+
+namespace AgentOrange;
+
+/// <summary>Sends this PC's queued changes to the server and brings back everyone else's.</summary>
+public sealed class SyncEngine
+{
+    private const int BatchSize = 200;
+
+    private readonly LocalDatabase _database;
+    private readonly ServerConnection _server;
+    private readonly DeviceSession _devices;
+    private bool _running;
+
+    public SyncEngine(LocalDatabase database, ServerConnection server, DeviceSession devices)
+    {
+        _database = database;
+        _server = server;
+        _devices = devices;
+
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        timer.Tick += async (_, _) => await SyncNowAsync();
+        timer.Start();
+    }
+
+    public DateTimeOffset? LastSynced { get; private set; }
+
+    public int WaitingToSync => _database.CountOutbox();
+
+    /// <summary>The sync status may have changed.</summary>
+    public event Action? StatusChanged;
+
+    /// <summary>Records arrived from the server.</summary>
+    public event Action? RecordsChanged;
+
+    public async Task SyncNowAsync()
+    {
+        if (_running || _server.State != ServerState.Connected || !_devices.IsPaired) return;
+        _running = true;
+
+        try
+        {
+            var cursorSetting = $"sync_cursor:{_server.Address}";
+            var stored = _database.GetSetting(cursorSetting);
+            if (stored is null) _database.QueueAllRecords();
+            var cursor = stored is null ? 0 : long.Parse(stored);
+
+            while (true)
+            {
+                var batch = _database.ReadOutbox(BatchSize);
+                var response = await _devices.SyncAsync(cursor, batch);
+                if (response is null) return;
+
+                _database.RemoveFromOutbox(batch);
+                if (_database.ApplyFromServer(response.Changes) > 0) RecordsChanged?.Invoke();
+
+                cursor = response.Cursor;
+                _database.SetSetting(cursorSetting, cursor.ToString());
+                LastSynced = DateTimeOffset.UtcNow;
+
+                if (!response.HasMore && batch.Count < BatchSize) break;
+            }
+        }
+        finally
+        {
+            _running = false;
+            StatusChanged?.Invoke();
+        }
+    }
+}

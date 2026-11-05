@@ -185,7 +185,7 @@ pub async fn remove(
     found_or_404(removed)
 }
 
-async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<String, StatusCode> {
+pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<String, StatusCode> {
     let token = headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -219,7 +219,7 @@ fn found_or_404(rows: u64) -> Result<StatusCode, StatusCode> {
     }
 }
 
-fn internal_error(error: tokio_postgres::Error) -> StatusCode {
+pub fn internal_error(error: tokio_postgres::Error) -> StatusCode {
     eprintln!("Database error: {error}");
     StatusCode::INTERNAL_SERVER_ERROR
 }
