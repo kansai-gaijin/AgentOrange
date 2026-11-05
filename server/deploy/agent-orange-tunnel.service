@@ -1,0 +1,19 @@
+[Unit]
+Description=Agent Orange public route (its own Cloudflare tunnel)
+After=network-online.target agent-orange-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agentorange
+Group=agentorange
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate --config /etc/agent-orange/tunnel.yml tunnel run
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

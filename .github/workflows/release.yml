@@ -1,0 +1,44 @@
+name: Release
+
+# Every push to main that passes builds a release. The server's updater picks it up.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    runs-on: ubuntu-24.04 # Same Ubuntu as the server, so the binary's system libraries match.
+    permissions:
+      contents: write # To publish the release.
+    env:
+      AGENT_ORANGE_VERSION: 0.1.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test
+        working-directory: server
+        run: cargo test --locked
+
+      - name: Build
+        working-directory: server
+        run: cargo build --release --locked
+
+      - name: Collect release files
+        run: |
+          mkdir dist
+          cp server/target/release/agent-orange-server dist/agent-orange-server-linux-x64
+          (cd dist && sha256sum agent-orange-server-linux-x64 > agent-orange-server-linux-x64.sha256)
+          printf '%s\n' "$AGENT_ORANGE_VERSION" > dist/server-version.txt # How the updater spots a new release.
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$AGENT_ORANGE_VERSION" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "$AGENT_ORANGE_VERSION" \
+            --notes "Built from $GITHUB_SHA"

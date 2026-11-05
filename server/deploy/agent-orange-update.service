@@ -1,0 +1,10 @@
+[Unit]
+Description=Install the latest Agent Orange server release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=agentorange
+Group=agentorange
+ExecStart=/usr/local/libexec/agent-orange-update
