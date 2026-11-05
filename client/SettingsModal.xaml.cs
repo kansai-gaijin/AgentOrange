@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -9,18 +10,20 @@ using Microsoft.Win32;
 
 namespace AgentOrange;
 
-/// <summary>
-/// A mock of the settings screen. Everything here is placeholder content: only
-/// moving between pages works, and nothing is saved.
-/// </summary>
+/// <summary>The settings screen. Third Party is still a placeholder, until there are keys to test with.</summary>
 public partial class SettingsModal : UserControl
 {
-    private readonly record struct Page(string Name, string Icon, Func<UIElement[]> Build);
+    private readonly record struct Page(string Name, string Icon, Func<UIElement[]> Build, Action? Reset = null);
 
+    private readonly Dictionary<string, Page> _pages = [];
+    private readonly Dictionary<string, RadioButton> _navItems = [];
     private ServerConnection _server = null!;
     private SyncEngine _sync = null!;
+    private EditorMonitor _editors = null!;
     private Action? _refreshServerPage;
+    private Action? _refreshEditorsPage;
     private Page _currentPage;
+    private bool _confirmingRestore;
 
     public event EventHandler? Closed;
 
@@ -30,6 +33,22 @@ public partial class SettingsModal : UserControl
 
     public DeviceSession Devices { get; set; } = null!;
 
+    public AgentProviders Providers { get; set; } = null!;
+
+    public string AppVersion { get; set; } = "";
+
+    public Func<Task<string>> CheckForUpdates { get; set; } = null!;
+
+    public EditorMonitor Editors
+    {
+        get => _editors;
+        set
+        {
+            _editors = value;
+            _editors.Changed += () => _refreshEditorsPage?.Invoke();
+        }
+    }
+
     public SyncEngine Sync
     {
         get => _sync;
@@ -37,6 +56,12 @@ public partial class SettingsModal : UserControl
         {
             _sync = value;
             _sync.StatusChanged += () => _refreshServerPage?.Invoke();
+
+            // Another PC changed the approvals, so show them.
+            _sync.RecordsChanged += () =>
+            {
+                if (_currentPage.Name == "Approvals") ShowPage(_currentPage);
+            };
         }
     }
 
@@ -58,18 +83,18 @@ public partial class SettingsModal : UserControl
         {
             (null,
             [
-                new("General", "", GeneralPage),
+                new("General", "", GeneralPage, ResetGeneral),
             ]),
             ("Agents",
             [
                 new("Providers", "", AgentProvidersPage),
-                new("Approvals", "", ApprovalsPage),
+                new("Approvals", "", ApprovalsPage, () => SaveApprovals(DefaultApprovals)),
                 new("Third Party", "", ThirdPartyPage),
             ]),
             ("Editors",
             [
-                new("Engines", "", EnginesPage),
-                new("Tools", "", ToolsPage),
+                new("Engines", "", EnginesPage, () => Editors.ResetToDefaults(true)),
+                new("Tools", "", ToolsPage, () => Editors.ResetToDefaults(false)),
             ]),
             ("Sync",
             [
@@ -82,7 +107,6 @@ public partial class SettingsModal : UserControl
             ]),
         };
 
-        RadioButton? first = null;
         foreach (var (title, pages) in groups)
         {
             if (title is not null) NavList.Children.Add(GroupLabel(title));
@@ -91,12 +115,15 @@ public partial class SettingsModal : UserControl
             foreach (var page in pages)
             {
                 var item = NavItem(page);
-                first ??= item;
+                _pages[page.Name] = page;
+                _navItems[page.Name] = item;
                 NavList.Children.Add(item);
             }
         }
-        first!.IsChecked = true;
     }
+
+    /// <summary>Shows the first page. Call once everything the pages need has been set.</summary>
+    public void Start() => _navItems["General"].IsChecked = true;
 
     private RadioButton NavItem(Page page)
     {
@@ -114,6 +141,7 @@ public partial class SettingsModal : UserControl
                 },
             },
         };
+        AutomationProperties.SetName(item, page.Name);
         item.Checked += (_, _) => ShowPage(page);
         return item;
     }
@@ -123,6 +151,11 @@ public partial class SettingsModal : UserControl
         _currentPage = page;
         PageName.Text = page.Name;
         _refreshServerPage = null;
+        _refreshEditorsPage = null;
+        _refreshProviderDetails = null;
+        _confirmingRestore = false;
+        RestoreLabel.Text = "Restore defaults";
+        RestoreDefaults.Visibility = page.Reset is null ? Visibility.Collapsed : Visibility.Visible;
         PageContent.Children.Clear();
         foreach (var element in page.Build()) PageContent.Children.Add(element);
         PageScroller.ScrollToTop();
@@ -130,141 +163,89 @@ public partial class SettingsModal : UserControl
 
     // Pages
 
-    private UIElement[] GeneralPage() =>
-    [
-        Section("Updates"),
-        Card(
-            Row("Current version", "Updates are required, and they install when you choose Download update.", Value("0.1.9")),
-            Row("Check for updates", "Checks on launch and every minute.", Action("Check now"))),
-        Section("Notifications"),
-        Card(
-            Row("Agent needs you", "Alert when an agent is waiting on an answer or an approval.", Toggle(true)),
-            Row("Agent finished", "Alert when an agent finishes its work.", Toggle(true)),
-            Row("Generation finished", "Alert when a generation run has results to review.", Toggle(true)),
-            Row("Notification sounds", "Play a sound along with the alert.", Toggle(false))),
-    ];
-
-    private sealed record AgentProvider(
-        string Name, string Version, string Subscription, string Binary, string LoginFolder, bool On, bool AppManagesSignIn);
-
-    private static readonly AgentProvider[] AgentProviders =
-    [
-        new("Claude Code", "v2.1.318", "Claude Max subscription", "claude", "~/.claude-agent-orange", true, false),
-        new("Codex", "v0.166.0", "ChatGPT Plus subscription", "codex", "~/.codex-agent-orange", true, true),
-    ];
-
-    private UIElement[] AgentProvidersPage()
+    private UIElement[] GeneralPage()
     {
-        var details = new ContentControl();
-        var list = new StackPanel();
-        RadioButton? first = null;
-
-        foreach (var provider in AgentProviders)
+        var checkResult = Value("");
+        var check = Action("Check now");
+        check.Click += async (_, _) =>
         {
-            var item = AgentProviderItem(provider);
-            item.Checked += (_, _) => details.Content = AgentProviderDetails(provider);
-            first ??= item;
-            list.Children.Add(item);
-        }
-        first!.IsChecked = true;
-
-        var addProvider = new Button
-        {
-            Style = (Style)FindResource("AddRow"),
-            Content = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                Children =
-                {
-                    new TextBlock { Text = "", FontFamily = (FontFamily)FindResource("Icons"), FontSize = 12, Foreground = (Brush)FindResource("TextNormal"), Margin = new Thickness(2, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center },
-                    new TextBlock { Text = "Add provider", FontSize = 14, FontWeight = FontWeights.Medium, Foreground = (Brush)FindResource("TextStrong") },
-                },
-            },
+            check.IsEnabled = false;
+            checkResult.Text = "Checking…";
+            checkResult.Text = await CheckForUpdates();
+            check.IsEnabled = true;
         };
-        AutomationProperties.SetName(addProvider, "Add provider");
-        addProvider.Click += (_, _) => OpenAddProvider();
-        list.Children.Add(addProvider);
-
-        var layout = new Grid();
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(262) });
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var listPanel = new Border { BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(0, 0, 1, 0), Child = list };
-        Grid.SetColumn(details, 1);
-        layout.Children.Add(listPanel);
-        layout.Children.Add(details);
 
         return
         [
-            Section("Providers"),
-            new Border { BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), ClipToBounds = true, Child = layout },
+            Section("Updates"),
+            Card(
+                Row("Current version", "Updates are required, and they install when you choose Download update.", Value(AppVersion)),
+                Row("Check for updates", "Checks on launch and every minute.", checkResult, check)),
+            Section("Notifications"),
+            Card(
+                Row("Agent needs you", "Alert when an agent is waiting on an answer or an approval.", SettingToggle("notify_agent_needs_you", true)),
+                Row("Agent finished", "Alert when an agent finishes its work.", SettingToggle("notify_agent_finished", true)),
+                Row("Generation finished", "Alert when a generation run has results to review.", SettingToggle("notify_generation_finished", true)),
+                Row("Notification sounds", "Play a sound along with the alert.", SettingToggle("notify_sounds", false))),
         ];
     }
 
-    private RadioButton AgentProviderItem(AgentProvider provider)
+    private void ResetGeneral()
     {
-        var name = new StackPanel { Orientation = Orientation.Horizontal };
-        name.Children.Add(new TextBlock { Text = provider.Name, FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextStrong") });
-        name.Children.Add(new TextBlock { Text = provider.Version, FontSize = 11, FontFamily = new FontFamily("Consolas"), Foreground = (Brush)FindResource("TextNormal"), Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
-
-        var text = new StackPanel { Margin = new Thickness(12, 0, 8, 0) };
-        text.Children.Add(name);
-        text.Children.Add(new TextBlock { Text = $"Signed in · {provider.Subscription}", FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(0, 4, 0, 0), TextWrapping = TextWrapping.Wrap });
-
-        var icon = new TextBlock { Text = "", FontFamily = (FontFamily)FindResource("Icons"), FontSize = 15, Foreground = (Brush)FindResource("TextNormal") };
-        var toggle = Toggle(provider.On);
-        toggle.VerticalAlignment = VerticalAlignment.Center;
-
-        var row = new Grid();
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        Grid.SetColumn(text, 1);
-        Grid.SetColumn(toggle, 2);
-        row.Children.Add(icon);
-        row.Children.Add(text);
-        row.Children.Add(toggle);
-
-        return new RadioButton { Style = (Style)FindResource("ListItem"), Content = row };
-    }
-
-    private StackPanel AgentProviderDetails(AgentProvider provider)
-    {
-        var header = new DockPanel { Margin = new Thickness(16, 14, 16, 12) };
-        var version = new TextBlock { Text = provider.Version, FontSize = 11, FontFamily = new FontFamily("Consolas"), Foreground = (Brush)FindResource("TextNormal"), VerticalAlignment = VerticalAlignment.Center };
-        DockPanel.SetDock(version, Dock.Right);
-        header.Children.Add(version);
-        header.Children.Add(new TextBlock { Text = provider.Name, FontSize = 16, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextStrong") });
-
-        return new StackPanel
+        foreach (var key in new[] { "notify_agent_needs_you", "notify_agent_finished", "notify_generation_finished", "notify_sounds" })
         {
-            Children =
-            {
-                header,
-                Divider(),
-                provider.AppManagesSignIn
-                    ? Row("Status", $"Signed in · {provider.Subscription}", Status("Connected", true), Action("Sign out"))
-                    : Row("Status", $"Signed in · {provider.Subscription}", Status("Connected", true)),
-                Divider(),
-                Row("Display name", null, Field(provider.Name)),
-                Divider(),
-                Row("Program", "The command used to start this agent.", Field(provider.Binary)),
-                Divider(),
-                Row("Login folder", "Keeps this login separate from your normal setup.", Field(provider.LoginFolder)),
-            },
-        };
+            Database.SetSetting(key, "");
+        }
     }
 
-    private UIElement[] ApprovalsPage() =>
-    [
-        Section("Agent actions"),
-        Card(
-            Row("Default mode", "How much an agent can do without asking.", Dropdown("Ask for risky actions")),
-            Row("File edits", "Inside the current project.", Dropdown("Allow")),
-            Row("Shell commands", "Each command is shown step by step.", Dropdown("Ask")),
-            Row("Web access", "Fetching pages from the internet.", Dropdown("Ask")),
-            Row("Agents can start editors", "Let an agent open an editor that isn't running.", Toggle(false)),
-            Row("Paid generation", "Every paid run needs a fresh yes.", Toggle(true, enabled: false))),
-    ];
+    private CheckBox SettingToggle(string key, bool defaultValue)
+    {
+        var stored = Database.GetSetting(key);
+        var toggle = Toggle(string.IsNullOrEmpty(stored) ? defaultValue : stored == "1");
+        toggle.Checked += (_, _) => Database.SetSetting(key, "1");
+        toggle.Unchecked += (_, _) => Database.SetSetting(key, "0");
+        return toggle;
+    }
+
+    private sealed record ApprovalSettings(string DefaultMode, string FileEdits, string ShellCommands, string WebAccess, bool AgentsCanStartEditors);
+
+    private static readonly ApprovalSettings DefaultApprovals = new("Ask for risky actions", "Allow", "Ask", "Ask", false);
+    private static readonly string[] ApprovalModes = ["Ask for everything", "Ask for risky actions", "Allow everything"];
+    private static readonly string[] ApprovalChoices = ["Ask", "Allow", "Block"];
+    private static readonly JsonSerializerOptions ApprovalJson = new(JsonSerializerDefaults.Web);
+
+    private ApprovalSettings LoadApprovals()
+    {
+        var stored = Database.GetRecord("settings", "approvals");
+        return string.IsNullOrEmpty(stored) ? DefaultApprovals : JsonSerializer.Deserialize<ApprovalSettings>(stored, ApprovalJson) ?? DefaultApprovals;
+    }
+
+    // Approvals sync, because they're how agents should behave on every PC.
+    private void SaveApprovals(ApprovalSettings approvals)
+    {
+        Database.SaveRecord("settings", "approvals", JsonSerializer.Serialize(approvals, ApprovalJson));
+        _ = Sync.SyncNowAsync();
+    }
+
+    private UIElement[] ApprovalsPage()
+    {
+        var approvals = LoadApprovals();
+        var startEditors = Toggle(approvals.AgentsCanStartEditors);
+        startEditors.Checked += (_, _) => SaveApprovals(LoadApprovals() with { AgentsCanStartEditors = true });
+        startEditors.Unchecked += (_, _) => SaveApprovals(LoadApprovals() with { AgentsCanStartEditors = false });
+
+        return
+        [
+            Section("Agent actions"),
+            Card(
+                Row("Default mode", "How much an agent can do without asking.", Choice(ApprovalModes, approvals.DefaultMode, value => SaveApprovals(LoadApprovals() with { DefaultMode = value }))),
+                Row("File edits", "Inside the current project.", Choice(ApprovalChoices, approvals.FileEdits, value => SaveApprovals(LoadApprovals() with { FileEdits = value }))),
+                Row("Shell commands", "Each command is shown step by step.", Choice(ApprovalChoices, approvals.ShellCommands, value => SaveApprovals(LoadApprovals() with { ShellCommands = value }))),
+                Row("Web access", "Fetching pages from the internet.", Choice(ApprovalChoices, approvals.WebAccess, value => SaveApprovals(LoadApprovals() with { WebAccess = value }))),
+                Row("Agents can start editors", "Let an agent open an editor that isn't running.", startEditors),
+                Row("Paid generation", "Every paid run needs a fresh yes.", Toggle(true, enabled: false))),
+        ];
+    }
 
     private UIElement[] ThirdPartyPage() =>
     [
@@ -277,22 +258,6 @@ public partial class SettingsModal : UserControl
         Section("More"),
         Card(
             Row("Add a provider", "Connect another generation service.", Action("Add"))),
-    ];
-
-    private UIElement[] EnginesPage() =>
-    [
-        Section("Engines"),
-        Card(
-            Row("Unreal Engine", "localhost:8666", Status("Connected", true), Action("Configure")),
-            Row("Godot", "localhost:8645", Status("Not running", false), Action("Configure"))),
-    ];
-
-    private UIElement[] ToolsPage() =>
-    [
-        Section("Tools"),
-        Card(
-            Row("Blender", "localhost:9876", Status("Connected", true), Action("Configure")),
-            Row("Aseprite", "localhost:8650", Status("Not running", false), Action("Configure"))),
     ];
 
     private UIElement[] ServerPage()
@@ -636,16 +601,35 @@ public partial class SettingsModal : UserControl
         return dialog.ShowDialog() == true ? dialog.FolderName : null;
     }
 
-    private UIElement[] AboutPage() =>
-    [
-        Section("Agent Orange"),
-        Card(
-            Row("Client version", null, Value("0.1.9")),
-            Row("Server version", null, Value("0.1.9"))),
-        Section("Help"),
-        Card(
-            Row("Logs", "Open the folder with the app's logs.", Action("Open folder"))),
-    ];
+    private UIElement[] AboutPage()
+    {
+        var serverVersion = Value("Checking…");
+        _ = ShowServerVersionAsync(serverVersion);
+
+        var openLogs = Action("Open folder");
+        openLogs.Click += (_, _) =>
+        {
+            Directory.CreateDirectory(Folders.LogsFolder);
+            Process.Start("explorer.exe", Folders.LogsFolder)?.Dispose();
+        };
+
+        return
+        [
+            Section("Agent Orange"),
+            Card(
+                Row("Client version", null, Value(AppVersion)),
+                Row("Server version", null, serverVersion)),
+            Section("Help"),
+            Card(
+                Row("Logs", "Open the folder with the app's logs.", openLogs)),
+        ];
+    }
+
+    private async Task ShowServerVersionAsync(TextBlock label)
+    {
+        var version = Devices.IsPaired ? await Devices.ServerVersionAsync() : null;
+        label.Text = version ?? "Not connected";
+    }
 
     // Building blocks
 
@@ -739,25 +723,40 @@ public partial class SettingsModal : UserControl
         IsEnabled = enabled,
     };
 
-    private Button Dropdown(string value) => new()
+    private ComboBox Choice(string[] options, string selected, Action<string> changed)
     {
-        Style = (Style)FindResource("ControlButton"),
-        MinWidth = 120,
-        Content = new DockPanel
+        var choice = new ComboBox
         {
-            LastChildFill = false,
-            Children =
-            {
-                new TextBlock { Text = value, Margin = new Thickness(0, 0, 14, 0) },
-                DockedRight(new TextBlock { Text = "", FontFamily = (FontFamily)FindResource("Icons"), FontSize = 10, VerticalAlignment = VerticalAlignment.Center }),
-            },
-        },
-    };
+            Style = (Style)FindResource("Choice"),
+            ItemsSource = options,
+            SelectedItem = selected,
+        };
+        choice.SelectionChanged += (_, _) =>
+        {
+            if (choice.SelectedItem is string value) changed(value);
+        };
+        return choice;
+    }
 
-    private static TextBlock DockedRight(TextBlock text)
+    // Takes two clicks, for things that are a nuisance to undo.
+    private Button TwoClickAction(string label, Func<Task> action)
     {
-        DockPanel.SetDock(text, Dock.Right);
-        return text;
+        var button = Action(label);
+        var confirming = false;
+        button.Click += async (_, _) =>
+        {
+            if (!confirming)
+            {
+                confirming = true;
+                button.Content = "Are you sure?";
+                return;
+            }
+
+            confirming = false;
+            button.Content = label;
+            await action();
+        };
+        return button;
     }
 
     private Button Action(string label) => new()
@@ -796,10 +795,25 @@ public partial class SettingsModal : UserControl
 
     private void Close_Click(object sender, RoutedEventArgs e) => Closed?.Invoke(this, EventArgs.Empty);
 
+    // Takes two clicks, and only touches the page being shown.
+    private void RestoreDefaults_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_confirmingRestore)
+        {
+            _confirmingRestore = true;
+            RestoreLabel.Text = "Are you sure?";
+            return;
+        }
+
+        _currentPage.Reset?.Invoke();
+        ShowPage(_currentPage);
+    }
+
     private void Modal_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Escape) return;
         if (WizardLayer.Visibility == Visibility.Visible) CloseWizard();
+        else if (SearchBox.Text.Length > 0) SearchBox.Clear();
         else Closed?.Invoke(this, EventArgs.Empty);
     }
 

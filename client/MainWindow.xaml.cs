@@ -43,9 +43,16 @@ public partial class MainWindow : Window
             folders.UseDefaultDatabaseFolder();
         }
 
+        AppLog.Start(folders.LogsFolder);
+        AppLog.Write($"Started {(_updates.IsInstalled ? $"v{_updates.CurrentVersion}" : "dev build")}");
+
         _database = new LocalDatabase(folders.DatabasePath);
         Settings.Folders = folders;
         Settings.Database = _database;
+        Settings.Providers = new AgentProviders(_database);
+        Settings.Editors = new EditorMonitor(_database);
+        Settings.AppVersion = _updates.IsInstalled ? _updates.CurrentVersion?.ToString() ?? "Unknown" : "Dev build";
+        Settings.CheckForUpdates = CheckForUpdatesFromSettingsAsync;
         RefreshProjects();
 
         _server = new ServerConnection(_database);
@@ -59,6 +66,7 @@ public partial class MainWindow : Window
         _sync = new SyncEngine(_database, _server, _devices);
         _sync.RecordsChanged += RefreshProjects;
         Settings.Sync = _sync;
+        Settings.Start();
 
         // Dev builds aren't installed, so there's nothing for them to update.
         if (_updates.IsInstalled)
@@ -162,10 +170,22 @@ public partial class MainWindow : Window
         };
     }
 
-    // Keeps running while the overlay waits, because only the newest release can be downloaded.
-    private async Task CheckForUpdateAsync()
+    private async Task<string> CheckForUpdatesFromSettingsAsync()
     {
-        if (_downloading) return;
+        if (!_updates.IsInstalled) return "Dev builds don't update";
+        return await CheckForUpdateAsync() switch
+        {
+            true => "Update found",
+            false => "Up to date",
+            null => "Couldn't check",
+        };
+    }
+
+    // Keeps running while the overlay waits, because only the newest release can be downloaded.
+    // Returns whether there's an update, or null if it couldn't be checked.
+    private async Task<bool?> CheckForUpdateAsync()
+    {
+        if (_downloading) return true;
 
         UpdateInfo? update;
         try
@@ -174,14 +194,16 @@ public partial class MainWindow : Window
         }
         catch (Exception)
         {
-            return; // Offline, say. The next check tries again, and a known update stays required.
+            return null; // Offline, say. The next check tries again, and a known update stays required.
         }
 
-        if (update is null || _downloading) return;
+        if (update is null) return false;
+        if (_downloading) return true;
 
         var isNewVersion = _requiredUpdate?.TargetFullRelease.Version != update.TargetFullRelease.Version;
         _requiredUpdate = update;
         if (isNewVersion) ShowUpdateRequired(update);
+        return true;
     }
 
     private void ShowUpdateRequired(UpdateInfo update)

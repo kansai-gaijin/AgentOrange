@@ -3,7 +3,8 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              Focusable="True"
              FocusVisualStyle="{x:Null}"
-             KeyDown="Modal_KeyDown">
+             KeyDown="Modal_KeyDown"
+             PreviewKeyDown="Modal_PreviewKeyDown">
     <UserControl.Resources>
         <SolidColorBrush x:Key="ContentBackground" Color="#17212B" />
         <SolidColorBrush x:Key="SidebarBackground" Color="#1E2D3B" />
@@ -271,6 +272,102 @@
             </Setter>
         </Style>
 
+        <!-- Search result in the sidebar -->
+        <Style x:Key="SearchResult" TargetType="Button">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Face" Background="Transparent" CornerRadius="6" Padding="10,6" Margin="0,1">
+                            <ContentPresenter />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Face" Property="Background" Value="{StaticResource HoverBackground}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Dropdown -->
+        <Style x:Key="ChoiceItem" TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="{StaticResource TextStrong}" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Face" Background="Transparent" CornerRadius="4" Padding="8,5">
+                            <ContentPresenter />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Face" Property="Background" Value="{StaticResource SelectedBackground}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="Choice" TargetType="ComboBox">
+            <Setter Property="Foreground" Value="{StaticResource TextStrong}" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="Medium" />
+            <Setter Property="MinWidth" Value="150" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="ItemContainerStyle" Value="{StaticResource ChoiceItem}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton Focusable="False"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border x:Name="Face" Background="{StaticResource ControlBackground}" BorderBrush="#4C5A68" BorderThickness="1" CornerRadius="6" Padding="10,5">
+                                            <TextBlock Text="&#xE70D;" FontFamily="{StaticResource Icons}" FontSize="10" HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{StaticResource TextStrong}" />
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Face" Property="Background" Value="#425160" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <ContentPresenter IsHitTestVisible="False"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              Margin="11,5,28,5"
+                                              VerticalAlignment="Center" />
+                            <Popup x:Name="PART_Popup"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   AllowsTransparency="True"
+                                   Focusable="False"
+                                   Placement="Bottom"
+                                   PopupAnimation="Fade">
+                                <Border Background="#22303D"
+                                        BorderBrush="#4C5A68"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
+                                        Padding="4"
+                                        Margin="0,4,0,0"
+                                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
+                                    <ItemsPresenter />
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Slim dark scrollbar -->
         <Style TargetType="ScrollBar">
             <Setter Property="Width" Value="10" />
@@ -322,29 +419,59 @@
                         <Border DockPanel.Dock="Top" Margin="8,8,8,4" Padding="10,7" CornerRadius="6">
                             <DockPanel>
                                 <TextBlock Text="&#xE721;" FontFamily="{StaticResource Icons}" FontSize="13" Foreground="{StaticResource TextNormal}" VerticalAlignment="Center" />
-                                <Border DockPanel.Dock="Right" Background="{StaticResource ControlBackground}" CornerRadius="3" Padding="6,0">
+                                <Border x:Name="SearchKeyHint" DockPanel.Dock="Right" Background="{StaticResource ControlBackground}" CornerRadius="3" Padding="6,0">
                                     <TextBlock Text="/" FontSize="12" Foreground="{StaticResource TextNormal}" />
                                 </Border>
-                                <TextBlock Text="Search" Margin="10,0,0,0" FontSize="14" FontWeight="Medium" Foreground="{StaticResource TextNormal}" />
+                                <Button x:Name="ClearSearch"
+                                        DockPanel.Dock="Right"
+                                        Style="{StaticResource HeaderButton}"
+                                        Margin="0,-4,-6,-4"
+                                        Visibility="Collapsed"
+                                        AutomationProperties.Name="Clear search"
+                                        Click="ClearSearch_Click">
+                                    <TextBlock Text="&#xE711;" FontFamily="{StaticResource Icons}" FontSize="10" />
+                                </Button>
+                                <Grid Margin="10,0,0,0">
+                                    <TextBlock x:Name="SearchHint" Text="Search" FontSize="14" FontWeight="Medium" Foreground="{StaticResource TextNormal}" IsHitTestVisible="False" />
+                                    <TextBox x:Name="SearchBox"
+                                             AutomationProperties.Name="Search settings"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             Padding="-2,0,0,0"
+                                             FontSize="14"
+                                             FontWeight="Medium"
+                                             Foreground="{StaticResource TextStrong}"
+                                             CaretBrush="{StaticResource TextStrong}"
+                                             FocusVisualStyle="{x:Null}"
+                                             TextChanged="SearchBox_TextChanged"
+                                             KeyDown="SearchBox_KeyDown" />
+                                </Grid>
                             </DockPanel>
                         </Border>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="8,0,2,8">
-                            <StackPanel x:Name="NavList" Margin="0,0,6,0" />
+                            <Grid Margin="0,0,6,0">
+                                <StackPanel x:Name="NavList" />
+                                <StackPanel x:Name="SearchResults" Visibility="Collapsed" />
+                            </Grid>
                         </ScrollViewer>
                     </DockPanel>
                 </Border>
 
                 <!-- Page -->
                 <DockPanel Grid.Column="1">
-                    <Border DockPanel.Dock="Top" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="20,10,14,10">
+                    <Border DockPanel.Dock="Top" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="20,10,14,10" MinHeight="47">
                         <DockPanel>
                             <Button DockPanel.Dock="Right" Style="{StaticResource HeaderButton}" Margin="6,0,0,0" Click="Close_Click" AutomationProperties.Name="Close settings">
                                 <TextBlock Text="&#xE711;" FontFamily="{StaticResource Icons}" FontSize="12" />
                             </Button>
-                            <Button DockPanel.Dock="Right" Style="{StaticResource HeaderButton}">
+                            <Button x:Name="RestoreDefaults"
+                                    DockPanel.Dock="Right"
+                                    Style="{StaticResource HeaderButton}"
+                                    AutomationProperties.Name="Restore defaults"
+                                    Click="RestoreDefaults_Click">
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Text="&#xE777;" FontFamily="{StaticResource Icons}" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                    <TextBlock Text="Restore defaults" />
+                                    <TextBlock x:Name="RestoreLabel" Text="Restore defaults" />
                                 </StackPanel>
                             </Button>
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">

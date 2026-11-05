@@ -113,6 +113,19 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
         }
     }
 
+    public async Task<string?> ServerVersionAsync()
+    {
+        try
+        {
+            var response = await SendAsync(HttpMethod.Get, "/v1/version");
+            return response is { IsSuccessStatusCode: true } ? await response.Content.ReadAsStringAsync() : null;
+        }
+        catch (Exception error) when (IsNetworkFailure(error))
+        {
+            return null;
+        }
+    }
+
     public Task<bool> RenameAsync(string id, string name) =>
         SucceedsAsync(HttpMethod.Patch, $"/v1/devices/{id}", new { name });
 

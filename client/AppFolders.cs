@@ -24,6 +24,8 @@ public sealed class AppFolders
         _pointerFile = Path.Combine(_appFolder, "database-location.txt");
     }
 
+    public string LogsFolder => Path.Combine(_appFolder, "logs");
+
     public string DatabaseFolder =>
         File.Exists(_pointerFile) ? File.ReadAllText(_pointerFile).Trim() : _appFolder;
 

@@ -89,6 +89,16 @@ public sealed class LocalDatabase
         transaction.Commit();
     }
 
+    public string? GetRecord(string collection, string id)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT data FROM records WHERE collection = $collection AND id = $id AND deleted = 0";
+        command.Parameters.AddWithValue("$collection", collection);
+        command.Parameters.AddWithValue("$id", id);
+        return command.ExecuteScalar() as string;
+    }
+
     public List<SyncChange> ReadOutbox(int limit)
     {
         using var connection = Open();

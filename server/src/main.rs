@@ -5,11 +5,19 @@ use std::sync::{Arc, Mutex};
 
 use axum::{
     Router,
+    extract::State,
+    http::{HeaderMap, StatusCode},
     routing::{get, patch, post},
 };
 use tokio_postgres::{Client, NoTls};
 
 const DEFAULT_BIND: &str = "127.0.0.1:47100";
+
+/// Set by the release build. Local builds use the version in Cargo.toml.
+const VERSION: &str = match option_env!("AGENT_ORANGE_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 pub struct AppState {
     pub db: Client,
@@ -55,6 +63,7 @@ async fn main() {
     let app = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/pair", post(devices::pair))
+        .route("/v1/version", get(version))
         .route("/v1/sync", post(sync::sync))
         .route("/v1/devices", get(devices::list))
         .route(
@@ -78,4 +87,13 @@ async fn main() {
 
 async fn health() -> &'static str {
     "🍊"
+}
+
+/// Only for paired devices. The public health check stays just an orange.
+async fn version(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<&'static str, StatusCode> {
+    devices::authenticate(&state, &headers).await?;
+    Ok(VERSION)
 }

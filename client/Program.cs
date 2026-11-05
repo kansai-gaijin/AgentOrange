@@ -12,6 +12,7 @@ public static class Program
         VelopackApp.Build().Run();
 
         var app = new App();
+        app.DispatcherUnhandledException += (_, e) => AppLog.Write($"Crashed: {e.Exception}");
         app.InitializeComponent();
         app.Run();
     }
