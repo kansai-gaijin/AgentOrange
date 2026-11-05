@@ -1,8 +1,11 @@
+using System.Diagnostics;
+using System.IO;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using Microsoft.Win32;
 
 namespace AgentOrange;
 
@@ -17,8 +20,13 @@ public partial class SettingsModal : UserControl
     private ServerConnection _server = null!;
     private SyncEngine _sync = null!;
     private Action? _refreshServerPage;
+    private Page _currentPage;
 
     public event EventHandler? Closed;
+
+    public AppFolders Folders { get; set; } = null!;
+
+    public LocalDatabase Database { get; set; } = null!;
 
     public DeviceSession Devices { get; set; } = null!;
 
@@ -112,6 +120,7 @@ public partial class SettingsModal : UserControl
 
     private void ShowPage(Page page)
     {
+        _currentPage = page;
         PageName.Text = page.Name;
         _refreshServerPage = null;
         PageContent.Children.Clear();
@@ -560,13 +569,72 @@ public partial class SettingsModal : UserControl
         problem.Visibility = Visibility.Visible;
     }
 
-    private UIElement[] LocalDataPage() =>
-    [
-        Section("On this PC"),
-        Card(
-            Row("Database", "Your offline copy of every project. 148 MB.", Field(@"%APPDATA%\AgentOrange"), Action("Change")),
-            Row("Downloads", "Images, models and other files kept for offline use. 2.1 GB.", Field(@"%APPDATA%\AgentOrange\downloads"), Action("Change"), Action("Clear"))),
-    ];
+    private UIElement[] LocalDataPage()
+    {
+        var problem = ProblemText();
+
+        var changeDatabase = Action("Change");
+        changeDatabase.Click += (_, _) =>
+        {
+            if (PickFolder(Folders.DatabaseFolder) is not { } folder
+                || string.Equals(folder.TrimEnd('\\'), Folders.DatabaseFolder.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (Folders.MoveDatabase(folder) is { } failure)
+            {
+                ShowProblem(problem, failure);
+                return;
+            }
+
+            // Everything open still points at the old database, so start fresh.
+            Process.Start(Environment.ProcessPath!);
+            Application.Current.Shutdown();
+        };
+
+        var downloadsFolder = Folders.DownloadsFolder(Database);
+        var downloadsPath = FolderField(downloadsFolder);
+        var changeDownloads = Action("Change");
+        var downloadsRow = Row("Downloads", DownloadsDescription(downloadsFolder), downloadsPath, changeDownloads);
+        changeDownloads.Click += (_, _) =>
+        {
+            if (PickFolder(Folders.DownloadsFolder(Database)) is not { } folder) return;
+            Folders.SetDownloadsFolder(Database, folder);
+            ShowPage(_currentPage);
+        };
+
+        return
+        [
+            Section("On this PC"),
+            Card(
+                Row("Database", $"Your offline copy of every project. {AppFolders.FormatSize(Folders.DatabaseSize)}.", FolderField(Folders.DatabaseFolder), changeDatabase),
+                downloadsRow),
+            problem,
+        ];
+    }
+
+    private static string DownloadsDescription(string folder) =>
+        $"Images, models and other files kept for offline use. {AppFolders.FormatSize(AppFolders.FolderSize(folder))}.";
+
+    private TextBox FolderField(string folder)
+    {
+        var field = Field(folder);
+        field.Width = 290;
+        field.IsReadOnly = true;
+        field.ToolTip = folder;
+        return field;
+    }
+
+    private static string? PickFolder(string startIn)
+    {
+        var dialog = new OpenFolderDialog
+        {
+            Title = "Choose a folder",
+            InitialDirectory = Directory.Exists(startIn) ? startIn : "",
+        };
+        return dialog.ShowDialog() == true ? dialog.FolderName : null;
+    }
 
     private UIElement[] AboutPage() =>
     [

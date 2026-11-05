@@ -1,5 +1,4 @@
-﻿using System.IO;
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -31,12 +30,22 @@ public partial class MainWindow : Window
         InitializeComponent();
         VersionLabel.Text = _updates.IsInstalled ? $"v{_updates.CurrentVersion}" : "dev build";
 
-        // Kept outside the install folder, which updates replace. Dev builds get their
-        // own folder so testing never touches real projects.
-        _database = new LocalDatabase(Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            _updates.IsInstalled ? "AgentOrange" : "AgentOrange-Dev",
-            "agent-orange.db"));
+        // Kept outside the install folder, which updates replace.
+        var folders = new AppFolders(_updates.IsInstalled);
+        if (!folders.DatabaseFolderExists)
+        {
+            var answer = MessageBox.Show(
+                $"Agent Orange can't find its database folder:\n{folders.DatabaseFolder}\n\nIf it's on a drive that isn't connected, choose No, connect the drive and open Agent Orange again.\n\nChoose Yes to start again in the default folder. Anything already synced comes back from your server.",
+                "Agent Orange",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (answer != MessageBoxResult.Yes) Environment.Exit(0);
+            folders.UseDefaultDatabaseFolder();
+        }
+
+        _database = new LocalDatabase(folders.DatabasePath);
+        Settings.Folders = folders;
+        Settings.Database = _database;
         RefreshProjects();
 
         _server = new ServerConnection(_database);
