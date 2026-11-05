@@ -55,7 +55,6 @@ public partial class SettingsModal : UserControl
             ("Sync",
             [
                 new("Server", "", ServerPage),
-                new("Devices", "", DevicesPage),
                 new("Local data", "", LocalDataPage),
             ]),
             (null,
@@ -278,6 +277,22 @@ public partial class SettingsModal : UserControl
 
     private UIElement[] ServerPage()
     {
+        var host = new StackPanel();
+        _ = FillServerPageAsync(host);
+        return [host];
+    }
+
+    private async Task FillServerPageAsync(StackPanel host)
+    {
+        _refreshServerPage = null;
+        host.Children.Clear();
+
+        if (Server.Address.Length == 0 || !Devices.IsPaired)
+        {
+            ShowConnectForm(host);
+            return;
+        }
+
         var address = Field(Server.Address);
         address.Width = 300;
         var save = Action("Save");
@@ -286,15 +301,14 @@ public partial class SettingsModal : UserControl
 
         async Task SaveAddress()
         {
-            if (!ServerConnection.TryCleanAddress(address.Text, out var cleaned))
+            if (!ServerConnection.TryCleanAddress(address.Text, out var cleaned) || cleaned.Length == 0)
             {
                 ShowProblem(problem, "Enter a full https:// address.");
                 return;
             }
 
-            problem.Visibility = Visibility.Collapsed;
-            address.Text = cleaned;
             await Server.SetAddressAsync(cleaned);
+            await FillServerPageAsync(host);
         }
 
         address.TextChanged += (_, _) =>
@@ -312,20 +326,48 @@ public partial class SettingsModal : UserControl
         var reconnect = Action("Reconnect");
         reconnect.Click += async (_, _) => await Server.ReconnectAsync();
 
-        return
-        [
-            Section("Connection"),
-            Card(
-                Row("Server address", "The URL of your Agent Orange server.", address, save),
-                Row("Status", null, statusHost),
-                Row("Reconnect", "Try the connection again now.", reconnect)),
-            problem,
-            Section("Sync"),
-            Card(
-                Row("Last synced", "Everything works offline and syncs when it can.", Value("Just now")),
-                Row("Waiting to sync", "Changes made on this PC that the server doesn't have yet.", Value("0")),
-                Row("Sync now", "Send and receive changes now.", Action("Sync"))),
-        ];
+        var devicesHost = new StackPanel();
+        host.Children.Add(Section("Connection"));
+        host.Children.Add(Card(
+            Row("Server address", "The URL of your Agent Orange server.", address, save),
+            Row("Status", null, statusHost, reconnect)));
+        host.Children.Add(devicesHost);
+        host.Children.Add(problem);
+        host.Children.Add(Section("Sync"));
+        host.Children.Add(Card(
+            Row("Last synced", "Everything works offline and syncs when it can.", Value("Just now")),
+            Row("Waiting to sync", "Changes made on this PC that the server doesn't have yet.", Value("0")),
+            Row("Sync now", "Send and receive changes now.", Action("Sync"))));
+
+        var devices = await Devices.ListAsync();
+
+        // The server turned this login down, because this PC was removed.
+        if (!Devices.IsPaired)
+        {
+            await FillServerPageAsync(host);
+            return;
+        }
+
+        if (devices is null)
+        {
+            var retry = Action("Try again");
+            retry.Click += async (_, _) => await FillServerPageAsync(host);
+            devicesHost.Children.Add(Section("Devices"));
+            devicesHost.Children.Add(Card(Row("Can't reach the server", "Devices can't be shown right now.", retry)));
+            return;
+        }
+
+        var thisDevice = devices.First(device => device.Current);
+        devicesHost.Children.Add(Section("This device"));
+        devicesHost.Children.Add(Card(
+            RenameRow(thisDevice, problem),
+            SignOutRow(thisDevice, host, problem)));
+        devicesHost.Children.Add(Section("Other devices"));
+
+        var others = devices.Where(device => !device.Current).ToList();
+        devicesHost.Children.Add(others.Count == 0
+            ? Card(Row("No other devices", "To add one, install Agent Orange on it and enter this server's pairing key."))
+            : Card(others.Select(device => Row(device.Name, device.LastSeenLabel, RemoveButton(device, host, problem))).ToArray<FrameworkElement>()));
     }
 
     private StackPanel ServerStatusView() => Server.State switch
@@ -336,88 +378,42 @@ public partial class SettingsModal : UserControl
         _ => Status("No server set", false),
     };
 
-    private UIElement[] DevicesPage()
+    private void ShowConnectForm(StackPanel host)
     {
-        var host = new StackPanel();
-        _ = FillDevicesPageAsync(host);
-        return [host];
-    }
-
-    private async Task FillDevicesPageAsync(StackPanel host)
-    {
-        host.Children.Clear();
-
-        if (Server.Address.Length == 0)
-        {
-            host.Children.Add(Section("This device"));
-            host.Children.Add(Card(Row("No server set", "Add a server address on the Server page first.")));
-            return;
-        }
-
-        if (!Devices.IsPaired)
-        {
-            ShowPairForm(host);
-            return;
-        }
-
-        var devices = await Devices.ListAsync();
-        host.Children.Clear();
-
-        if (!Devices.IsPaired)
-        {
-            ShowPairForm(host);
-            return;
-        }
-
-        if (devices is null)
-        {
-            var retry = Action("Try again");
-            retry.Click += async (_, _) => await FillDevicesPageAsync(host);
-            host.Children.Add(Section("This device"));
-            host.Children.Add(Card(Row("Can't reach the server", "This PC's devices can't be shown right now.", retry)));
-            return;
-        }
-
-        var problem = ProblemText();
-        var thisDevice = devices.First(device => device.Current);
-        host.Children.Add(Section("This device"));
-        host.Children.Add(Card(
-            RenameRow(thisDevice, problem),
-            SignOutRow(thisDevice, host, problem)));
-        host.Children.Add(Section("Other devices"));
-
-        var others = devices.Where(device => !device.Current).ToList();
-        host.Children.Add(others.Count == 0
-            ? Card(Row("No other devices", "To add one, install Agent Orange on it and enter this server's pairing key."))
-            : Card(others.Select(device => Row(device.Name, device.LastSeenLabel, RemoveButton(device, host, problem))).ToArray<FrameworkElement>()));
-        host.Children.Add(problem);
-    }
-
-    private void ShowPairForm(StackPanel host)
-    {
+        var address = Field(Server.Address);
+        address.Width = 300;
         var key = new PasswordBox { Style = (Style)FindResource("SecretField") };
         var name = Field(Environment.MachineName);
         name.Width = 300;
-        var pair = Action("Pair");
+        var connect = Action("Connect");
         var problem = ProblemText();
 
-        async Task PairNow()
+        async Task ConnectNow()
         {
+            if (!ServerConnection.TryCleanAddress(address.Text, out var cleaned) || cleaned.Length == 0)
+            {
+                ShowProblem(problem, "Enter a full https:// address.");
+                return;
+            }
+
             if (key.Password.Length == 0 || string.IsNullOrWhiteSpace(name.Text))
             {
                 ShowProblem(problem, "Enter the pairing key and a name for this PC.");
                 return;
             }
 
-            pair.IsEnabled = false;
+            problem.Visibility = Visibility.Collapsed;
+            address.Text = cleaned;
+            connect.IsEnabled = false;
+            if (cleaned != Server.Address) await Server.SetAddressAsync(cleaned);
             var result = await Devices.PairAsync(key.Password, name.Text);
-            pair.IsEnabled = true;
+            connect.IsEnabled = true;
 
             switch (result)
             {
                 case PairResult.Paired:
                     key.Clear();
-                    await FillDevicesPageAsync(host);
+                    await FillServerPageAsync(host);
                     break;
                 case PairResult.WrongKey:
                     ShowProblem(problem, "That pairing key isn't right.");
@@ -434,17 +430,20 @@ public partial class SettingsModal : UserControl
             }
         }
 
-        key.KeyDown += async (_, e) =>
+        KeyEventHandler connectOnEnter = async (_, e) =>
         {
-            if (e.Key == Key.Enter) await PairNow();
+            if (e.Key == Key.Enter) await ConnectNow();
         };
-        pair.Click += async (_, _) => await PairNow();
+        address.KeyDown += connectOnEnter;
+        key.KeyDown += connectOnEnter;
+        connect.Click += async (_, _) => await ConnectNow();
 
-        host.Children.Add(Section("Pair this PC"));
+        host.Children.Add(Section("Connect to a server"));
         host.Children.Add(Card(
+            Row("Server address", "The URL of your Agent Orange server.", address),
             Row("Pairing key", "From your server. Each PC only needs it once.", key),
             Row("Device name", "Shown to your other devices.", name),
-            Row("Pair", "Connect this PC to the server.", pair)));
+            Row("Connect", "Pair this PC with the server.", connect)));
         host.Children.Add(problem);
     }
 
@@ -502,7 +501,7 @@ public partial class SettingsModal : UserControl
 
             if (await Devices.RemoveAsync(device))
             {
-                await FillDevicesPageAsync(host);
+                await FillServerPageAsync(host);
             }
             else
             {

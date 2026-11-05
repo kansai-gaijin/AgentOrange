@@ -33,6 +33,8 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
 
     public bool IsPaired => Token is not null;
 
+    public event Action? PairingChanged;
+
     // Keyed by address, so a login is only ever sent to the server that issued it.
     private string TokenSetting => $"device_token:{server.Address}";
 
@@ -70,6 +72,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
             var paired = await response.Content.ReadFromJsonAsync<PairResponse>();
             var encrypted = ProtectedData.Protect(Encoding.UTF8.GetBytes(paired!.Token), null, DataProtectionScope.CurrentUser);
             database.SetSetting(TokenSetting, Convert.ToBase64String(encrypted));
+            PairingChanged?.Invoke();
             return PairResult.Paired;
         }
         catch (Exception error) when (IsNetworkFailure(error))
@@ -99,7 +102,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     public async Task<bool> RemoveAsync(DeviceInfo device)
     {
         var removed = await SucceedsAsync(HttpMethod.Delete, $"/v1/devices/{device.Id}", null);
-        if (removed && device.Current) database.SetSetting(TokenSetting, "");
+        if (removed && device.Current) ForgetLogin();
         return removed;
     }
 
@@ -126,8 +129,14 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
 
         var response = await _http.SendAsync(request);
         // This device was removed from the server, so its login is no use any more.
-        if (response.StatusCode == HttpStatusCode.Unauthorized) database.SetSetting(TokenSetting, "");
+        if (response.StatusCode == HttpStatusCode.Unauthorized) ForgetLogin();
         return response;
+    }
+
+    private void ForgetLogin()
+    {
+        database.SetSetting(TokenSetting, "");
+        PairingChanged?.Invoke();
     }
 
     private static bool IsNetworkFailure(Exception error) =>

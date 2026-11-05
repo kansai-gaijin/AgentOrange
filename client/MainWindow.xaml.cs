@@ -20,6 +20,7 @@ public partial class MainWindow : Window
     private readonly UpdateManager _updates = new(new SimpleWebSource(UpdateFeedUrl));
     private readonly LocalDatabase _database;
     private readonly ServerConnection _server;
+    private readonly DeviceSession _devices;
 
     private UpdateInfo? _requiredUpdate;
     private bool _downloading;
@@ -38,10 +39,12 @@ public partial class MainWindow : Window
         RefreshProjects();
 
         _server = new ServerConnection(_database);
+        _devices = new DeviceSession(_database, _server);
         _server.StateChanged += ShowServerState;
+        _devices.PairingChanged += ShowServerState;
         ShowServerState();
         Settings.Server = _server;
-        Settings.Devices = new DeviceSession(_database, _server);
+        Settings.Devices = _devices;
 
         // Dev builds aren't installed, so there's nothing for them to update.
         if (_updates.IsInstalled)
@@ -130,12 +133,17 @@ public partial class MainWindow : Window
 
     private void ShowServerState()
     {
+        if (_server.State == ServerState.NoAddress || !_devices.IsPaired)
+        {
+            (ServerStatus.Text, ServerStatus.Foreground) = ("Not connected to a server", MutedBrush);
+            return;
+        }
+
         (ServerStatus.Text, ServerStatus.Foreground) = _server.State switch
         {
             ServerState.Connected => ("● Connected to server", ConnectedBrush),
-            ServerState.Disconnected => ("● Not connected to server", DisconnectedBrush),
             ServerState.Connecting => ("Connecting to server…", MutedBrush),
-            _ => ("No server set", MutedBrush),
+            _ => ("● Can't reach the server", DisconnectedBrush),
         };
     }
 
