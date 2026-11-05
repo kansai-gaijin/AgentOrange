@@ -28,34 +28,46 @@
         </Grid>
 
         <!-- Updates are mandatory: this covers the whole app and can't be dismissed. -->
-        <Grid x:Name="UpdateOverlay" Background="#16181D" Visibility="Collapsed">
-            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Width="360">
-                <TextBlock x:Name="UpdateTitle"
-                           Foreground="#FF8A1F"
-                           FontSize="24"
-                           FontWeight="Bold"
-                           TextAlignment="Center" />
-                <ProgressBar x:Name="UpdateProgress"
-                             Height="6"
-                             Margin="0,16,0,0"
-                             Maximum="100"
-                             Foreground="#FF8A1F"
-                             Background="#2A2E36"
-                             BorderThickness="0" />
-                <TextBlock x:Name="UpdateMessage"
-                           Foreground="#9AA0AA"
-                           FontSize="14"
-                           Margin="0,12,0,0"
-                           TextWrapping="Wrap"
-                           TextAlignment="Center" />
-                <Button x:Name="RetryUpdate"
-                        Content="Retry now"
-                        Padding="16,6"
-                        Margin="0,16,0,0"
-                        HorizontalAlignment="Center"
-                        Visibility="Collapsed"
-                        Click="RetryUpdate_Click" />
-            </StackPanel>
+        <Grid x:Name="UpdateOverlay" Background="#D916181D" Visibility="Collapsed">
+            <Border Background="#22262E"
+                    CornerRadius="8"
+                    Padding="28"
+                    Width="400"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center">
+                <StackPanel>
+                    <TextBlock x:Name="UpdateTitle"
+                               Foreground="#FF8A1F"
+                               FontSize="24"
+                               FontWeight="Bold"
+                               TextAlignment="Center" />
+                    <TextBlock x:Name="UpdateMessage"
+                               Foreground="#C4C9D2"
+                               FontSize="14"
+                               Margin="0,12,0,0"
+                               TextWrapping="Wrap"
+                               TextAlignment="Center" />
+                    <ProgressBar x:Name="UpdateProgress"
+                                 Height="6"
+                                 Margin="0,18,0,0"
+                                 Maximum="100"
+                                 Foreground="#FF8A1F"
+                                 Background="#2A2E36"
+                                 BorderThickness="0"
+                                 Visibility="Collapsed" />
+                    <Button x:Name="DownloadUpdate"
+                            Content="Download update"
+                            Padding="20,8"
+                            Margin="0,18,0,0"
+                            FontSize="14"
+                            FontWeight="SemiBold"
+                            Foreground="#16181D"
+                            Background="#FF8A1F"
+                            BorderThickness="0"
+                            HorizontalAlignment="Center"
+                            Click="DownloadUpdate_Click" />
+                </StackPanel>
+            </Border>
         </Grid>
     </Grid>
 </Window>

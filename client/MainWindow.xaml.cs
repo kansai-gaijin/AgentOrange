@@ -21,7 +21,7 @@ public partial class MainWindow : Window
     private readonly UpdateManager _updates = new(new SimpleWebSource(UpdateFeedUrl));
 
     private UpdateInfo? _requiredUpdate;
-    private bool _updateRunning;
+    private bool _downloading;
 
     public MainWindow()
     {
@@ -36,14 +36,14 @@ public partial class MainWindow : Window
         if (_updates.IsInstalled)
         {
             var updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
-            updateTimer.Tick += async (_, _) => await ForceUpdateIfAvailableAsync();
+            updateTimer.Tick += async (_, _) => await CheckForUpdateAsync();
             updateTimer.Start();
         }
 
         Loaded += async (_, _) =>
         {
             await CheckServerAsync();
-            if (_updates.IsInstalled) await ForceUpdateIfAvailableAsync();
+            if (_updates.IsInstalled) await CheckForUpdateAsync();
         };
     }
 
@@ -63,18 +63,53 @@ public partial class MainWindow : Window
         ServerStatus.Foreground = connected ? ConnectedBrush : DisconnectedBrush;
     }
 
-    private async Task ForceUpdateIfAvailableAsync()
+    // Keeps running while the overlay waits, because only the newest release can be downloaded.
+    private async Task CheckForUpdateAsync()
     {
-        if (_updateRunning) return;
-        _updateRunning = true;
+        if (_downloading) return;
+
+        UpdateInfo? update;
+        try
+        {
+            update = await _updates.CheckForUpdatesAsync();
+        }
+        catch (Exception)
+        {
+            return; // Offline, say. The next check tries again, and a known update stays required.
+        }
+
+        if (update is null || _downloading) return;
+
+        var isNewVersion = _requiredUpdate?.TargetFullRelease.Version != update.TargetFullRelease.Version;
+        _requiredUpdate = update;
+        if (isNewVersion) ShowUpdateRequired(update);
+    }
+
+    private void ShowUpdateRequired(UpdateInfo update)
+    {
+        MainContent.IsEnabled = false;
+        UpdateOverlay.Visibility = Visibility.Visible;
+        UpdateTitle.Text = $"Update to v{update.TargetFullRelease.Version}";
+        UpdateMessage.Text = "This update is required to keep using Agent Orange.";
+        UpdateProgress.Visibility = Visibility.Collapsed;
+        DownloadUpdate.Content = "Download update";
+        DownloadUpdate.Visibility = Visibility.Visible;
+    }
+
+    private async void DownloadUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (_downloading || _requiredUpdate is null) return;
+        _downloading = true;
+
+        DownloadUpdate.Visibility = Visibility.Collapsed;
+        UpdateProgress.Value = 0;
+        UpdateProgress.Visibility = Visibility.Visible;
+        UpdateMessage.Text = "Downloading…";
 
         try
         {
-            // Once an update is known it stays required, even if a later check can't reach GitHub.
-            _requiredUpdate ??= await _updates.CheckForUpdatesAsync();
-            if (_requiredUpdate is null) return;
-
-            ShowUpdating(_requiredUpdate);
+            _requiredUpdate = await _updates.CheckForUpdatesAsync() ?? _requiredUpdate;
+            UpdateTitle.Text = $"Update to v{_requiredUpdate.TargetFullRelease.Version}";
             await _updates.DownloadUpdatesAsync(
                 _requiredUpdate,
                 percent => Dispatcher.Invoke(() => UpdateProgress.Value = percent));
@@ -83,31 +118,14 @@ public partial class MainWindow : Window
         }
         catch (Exception)
         {
-            // Failing to check (offline, say) is fine; the next check tries again.
-            // A required update that fails stays blocking until it works.
-            if (_requiredUpdate is not null) ShowUpdateFailed();
+            UpdateMessage.Text = "The download didn't finish. Check your connection and try again.";
+            UpdateProgress.Visibility = Visibility.Collapsed;
+            DownloadUpdate.Content = "Try again";
+            DownloadUpdate.Visibility = Visibility.Visible;
         }
         finally
         {
-            _updateRunning = false;
+            _downloading = false;
         }
     }
-
-    private void ShowUpdating(UpdateInfo update)
-    {
-        MainContent.IsEnabled = false;
-        UpdateOverlay.Visibility = Visibility.Visible;
-        UpdateTitle.Text = $"Updating to v{update.TargetFullRelease.Version}";
-        UpdateMessage.Text = "Downloading…";
-        UpdateProgress.Value = 0;
-        RetryUpdate.Visibility = Visibility.Collapsed;
-    }
-
-    private void ShowUpdateFailed()
-    {
-        UpdateMessage.Text = "The update didn't finish. Trying again every minute.";
-        RetryUpdate.Visibility = Visibility.Visible;
-    }
-
-    private async void RetryUpdate_Click(object sender, RoutedEventArgs e) => await ForceUpdateIfAvailableAsync();
 }
