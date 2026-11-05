@@ -1,6 +1,7 @@
 ﻿<Window x:Class="AgentOrange.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:AgentOrange"
         Title="Agent Orange" Height="720" Width="1100"
         MinHeight="480" MinWidth="640"
         WindowStartupLocation="CenterScreen"
@@ -94,11 +95,17 @@
                                FontSize="28"
                                FontWeight="Bold"
                                VerticalAlignment="Center" />
-                    <Button x:Name="NewProject"
-                            Content="New project"
-                            Style="{StaticResource OrangeButton}"
-                            HorizontalAlignment="Right"
-                            Click="NewProject_Click" />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="OpenSettings"
+                                Content="Settings"
+                                Style="{StaticResource QuietButton}"
+                                Margin="0,0,8,0"
+                                Click="OpenSettings_Click" />
+                        <Button x:Name="NewProject"
+                                Content="New project"
+                                Style="{StaticResource OrangeButton}"
+                                Click="NewProject_Click" />
+                    </StackPanel>
                 </Grid>
 
                 <Border x:Name="NewProjectForm"
@@ -213,6 +220,8 @@
                            HorizontalAlignment="Right" />
             </Grid>
         </Grid>
+
+        <local:SettingsModal x:Name="Settings" Visibility="Collapsed" Closed="Settings_Closed" />
 
         <!-- Updates are mandatory: this covers the whole app and can't be dismissed. -->
         <Grid x:Name="UpdateOverlay" Background="#D916181D" Visibility="Collapsed">

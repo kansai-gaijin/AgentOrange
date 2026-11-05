@@ -10,12 +10,12 @@ public sealed record Project(string Id, string Name, DateTimeOffset CreatedAt)
         "Created " + CreatedAt.ToLocalTime().ToString("MMM d, yyyy", CultureInfo.InvariantCulture);
 }
 
-/// <summary>Keeps projects in a local database, so the app works without the server.</summary>
-public sealed class ProjectStore
+/// <summary>This PC's own database, so the app works without the server.</summary>
+public sealed class LocalDatabase
 {
     private readonly string _connectionString;
 
-    public ProjectStore(string databasePath)
+    public LocalDatabase(string databasePath)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
         _connectionString = new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString();
@@ -27,12 +27,16 @@ public sealed class ProjectStore
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 created_at TEXT NOT NULL
-            )
+            );
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             """;
         command.ExecuteNonQuery();
     }
 
-    public List<Project> List()
+    public List<Project> ListProjects()
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
@@ -47,7 +51,7 @@ public sealed class ProjectStore
         return projects;
     }
 
-    public Project Create(string name)
+    public Project CreateProject(string name)
     {
         var project = new Project(Guid.NewGuid().ToString(), name, DateTimeOffset.UtcNow);
 
@@ -59,6 +63,28 @@ public sealed class ProjectStore
         command.Parameters.AddWithValue("$createdAt", project.CreatedAt.ToString("O"));
         command.ExecuteNonQuery();
         return project;
+    }
+
+    public string? GetSetting(string key)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT value FROM settings WHERE key = $key";
+        command.Parameters.AddWithValue("$key", key);
+        return command.ExecuteScalar() as string;
+    }
+
+    public void SetSetting(string key, string value)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO settings (key, value) VALUES ($key, $value)
+            ON CONFLICT (key) DO UPDATE SET value = excluded.value
+            """;
+        command.Parameters.AddWithValue("$key", key);
+        command.Parameters.AddWithValue("$value", value);
+        command.ExecuteNonQuery();
     }
 
     private SqliteConnection Open()

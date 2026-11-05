@@ -1,9 +1,9 @@
 ﻿using System.IO;
-using System.Net.Http;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
 using System.Windows.Threading;
 using Velopack;
 using Velopack.Sources;
@@ -12,17 +12,14 @@ namespace AgentOrange;
 
 public partial class MainWindow : Window
 {
-    private const string DefaultServerUrl = "http://127.0.0.1:47100";
-    private const string HealthyAnswer = "🍊";
     private const string UpdateFeedUrl = "https://github.com/kansai-gaijin/AgentOrange/releases/latest/download";
     private static readonly Brush ConnectedBrush = new SolidColorBrush(Color.FromRgb(0x5F, 0xD0, 0x8A));
     private static readonly Brush DisconnectedBrush = new SolidColorBrush(Color.FromRgb(0xE8, 0x6B, 0x6B));
+    private static readonly Brush MutedBrush = new SolidColorBrush(Color.FromRgb(0x9A, 0xA0, 0xAA));
 
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(3) };
-    private readonly string _serverUrl =
-        Environment.GetEnvironmentVariable("AGENT_ORANGE_SERVER")?.TrimEnd('/') ?? DefaultServerUrl;
     private readonly UpdateManager _updates = new(new SimpleWebSource(UpdateFeedUrl));
-    private readonly ProjectStore _projects;
+    private readonly LocalDatabase _database;
+    private readonly ServerConnection _server;
 
     private UpdateInfo? _requiredUpdate;
     private bool _downloading;
@@ -34,15 +31,17 @@ public partial class MainWindow : Window
 
         // Kept outside the install folder, which updates replace. Dev builds get their
         // own folder so testing never touches real projects.
-        _projects = new ProjectStore(Path.Combine(
+        _database = new LocalDatabase(Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             _updates.IsInstalled ? "AgentOrange" : "AgentOrange-Dev",
             "agent-orange.db"));
         RefreshProjects();
 
-        var serverTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-        serverTimer.Tick += async (_, _) => await CheckServerAsync();
-        serverTimer.Start();
+        _server = new ServerConnection(_database);
+        _server.StateChanged += ShowServerState;
+        ShowServerState();
+        Settings.Server = _server;
+        Settings.Devices = new DeviceSession(_database, _server);
 
         // Dev builds aren't installed, so there's nothing for them to update.
         if (_updates.IsInstalled)
@@ -54,14 +53,14 @@ public partial class MainWindow : Window
 
         Loaded += async (_, _) =>
         {
-            await CheckServerAsync();
+            await _server.CheckAsync();
             if (_updates.IsInstalled) await CheckForUpdateAsync();
         };
     }
 
     private void RefreshProjects()
     {
-        var projects = _projects.List();
+        var projects = _database.ListProjects();
         ProjectList.ItemsSource = projects;
         NoProjects.Visibility = projects.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -91,7 +90,7 @@ public partial class MainWindow : Window
         var name = NewProjectName.Text.Trim();
         if (name.Length == 0) return;
 
-        _projects.Create(name);
+        _database.CreateProject(name);
         HideNewProjectForm();
         RefreshProjects();
     }
@@ -102,30 +101,42 @@ public partial class MainWindow : Window
     {
         var project = (Project)((Button)sender).DataContext;
         OpenProjectName.Text = project.Name;
+        ShowView(ProjectView);
+    }
+
+    private void OpenSettings_Click(object sender, RoutedEventArgs e)
+    {
+        MainContent.IsEnabled = false;
+        MainContent.Effect = new BlurEffect { Radius = 8 };
+        Settings.Visibility = Visibility.Visible;
+        Settings.Focus();
+    }
+
+    private void Settings_Closed(object? sender, EventArgs e)
+    {
+        Settings.Visibility = Visibility.Collapsed;
+        MainContent.Effect = null;
+        MainContent.IsEnabled = _requiredUpdate is null;
+    }
+
+    private void BackToProjects_Click(object sender, RoutedEventArgs e) => ShowView(ProjectSelectView);
+
+    private void ShowView(UIElement view)
+    {
         ProjectSelectView.Visibility = Visibility.Collapsed;
-        ProjectView.Visibility = Visibility.Visible;
-    }
-
-    private void BackToProjects_Click(object sender, RoutedEventArgs e)
-    {
         ProjectView.Visibility = Visibility.Collapsed;
-        ProjectSelectView.Visibility = Visibility.Visible;
+        view.Visibility = Visibility.Visible;
     }
 
-    private async Task CheckServerAsync()
+    private void ShowServerState()
     {
-        bool connected;
-        try
+        (ServerStatus.Text, ServerStatus.Foreground) = _server.State switch
         {
-            connected = await _http.GetStringAsync($"{_serverUrl}/v1/health") == HealthyAnswer;
-        }
-        catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
-        {
-            connected = false;
-        }
-
-        ServerStatus.Text = connected ? "● Connected to server" : "● Not connected to server";
-        ServerStatus.Foreground = connected ? ConnectedBrush : DisconnectedBrush;
+            ServerState.Connected => ("● Connected to server", ConnectedBrush),
+            ServerState.Disconnected => ("● Not connected to server", DisconnectedBrush),
+            ServerState.Connecting => ("Connecting to server…", MutedBrush),
+            _ => ("No server set", MutedBrush),
+        };
     }
 
     // Keeps running while the overlay waits, because only the newest release can be downloaded.
