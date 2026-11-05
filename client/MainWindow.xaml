@@ -63,9 +63,27 @@
                             FontWeight="SemiBold"
                             Foreground="#16181D"
                             Background="#FF8A1F"
-                            BorderThickness="0"
                             HorizontalAlignment="Center"
-                            Click="DownloadUpdate_Click" />
+                            Click="DownloadUpdate_Click">
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="Face"
+                                        Background="{TemplateBinding Background}"
+                                        CornerRadius="4"
+                                        Padding="{TemplateBinding Padding}">
+                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="Face" Property="Background" Value="#FFA24D" />
+                                    </Trigger>
+                                    <Trigger Property="IsPressed" Value="True">
+                                        <Setter TargetName="Face" Property="Background" Value="#E67A12" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
+                    </Button>
                 </StackPanel>
             </Border>
         </Grid>
