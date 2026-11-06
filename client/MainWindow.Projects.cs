@@ -103,9 +103,9 @@ public partial class MainWindow
         {
             _ = OpenProjectAsync(current);
         }
-        else
+        else if (!_confirmingNewRepo)
         {
-            RenderProject(current); // Its header image syncs as a separate record.
+            RenderProject(current); // Its header image syncs as a separate record. Not while someone's typing.
         }
     }
 
@@ -496,7 +496,12 @@ public partial class MainWindow
         var runnable = folder is null ? FolderGitSettings.None : await GitTools.FolderRunnableSettingsAsync(folder);
         var useFolderSettings = runnable is not null && (folder is null || GitTools.AreAllowed(folder, runnable));
         var latest = await GitTools.CheckRepoAccessAsync(project.RepoUrl, folder, useFolderSettings);
-        if (latest != shown && _openProject?.Id == project.Id && _busyProjectId is null) await RecheckIfStillOpenAsync(project.Id);
+
+        // The folder may have changed too, as anything can happen to it while no one's looking.
+        var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
+        var folderProblem = folderExists ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl) : null;
+        var changed = latest != shown || folderExists != _folderExists || folderProblem != _folderProblem;
+        if (changed && _openProject?.Id == project.Id && _busyProjectId is null) await RecheckIfStillOpenAsync(project.Id);
     }
 
     private void RenderProject(Project project)
@@ -965,6 +970,7 @@ public partial class MainWindow
 
         var updated = latest with { RepoUrl = result.Value };
         _database.SaveProject(updated);
+        _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(result.Value)); // This PC just made it.
 
         // A folder chosen in settings while this ran is more recent, so it stays.
         if (_database.GetProjectFolder(project.Id) == linkedBefore) _database.SetProjectFolder(project.Id, folder!);

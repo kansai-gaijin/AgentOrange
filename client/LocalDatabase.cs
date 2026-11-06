@@ -476,7 +476,18 @@ public sealed class LocalDatabase
     {
         using var connection = Open();
         using var transaction = connection.BeginTransaction();
-        var change = new SyncChange(collection, id, data, deleted, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        // Always later than what's being replaced, so a PC whose clock runs slow can't lose an edit
+        // it made after seeing the one before it.
+        long previous;
+        using (var read = connection.CreateCommand())
+        {
+            read.CommandText = "SELECT changed_at FROM records WHERE collection = $collection AND id = $id";
+            read.Parameters.AddWithValue("$collection", collection);
+            read.Parameters.AddWithValue("$id", id);
+            previous = read.ExecuteScalar() is long known ? known : 0;
+        }
+        var change = new SyncChange(collection, id, data, deleted, Math.Max(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), previous + 1));
         Upsert(connection, "records", change);
         Upsert(connection, "outbox", change);
         transaction.Commit();

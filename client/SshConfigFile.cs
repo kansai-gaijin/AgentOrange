@@ -80,12 +80,31 @@ internal static partial class SshConfigFile
         return false;
     }
 
-    /// <summary>The same, for a path that may not all exist. Nothing past a missing part can be a link.</summary>
-    internal static bool HasLinkBeforeAnythingMissing(string path)
+    /// <summary>
+    /// The same, for a path that may not all exist, as nothing past a missing part can be a link.
+    /// Only looks below where it parts ways with chosenFolder. The person chose how to get to that
+    /// folder, which is often through a link of their own, like one onto a bigger drive, and a
+    /// folder someone hands over can only bring links of its own.
+    /// </summary>
+    internal static bool HasLinkBelowChosenPath(string chosenFolder, string path)
     {
+        var full = Path.GetFullPath(path);
+        var parts = full.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+        var chosen = Path.GetFullPath(chosenFolder).Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+
+        var shared = 0;
+        while (shared < parts.Length && shared < chosen.Length && parts[shared].Equals(chosen[shared], StringComparison.OrdinalIgnoreCase)) shared++;
+
+        // Nothing in common, such as another drive, and its first part is only the drive's name.
+        var current = shared == 0 ? Path.GetPathRoot(full)! : string.Join(Path.DirectorySeparatorChar, parts[..shared]) + Path.DirectorySeparatorChar;
         try
         {
-            return HasLinkOnTheWay(Path.GetFullPath(path));
+            foreach (var part in parts[Math.Max(shared, 1)..])
+            {
+                current = Path.Combine(current, part);
+                if (IsLink(current)) return true;
+            }
+            return false;
         }
         catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
         {

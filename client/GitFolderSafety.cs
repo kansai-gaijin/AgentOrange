@@ -18,7 +18,7 @@ internal static partial class GitFolderSafety
     private const int MaxIncludeDepth = 5;
     private const int MaxBytes = 1_000_000;
     private static readonly TimeSpan RememberFor = TimeSpan.FromSeconds(3);
-    private const string Problem = "fatal: That folder's Git settings point at a network location, or couldn't be checked, and opening one could send your Windows login there. Nothing was run in it. Fix that in its Git settings if you trust where it came from.";
+    private const string Problem = "fatal: That folder's Git settings or data point at a network location, or through a link that could lead to one, or couldn't be checked. Opening one could send your Windows login there, so nothing was run in it. Fix that in the folder if you trust where it came from.";
 
     // Git runs many times in a row for one check, and each would otherwise look at all this again.
     private static readonly ConcurrentDictionary<string, (DateTimeOffset At, string? Answer)> Recent = new(StringComparer.OrdinalIgnoreCase);
@@ -72,6 +72,9 @@ internal static partial class GitFolderSafety
     {
         if (SshConfigFile.IsLink(entry)) return true; // It could lead anywhere, and following it to find out is the risk.
 
+        // Where this repo is, however the person chooses to get there.
+        var chosen = Path.GetDirectoryName(entry)!;
+
         var gitDirectory = entry;
 
         // A .git file says where the real Git data is, as worktrees and submodules have.
@@ -81,8 +84,8 @@ internal static partial class GitFolderSafety
             var line = File.ReadLines(entry).FirstOrDefault(text => text.StartsWith("gitdir:", StringComparison.OrdinalIgnoreCase));
             if (line is null) return false;
 
-            gitDirectory = SshConfigFile.Resolve(line["gitdir:".Length..].Trim(), Path.GetDirectoryName(entry)!);
-            if (IsUnsafeToOpen(gitDirectory)) return true;
+            gitDirectory = SshConfigFile.Resolve(line["gitdir:".Length..].Trim(), chosen);
+            if (IsUnsafeToOpen(chosen, gitDirectory)) return true;
         }
 
         var directories = new List<string> { gitDirectory };
@@ -93,25 +96,26 @@ internal static partial class GitFolderSafety
         {
             if (new FileInfo(shared).Length > MaxBytes) return true;
             var common = SshConfigFile.Resolve(File.ReadAllText(shared).Trim(), gitDirectory);
-            if (IsUnsafeToOpen(common)) return true;
+            if (IsUnsafeToOpen(chosen, common)) return true;
             directories.Add(common);
         }
 
         foreach (var directory in directories.Where(Directory.Exists))
         {
             if (HasLinkInside(directory) || HasLinkInside(Path.Combine(directory, "objects"))) return true;
-            if (HasNetworkAlternate(directory)) return true;
-            if (await SettingsPointAtNetworkAsync(Path.Combine(directory, "config"), 0, readSettingsFile)) return true;
-            if (await SettingsPointAtNetworkAsync(Path.Combine(directory, "config.worktree"), 0, readSettingsFile)) return true;
+            if (HasNetworkAlternate(chosen, directory)) return true;
+            if (await SettingsPointAtNetworkAsync(chosen, Path.Combine(directory, "config"), 0, readSettingsFile)) return true;
+            if (await SettingsPointAtNetworkAsync(chosen, Path.Combine(directory, "config.worktree"), 0, readSettingsFile)) return true;
         }
         return false;
     }
 
+    // Git LFS keeps its big files here, and moving them onto another drive with a link is normal.
     private static bool HasLinkInside(string directory) =>
-        Directory.Exists(directory) && Directory.EnumerateFileSystemEntries(directory).Any(SshConfigFile.IsLink);
+        Directory.Exists(directory) && Directory.EnumerateFileSystemEntries(directory).Any(entry => Path.GetFileName(entry) != "lfs" && SshConfigFile.IsLink(entry));
 
     // Other places a repo borrows its history from. Git opens them to look for any commit.
-    private static bool HasNetworkAlternate(string gitDirectory)
+    private static bool HasNetworkAlternate(string chosen, string gitDirectory)
     {
         var objects = Path.Combine(gitDirectory, "objects");
         var alternates = Path.Combine(objects, "info", "alternates");
@@ -122,13 +126,13 @@ internal static partial class GitFolderSafety
         return File.ReadLines(alternates)
             .Select(line => line.Trim())
             .Where(line => line.Length > 0 && !line.StartsWith('#'))
-            .Any(line => line.StartsWith('"') || StartsLikeShare(line) || IsUnsafeToOpen(SshConfigFile.Resolve(line, objects)));
+            .Any(line => line.StartsWith('"') || StartsLikeShare(line) || IsUnsafeToOpen(chosen, SshConfigFile.Resolve(line, objects)));
     }
 
-    private static async Task<bool> SettingsPointAtNetworkAsync(string file, int depth, Func<string, Task<string?>> readSettingsFile)
+    private static async Task<bool> SettingsPointAtNetworkAsync(string chosen, string file, int depth, Func<string, Task<string?>> readSettingsFile)
     {
         if (depth > MaxIncludeDepth) return true; // Git gives up on this too, and it can't be vouched for.
-        if (IsUnsafeToOpen(file)) return true;
+        if (IsUnsafeToOpen(chosen, file)) return true;
 
         var info = new FileInfo(file);
         if (!info.Exists) return false; // Git skips a missing one, and carries on to the next.
@@ -148,15 +152,15 @@ internal static partial class GitFolderSafety
             var value = parts[1];
             if (StartsLikeShare(value) || value.StartsWith("%(prefix)", StringComparison.Ordinal) || NamesNetworkDrive(value)) return true;
 
-            if (PathSetting().IsMatch(parts[0]) && IsUnsafeToOpen(SshConfigFile.Resolve(value, directory))) return true;
+            if (PathSetting().IsMatch(parts[0]) && IsUnsafeToOpen(chosen, SshConfigFile.Resolve(value, directory))) return true;
 
             if (!IncludeSetting().IsMatch(parts[0])) continue;
-            if (await SettingsPointAtNetworkAsync(SshConfigFile.Resolve(value, directory), depth + 1, readSettingsFile)) return true;
+            if (await SettingsPointAtNetworkAsync(chosen, SshConfigFile.Resolve(value, directory), depth + 1, readSettingsFile)) return true;
         }
         return false;
     }
 
-    private static bool IsUnsafeToOpen(string path) => IsNetworkPath(path) || SshConfigFile.HasLinkBeforeAnythingMissing(path);
+    private static bool IsUnsafeToOpen(string chosen, string path) => IsNetworkPath(path) || SshConfigFile.HasLinkBelowChosenPath(chosen, path);
 
     private static bool Exists(string path)
     {

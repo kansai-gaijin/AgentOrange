@@ -168,7 +168,7 @@ public partial class NewProjectWizard : UserControl
         repoName.TextChanged += (_, _) => _wantedRepoName = repoName.Text;
 
         // Only used when creating a repo, so it can't look like it does something otherwise.
-        void ShowRepoNameFor(string url) => repoName.IsEnabled = !_working && url.Trim().Length == 0;
+        void ShowRepoNameFor(string url) => repoName.IsEnabled = !_working && (url.Trim().Length == 0 || _replacingUrl is not null);
         repo.TextChanged += (_, _) => ShowRepoNameFor(repo.Text);
         ShowRepoNameFor(repo.Text);
         var progress = new TextBlock { FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 8, 0, 0), Visibility = Visibility.Collapsed };
@@ -210,6 +210,7 @@ public partial class NewProjectWizard : UserControl
             _replacingUrl = null;
             _offeringFolderSettings = false;
             create.Content = "Create project";
+            ShowRepoNameFor(repo.Text);
         }
         folder.TextChanged += (_, _) => ForgetOffer();
         repo.TextChanged += (_, _) => ForgetOffer();
@@ -426,7 +427,9 @@ public partial class NewProjectWizard : UserControl
                 _replacingUrl = url;
                 _replacementOfferedFor = check;
                 var where = check.Account is null ? "your active GitHub account" : $"the GitHub account {check.Account}";
-                return ("", false, $"{gone}. {why} This folder is connected to it, so you can create a new, empty private repo for the folder under {where} instead. Nothing is pushed.");
+                var newName = GitTools.RepoName(_wantedRepoName.Trim().Length > 0 ? _wantedRepoName : project.Name);
+                var called = newName.Length > 0 ? $"called {newName} " : "";
+                return ("", false, $"{gone}. {why} This folder is connected to it, so you can create a new, empty private repo {called}for the folder under {where} instead. You can set its name above. Nothing is pushed.");
             default:
                 var (heading, description) = check.Describe();
                 return ("", false, $"{heading}. {description}");

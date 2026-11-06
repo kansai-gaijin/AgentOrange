@@ -53,9 +53,6 @@ pub struct Change {
     /// When the device made this copy, in milliseconds.
     #[serde(default, rename = "changedAt")]
     changed_at: i64,
-    /// Only being sent again because a server lost its data, so it mustn't replace anything newer.
-    #[serde(default, skip_serializing)]
-    resend: bool,
 }
 
 #[derive(Deserialize)]
@@ -93,7 +90,9 @@ fn client_is_out_of_date(headers: &HeaderMap) -> bool {
         .is_some_and(|(client, server)| client != server)
 }
 
-/// Saves this device's changes, then returns everything newer than its cursor.
+/// Saves this device's changes, then returns everything newer than its cursor. The newest edit of
+/// each record wins, whatever order they arrive in, so a PC coming back online can't undo what
+/// others did while it was away. Its own copy gets corrected by the answer to this same request.
 ///
 /// The server has one database connection, so writes run one at a time and
 /// sequence numbers become visible in order. A cursor can't skip past a change
@@ -162,7 +161,7 @@ pub async fn sync(
                     seq = excluded.seq,
                     updated_by = excluded.updated_by,
                     changed_at = excluded.changed_at
-                 WHERE NOT $7::boolean OR excluded.changed_at > sync_records.changed_at",
+                 WHERE excluded.changed_at >= sync_records.changed_at",
                 &[
                     &change.collection,
                     &change.id,
@@ -170,7 +169,6 @@ pub async fn sync(
                     &change.deleted,
                     &device,
                     &change.changed_at,
-                    &change.resend,
                 ],
             )
             .await
@@ -220,7 +218,6 @@ pub async fn sync(
             data,
             deleted: row.get(3),
             changed_at: row.get(6),
-            resend: false,
         });
     }
 

@@ -857,10 +857,14 @@ public static partial class GitTools
             ? await RunAsync("git", folder, "config", "--get", $"branch.{branch.Output.Trim()}.pushRemote")
             : null;
         var chosen = forBranch is { ExitCode: 0 } ? forBranch : await RunAsync("git", folder, "config", "--get", "remote.pushDefault");
+        if (chosen is not { ExitCode: 0 } && branch is { ExitCode: 0 })
+        {
+            chosen = await RunAsync("git", folder, "config", "--get", $"branch.{branch.Output.Trim()}.remote"); // Git's last resort.
+        }
         if (chosen is not { ExitCode: 0 }) return null;
 
         var remote = chosen.Output.Trim();
-        if (remote.Length == 0 || remote == "origin") return null;
+        if (remote.Length == 0 || remote is "origin" or ".") return null;
 
         var addresses = await RunAsync("git", folder, "remote", "get-url", "--push", "--all", remote);
         if (addresses is not { ExitCode: 0 }) return remote;
