@@ -119,7 +119,6 @@ public partial class ProjectSettingsModal : UserControl
                 Card(
                     ImageRow("Thumbnail", "Shown on the project list.", ProjectImageKind.Thumbnail, 44, 66),
                     ImageRow("Header", "Shown at the top of the project's page.", ProjectImageKind.Header, 124, 40)),
-                _problem,
                 Section("Danger zone"),
                 DangerZone(),
             },
@@ -128,12 +127,17 @@ public partial class ProjectSettingsModal : UserControl
 
         var scroller = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = 440, Content = details };
 
+        // Outside the scrolling part, so a problem is always in view when Done refuses to close.
+        _problem.Margin = new Thickness(24, 8, 24, 10);
+        DockPanel.SetDock(_problem, Dock.Bottom);
+        var body = new DockPanel { Children = { _problem, scroller } };
+
         Card.Child = WizardShell(
             Close,
             "Project settings",
             "Changes save as you make them.",
             null,
-            scroller,
+            body,
             PrimaryButton("Done", Close));
     }
 
