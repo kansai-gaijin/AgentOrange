@@ -229,7 +229,7 @@ public sealed class LocalDatabase
 
     /// <summary>
     /// A folder can only be one project, so this finds who already has it, by any path. A folder
-    /// holding another project's folder counts too, since its repo and engine files would mix with it.
+    /// inside or around another project's counts too, since their repos and engine files would mix.
     /// </summary>
     public async Task<Project?> ProjectUsingFolderAsync(string folder, string? exceptProjectId = null)
     {
@@ -242,7 +242,7 @@ public sealed class LocalDatabase
                 .Select(reserved => (Project: reserved.Value, Folder: (string?)reserved.Key)))
             .ToList();
 
-        return await Task.Run(() => linked.FirstOrDefault(link => IsOrHolds(folder, link.Folder!)).Project);
+        return await Task.Run(() => linked.FirstOrDefault(link => IsOrHolds(folder, link.Folder!) || IsOrHolds(link.Folder!, folder)).Project);
     }
 
     private static bool IsOrHolds(string folder, string other)

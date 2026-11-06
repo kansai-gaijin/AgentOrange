@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tokio_postgres::Client;
 
 use crate::{
-    AppState,
+    AppState, VERSION,
     devices::{authenticate, internal_error},
 };
 
@@ -71,6 +71,20 @@ pub struct SyncResponse {
     epoch: String,
 }
 
+/// Nothing stays compatible across a release, so an older one can't read or change data here.
+/// Its changes stay queued on that PC until it updates. Dev builds don't send a version.
+fn client_is_out_of_date(headers: &HeaderMap) -> bool {
+    let parts = |version: &str| -> Option<Vec<u64>> {
+        version.split('.').map(|part| part.parse().ok()).collect()
+    };
+    headers
+        .get("x-agent-orange-version")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parts)
+        .zip(parts(VERSION))
+        .is_some_and(|(client, server)| client < server)
+}
+
 /// Saves this device's changes, then returns everything newer than its cursor.
 ///
 /// The server has one database connection, so writes run one at a time and
@@ -81,6 +95,10 @@ pub async fn sync(
     headers: HeaderMap,
     Json(request): Json<SyncRequest>,
 ) -> Result<Json<SyncResponse>, StatusCode> {
+    if client_is_out_of_date(&headers) {
+        return Err(StatusCode::UPGRADE_REQUIRED);
+    }
+
     let device = authenticate(&state, &headers).await?;
 
     if request.changes.len() > MAX_CHANGES_PER_REQUEST {

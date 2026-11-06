@@ -26,6 +26,7 @@ public partial class MainWindow : Window
     private UpdateInfo? _requiredUpdate;
     private string? _requiredVersion; // Can be known from an earlier run without the details to download it.
     private bool _downloading;
+    private bool _agreedToStopClone;
 
     public MainWindow()
     {
@@ -81,7 +82,12 @@ public partial class MainWindow : Window
         Settings.Server = _server;
         Settings.Devices = _devices;
 
-        _sync = new SyncEngine(_database, _server, _devices);
+        _devices.ClientVersion = _updates.IsInstalled ? _updates.CurrentVersion?.ToString() : null;
+        Settings.ConfirmStoppingWork = ConfirmStoppingClone;
+        Closing += (_, closing) => closing.Cancel = !ConfirmStoppingClone("Closing");
+
+        // Nothing stays compatible across a release, so a copy that has to update doesn't sync.
+        _sync = new SyncEngine(_database, _server, _devices) { IsPaused = () => _requiredVersion is not null };
         _sync.RecordsChanged += () =>
         {
             _database.CleanUpDeletedProjects();
@@ -245,15 +251,39 @@ public partial class MainWindow : Window
         Settings.IsEnabled = false;
         UpdateOverlay.Visibility = Visibility.Visible;
         UpdateTitle.Text = $"Update to v{version}";
-        UpdateMessage.Text = "This update is required to keep using Agent Orange.";
+        ShowUpdateMessage();
         UpdateProgress.Visibility = Visibility.Collapsed;
         DownloadUpdate.Content = "Download update";
         DownloadUpdate.Visibility = Visibility.Visible;
     }
 
+    // The overlay covers the page that says a clone is running, so it has to say so itself.
+    private void ShowUpdateMessage()
+    {
+        const string required = "This update is required to keep using Agent Orange.";
+        UpdateMessage.Text = CloningProjectName() is { } name
+            ? $"{required} {name} is still cloning, and updating stops that, so you can wait for it to finish first."
+            : required;
+    }
+
+    private string? CloningProjectName() =>
+        _cloneCancel is null ? null : (_busyProjectId is { } id ? FindProject(id)?.Name : null) ?? "A project";
+
+    // A clone can take hours, and whatever stops it means starting again from nothing.
+    private bool ConfirmStoppingClone(string action)
+    {
+#if DEBUG
+        if (Headless.Active) return true;
+#endif
+        if (_agreedToStopClone || CloningProjectName() is not { } name) return true;
+        _agreedToStopClone = Dialogs.Confirm($"{name} is still cloning. {action} stops that, and what's been downloaded so far is thrown away. Do it anyway?");
+        return _agreedToStopClone;
+    }
+
     private async void DownloadUpdate_Click(object sender, RoutedEventArgs e)
     {
         if (_downloading || _requiredVersion is null) return;
+        if (!ConfirmStoppingClone("Updating")) return;
         _downloading = true;
 
         DownloadUpdate.Visibility = Visibility.Collapsed;

@@ -26,6 +26,9 @@ public sealed class SyncEngine
         timer.Start();
     }
 
+    /// <summary>Nothing goes either way while this says so. Queued changes wait.</summary>
+    public Func<bool> IsPaused { get; set; } = () => false;
+
     public DateTimeOffset? LastSynced { get; private set; }
 
     public int WaitingToSync => _database.CountOutbox();
@@ -40,7 +43,7 @@ public sealed class SyncEngine
 
     public async Task SyncNowAsync()
     {
-        if (_running || _server.State != ServerState.Connected || !_devices.IsPaired) return;
+        if (_running || IsPaused() || _server.State != ServerState.Connected || !_devices.IsPaired) return;
         _running = true;
 
         try
@@ -69,7 +72,7 @@ public sealed class SyncEngine
             if (stored is null) _database.QueueAllRecords();
             var cursor = stored is null ? 0 : long.Parse(stored);
 
-            while (_server.Address == address)
+            while (_server.Address == address && !IsPaused())
             {
                 var batch = _database.ReadOutbox(BatchSize, MaxBatchBytes);
                 var response = await _devices.SyncAsync(cursor, batch, epoch);

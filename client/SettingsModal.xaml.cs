@@ -593,6 +593,9 @@ public partial class SettingsModal : UserControl
         return button;
     }
 
+    /// <summary>Asks before stopping long work that would be lost, saying what's about to stop it.</summary>
+    public Func<string, bool> ConfirmStoppingWork { get; set; } = _ => true;
+
     private UIElement[] LocalDataPage()
     {
         var problem = ProblemText();
@@ -605,6 +608,9 @@ public partial class SettingsModal : UserControl
             {
                 return;
             }
+
+            // Moving it restarts the app.
+            if (!ConfirmStoppingWork("Moving the database")) return;
 
             if (Folders.MoveDatabase(folder) is { } failure)
             {

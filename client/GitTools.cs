@@ -22,6 +22,7 @@ public enum RepoAccess
     NotFound,
     NotFoundOrNoAccess,
     GitCantReach,
+    GitReadOnly,
     BadUrl,
     Offline,
     CheckFailed,
@@ -31,7 +32,7 @@ public enum RepoAccess
 public sealed record RepoCheck(RepoAccess Access, string? Account = null)
 {
     /// <summary>The check got a clear answer that this PC can't use the repo, as opposed to not getting one.</summary>
-    public bool IsDenied => Access is RepoAccess.ReadOnly or RepoAccess.Archived or RepoAccess.Restricted or RepoAccess.NotFound or RepoAccess.NotFoundOrNoAccess or RepoAccess.BadUrl;
+    public bool IsDenied => Access is RepoAccess.ReadOnly or RepoAccess.Archived or RepoAccess.Restricted or RepoAccess.NotFound or RepoAccess.NotFoundOrNoAccess or RepoAccess.GitReadOnly or RepoAccess.BadUrl;
 
     public (string Heading, string Description) Describe() => Access switch
     {
@@ -45,6 +46,7 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
         RepoAccess.NotFound => ("This repo doesn't exist", "It may have been deleted or renamed, or your GitHub login may not be allowed to see it."),
         RepoAccess.NotFoundOrNoAccess => ("Can't find this repo", "It was deleted, or your GitHub account doesn't have access. GitHub doesn't say which. If you should have access, ask the owner."),
         RepoAccess.GitCantReach => ("Git on this PC can't reach this repo", "Your GitHub account has access, but Git doesn't get through from here. Check this PC's Git setup, such as its SSH keys or a firewall, or run gh auth setup-git."),
+        RepoAccess.GitReadOnly => ("Git on this PC can only read this repo", "Your GitHub account can work on it, but the key or login Git uses here can't push to it. Check this PC's Git setup, such as a read-only deploy key, or run gh auth setup-git."),
         RepoAccess.BadUrl => ("This repo URL can't be used", "It has to be a GitHub repo, with no password or token in the URL. Change it in project settings."),
         RepoAccess.Offline => ("Couldn't reach GitHub", "This PC seems to be offline or blocked from GitHub, and it hasn't had access to this repo before."),
         RepoAccess.Allowed => ("You have access", ""),
@@ -680,15 +682,17 @@ public static partial class GitTools
     public static string? CloneDestination(string url, string parentFolder) =>
         FolderNameFor(url) is { } name ? Path.Combine(parentFolder, name) : null;
 
-    /// <summary>Whether a repo has anything in it. Not being able to tell counts as no.</summary>
-    public static async Task<bool> RepoHasContentAsync(string url)
+    /// <summary>Whether a repo has anything in it, or null if that couldn't be found out.</summary>
+    public static async Task<bool?> RepoHasContentAsync(string url)
     {
         var form = await ReachableFormAsync(url) ?? url;
         var heads = await RunAsync("git", Path.GetTempPath(), null, ["ls-remote", "--heads", "--", form], default, await SshSettingsAsync(Path.GetTempPath()));
-        return heads is { ExitCode: 0 } && heads.Output.Trim().Length > 0;
+        return heads is { ExitCode: 0 } ? heads.Output.Trim().Length > 0 : null;
     }
 
     public static Task<bool> FolderIsEmptyAsync(string folder) => Task.Run(() => Directory.Exists(folder) && !IsTaken(folder));
+
+    public static Task<bool> FolderIsLinkAsync(string folder) => Task.Run(() => new DirectoryInfo(folder).LinkTarget is not null);
 
     /// <summary>
     /// Clones into a new folder inside the chosen one, or into exactFolder if it's empty, and
@@ -696,9 +700,12 @@ public static partial class GitTools
     /// be cleaned up if the app closes first, and is told null once that folder holds a finished
     /// clone that must not be cleaned up.
     /// </summary>
-    public static async Task<GitResult> CloneAsync(string url, string parentFolder, CancellationToken cancel, Action<string?> workingFolder, string? exactFolder = null)
+    public static async Task<GitResult> CloneAsync(string url, string parentFolder, CancellationToken cancel, Action<string?> workingFolder, string? exactFolder = null, Action<string>? progress = null)
     {
         if (RepoUrlProblem(url) is { } problem) return new GitResult(false, problem);
+
+        // A repo inside a repo gets picked up by the outer one's next commit.
+        if (await InspectFolderAsync(parentFolder) is { InsideRepo: true }) return new GitResult(false, $"{parentFolder} is inside a Git repo, and a project can't be cloned into another repo. Choose somewhere else.");
         if ((exactFolder ?? CloneDestination(url, parentFolder)) is not { } destination) return new GitResult(false, "That repo URL doesn't name a folder to clone into.");
 
         var form = await ReachableFormAsync(url) ?? url;
@@ -712,7 +719,21 @@ public static partial class GitTools
         {
             if (await DestinationTakenAsync(destination)) return new GitResult(false, $"{destination} already exists and isn't empty.");
 
-            var result = await RunAsync("git", parentFolder, null, ["clone", "--", form, working], cancel, await SshSettingsAsync(Path.GetTempPath()));
+            // Working beside the chosen folder needs permission there too, so that's found out first.
+            if (exactFolder is not null) await Task.Run(() => Directory.CreateDirectory(working));
+
+            string? stage = null;
+            void ShowStage(string line)
+            {
+                var match = CloneStage().Match(line);
+                if (!match.Success) return;
+                var text = $"{match.Groups[1].Value}: {match.Groups[2].Value}";
+                if (text == stage) return;
+                stage = text;
+                progress?.Invoke(text);
+            }
+
+            var result = await RunAsync("git", parentFolder, null, ["clone", "--progress", "--", form, working], cancel, await SshSettingsAsync(Path.GetTempPath()), ShowStage);
             if (result is null) return new GitResult(false, "Git wasn't found on this PC.");
 
             if (result.ExitCode != 0)
@@ -727,7 +748,9 @@ public static partial class GitTools
         {
             AppLog.Write($"Couldn't start a clone: {error.Message}");
             await TryDeleteOwnedFolderAsync(working);
-            return new GitResult(false, $"Couldn't put the project in {parentFolder}.");
+            return new GitResult(false, exactFolder is null
+                ? $"Couldn't put the project in {parentFolder}."
+                : $"Couldn't clone into {exactFolder}. The clone is prepared beside it, in {parentFolder}, and that can't be written to. Choose a folder somewhere it can.");
         }
 
         // From here it's a finished clone, which could have taken hours, so it's never deleted,
@@ -909,7 +932,7 @@ public static partial class GitTools
         {
             // By name, because the address on show has had any credentials taken out of it.
             var viaFolder = await LsRemoteAsync("origin", folder!);
-            if (viaFolder is { ExitCode: 0 }) return new RepoCheck(RepoAccess.Allowed);
+            if (viaFolder is { ExitCode: 0 }) return new RepoCheck(await GitRefusesPushAsync("origin", folder!) ? RepoAccess.GitReadOnly : RepoAccess.Allowed);
 
             // No answer this way, such as a blocked SSH port, isn't being offline if there's
             // another way in. Saying so is what offers to repair the folder.
@@ -926,13 +949,49 @@ public static partial class GitTools
     private static async Task<RepoAccess> TryFormsAsync(string url)
     {
         var turnedAway = false;
+        var readOnly = false;
         foreach (var form in await FormsToTryAsync(url))
         {
             var attempt = await LsRemoteAsync(form, Path.GetTempPath());
-            if (attempt is { ExitCode: 0 }) return RepoAccess.Allowed;
+            if (attempt is { ExitCode: 0 })
+            {
+                if (!await GitRefusesPushAsync(form, null)) return RepoAccess.Allowed;
+                readOnly = true;
+                continue;
+            }
             turnedAway |= GitFailure(attempt) != RepoAccess.Offline;
         }
-        return turnedAway ? RepoAccess.GitCantReach : RepoAccess.Offline;
+        return readOnly ? RepoAccess.GitReadOnly : turnedAway ? RepoAccess.GitCantReach : RepoAccess.Offline;
+    }
+
+    // Reading works with a read-only deploy key too, so this asks whether Git could push. It's a
+    // dry run of deleting a branch that doesn't exist, which GitHub has to authorize the same way
+    // and which can't change anything. Only a clear refusal counts, so a blip can't lock anyone out.
+    private static async Task<bool> GitRefusesPushAsync(string remote, string? folder)
+    {
+        // Git only pushes from inside a repo, and folder is the one whose settings are allowed.
+        var scratch = folder is null ? Path.Combine(Path.GetTempPath(), $".ao-{Guid.NewGuid():N}"[..12]) : null;
+        try
+        {
+            if (scratch is not null)
+            {
+                await Task.Run(() => Directory.CreateDirectory(scratch));
+                if (await RunAsync("git", scratch, "init", "-q") is not { ExitCode: 0 }) return false;
+            }
+
+            var where = folder ?? scratch!;
+            var result = await RunAsync("git", where, null, ["push", "--dry-run", "--no-verify", "--", remote, $":refs/heads/agent-orange-check-{Guid.NewGuid():N}"], default, await SshSettingsAsync(where));
+            return result is { ExitCode: not 0 } && PushRefusal().IsMatch(result.Errors);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write($"Couldn't check whether Git can push: {error.Message}");
+            return false;
+        }
+        finally
+        {
+            if (scratch is not null) await TryDeleteOwnedFolderAsync(scratch);
+        }
     }
 
     private static RepoAccess GitFailure(CommandResult? result) =>
@@ -1021,7 +1080,7 @@ public static partial class GitTools
         RunAsync(program, folder, null, arguments);
 
     // Checks have a time limit. A clone can take as long as it needs, and stops only when cancelled.
-    private static async Task<CommandResult?> RunAsync(string program, string folder, string? gitHubToken, string[] arguments, CancellationToken cancel = default, Dictionary<string, string>? extraSettings = null)
+    private static async Task<CommandResult?> RunAsync(string program, string folder, string? gitHubToken, string[] arguments, CancellationToken cancel = default, Dictionary<string, string>? extraSettings = null, Action<string>? statusLine = null)
     {
 #if DEBUG
         // Trying something out must never leave a real repo on someone's account.
@@ -1074,7 +1133,7 @@ public static partial class GitTools
             if (process is null) return null;
             ChildProcesses.Track(process);
             var output = process.StandardOutput.ReadToEndAsync(stop.Token);
-            var errors = process.StandardError.ReadToEndAsync(stop.Token);
+            var errors = statusLine is null ? process.StandardError.ReadToEndAsync(stop.Token) : ReadErrorsWithStatusAsync(process.StandardError, statusLine, stop.Token);
             await process.WaitForExitAsync(stop.Token);
             return new CommandResult(process.ExitCode, await output, await errors);
         }
@@ -1093,6 +1152,31 @@ public static partial class GitTools
         {
             process?.Dispose();
         }
+    }
+
+    // Git rewrites a status line by ending it with a return, so only finished lines are kept.
+    private static async Task<string> ReadErrorsWithStatusAsync(StreamReader reader, Action<string> statusLine, CancellationToken cancel)
+    {
+        var kept = new StringBuilder();
+        var line = new StringBuilder();
+        var buffer = new char[1024];
+        int count;
+        while ((count = await reader.ReadAsync(buffer.AsMemory(), cancel)) > 0)
+        {
+            foreach (var character in buffer.AsSpan(0, count))
+            {
+                if (character is not ('\r' or '\n'))
+                {
+                    line.Append(character);
+                    continue;
+                }
+
+                if (character == '\r') statusLine(line.ToString());
+                else kept.Append(line).Append('\n');
+                line.Clear();
+            }
+        }
+        return kept.Append(line).ToString();
     }
 
     // Waits for it to really be gone, because its files can't be cleaned up until then.
@@ -1130,6 +1214,12 @@ public static partial class GitTools
 
     [GeneratedRegex(@"\s+")]
     private static partial Regex WhiteSpaceRun();
+
+    [GeneratedRegex(@"^(Receiving objects|Resolving deltas|Updating files|Filtering content):\s+(\d+%)")]
+    private static partial Regex CloneStage();
+
+    [GeneratedRegex(@"read.only|Permission to \S+ denied|error: 403", RegexOptions.IgnoreCase)]
+    private static partial Regex PushRefusal();
 
     [GeneratedRegex(@"://[^/@\s]+@")]
     private static partial Regex LoginInUrl();

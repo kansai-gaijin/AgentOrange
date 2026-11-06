@@ -34,6 +34,9 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(60) }; // Images can take a while.
 
+    /// <summary>Told to the server, which turns away releases older than itself. Dev builds don't have one.</summary>
+    public string? ClientVersion { get; set; }
+
     public bool IsPaired => HasLogin(server.Address);
 
     public bool HasLogin(string address) => ReadToken(TokenSettingFor(address)) is not null;
@@ -167,6 +170,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
 
         using var request = new HttpRequestMessage(method, address + path);
         request.Headers.Authorization = new("Bearer", token);
+        if (ClientVersion is not null) request.Headers.Add("X-Agent-Orange-Version", ClientVersion);
         if (body is not null) request.Content = JsonContent.Create(body);
 
         var response = await _http.SendAsync(request);

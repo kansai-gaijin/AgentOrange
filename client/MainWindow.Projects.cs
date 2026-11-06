@@ -43,6 +43,7 @@ public partial class MainWindow
     // Only one long operation runs at a time. It keeps going if the person leaves the page.
     private string? _busyProjectId;
     private string? _busyText;
+    private TextBlock? _busyLabel;
     private CancellationTokenSource? _cloneCancel;
 
     // Refreshes are frequent during a big sync, and most covers haven't changed.
@@ -321,7 +322,7 @@ public partial class MainWindow
         var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl, folder, useFolderSettings);
 
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
-        var folderProblem = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitCantReach
+        var folderProblem = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitCantReach or RepoAccess.GitReadOnly
             ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl)
             : null;
 
@@ -392,6 +393,12 @@ public partial class MainWindow
         var body = new StackPanel { Margin = new Thickness(40, 20, 40, 0), MaxWidth = 840, HorizontalAlignment = HorizontalAlignment.Left };
         body.Children.Add(new TextBlock { Text = project.Summary, Foreground = (Brush)FindResource("TextNormal"), FontSize = 14 });
         body.Children.Add(new TextBlock { Text = project.RepoUrl, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 4, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = project.RepoUrl });
+
+        // Two PCs can each add the same repo before they've synced, and only this can show that.
+        if (_database.ListProjects().FirstOrDefault(other => other.Id != project.Id && GitTools.SameRepo(other.RepoUrl, project.RepoUrl)) is { } twin)
+        {
+            body.Children.Add(new TextBlock { Text = $"{twin.Name} uses this repo too, and a repo can only be one project. This can happen when two PCs add it before syncing. Delete the extra one in its project settings.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+        }
         ProjectPage.Children.Add(body);
 
         if (_projectCheck is not { } check)
@@ -589,7 +596,7 @@ public partial class MainWindow
         body.Children.Add(buttons);
 
         // A copy on this PC may reach the repo in a way the URL alone doesn't, such as its own SSH setup.
-        if (check.Access == RepoAccess.GitCantReach)
+        if (check.Access is RepoAccess.GitCantReach or RepoAccess.GitReadOnly)
         {
             var rows = new List<FrameworkElement>();
             var linked = _database.GetProjectFolder(project.Id);
@@ -653,7 +660,8 @@ public partial class MainWindow
     {
         if (_busyProjectId != project.Id || _busyText is null) return;
 
-        body.Children.Add(new TextBlock { Text = _busyText, FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 10, 0, 0) });
+        _busyLabel = new TextBlock { Text = _busyText, FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 10, 0, 0) };
+        body.Children.Add(_busyLabel);
         if (_cloneCancel is not { } clone) return;
 
         var stop = ActionButton("Cancel");
@@ -678,6 +686,7 @@ public partial class MainWindow
         _busyProjectId = project.Id;
         _busyText = text;
         _pageProblem = null;
+        if (UpdateOverlay.IsVisible && !_downloading) ShowUpdateMessage();
         if (_openProject?.Id == project.Id) RenderProject(_openProject);
         else RefreshProjects();
     }
@@ -686,6 +695,7 @@ public partial class MainWindow
     {
         _busyProjectId = null;
         _busyText = null;
+        if (UpdateOverlay.IsVisible && !_downloading) ShowUpdateMessage();
         if (_openProject is null)
         {
             RefreshProjects();
@@ -765,7 +775,7 @@ public partial class MainWindow
         if (await _database.ClaimFolderAsync(folder!, project) is { } owner)
         {
             EndBusy();
-            ShowPageProblem(project.Id, $"{owner.Name} already uses that folder, or one inside it. A folder can only be one project.");
+            ShowPageProblem(project.Id, $"{owner.Name} already uses that folder, or one that overlaps it. Project folders can't overlap.");
             return;
         }
 
@@ -855,7 +865,7 @@ public partial class MainWindow
         EndBusy();
         if (owner is not null)
         {
-            ShowPageProblem(project.Id, $"{owner.Name} already uses the folder this would clone into. A folder can only be one project.");
+            ShowPageProblem(project.Id, $"{owner.Name} already uses a folder that overlaps where this would clone to. Project folders can't overlap.");
             return;
         }
 
@@ -879,7 +889,13 @@ public partial class MainWindow
             }
             cloneRecord = CloneRecord(working);
             SaveCloneRecords(CloneRecords().Append(cloneRecord));
-        }, exactFolder);
+        }, exactFolder, stage =>
+        {
+            // Just the words, because drawing the page again would keep taking focus off Cancel.
+            _busyText = $"Cloning… {stage}";
+            if (_busyLabel is not null) _busyLabel.Text = _busyText;
+        });
+        _agreedToStopClone = false;
 
         // One that couldn't be fully removed stays on the list, to be tried again next start.
         if (cloneRecord is not null && (workingFolder is null || !await GitTools.FolderExistsAsync(workingFolder)))
@@ -979,7 +995,7 @@ public partial class MainWindow
             var folderProblem = await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
             if (folderProblem is null && await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other)
             {
-                folderProblem = $"{other.Name} already uses that folder, or one inside it. A folder can only be one project.";
+                folderProblem = $"{other.Name} already uses that folder, or one that overlaps it. Project folders can't overlap.";
             }
             EndBusy();
 

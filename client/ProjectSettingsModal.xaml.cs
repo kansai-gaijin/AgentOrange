@@ -296,7 +296,7 @@ public partial class ProjectSettingsModal : UserControl
             var problem = await GitTools.FolderProblemAsync(chosen, current.RepoUrl);
             if (problem is null && await _database.ClaimFolderAsync(chosen, current) is { } other)
             {
-                problem = $"{other.Name} already uses that folder, or one inside it. A folder can only be one project.";
+                problem = $"{other.Name} already uses that folder, or one that overlaps it. Project folders can't overlap.";
             }
             if (problem is not null)
             {

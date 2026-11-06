@@ -240,7 +240,7 @@ public partial class NewProjectWizard : UserControl
                 }
                 else if (await ClaimFolder(path, _name) is { } otherProject)
                 {
-                    (url, confirmed, failure) = ("", false, $"{otherProject} already uses that folder, or one inside it. A folder can only be one project.");
+                    (url, confirmed, failure) = ("", false, $"{otherProject} already uses that folder, or one that overlaps it. Project folders can't overlap.");
                 }
                 else if (_replacingUrl is { } replacing)
                 {
@@ -375,9 +375,9 @@ public partial class NewProjectWizard : UserControl
         {
             case RepoAccess.Allowed or RepoAccess.Offline:
                 break;
-            case RepoAccess.GitCantReach when !useFolderSettings && runnable is { CanBeApproved: false }:
+            case RepoAccess.GitCantReach or RepoAccess.GitReadOnly when !useFolderSettings && runnable is { CanBeApproved: false }:
                 return ("", false, "Git can't reach this repo without this folder's own Git settings, and there are too many of them to show here for you to check. Cut them down, or choose another copy.");
-            case RepoAccess.GitCantReach when !useFolderSettings && runnable is { IsEmpty: false }:
+            case RepoAccess.GitCantReach or RepoAccess.GitReadOnly when !useFolderSettings && runnable is { IsEmpty: false }:
                 _offeringFolderSettings = true;
                 _shownFolderSettings = runnable.Fingerprint;
                 return ("", false, $"Git can't reach this repo without this folder's own Git settings, which can run programs or send your login somewhere else:\n{runnable.Shown}\nOnly use them if you trust where this folder came from.");
@@ -400,11 +400,15 @@ public partial class NewProjectWizard : UserControl
         {
             // Connecting a folder to a repo that already has work in it doesn't bring that work
             // over, so the two would just look like the same project without being it.
-            if (check.Access == RepoAccess.Allowed && await GitTools.RepoHasContentAsync(url))
+            var hasContent = check.Access == RepoAccess.Allowed ? await GitTools.RepoHasContentAsync(url) : false;
+            if (hasContent is null) return ("", false, "Couldn't check whether that repo already has files, so nothing was changed. Try again.");
+            if (hasContent == true)
             {
-                var hasParent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(project.Folder)) is not null;
-                if (hasParent && await GitTools.FolderIsEmptyAsync(project.Folder))
+                if (await GitTools.FolderIsEmptyAsync(project.Folder))
                 {
+                    if (Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(project.Folder)) is null) return ("", false, "That repo already has files, and they can't be cloned onto a whole drive. Choose a folder on it.");
+                    if (await GitTools.FolderIsLinkAsync(project.Folder)) return ("", false, "That folder is a link, and a clone would replace it. Choose the real folder it points to.");
+
                     _cloneIntoFolder = true;
                     return (url, true, null);
                 }
