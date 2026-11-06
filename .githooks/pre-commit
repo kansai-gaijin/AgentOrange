@@ -28,7 +28,7 @@ while IFS= read -r file; do
         status=1
     fi
 done <<EOF
-$(git -c core.quotePath=off diff --cached --name-only --diff-filter=ACMR)
+$(git -c core.quotePath=off diff --cached --name-only --diff-filter=ACMRT)
 EOF
 
 exit $status

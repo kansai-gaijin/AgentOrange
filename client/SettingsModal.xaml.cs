@@ -412,6 +412,8 @@ public partial class SettingsModal : UserControl
 
     private string LastSyncedLabel()
     {
+        // Whichever is behind updates itself soon, and changes wait on this PC until then.
+        if (Devices.VersionsDiffer) return "Paused until this PC and the server are on the same version";
         if (Sync.LastSynced is not { } synced) return "Not yet";
         var ago = DateTimeOffset.UtcNow - synced;
         return ago.TotalMinutes < 1 ? "Just now" : ago.TotalHours < 1 ? $"{(int)ago.TotalMinutes} min ago" : $"{(int)ago.TotalHours} hr ago";
@@ -596,6 +598,8 @@ public partial class SettingsModal : UserControl
     /// <summary>Asks before stopping long work that would be lost, saying what's about to stop it.</summary>
     public Func<string, bool> ConfirmStoppingWork { get; set; } = _ => true;
 
+    public Action AppIsRestarting { get; set; } = () => { };
+
     private UIElement[] LocalDataPage()
     {
         var problem = ProblemText();
@@ -626,6 +630,7 @@ public partial class SettingsModal : UserControl
                 return;
             }
 #endif
+            AppIsRestarting();
             Process.Start(Environment.ProcessPath!);
             Application.Current.Shutdown();
         };

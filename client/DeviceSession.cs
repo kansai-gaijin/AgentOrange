@@ -34,8 +34,11 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(60) }; // Images can take a while.
 
-    /// <summary>Told to the server, which turns away releases older than itself. Dev builds don't have one.</summary>
+    /// <summary>Told to the server, which only syncs with its own release. Dev builds don't have one.</summary>
     public string? ClientVersion { get; set; }
+
+    /// <summary>The server's last answer was that it's on a different release than this PC.</summary>
+    public bool VersionsDiffer { get; private set; }
 
     public bool IsPaired => HasLogin(server.Address);
 
@@ -111,6 +114,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
         try
         {
             var response = await SendAsync(HttpMethod.Post, "/v1/sync", new { cursor, changes, epoch });
+            VersionsDiffer = response?.StatusCode == HttpStatusCode.UpgradeRequired;
             if (response is null || !response.IsSuccessStatusCode) return null;
 
             // Something like a proxy can answer 200 with anything, and queued changes must only

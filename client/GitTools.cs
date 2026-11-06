@@ -383,13 +383,20 @@ public static partial class GitTools
     /// The form of a repo's URL that works from this PC, HTTPS or SSH. The synced URL may have
     /// come from a PC set up differently. Null if neither works.
     /// </summary>
-    public static async Task<string?> ReachableFormAsync(string url)
+    public static async Task<string?> ReachableFormAsync(string url) => (await BestFormAsync(url)).Form;
+
+    // One that can push, or else one that can at least read, so what's chosen here passes the
+    // guard's check of the same thing.
+    private static async Task<(string? Form, bool CanPush)> BestFormAsync(string url)
     {
+        string? readable = null;
         foreach (var form in await FormsToTryAsync(url))
         {
-            if (await LsRemoteAsync(form, Path.GetTempPath()) is { ExitCode: 0 }) return form;
+            if (await LsRemoteAsync(form, Path.GetTempPath()) is not { ExitCode: 0 }) continue;
+            if (!await GitRefusesPushAsync(form, null)) return (form, true);
+            readable ??= form;
         }
-        return null;
+        return (readable, false);
     }
 
     // The one this PC's GitHub CLI is set to comes first. Anyone can read a public repo over
@@ -559,9 +566,14 @@ public static partial class GitTools
             return new GitResult(false, $"That folder uses a different repo: {state.Origin}. Nothing was changed.");
         }
 
-        if (await ReachableFormAsync(repoUrl) is not { } form)
+        var (reachable, canPush) = await BestFormAsync(repoUrl);
+        if (reachable is not { } form)
         {
             return new GitResult(false, "Neither HTTPS nor SSH gets through from this PC, so nothing was changed.");
+        }
+        if (!canPush)
+        {
+            return new GitResult(false, "Git on this PC can read this repo, but can't push to it over HTTPS or SSH, so changing the connection won't help. Nothing was changed. Check its SSH keys, or run gh auth setup-git.");
         }
 
         if (state.Origin is null) return await ConnectFolderAsync(folder, form);
@@ -712,7 +724,8 @@ public static partial class GitTools
 
         // Cloning into a folder that only this clone owns means a failure can never remove
         // anything else, and the real name only appears once the clone is complete.
-        // Short, because a long name here can push a deep repo past Windows' path limit.
+        // Short, because a long name here can push a deep repo past the limit of tools that
+        // don't handle long paths, even with Git set up to.
         var working = Path.Combine(parentFolder, $".ao-{Guid.NewGuid():N}"[..12]);
         workingFolder(working);
         try
@@ -733,7 +746,7 @@ public static partial class GitTools
                 progress?.Invoke(text);
             }
 
-            var result = await RunAsync("git", parentFolder, null, ["clone", "--progress", "--", form, working], cancel, await SshSettingsAsync(Path.GetTempPath()), ShowStage);
+            var result = await RunAsync("git", parentFolder, null, ["clone", "--progress", "--config", "core.longpaths=true", "--", form, working], cancel, await SshSettingsAsync(Path.GetTempPath()), ShowStage);
             if (result is null) return new GitResult(false, "Git wasn't found on this PC.");
 
             if (result.ExitCode != 0)
@@ -981,7 +994,9 @@ public static partial class GitTools
 
             var where = folder ?? scratch!;
             var result = await RunAsync("git", where, null, ["push", "--dry-run", "--no-verify", "--", remote, $":refs/heads/agent-orange-check-{Guid.NewGuid():N}"], default, await SshSettingsAsync(where));
-            return result is { ExitCode: not 0 } && PushRefusal().IsMatch(result.Errors);
+
+            // Addresses come out first, because a repo can be called something like read-only-demo.
+            return result is { ExitCode: not 0 } && PushRefusal().IsMatch(QuotedText().Replace(result.Errors, ""));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -1218,7 +1233,7 @@ public static partial class GitTools
     [GeneratedRegex(@"^(Receiving objects|Resolving deltas|Updating files|Filtering content):\s+(\d+%)")]
     private static partial Regex CloneStage();
 
-    [GeneratedRegex(@"read.only|Permission to \S+ denied|error: 403", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"marked as read.only|Permission to \S+ denied|error: 403", RegexOptions.IgnoreCase)]
     private static partial Regex PushRefusal();
 
     [GeneratedRegex(@"://[^/@\s]+@")]

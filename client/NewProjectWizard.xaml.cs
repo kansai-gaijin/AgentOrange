@@ -9,8 +9,10 @@ using static AgentOrange.Ui;
 
 namespace AgentOrange;
 
-/// <summary>RepoConfirmed means GitHub just said this PC can work on the repo, rather than it not being asked.</summary>
-/// <summary>CloneIntoFolder means the folder is empty and the repo isn't, so the folder hasn't been connected and still needs a clone.</summary>
+/// <summary>
+/// RepoConfirmed means GitHub just said this PC can work on the repo, rather than it not being asked.
+/// CloneIntoFolder means the folder is empty and the repo isn't, so the folder hasn't been connected and still needs a clone.
+/// </summary>
 public sealed record NewProject(string Name, string Engine, string GameType, string Folder, string RepoUrl, bool RepoConfirmed = false, bool CloneIntoFolder = false);
 
 public static class ProjectChoices

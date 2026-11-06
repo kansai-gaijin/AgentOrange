@@ -71,8 +71,9 @@ pub struct SyncResponse {
     epoch: String,
 }
 
-/// Nothing stays compatible across a release, so an older one can't read or change data here.
-/// Its changes stay queued on that PC until it updates. Dev builds don't send a version.
+/// Nothing stays compatible across a release, so only this server's own can read or change data
+/// here. Changes stay queued on a PC until the two match, which takes minutes at most after a
+/// release, since both update themselves. Dev builds don't send a version.
 fn client_is_out_of_date(headers: &HeaderMap) -> bool {
     let parts = |version: &str| -> Option<Vec<u64>> {
         version.split('.').map(|part| part.parse().ok()).collect()
@@ -82,7 +83,7 @@ fn client_is_out_of_date(headers: &HeaderMap) -> bool {
         .and_then(|value| value.to_str().ok())
         .and_then(parts)
         .zip(parts(VERSION))
-        .is_some_and(|(client, server)| client < server)
+        .is_some_and(|(client, server)| client != server)
 }
 
 /// Saves this device's changes, then returns everything newer than its cursor.

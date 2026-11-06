@@ -26,7 +26,7 @@ public partial class MainWindow : Window
     private UpdateInfo? _requiredUpdate;
     private string? _requiredVersion; // Can be known from an earlier run without the details to download it.
     private bool _downloading;
-    private bool _agreedToStopClone;
+    private bool _restarting; // Already agreed to, so closing doesn't ask again.
 
     public MainWindow()
     {
@@ -84,7 +84,8 @@ public partial class MainWindow : Window
 
         _devices.ClientVersion = _updates.IsInstalled ? _updates.CurrentVersion?.ToString() : null;
         Settings.ConfirmStoppingWork = ConfirmStoppingClone;
-        Closing += (_, closing) => closing.Cancel = !ConfirmStoppingClone("Closing");
+        Settings.AppIsRestarting = () => _restarting = true;
+        Closing += (_, closing) => closing.Cancel = !_restarting && !ConfirmStoppingClone("Closing");
 
         // Nothing stays compatible across a release, so a copy that has to update doesn't sync.
         _sync = new SyncEngine(_database, _server, _devices) { IsPaused = () => _requiredVersion is not null };
@@ -275,9 +276,8 @@ public partial class MainWindow : Window
 #if DEBUG
         if (Headless.Active) return true;
 #endif
-        if (_agreedToStopClone || CloningProjectName() is not { } name) return true;
-        _agreedToStopClone = Dialogs.Confirm($"{name} is still cloning. {action} stops that, and what's been downloaded so far is thrown away. Do it anyway?");
-        return _agreedToStopClone;
+        return CloningProjectName() is not { } name
+            || Dialogs.Confirm($"{name} is still cloning. {action} stops that, and what's been downloaded so far is thrown away. Do it anyway?");
     }
 
     private async void DownloadUpdate_Click(object sender, RoutedEventArgs e)
@@ -307,10 +307,12 @@ public partial class MainWindow : Window
                 _requiredUpdate,
                 percent => Dispatcher.Invoke(() => UpdateProgress.Value = percent));
             UpdateMessage.Text = "Restarting…";
+            _restarting = true;
             _updates.ApplyUpdatesAndRestart(_requiredUpdate);
         }
         catch (Exception)
         {
+            _restarting = false;
             UpdateMessage.Text = "The download didn't finish. Check your connection and try again.";
             UpdateProgress.Visibility = Visibility.Collapsed;
             DownloadUpdate.Content = "Try again";

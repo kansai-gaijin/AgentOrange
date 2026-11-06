@@ -45,6 +45,7 @@ public static class ProjectImages
             var source = new BitmapImage();
             source.BeginInit();
             source.CacheOption = BitmapCacheOption.OnLoad;
+            source.CreateOptions = BitmapCreateOptions.IgnoreImageCache; // The same file may have been edited since it was last chosen.
             source.UriSource = new Uri(path);
             source.DecodePixelWidth = decodeWidth;
             source.EndInit();

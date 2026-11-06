@@ -44,6 +44,7 @@ public partial class MainWindow
     private string? _busyProjectId;
     private string? _busyText;
     private TextBlock? _busyLabel;
+    private TextBlock? _busyCardLabel;
     private CancellationTokenSource? _cloneCancel;
 
     // Refreshes are frequent during a big sync, and most covers haven't changed.
@@ -155,7 +156,9 @@ public partial class MainWindow
         var cardStatus = _busyProjectId == project.Id ? _busyText : _heldProblems.ContainsKey(project.Id) ? "Open it to see what happened" : null;
         if (cardStatus is not null)
         {
-            content.Children.Add(new TextBlock { Text = cardStatus, Foreground = (Brush)FindResource("Accent"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = cardStatus });
+            var statusLabel = new TextBlock { Text = cardStatus, Foreground = (Brush)FindResource("Accent"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = cardStatus };
+            content.Children.Add(statusLabel);
+            if (_busyProjectId == project.Id) _busyCardLabel = statusLabel;
         }
 
         var card = new Button { Style = (Style)FindResource("ProjectCard"), Content = content, Tag = project.Id, AllowDrop = true };
@@ -826,6 +829,7 @@ public partial class MainWindow
     private async Task RecheckThenShowAsync(string projectId, string problem)
     {
         _heldProblems[projectId] = problem;
+        if (_openProject?.Id != projectId) RefreshProjects(); // Its card says there's something to see.
         await RecheckIfStillOpenAsync(projectId);
     }
 
@@ -894,8 +898,12 @@ public partial class MainWindow
             // Just the words, because drawing the page again would keep taking focus off Cancel.
             _busyText = $"Cloning… {stage}";
             if (_busyLabel is not null) _busyLabel.Text = _busyText;
+            if (_busyCardLabel is not null)
+            {
+                _busyCardLabel.Text = _busyText;
+                _busyCardLabel.ToolTip = _busyText;
+            }
         });
-        _agreedToStopClone = false;
 
         // One that couldn't be fully removed stays on the list, to be tried again next start.
         if (cloneRecord is not null && (workingFolder is null || !await GitTools.FolderExistsAsync(workingFolder)))
@@ -933,13 +941,13 @@ public partial class MainWindow
             if (Dialogs.PickFolder("Choose where to put the project") is not { } parentFolder) return;
 
             // The dialog can stay open a long time, and sync keeps running behind it.
-            if (FindProject(project.Id) is null)
+            if (FindProject(project.Id) is not { } latest || !GitTools.SameRepo(latest.RepoUrl, project.RepoUrl))
             {
                 await RecheckIfStillOpenAsync(project.Id);
                 return;
             }
 
-            await CloneProjectAsync(project, parentFolder);
+            await CloneProjectAsync(latest, parentFolder);
         };
 
         var (heading, description) = (linkedFolder, _folderProblem, _folderExists) switch
@@ -1123,7 +1131,7 @@ public partial class MainWindow
     private async void ProjectSettings_Closed()
     {
         MainContent.Effect = null;
-        MainContent.IsEnabled = _requiredUpdate is null;
+        MainContent.IsEnabled = _requiredVersion is null;
 
         // The engine or folder may have changed.
         if (_settingsProjectId is { } changedProject) _ = ReadEngineVersionAsync(changedProject);
@@ -1148,7 +1156,7 @@ public partial class MainWindow
     private void ProjectSettings_Deleted()
     {
         MainContent.Effect = null;
-        MainContent.IsEnabled = _requiredUpdate is null;
+        MainContent.IsEnabled = _requiredVersion is null;
         BackToProjects();
         RefreshProjects();
         _ = _sync.SyncNowAsync();
