@@ -84,6 +84,7 @@ public partial class MainWindow : Window
         Loaded += async (_, _) =>
         {
             await RemoveLeftoverCloneAsync();
+            await ReadEngineVersionsAsync();
             await _server.CheckAsync();
             if (_updates.IsInstalled) await CheckForUpdateAsync();
         };
@@ -104,7 +105,7 @@ public partial class MainWindow : Window
 
     private void ProjectWizard_Created(NewProject project)
     {
-        var id = _database.CreateProject(project.Name, project.Engine, project.EngineVersion, project.GameType, project.RepoUrl);
+        var id = _database.CreateProject(project.Name, project.Engine, project.GameType, project.RepoUrl);
 
         // Folders differ between PCs, so this stays here and only the rest syncs.
         _database.SetProjectFolder(id, project.Folder);
@@ -112,6 +113,7 @@ public partial class MainWindow : Window
 
         RefreshProjects();
         _ = _sync.SyncNowAsync();
+        _ = ReadEngineVersionAsync(id);
     }
 
     private void OpenSettings_Click(object sender, RoutedEventArgs e)

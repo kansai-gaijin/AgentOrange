@@ -84,17 +84,6 @@ public partial class ProjectSettingsModal : UserControl
             return Task.FromResult<string?>(null);
         });
 
-        var version = Field(project.EngineVersion);
-        version.Width = 300;
-        SaveOnLeave(version, project.EngineVersion, value =>
-        {
-            Update(projectId, current => current with { EngineVersion = value });
-            return Task.FromResult<string?>(null);
-        });
-
-        var versionRow = Row("Engine version", null, version);
-        versionRow.Visibility = ProjectChoices.HasEngineVersion(project.Engine) ? Visibility.Visible : Visibility.Collapsed;
-
         var repo = Field(project.RepoUrl);
         repo.Width = 300;
         var folder = Field(_database.GetProjectFolder(project.Id) ?? "");
@@ -106,17 +95,9 @@ public partial class ProjectSettingsModal : UserControl
         var browse = ActionButton("Browse");
         browse.Click += async (_, _) => await ChooseFolderAsync(projectId, folder);
 
+        // A version belongs to one engine. The right one is read from the project again on closing.
         var engine = Choice(ProjectChoices.Engines, project.Engine, value =>
-        {
-            var hasVersion = ProjectChoices.HasEngineVersion(value);
-            versionRow.Visibility = hasVersion ? Visibility.Visible : Visibility.Collapsed;
-            if (!hasVersion)
-            {
-                version.Text = "";
-                _saved[version] = "";
-            }
-            QueueUpdate(projectId, current => current with { Engine = value, EngineVersion = hasVersion ? current.EngineVersion : "" });
-        });
+            QueueUpdate(projectId, current => current with { Engine = value, EngineVersion = "" }));
 
         var details = new StackPanel
         {
@@ -126,7 +107,6 @@ public partial class ProjectSettingsModal : UserControl
                 Card(
                     Row("Name", null, name),
                     Row("Engine", null, engine),
-                    versionRow,
                     Row("Game type", null, Choice(ProjectChoices.GameTypes, project.GameType, value => QueueUpdate(projectId, current => current with { GameType = value }))),
                     Row("Repo URL", null, repo),
                     Row("Folder on this PC", "Doesn't sync, because it's different on each PC.", folder, browse)),

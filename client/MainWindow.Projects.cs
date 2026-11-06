@@ -31,6 +31,7 @@ public partial class MainWindow
     private string? _pageProblem;
     private bool _confirmingNewRepo;
     private int _navigation;
+    private string? _settingsProjectId;
 
     // Only one long operation runs at a time. It keeps going if the person leaves the page.
     private string? _busyProjectId;
@@ -326,6 +327,28 @@ public partial class MainWindow
         _folderExists = folderExists;
         _folderProblem = folderProblem;
         RenderProject(latest);
+        await ReadEngineVersionAsync(latest.Id);
+    }
+
+    // A project on this PC may have moved to a newer engine since it was last opened.
+    private async Task ReadEngineVersionsAsync()
+    {
+        foreach (var project in _database.ListProjects()) await ReadEngineVersionAsync(project.Id);
+    }
+
+    // The version comes from the project's own files, and syncs so that PCs without a copy
+    // can show it too. A project whose files don't say keeps what was last found.
+    private async Task ReadEngineVersionAsync(string projectId)
+    {
+        if (FindProject(projectId) is not { } project || _database.GetProjectFolder(projectId) is not { } folder) return;
+
+        var version = await EngineVersions.FindAsync(project.Engine, folder);
+        if (version is null || FindProject(projectId) is not { } latest) return;
+        if (latest.Engine != project.Engine || latest.EngineVersion == version) return;
+
+        _database.SaveProject(latest with { EngineVersion = version });
+        _ = _sync.SyncNowAsync();
+        RefreshProjects();
     }
 
     private Project? FindProject(string id) => _database.ListProjects().FirstOrDefault(project => project.Id == id);
@@ -744,6 +767,7 @@ public partial class MainWindow
     {
         if (FindProject(projectId) is null) return;
         _database.SetProjectFolder(projectId, folder);
+        await ReadEngineVersionAsync(projectId);
         await RefreshThenRecheckAsync(projectId);
     }
 
@@ -751,6 +775,7 @@ public partial class MainWindow
     {
         if (FindProject(projectId) is not { } project) return;
 
+        _settingsProjectId = projectId;
         MainContent.IsEnabled = false;
         MainContent.Effect = new BlurEffect { Radius = 8 };
         ProjectSettings.Open(_database, project);
@@ -762,6 +787,9 @@ public partial class MainWindow
     {
         MainContent.Effect = null;
         MainContent.IsEnabled = _requiredUpdate is null;
+
+        // The engine or folder may have changed.
+        if (_settingsProjectId is { } changedProject) _ = ReadEngineVersionAsync(changedProject);
 
         var openId = _openProject?.Id;
         if (openId is null)

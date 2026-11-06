@@ -105,9 +105,9 @@ public sealed class LocalDatabase
             .ToList();
     }
 
-    public string CreateProject(string name, string engine, string engineVersion, string gameType, string repoUrl)
+    public string CreateProject(string name, string engine, string gameType, string repoUrl)
     {
-        var project = new Project(Guid.NewGuid().ToString(), name, engine, engineVersion, gameType, repoUrl, DateTimeOffset.UtcNow);
+        var project = new Project(Guid.NewGuid().ToString(), name, engine, "", gameType, repoUrl, DateTimeOffset.UtcNow);
         SaveProject(project);
         return project.Id;
     }

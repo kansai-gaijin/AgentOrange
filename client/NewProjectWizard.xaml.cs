@@ -10,29 +10,13 @@ using static AgentOrange.Ui;
 namespace AgentOrange;
 
 /// <summary>RepoConfirmed means GitHub just said this PC can work on the repo, rather than it not being asked.</summary>
-public sealed record NewProject(string Name, string Engine, string EngineVersion, string GameType, string Folder, string RepoUrl, bool RepoConfirmed = false);
+public sealed record NewProject(string Name, string Engine, string GameType, string Folder, string RepoUrl, bool RepoConfirmed = false);
 
 public static class ProjectChoices
 {
     public static readonly string[] Engines = ["Unreal Engine", "Godot", "Web", "Other"];
     public static readonly string[] GameTypes = ["3D", "2D", "2.5D", "Other"];
 
-    /// <summary>Web and Other don't have an engine version to speak of.</summary>
-    public static bool HasEngineVersion(string engine) => engine is "Unreal Engine" or "Godot";
-
-    /// <summary>The newest Unreal installed here, as a starting point.</summary>
-    public static string SuggestedVersion(string engine)
-    {
-        if (engine != "Unreal Engine") return "";
-        var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Epic Games");
-        if (!Directory.Exists(folder)) return "";
-
-        return Directory.GetDirectories(folder, "UE_*")
-            .Select(path => Path.GetFileName(path)["UE_".Length..])
-            .Where(name => Version.TryParse(name, out _))
-            .OrderByDescending(Version.Parse)
-            .FirstOrDefault() ?? "";
-    }
 }
 
 /// <summary>Creating a project: what it is, then where its files are.</summary>
@@ -42,7 +26,6 @@ public partial class NewProjectWizard : UserControl
 
     private string _name = "";
     private string _engine = ProjectChoices.Engines[0];
-    private string _engineVersion = "";
     private string _gameType = ProjectChoices.GameTypes[0];
     private string _folder = "";
     private string _repoUrl = "";
@@ -65,7 +48,6 @@ public partial class NewProjectWizard : UserControl
     {
         _name = "";
         _engine = ProjectChoices.Engines[0];
-        _engineVersion = ProjectChoices.SuggestedVersion(_engine);
         _gameType = ProjectChoices.GameTypes[0];
         _folder = "";
         _repoUrl = "";
@@ -79,16 +61,11 @@ public partial class NewProjectWizard : UserControl
     {
         var name = Field(_name);
         name.Width = 300;
-        var version = Field(_engineVersion);
-        version.Width = 300;
         var problem = ProblemText();
-        var versionRow = Row("Engine version", "Like 5.8.", version);
-        versionRow.Visibility = ProjectChoices.HasEngineVersion(_engine) ? Visibility.Visible : Visibility.Collapsed;
 
         void Next()
         {
             _name = name.Text.Trim();
-            _engineVersion = version.Text.Trim();
             if (_name.Length == 0)
             {
                 ShowProblem(problem, "Give the project a name.");
@@ -98,7 +75,6 @@ public partial class NewProjectWizard : UserControl
         }
 
         name.TextChanged += (_, _) => _name = name.Text;
-        version.TextChanged += (_, _) => _engineVersion = version.Text;
         name.KeyDown += (_, e) =>
         {
             if (e.Key != Key.Enter) return;
@@ -106,12 +82,7 @@ public partial class NewProjectWizard : UserControl
             Next();
         };
 
-        var engines = TileChoice("Engine", ProjectChoices.Engines, _engine, 4, engine =>
-        {
-            _engine = engine;
-            version.Text = ProjectChoices.SuggestedVersion(engine);
-            versionRow.Visibility = ProjectChoices.HasEngineVersion(engine) ? Visibility.Visible : Visibility.Collapsed;
-        });
+        var engines = TileChoice("Engine", ProjectChoices.Engines, _engine, 4, engine => _engine = engine);
         var types = TileChoice("Game type", ProjectChoices.GameTypes, _gameType, 4, type => _gameType = type);
 
         var body = new StackPanel
@@ -121,7 +92,6 @@ public partial class NewProjectWizard : UserControl
             {
                 Row("Name", "You can change this later.", name),
                 engines,
-                versionRow,
                 types,
                 problem,
             },
@@ -237,7 +207,7 @@ public partial class NewProjectWizard : UserControl
 
             // What was entered is fixed here, and the wizard can't close until this finishes.
             var typedUrl = repo.Text.Trim();
-            var submission = new NewProject(_name, _engine, ProjectChoices.HasEngineVersion(_engine) ? _engineVersion : "", _gameType, path, typedUrl);
+            var submission = new NewProject(_name, _engine, _gameType, path, typedUrl);
 
             SetWorking(true, "Checking…");
             string? failure;
