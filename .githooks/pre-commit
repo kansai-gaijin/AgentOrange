@@ -29,7 +29,7 @@ while IFS= read -r file; do
     elif git show ":$file" | grep -IqE '[A-Za-z]:[\\/]+Users[\\/]+[A-Za-z0-9]|/(Users|home)/[A-Za-z0-9]|[[:alnum:]-]+\.ts\.net'; then
         echo "Blocked: $file seems to hold a personal path or a private address." >&2
         status=1
-    elif git show ":$file" | grep -IoE '[[:alnum:]._%+-]+@[[:alnum:]-]+(\.[[:alnum:]-]+)+' | grep -vqE '^git@github\.com$|@example\.(com|org)$|noreply'; then
+    elif git show ":$file" | grep -IoE '[[:alnum:]._%+-]+@([[:alnum:]-]+\.)+[[:alpha:]]{2,}' | grep -vqE '^git@github\.com$|@example\.(com|org)$|noreply'; then
         echo "Blocked: $file seems to hold an email address." >&2
         status=1
     fi

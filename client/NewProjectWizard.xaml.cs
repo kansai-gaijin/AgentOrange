@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -309,6 +310,11 @@ public partial class NewProjectWizard : UserControl
                 AppLog.Write($"Couldn't use a project folder: {error.Message}");
                 (url, confirmed, failure) = ("", false, $"That folder stopped being available: {error.Message}");
             }
+            catch (SqliteException error)
+            {
+                AppLog.Write($"Couldn't check a new project: {error.Message}");
+                (url, confirmed, failure) = ("", false, "The app's database can't be reached, so nothing was saved. Try again once it's back.");
+            }
             finally
             {
                 SetWorking(false);
@@ -325,7 +331,17 @@ public partial class NewProjectWizard : UserControl
             }
 
             // Where a clone is going stays held, by whoever runs it.
-            Created?.Invoke(submission with { RepoUrl = url, RepoConfirmed = confirmed, CloneIntoFolder = _cloneIntoFolder });
+            try
+            {
+                Created?.Invoke(submission with { RepoUrl = url, RepoConfirmed = confirmed, CloneIntoFolder = _cloneIntoFolder });
+            }
+            catch (SqliteException error)
+            {
+                AppLog.Write($"Couldn't save a new project: {error.Message}");
+                ReleaseFolder(path);
+                ShowProblem(problem, "The app's database can't be reached, so the project wasn't saved. Try again once it's back.");
+                return;
+            }
             if (!_cloneIntoFolder) ReleaseFolder(path);
             Close();
         };

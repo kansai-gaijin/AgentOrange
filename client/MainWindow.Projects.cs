@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
@@ -36,6 +37,8 @@ public partial class MainWindow
     private string? _folderPushesTo;
     private string? _checkedFolder;
     private bool _downloadIsInPlace;
+    private (bool Unfinished, bool Held) _shownDownloadState;
+    private bool _databaseWasLost;
     private bool _folderLacksFiles;
     private bool _folderMayNotMatch;
     private string? _scrolledToProblem;
@@ -415,6 +418,7 @@ public partial class MainWindow
         }
         if (!GitTools.SameRepo(latest.RepoUrl, project.RepoUrl))
         {
+            KeepProblemThroughReopen(project.Id);
             await OpenProjectAsync(latest);
             return;
         }
@@ -427,6 +431,7 @@ public partial class MainWindow
             _database.SaveProject(latest with { RepoUrl = renamed });
             if (folderExists && folderProblem is null) await GitTools.PointFolderAtRepoAsync(folder!, renamed);
             _ = _sync.SyncNowAsync();
+            KeepProblemThroughReopen(project.Id);
             if (navigation == _navigation && FindProject(project.Id) is { } moved) await OpenProjectAsync(moved);
             return;
         }
@@ -517,9 +522,18 @@ public partial class MainWindow
         if (changed && _openProject?.Id == project.Id && _busyProjectId is null) await RecheckIfStillOpenAsync(project.Id);
     }
 
+    private void KeepProblemThroughReopen(string projectId)
+    {
+        if (_pageProblem is { } shown) _heldProblems[projectId] = shown;
+    }
+
+    private (bool Unfinished, bool Held) DownloadStateOf(string? folder) =>
+        folder is null ? default : (_database.DownloadIsUnfinished(folder), GitTools.DownloadIsHeld(folder));
+
     private void RenderProject(Project project)
     {
         _openProject = project;
+        _shownDownloadState = DownloadStateOf(_database.GetProjectFolder(project.Id));
         ProjectPage.Children.Clear();
         ProjectPage.Children.Add(ProjectHero(project));
 
@@ -578,14 +592,30 @@ public partial class MainWindow
             {
                 body.Children.Add(new TextBlock { Text = "This folder doesn't have the repo's latest commits. It may just be behind, but it may not be the same project, so check before pushing.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
             }
-            if (_busyProjectId is null && folder is not null && _database.DownloadIsUnfinished(folder))
+            if (_busyProjectId is null && _shownDownloadState.Held)
             {
-                body.Children.Add(new TextBlock { Text = "This folder's download never finished, so some of its big files or submodules may be missing, or be small placeholders. Finishing picks up where it left off.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
-                var finish = ActionButton("Finish the download");
-                finish.HorizontalAlignment = HorizontalAlignment.Left;
-                finish.Margin = new Thickness(0, 8, 0, 0);
-                finish.Click += async (_, _) => await FinishDownloadAsync(project, folder);
-                body.Children.Add(finish);
+                body.Children.Add(new TextBlock { Text = "Another window of the app is finishing this folder's download.", Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+            }
+            else if (_busyProjectId is null && _shownDownloadState.Unfinished)
+            {
+                body.Children.Add(new TextBlock { Text = "This folder's download never finished, so some of its files or submodules may be missing, or be small placeholders. Finishing picks up where it left off.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+                if (_settingsToAllow is not null)
+                {
+                    // Finishing runs Git in the folder, so these have to be looked at first.
+                    var rows = new List<FrameworkElement>();
+                    AddFolderSettingsRow(rows, project, folder!);
+                    var allow = Card(rows.ToArray());
+                    allow.Margin = new Thickness(0, 8, 0, 0);
+                    body.Children.Add(allow);
+                }
+                else
+                {
+                    var finish = ActionButton("Finish the download");
+                    finish.HorizontalAlignment = HorizontalAlignment.Left;
+                    finish.Margin = new Thickness(0, 8, 0, 0);
+                    finish.Click += async (_, _) => await FinishDownloadAsync(project, folder!);
+                    body.Children.Add(finish);
+                }
             }
             body.Children.Add(CenteredNote("Nothing here yet."));
             AddOwnBusy(body, project);
@@ -717,7 +747,7 @@ public partial class MainWindow
         if (canReplace && _confirmingNewRepo)
         {
             var confirm = new Button { Style = (Style)FindResource("PrimaryButton"), Content = "Yes, create it", IsEnabled = !busy };
-            confirm.Click += async (_, _) => await CreateReplacementRepoAsync(project, check);
+            confirm.Click += async (_, _) => await EndBusyIfDatabaseFailsAsync(project.Id, () => CreateReplacementRepoAsync(project, check));
             var cancel = ActionButton("Cancel");
             cancel.IsEnabled = !busy;
             cancel.Click += (_, _) =>
@@ -772,13 +802,13 @@ public partial class MainWindow
             if (linked is not null && _folderExists && _folderProblem is not null && GitTools.ConnectingCanFix(_folderProblem))
             {
                 // The project moved repos elsewhere, and this PC may only get in the way this folder does.
-                var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linked));
+                var connect = TwoClickAction("Connect it", () => EndBusyIfDatabaseFailsAsync(project.Id, () => PointFolderAtRepoAsync(project, linked)));
                 connect.IsEnabled = !busy;
                 rows.Add(Row("Keep using this folder", "If the project moved repos, this points the folder's remote at the new one, the same way it connects now. Its files don't change.", connect));
             }
             else if (linked is not null && _folderExists)
             {
-                var repair = TwoClickAction("Repair it", () => RepairRemoteAsync(project, linked));
+                var repair = TwoClickAction("Repair it", () => EndBusyIfDatabaseFailsAsync(project.Id, () => RepairRemoteAsync(project, linked)));
                 repair.IsEnabled = !busy;
                 rows.Add(Row("Repair this folder's connection", "Switches it between HTTPS and SSH, whichever works from this PC.", repair));
             }
@@ -901,6 +931,21 @@ public partial class MainWindow
         RenderProject(_openProject);
     }
 
+    // The app carries on through a database error, as the database can be on a drive that's
+    // dropped. Whatever this page was busy with has stopped, and the page has to say so.
+    private async Task EndBusyIfDatabaseFailsAsync(string projectId, Func<Task> work)
+    {
+        try
+        {
+            await work();
+        }
+        catch (SqliteException)
+        {
+            if (_busyProjectId == projectId) EndBusy();
+            throw;
+        }
+    }
+
     private async Task CreateReplacementRepoAsync(Project project, RepoCheck shownCheck)
     {
         // Busy from the first click, so a second one can't create a second repo.
@@ -992,11 +1037,21 @@ public partial class MainWindow
         }
 
         var updated = latest with { RepoUrl = result.Value };
-        _database.SaveProject(updated);
-        _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(result.Value)); // This PC just made it.
+        try
+        {
+            _database.SaveProject(updated);
+            _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(result.Value)); // This PC just made it.
 
-        // A folder chosen in settings while this ran is more recent, so it stays.
-        if (_database.GetProjectFolder(project.Id) == linkedBefore) _database.SetProjectFolder(project.Id, folder!);
+            // A folder chosen in settings while this ran is more recent, so it stays.
+            if (_database.GetProjectFolder(project.Id) == linkedBefore) _database.SetProjectFolder(project.Id, folder!);
+        }
+        catch (SqliteException error)
+        {
+            // It exists on GitHub now, and this is the only place that says where.
+            AppLog.Write($"Couldn't save a new repo's address: {error.Message}");
+            Dialogs.Notify($"The repo was created at {result.Value}, but the app's database can't be reached, so {project.Name} wasn't changed. Once it's back, enter that address in its project settings.");
+            return;
+        }
         _ = _sync.SyncNowAsync();
         _confirmingNewRepo = false;
         await RefreshThenRecheckAsync(updated.Id);
@@ -1054,18 +1109,20 @@ public partial class MainWindow
     private async Task CloneProjectAsync(Project project, string parentFolder, string? exactFolder = null)
     {
         if (_busyProjectId is not null) return;
-        StartBusy(project, "Checking that folder…");
         var destination = exactFolder ?? GitTools.CloneDestination(project.RepoUrl, parentFolder);
-        var owner = destination is null ? null : await _database.ClaimFolderAsync(destination, project);
-        EndBusy();
-        if (owner is not null)
-        {
-            ShowPageProblem(project.Id, $"{owner.Name} already uses a folder that overlaps where this would clone to. Project folders can't overlap.");
-            return;
-        }
-
+        var isHeld = false;
         try
         {
+            StartBusy(project, "Checking that folder…");
+            var owner = destination is null ? null : await _database.ClaimFolderAsync(destination, project);
+            isHeld = destination is not null && owner is null;
+            EndBusy();
+            if (owner is not null)
+            {
+                ShowPageProblem(project.Id, $"{owner.Name} already uses a folder that overlaps where this would clone to. Project folders can't overlap.");
+                return;
+            }
+
             await RunCloneAsync(project, parentFolder, exactFolder);
         }
         catch (Exception)
@@ -1080,7 +1137,7 @@ public partial class MainWindow
         }
         finally
         {
-            if (destination is not null) _database.ReleaseFolder(destination);
+            if (isHeld) _database.ReleaseFolder(destination!);
         }
     }
 
@@ -1108,11 +1165,38 @@ public partial class MainWindow
             SaveCloneRecords(CloneRecords().Append(cloneRecord));
         }, exactFolder, stage => ShowBusyStage("Cloning…", stage));
 
-        // One that couldn't be fully removed stays on the list, to be tried again next start.
-        if (cloneRecord is not null && (workingFolder is null || !await GitTools.FolderExistsAsync(workingFolder)))
+        try
         {
-            SaveCloneRecords(CloneRecords().Where(record => record != cloneRecord));
+            await AfterCloneAsync(project, result, cancel, folderBefore, async () =>
+            {
+                // One that couldn't be fully removed stays on the list, to be tried again next start.
+                if (cloneRecord is not null && (workingFolder is null || !await GitTools.FolderExistsAsync(workingFolder)))
+                {
+                    SaveCloneRecords(CloneRecords().Where(record => record != cloneRecord));
+                }
+            });
         }
+        catch (SqliteException error) when (result.Worked)
+        {
+            // Hours of download are sitting there, and nothing's going to say so otherwise.
+            AppLog.Write($"Couldn't link a finished clone: {error.Message}");
+            _cloneCancel = null;
+            _databaseWasLost = true;
+            try
+            {
+                if (_busyProjectId == project.Id) EndBusy();
+            }
+            catch (SqliteException)
+            {
+                // Drawing the page needs the database, and that happens again once it's back.
+            }
+            Dialogs.Notify($"{project.Name} finished cloning to {result.Value}, but the app's database can't be reached, so it may not be linked. Once it's back, select that folder. If it uses large files or submodules, get them with git lfs pull and git submodule update --init --recursive.");
+        }
+    }
+
+    private async Task AfterCloneAsync(Project project, GitResult result, CancellationTokenSource cancel, string? folderBefore, Func<Task> forgetCloneRecord)
+    {
+        await forgetCloneRecord();
 
         if (!result.Worked)
         {
@@ -1140,9 +1224,18 @@ public partial class MainWindow
             // Linked first, so an app closing during what comes next leaves a project that knows
             // about this folder, and says what's still missing from it.
             _downloadIsInPlace = true;
-            await UseFolderAsync(FindProject(project.Id) ?? project, result.Value, folderBefore);
-            var isLinked = _database.GetProjectFolder(project.Id) == result.Value;
-            var missing = isLinked ? await GitTools.FinishDownloadAsync(result.Value, cancel.Token, stage => ShowBusyStage("Cloning…", stage)) : null;
+            string? missing = null;
+            using (var hold = GitTools.TryTakeDownload(result.Value))
+            {
+                await UseFolderAsync(FindProject(project.Id) ?? project, result.Value, folderBefore);
+                var isLinked = _database.GetProjectFolder(project.Id) == result.Value;
+
+                // Files that never got put in place come first, and it stays unfinished until they're sorted out.
+                if (isLinked && hold is not null && result.Note is null)
+                {
+                    missing = await GitTools.FinishDownloadAsync(result.Value, cancel.Token, stage => ShowBusyStage("Cloning…", stage));
+                }
+            }
             _cloneCancel = null;
             EndBusy();
 
@@ -1157,12 +1250,24 @@ public partial class MainWindow
 
         // These run in the folder, and it can have picked up settings since it was last looked at.
         var runnable = await GitTools.FolderRunnableSettingsAsync(folder);
-        if (runnable is null || !GitTools.AreAllowed(folder, runnable))
+        if (runnable is null)
         {
-            await RecheckIfStillOpenAsync(project.Id);
+            ShowPageProblem(project.Id, "Couldn't read this folder's own Git settings, so nothing was run in it. Check that Git works in that folder, then try again.");
+            return;
+        }
+        if (!GitTools.AreAllowed(folder, runnable))
+        {
+            await RecheckIfStillOpenAsync(project.Id); // That draws the row for allowing them.
             return;
         }
         if (_busyProjectId is not null) return;
+
+        // Two of these at once would run into each other's locks.
+        if (GitTools.TryTakeDownload(folder) is not { } hold)
+        {
+            if (_openProject?.Id == project.Id) RenderProject(_openProject);
+            return;
+        }
 
         using var cancel = new CancellationTokenSource();
         _cloneCancel = cancel;
@@ -1175,6 +1280,7 @@ public partial class MainWindow
         }
         finally
         {
+            hold.Dispose();
             _cloneCancel = null;
             EndBusy();
         }
@@ -1268,7 +1374,7 @@ public partial class MainWindow
         if (linkedFolder is not null && _folderExists && _folderProblem is not null && GitTools.ConnectingCanFix(_folderProblem))
         {
             // The project may have moved to a new repo on another PC, with this copy's work unpushed.
-            var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linkedFolder));
+            var connect = TwoClickAction("Connect it", () => EndBusyIfDatabaseFailsAsync(project.Id, () => PointFolderAtRepoAsync(project, linkedFolder)));
             connect.IsEnabled = !busy;
             rows.Add(Row("Keep using this folder", "If the project moved repos, this points the folder's remote at the new one. Its files don't change.", connect));
         }
@@ -1299,13 +1405,20 @@ public partial class MainWindow
 
             var folderBefore = _database.GetProjectFolder(project.Id);
             StartBusy(project, "Checking that folder…");
-            await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
-            var folderProblem = await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
-            if (folderProblem is null && await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other)
+            string? folderProblem;
+            try
             {
-                folderProblem = $"{other.Name} already uses that folder, or one that overlaps it. Project folders can't overlap.";
+                await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
+                folderProblem = await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
+                if (folderProblem is null && await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other)
+                {
+                    folderProblem = $"{other.Name} already uses that folder, or one that overlaps it. Project folders can't overlap.";
+                }
             }
-            EndBusy();
+            finally
+            {
+                EndBusy();
+            }
 
             if (folderProblem is null) await UseFolderAsync(project, chosen, folderBefore);
             else ShowPageProblem(project.Id, folderProblem);
@@ -1412,21 +1525,23 @@ public partial class MainWindow
             return;
         }
 
-        // Settings stay open during slow work, and sync keeps running, so this has to look again now.
-        if (FindProject(projectId) is not { } latest)
+        try
         {
-            _database.ReleaseFolder(folder);
-            return;
-        }
-        if (_database.GetProjectFolder(projectId) != folderBefore || !GitTools.SameRepo(latest.RepoUrl, chosenFor.RepoUrl))
-        {
-            _database.ReleaseFolder(folder);
-            await RecheckThenShowAsync(projectId, $"{folder} wasn't linked, because this project's folder or repo changed while that was being checked.");
-            return;
-        }
+            // Settings stay open during slow work, and sync keeps running, so this has to look again now.
+            if (FindProject(projectId) is not { } latest) return;
+            if (_database.GetProjectFolder(projectId) != folderBefore || !GitTools.SameRepo(latest.RepoUrl, chosenFor.RepoUrl))
+            {
+                _database.ReleaseFolder(folder);
+                await RecheckThenShowAsync(projectId, $"{folder} wasn't linked, because this project's folder or repo changed while that was being checked.");
+                return;
+            }
 
-        _database.SetProjectFolder(projectId, folder);
-        _database.ReleaseFolder(folder);
+            _database.SetProjectFolder(projectId, folder);
+        }
+        finally
+        {
+            _database.ReleaseFolder(folder);
+        }
         await ReadEngineVersionAsync(projectId);
         await RefreshThenRecheckAsync(projectId);
     }

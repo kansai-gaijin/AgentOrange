@@ -77,10 +77,20 @@ internal static partial class GitFolderSafety
         }
     }
 
-    // Git goes by a .git first, so a project that just has folders with these names isn't one.
-    private static bool LooksLikeBareRepo(string folder) =>
-        Path.GetFileName(folder) != ".git" && !Exists(Path.Combine(folder, ".git"))
-        && Exists(Path.Combine(folder, "HEAD")) && Exists(Path.Combine(folder, "objects")) && Exists(Path.Combine(folder, "refs"));
+    // Git goes by a .git first, so a project that just has folders with these names isn't one. It
+    // passes over a .git folder that isn't really a repo, though, and carries on to the rest.
+    private static bool LooksLikeBareRepo(string folder)
+    {
+        if (Path.GetFileName(folder) == ".git" || !HasRepoLayout(folder)) return false;
+
+        var git = Path.Combine(folder, ".git");
+        if (!Exists(git)) return true;
+        if (SshConfigFile.IsLink(git) || !File.GetAttributes(git).HasFlag(FileAttributes.Directory)) return false; // Looked at next, without following it.
+        return !HasRepoLayout(git);
+    }
+
+    private static bool HasRepoLayout(string folder) =>
+        Exists(Path.Combine(folder, "HEAD")) && Exists(Path.Combine(folder, "objects")) && Exists(Path.Combine(folder, "refs"));
 
     // How Git itself reads a path in these files, which is literally, apart from ~/ in settings.
     // A shell would expand %TEMP%, and looking there instead of where Git will look would be

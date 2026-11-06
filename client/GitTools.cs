@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -988,7 +989,7 @@ public static partial class GitTools
                 // file name Windows can't use. That's hours of download, and it can be fixed.
                 if (!cancel.IsCancellationRequested && await RunAsync("git", working, "rev-parse", "--verify", "-q", "HEAD") is { ExitCode: 0 })
                 {
-                    checkoutProblem = $"Everything downloaded, but some files couldn't be put in place: {AsSentence(reason)} Fix that, then run git restore --source=HEAD :/ in the folder.";
+                    checkoutProblem = $"Everything downloaded, but some files couldn't be put in place: {AsSentence(reason)} Fix that, then run git restore --source=HEAD --staged --worktree :/ in the folder.";
                 }
                 else
                 {
@@ -1009,8 +1010,8 @@ public static partial class GitTools
 
         // From here it's a finished clone, which could have taken hours, so it's never deleted,
         // including by the cleanup at the next start if the app closes during this.
-        workingFolder(null);
-        RememberUnfinishedDownload(destination, true);
+        TryNoting(() => workingFolder(null));
+        TryNoting(() => RememberUnfinishedDownload(destination, true));
         try
         {
             await MoveIntoPlaceAsync(working, destination);
@@ -1018,7 +1019,7 @@ public static partial class GitTools
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             AppLog.Write($"Couldn't name a finished clone: {error.Message}");
-            RememberUnfinishedDownload(destination, false);
+            TryNoting(() => RememberUnfinishedDownload(destination, false));
             return new GitResult(false, $"The clone finished, but it couldn't be named {destination}. It's kept at {await KeepVisibleAsync(working, destination)}. You can rename it and select it. If it uses large files or submodules, get them with git lfs pull and git submodule update --init --recursive.");
         }
         return new GitResult(true, destination, checkoutProblem);
@@ -1031,18 +1032,66 @@ public static partial class GitTools
     /// </summary>
     public static async Task<string?> FinishDownloadAsync(string folder, CancellationToken cancel = default, Action<string>? progress = null)
     {
-        var notes = new[] { await FetchSubmodulesAsync(folder, cancel, progress), await FetchLargeFilesAsync(folder, cancel, progress) }.OfType<string>().ToList();
+        // An empty repo has nothing to fetch.
+        var hasCommits = await RunAsync("git", folder, "rev-parse", "--verify", "-q", "HEAD") is not { ExitCode: not 0 };
+
+        // Git can't fetch what's listed in files that never arrived, and would say all is well. A
+        // checkout that failed outright hasn't even listed them yet, so Git's own list is asked too.
+        if (hasCommits
+            && (await RunAsync("git", folder, "diff-index", "--cached", "--quiet", "--diff-filter=D", "HEAD", "--") is { ExitCode: 1 }
+                || await RunAsync("git", folder, "ls-files", "--deleted") is { ExitCode: 0, Output.Length: > 0 }))
+        {
+            return "Some of this repo's files still aren't in the folder, so the rest can't be finished yet. Fix what stopped them, then run git restore --source=HEAD --staged --worktree :/ in the folder and try again.";
+        }
+
+        var notes = !hasCommits ? [] : new[] { await FetchSubmodulesAsync(folder, cancel, progress), await FetchLargeFilesAsync(folder, cancel, progress) }.OfType<string>().ToList();
         if (notes.Count > 0) return string.Join(' ', notes);
 
         RememberUnfinishedDownload(folder, false);
         return null;
     }
 
+    // The database can be on a drive that's dropped, and nothing being noted is worth more than the clone.
+    private static void TryNoting(Action note)
+    {
+        try
+        {
+            note();
+        }
+        catch (SqliteException error)
+        {
+            AppLog.Write($"Couldn't note something about a clone: {error.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Says this folder's download is being finished, to the other windows of the app, until it's
+    /// disposed. The handle is what counts, so it goes away by itself if the app does. Null if
+    /// another window already has it.
+    /// </summary>
+    public static IDisposable? TryTakeDownload(string folder)
+    {
+        var hold = new Mutex(false, DownloadHoldName(folder), out var isFirst);
+        if (isFirst) return hold;
+        hold.Dispose();
+        return null;
+    }
+
+    public static bool DownloadIsHeld(string folder)
+    {
+        if (!Mutex.TryOpenExisting(DownloadHoldName(folder), out var hold)) return false;
+        hold.Dispose();
+        return true;
+    }
+
+    private static string DownloadHoldName(string folder) =>
+        $@"Local\AgentOrangeDownload-{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.TrimEndingDirectorySeparator(folder).ToLowerInvariant())))[..32]}";
+
     // After the clone is safely in place, because a submodule that can't be fetched, such as a
     // private one, shouldn't cost everything else. Git's allowed protocols apply to these too.
     private static async Task<string?> FetchSubmodulesAsync(string folder, CancellationToken cancel, Action<string>? progress)
     {
-        if (!await Task.Run(() => File.Exists(Path.Combine(folder, ".gitmodules")))) return null;
+        if (await RunAsync("git", folder, "cat-file", "-e", "HEAD:.gitmodules") is not { ExitCode: 0 }) return null;
 
         progress?.Invoke("Fetching submodules");
         var result = await RunAsync("git", folder, null, ["-c", "core.longpaths=true", "submodule", "update", "--init", "--recursive"], cancel, await SshSettingsAsync(folder));
@@ -1054,10 +1103,11 @@ public static partial class GitTools
 
     // Git LFS keeps a repo's big files apart. Without it set up, a repo that uses it clones fine,
     // with small placeholders instead. Asked of Git, as any folder can declare it, and a file here
-    // could be a link. A quota running out or a dropped connection only costs this step.
+    // could be a link. A line that's commented out doesn't count. A quota running out or a dropped
+    // connection only costs this step.
     private static async Task<string?> FetchLargeFilesAsync(string folder, CancellationToken cancel, Action<string>? progress)
     {
-        var declared = await RunAsync("git", folder, "grep", "-q", "filter=lfs", "--", "*.gitattributes");
+        var declared = await RunAsync("git", folder, "grep", "-q", "-E", "^[^#]*filter=lfs", "HEAD", "--", "*.gitattributes");
         if (declared is { ExitCode: 1 }) return null;
         if (declared is not { ExitCode: 0 })
         {

@@ -417,17 +417,22 @@ public partial class ProjectSettingsModal : UserControl
                 return;
             }
 
-            // Sync can have moved the project to another repo while this folder was being checked.
-            var latest = Find(projectId);
-            if (latest is null || !GitTools.SameRepo(latest.RepoUrl, current.RepoUrl))
+            try
+            {
+                // Sync can have moved the project to another repo while this folder was being checked.
+                var latest = Find(projectId);
+                if (latest is null || !GitTools.SameRepo(latest.RepoUrl, current.RepoUrl))
+                {
+                    if (latest is not null && session == _session) ReportProblem("This project's repo changed while that folder was being checked, so it wasn't linked.");
+                    return;
+                }
+
+                _database.SetProjectFolder(projectId, chosen);
+            }
+            finally
             {
                 _database.ReleaseFolder(chosen);
-                if (latest is not null && session == _session) ReportProblem("This project's repo changed while that folder was being checked, so it wasn't linked.");
-                return;
             }
-
-            _database.SetProjectFolder(projectId, chosen);
-            _database.ReleaseFolder(chosen);
             Changed?.Invoke();
             if (session != _session) return;
             ClearGeneralProblem();

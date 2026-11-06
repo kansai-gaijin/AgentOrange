@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -96,18 +97,30 @@ public partial class MainWindow : Window
         var otherWindowTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         otherWindowTimer.Tick += (_, _) =>
         {
-            var latest = _database.RecordsSignature();
-            if (latest != knownRecords)
+            try
             {
-                knownRecords = latest;
-                RefreshProjects();
-            }
+                var latest = _database.RecordsSignature();
+                if (latest != knownRecords || _databaseWasLost)
+                {
+                    knownRecords = latest;
+                    RefreshProjects();
+                }
 
-            // Folders don't sync, so they're not records, and a clone there can finish at any time.
-            if (_openProject is { } open && _projectCheck is not null && _busyProjectId is null
-                && ProjectSettings.Visibility != Visibility.Visible && _database.GetProjectFolder(open.Id) != _checkedFolder)
+                // Folders don't sync, so they're not records, and a clone there can finish at any time.
+                if (_openProject is { } open && _projectCheck is not null && _busyProjectId is null && ProjectSettings.Visibility != Visibility.Visible)
+                {
+                    var folder = _database.GetProjectFolder(open.Id);
+                    if (folder != _checkedFolder || _databaseWasLost) _ = RecheckIfStillOpenAsync(open.Id);
+                    else if (DownloadStateOf(folder) != _shownDownloadState) RenderProject(open);
+                }
+                _databaseWasLost = false;
+            }
+            catch (SqliteException error)
             {
-                _ = RecheckIfStillOpenAsync(open.Id);
+                _databaseWasLost = true; // So everything's looked at again once it's back.
+
+                // Not thrown from here, because a timer whose tick throws never runs again.
+                Dispatcher.BeginInvoke(new Action(() => throw error));
             }
         };
         otherWindowTimer.Start();

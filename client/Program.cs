@@ -24,13 +24,15 @@ public static class Program
             // clone. What's already saved is safe, and it can carry on once the drive's back.
             if (e.Exception is SqliteException && app.MainWindow is { IsLoaded: true })
             {
-                AppLog.Write($"Couldn't use the database: {e.Exception.Message}");
                 e.Handled = true;
+
+                // Its timers will keep running into this for as long as it lasts.
+                if (DateTimeOffset.UtcNow - toldAboutDatabase < TimeSpan.FromMinutes(5)) return;
+                toldAboutDatabase = DateTimeOffset.UtcNow;
+                AppLog.Write($"Couldn't use the database: {e.Exception.Message}");
 #if DEBUG
                 if (Headless.Active) return;
 #endif
-                if (DateTimeOffset.UtcNow - toldAboutDatabase < TimeSpan.FromMinutes(5)) return;
-                toldAboutDatabase = DateTimeOffset.UtcNow;
                 System.Windows.MessageBox.Show(
                     "Agent Orange can't reach its database right now, so changes may not be saved until it's back. If it's on a drive that was disconnected, reconnect it. Otherwise, restart the app.",
                     "Agent Orange",

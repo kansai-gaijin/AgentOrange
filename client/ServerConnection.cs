@@ -100,25 +100,28 @@ public sealed class ServerConnection
         if (address.Length == 0 || _addressBeingChecked == address) return;
         _addressBeingChecked = address;
 
-        var reachable = await IsHealthyAsync(address);
-
-        // A PC paired at more than one address, such as Tailscale and public HTTPS, carries on
-        // through another when this one stops answering, and goes back once it answers again.
-        // The chosen address stays what's saved.
-        if (address == Address)
+        bool reachable;
+        try
         {
-            _failedChecks = reachable ? 0 : _failedChecks + 1;
-            var moved = !reachable && _failedChecks >= FailedChecksBeforeFallback
-                ? await TryOtherAddressesAsync(address)
-                : reachable && address != _chosenAddress && await TryChosenAddressAsync(address);
-            if (moved)
+            reachable = await IsHealthyAsync(address);
+
+            // A PC paired at more than one address, such as Tailscale and public HTTPS, carries on
+            // through another when this one stops answering, and goes back once it answers again.
+            // The chosen address stays what's saved.
+            if (address == Address)
             {
-                if (_addressBeingChecked == address) _addressBeingChecked = null;
-                return;
+                _failedChecks = reachable ? 0 : _failedChecks + 1;
+                var moved = !reachable && _failedChecks >= FailedChecksBeforeFallback
+                    ? await TryOtherAddressesAsync(address)
+                    : reachable && address != _chosenAddress && await TryChosenAddressAsync(address);
+                if (moved) return;
             }
         }
-
-        if (_addressBeingChecked == address) _addressBeingChecked = null;
+        finally
+        {
+            // Whatever went wrong, as this would otherwise never check that address again.
+            if (_addressBeingChecked == address) _addressBeingChecked = null;
+        }
 
         // The address may have changed while this check was running.
         if (address == Address) SetState(reachable ? ServerState.Connected : ServerState.Disconnected);
