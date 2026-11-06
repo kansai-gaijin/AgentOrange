@@ -5,10 +5,11 @@ using Microsoft.Data.Sqlite;
 
 namespace AgentOrange;
 
-public sealed record Project(string Id, string Name, string Engine, DateTimeOffset CreatedAt, string RepoUrl)
+public sealed record Project(string Id, string Name, string Engine, string EngineVersion, string GameType, string RepoUrl, DateTimeOffset CreatedAt)
 {
-    public string Summary =>
-        $"{Engine} · Created {CreatedAt.ToLocalTime().ToString("MMM d, yyyy", CultureInfo.InvariantCulture)}";
+    public string EngineLabel => EngineVersion.Length > 0 ? $"{Engine} {EngineVersion}" : Engine;
+
+    public string Summary => GameType == "Other" ? EngineLabel : $"{EngineLabel} · {GameType}";
 }
 
 public sealed record SyncChange(string Collection, string Id, string Data, bool Deleted);
@@ -22,8 +23,12 @@ public sealed record SyncChange(string Collection, string Id, string Data, bool 
 public sealed class LocalDatabase
 {
     private const string ProjectsCollection = "projects";
-    private const string UnknownEngine = "Other";
-    private sealed record ProjectData(string Name, DateTimeOffset CreatedAt, string? Engine = null, string? RepoUrl = null);
+    private const string SettingsCollection = "settings";
+    private const string ImagesCollection = "project_images";
+    private const string ProjectOrderRecord = "project_order";
+    private const string UnknownChoice = "Other";
+
+    private sealed record ProjectData(string Name, DateTimeOffset CreatedAt, string? Engine = null, string? RepoUrl = null, string? EngineVersion = null, string? GameType = null);
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -70,18 +75,78 @@ public sealed class LocalDatabase
         while (reader.Read())
         {
             var data = JsonSerializer.Deserialize<ProjectData>(reader.GetString(1), JsonOptions)!;
-            projects.Add(new Project(reader.GetString(0), data.Name, data.Engine ?? UnknownEngine, data.CreatedAt, data.RepoUrl ?? ""));
+            projects.Add(new Project(
+                reader.GetString(0),
+                data.Name,
+                data.Engine ?? UnknownChoice,
+                data.EngineVersion ?? "",
+                data.GameType ?? UnknownChoice,
+                data.RepoUrl ?? "",
+                data.CreatedAt));
         }
-        return projects.OrderByDescending(project => project.CreatedAt).ToList();
+
+        // Projects the saved order doesn't mention yet, such as new ones, go first.
+        var order = ProjectOrder();
+        return projects
+            .OrderBy(project => order.IndexOf(project.Id) is var index and >= 0 ? index : -1)
+            .ThenByDescending(project => project.CreatedAt)
+            .ToList();
     }
 
-    public string CreateProject(string name, string engine, string repoUrl)
+    public string CreateProject(string name, string engine, string engineVersion, string gameType, string repoUrl)
     {
-        var id = Guid.NewGuid().ToString();
-        var data = new ProjectData(name, DateTimeOffset.UtcNow, engine, repoUrl);
-        SaveRecord(ProjectsCollection, id, JsonSerializer.Serialize(data, JsonOptions));
-        return id;
+        var project = new Project(Guid.NewGuid().ToString(), name, engine, engineVersion, gameType, repoUrl, DateTimeOffset.UtcNow);
+        SaveProject(project);
+        return project.Id;
     }
+
+    public void SaveProject(Project project)
+    {
+        var data = new ProjectData(project.Name, project.CreatedAt, project.Engine, project.RepoUrl, project.EngineVersion, project.GameType);
+        SaveRecord(ProjectsCollection, project.Id, JsonSerializer.Serialize(data, JsonOptions));
+    }
+
+    /// <summary>Removes a project from every PC. Its folder and repo are left alone.</summary>
+    public void DeleteProject(string projectId)
+    {
+        SaveRecord(ProjectsCollection, projectId, "{}", deleted: true);
+        foreach (var kind in Enum.GetValues<ProjectImageKind>()) SetProjectImage(projectId, kind, null);
+
+        var order = ProjectOrder();
+        if (order.Remove(projectId)) SaveProjectOrder(order);
+
+        SetSetting($"project_folder:{projectId}", "");
+        SetSetting($"project_verified:{projectId}", "");
+    }
+
+    public void SaveProjectOrder(IEnumerable<string> projectIds) =>
+        SaveRecord(SettingsCollection, ProjectOrderRecord, JsonSerializer.Serialize(projectIds, JsonOptions));
+
+    private List<string> ProjectOrder()
+    {
+        var stored = GetRecord(SettingsCollection, ProjectOrderRecord);
+        return string.IsNullOrEmpty(stored) ? [] : JsonSerializer.Deserialize<List<string>>(stored, JsonOptions) ?? [];
+    }
+
+    /// <summary>Folders differ between PCs, so they stay on this one and never sync.</summary>
+    public string? GetProjectFolder(string projectId)
+    {
+        var folder = GetSetting($"project_folder:{projectId}");
+        return string.IsNullOrEmpty(folder) ? null : folder;
+    }
+
+    public void SetProjectFolder(string projectId, string folder) => SetSetting($"project_folder:{projectId}", folder);
+
+    public byte[]? GetProjectImage(string projectId, ProjectImageKind kind)
+    {
+        var stored = GetRecord(ImagesCollection, ImageId(projectId, kind));
+        return string.IsNullOrEmpty(stored) ? null : Convert.FromBase64String(stored);
+    }
+
+    public void SetProjectImage(string projectId, ProjectImageKind kind, byte[]? image) =>
+        SaveRecord(ImagesCollection, ImageId(projectId, kind), image is null ? "" : Convert.ToBase64String(image), deleted: image is null);
+
+    private static string ImageId(string projectId, ProjectImageKind kind) => $"{projectId}:{kind}";
 
     public void SaveRecord(string collection, string id, string data, bool deleted = false)
     {
@@ -102,7 +167,8 @@ public sealed class LocalDatabase
         return command.ExecuteScalar() as string;
     }
 
-    public List<SyncChange> ReadOutbox(int limit)
+    /// <summary>Reads queued changes, stopping at a size the server accepts in one request.</summary>
+    public List<SyncChange> ReadOutbox(int limit, int maxCharacters)
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
@@ -110,10 +176,14 @@ public sealed class LocalDatabase
         command.Parameters.AddWithValue("$limit", limit);
 
         var changes = new List<SyncChange>();
+        var total = 0;
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            changes.Add(new SyncChange(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3) != 0));
+            var data = reader.GetString(2);
+            if (changes.Count > 0 && total + data.Length > maxCharacters) break;
+            total += data.Length;
+            changes.Add(new SyncChange(reader.GetString(0), reader.GetString(1), data, reader.GetInt64(3) != 0));
         }
         return changes;
     }

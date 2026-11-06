@@ -7,6 +7,9 @@ public sealed class SyncEngine
 {
     private const int BatchSize = 200;
 
+    // The server accepts requests up to 2 MB, and images make up most of the data.
+    private const int MaxBatchCharacters = 1_400_000;
+
     private readonly LocalDatabase _database;
     private readonly ServerConnection _server;
     private readonly DeviceSession _devices;
@@ -47,7 +50,7 @@ public sealed class SyncEngine
 
             while (true)
             {
-                var batch = _database.ReadOutbox(BatchSize);
+                var batch = _database.ReadOutbox(BatchSize, MaxBatchCharacters);
                 var response = await _devices.SyncAsync(cursor, batch);
                 if (response is null) return;
 
@@ -58,7 +61,7 @@ public sealed class SyncEngine
                 _database.SetSetting(cursorSetting, cursor.ToString());
                 LastSynced = DateTimeOffset.UtcNow;
 
-                if (!response.HasMore && batch.Count < BatchSize) break;
+                if (!response.HasMore && _database.CountOutbox() == 0) break;
             }
         }
         finally

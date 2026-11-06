@@ -31,7 +31,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
 {
     private sealed record PairResponse(string Id, string Token);
 
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(60) }; // Images can take a while.
 
     public bool IsPaired => Token is not null;
 

@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -83,13 +83,6 @@ public partial class MainWindow : Window
         };
     }
 
-    private void RefreshProjects()
-    {
-        var projects = _database.ListProjects();
-        ProjectList.ItemsSource = projects;
-        NoProjects.Visibility = projects.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-    }
-
     private void NewProject_Click(object sender, RoutedEventArgs e)
     {
         MainContent.IsEnabled = false;
@@ -105,27 +98,13 @@ public partial class MainWindow : Window
 
     private void ProjectWizard_Created(NewProject project)
     {
-        var id = _database.CreateProject(project.Name, project.Engine, project.RepoUrl);
+        var id = _database.CreateProject(project.Name, project.Engine, project.EngineVersion, project.GameType, project.RepoUrl);
 
         // Folders differ between PCs, so this stays here and only the rest syncs.
-        if (project.Folder.Length > 0) _database.SetSetting(ProjectFolderSetting(id), project.Folder);
+        _database.SetProjectFolder(id, project.Folder);
 
         RefreshProjects();
         _ = _sync.SyncNowAsync();
-    }
-
-    private static string ProjectFolderSetting(string projectId) => $"project_folder:{projectId}";
-
-    private void OpenProject_Click(object sender, RoutedEventArgs e)
-    {
-        var project = (Project)((Button)sender).DataContext;
-        var folder = _database.GetSetting(ProjectFolderSetting(project.Id));
-        OpenProjectName.Text = project.Name;
-        OpenProjectDetails.Text = $"{project.Engine} · {(string.IsNullOrEmpty(folder) ? "No folder on this PC" : folder)}";
-        OpenProjectDetails.ToolTip = folder;
-        OpenProjectRepo.Text = string.IsNullOrEmpty(project.RepoUrl) ? "No repo" : project.RepoUrl;
-        OpenProjectRepo.ToolTip = project.RepoUrl;
-        ShowView(ProjectView);
     }
 
     private void OpenSettings_Click(object sender, RoutedEventArgs e)
@@ -141,15 +120,6 @@ public partial class MainWindow : Window
         Settings.Visibility = Visibility.Collapsed;
         MainContent.Effect = null;
         MainContent.IsEnabled = _requiredUpdate is null;
-    }
-
-    private void BackToProjects_Click(object sender, RoutedEventArgs e) => ShowView(ProjectSelectView);
-
-    private void ShowView(UIElement view)
-    {
-        ProjectSelectView.Visibility = Visibility.Collapsed;
-        ProjectView.Visibility = Visibility.Collapsed;
-        view.Visibility = Visibility.Visible;
     }
 
     private void ShowServerState()

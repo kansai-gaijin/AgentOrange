@@ -5,83 +5,9 @@
         Title="Agent Orange" Height="720" Width="1100"
         MinHeight="480" MinWidth="640"
         WindowStartupLocation="CenterScreen"
-        Background="#16181D">
-    <Window.Resources>
-        <Style x:Key="OrangeButton" TargetType="Button">
-            <Setter Property="Foreground" Value="#16181D" />
-            <Setter Property="Background" Value="#FF8A1F" />
-            <Setter Property="FontSize" Value="14" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Padding" Value="18,8" />
-            <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Face" Background="{TemplateBinding Background}" CornerRadius="4" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Face" Property="Background" Value="#FFA24D" />
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Face" Property="Background" Value="#E67A12" />
-                            </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="Face" Property="Opacity" Value="0.4" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style x:Key="QuietButton" TargetType="Button">
-            <Setter Property="Foreground" Value="#C4C9D2" />
-            <Setter Property="Background" Value="Transparent" />
-            <Setter Property="FontSize" Value="14" />
-            <Setter Property="Padding" Value="14,8" />
-            <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Face" Background="{TemplateBinding Background}" CornerRadius="4" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Face" Property="Background" Value="#2A2E36" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style x:Key="ProjectCard" TargetType="Button">
-            <Setter Property="Width" Value="300" />
-            <Setter Property="Margin" Value="0,0,16,16" />
-            <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="HorizontalContentAlignment" Value="Left" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Face" Background="#22262E" BorderBrush="#2F343D" BorderThickness="1" CornerRadius="8" Padding="20,18">
-                            <ContentPresenter />
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Face" Property="BorderBrush" Value="#FF8A1F" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-    </Window.Resources>
-
+        Background="{StaticResource ContentBackground}">
     <Grid>
-        <Grid x:Name="MainContent" Margin="40,32,40,20">
+        <Grid x:Name="MainContent" Margin="40,28,40,16">
             <Grid.RowDefinitions>
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
@@ -91,19 +17,20 @@
             <DockPanel x:Name="ProjectSelectView">
                 <Grid DockPanel.Dock="Top" Margin="0,0,0,24">
                     <TextBlock Text="Agent Orange"
-                               Foreground="#FF8A1F"
-                               FontSize="28"
+                               Foreground="{StaticResource TextStrong}"
+                               FontSize="24"
                                FontWeight="Bold"
                                VerticalAlignment="Center" />
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="OpenSettings"
                                 Content="Settings"
-                                Style="{StaticResource QuietButton}"
-                                Margin="0,0,8,0"
+                                Style="{StaticResource HeaderButton}"
+                                Margin="0,0,10,0"
+                                VerticalAlignment="Center"
                                 Click="OpenSettings_Click" />
                         <Button x:Name="NewProject"
                                 Content="New project"
-                                Style="{StaticResource OrangeButton}"
+                                Style="{StaticResource PrimaryButton}"
                                 Click="NewProject_Click" />
                     </StackPanel>
                 </Grid>
@@ -111,88 +38,37 @@
                 <Grid>
                     <StackPanel x:Name="NoProjects" HorizontalAlignment="Center" VerticalAlignment="Center">
                         <TextBlock Text="No projects yet"
-                                   Foreground="#E6E8EC"
+                                   Foreground="{StaticResource TextStrong}"
                                    FontSize="20"
                                    FontWeight="SemiBold"
                                    HorizontalAlignment="Center" />
                         <TextBlock Text="Create one to get started."
-                                   Foreground="#9AA0AA"
+                                   Foreground="{StaticResource TextMuted}"
                                    FontSize="14"
                                    Margin="0,6,0,0"
                                    HorizontalAlignment="Center" />
                     </StackPanel>
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <ItemsControl x:Name="ProjectList">
-                            <ItemsControl.ItemsPanel>
-                                <ItemsPanelTemplate>
-                                    <WrapPanel />
-                                </ItemsPanelTemplate>
-                            </ItemsControl.ItemsPanel>
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Button Style="{StaticResource ProjectCard}"
-                                            AutomationProperties.Name="{Binding Name}"
-                                            Click="OpenProject_Click">
-                                        <StackPanel>
-                                            <TextBlock Text="{Binding Name}"
-                                                       Foreground="#E6E8EC"
-                                                       FontSize="18"
-                                                       FontWeight="SemiBold"
-                                                       TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Text="{Binding Summary}"
-                                                       Foreground="#9AA0AA"
-                                                       FontSize="13"
-                                                       Margin="0,6,0,0" />
-                                        </StackPanel>
-                                    </Button>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
+                        <WrapPanel x:Name="ProjectGrid" AllowDrop="True" Background="Transparent" />
                     </ScrollViewer>
                 </Grid>
             </DockPanel>
 
-            <!-- An open project. Empty for now. -->
-            <DockPanel x:Name="ProjectView" Visibility="Collapsed">
-                <Button x:Name="BackToProjects"
-                        Content="← Projects"
-                        DockPanel.Dock="Top"
-                        Style="{StaticResource QuietButton}"
-                        HorizontalAlignment="Left"
-                        Margin="-14,0,0,16"
-                        Click="BackToProjects_Click" />
-                <TextBlock x:Name="OpenProjectName"
-                           DockPanel.Dock="Top"
-                           Foreground="#E6E8EC"
-                           FontSize="28"
-                           FontWeight="Bold"
-                           TextTrimming="CharacterEllipsis" />
-                <TextBlock x:Name="OpenProjectDetails"
-                           DockPanel.Dock="Top"
-                           Foreground="#9AA0AA"
-                           FontSize="14"
-                           Margin="0,6,0,0"
-                           TextTrimming="CharacterEllipsis" />
-                <TextBlock x:Name="OpenProjectRepo"
-                           DockPanel.Dock="Top"
-                           Foreground="#9AA0AA"
-                           FontSize="14"
-                           Margin="0,4,0,0"
-                           TextTrimming="CharacterEllipsis" />
-                <TextBlock Text="Nothing here yet."
-                           Foreground="#9AA0AA"
-                           FontSize="14"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center" />
-            </DockPanel>
+            <!-- An open project. Its top image runs edge to edge. -->
+            <ScrollViewer x:Name="ProjectView"
+                          Visibility="Collapsed"
+                          Margin="-40,-28,-40,0"
+                          VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="ProjectPage" />
+            </ScrollViewer>
 
             <Grid Grid.Row="1" Margin="0,12,0,0">
                 <TextBlock x:Name="ServerStatus"
                            Text="Connecting to server…"
-                           Foreground="#9AA0AA"
+                           Foreground="{StaticResource TextMuted}"
                            FontSize="12" />
                 <TextBlock x:Name="VersionLabel"
-                           Foreground="#6B7280"
+                           Foreground="{StaticResource TextMuted}"
                            FontSize="12"
                            HorizontalAlignment="Right" />
             </Grid>
@@ -203,24 +79,32 @@
                                 Created="ProjectWizard_Created"
                                 Closed="ProjectWizard_Closed" />
 
+        <local:ProjectSettingsModal x:Name="ProjectSettings"
+                                    Visibility="Collapsed"
+                                    Changed="ProjectSettings_Changed"
+                                    Closed="ProjectSettings_Closed"
+                                    Deleted="ProjectSettings_Deleted" />
+
         <local:SettingsModal x:Name="Settings" Visibility="Collapsed" Closed="Settings_Closed" />
 
         <!-- Updates are mandatory: this covers the whole app and can't be dismissed. -->
-        <Grid x:Name="UpdateOverlay" Background="#D916181D" Visibility="Collapsed">
-            <Border Background="#22262E"
-                    CornerRadius="8"
+        <Grid x:Name="UpdateOverlay" Background="#D917212B" Visibility="Collapsed">
+            <Border Background="#1C2732"
+                    BorderBrush="{StaticResource ModalBorder}"
+                    BorderThickness="1"
+                    CornerRadius="12"
                     Padding="28"
                     Width="400"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center">
                 <StackPanel>
                     <TextBlock x:Name="UpdateTitle"
-                               Foreground="#FF8A1F"
-                               FontSize="24"
-                               FontWeight="Bold"
+                               Foreground="{StaticResource TextStrong}"
+                               FontSize="22"
+                               FontWeight="SemiBold"
                                TextAlignment="Center" />
                     <TextBlock x:Name="UpdateMessage"
-                               Foreground="#C4C9D2"
+                               Foreground="{StaticResource TextNormal}"
                                FontSize="14"
                                Margin="0,12,0,0"
                                TextWrapping="Wrap"
@@ -229,13 +113,13 @@
                                  Height="6"
                                  Margin="0,18,0,0"
                                  Maximum="100"
-                                 Foreground="#FF8A1F"
-                                 Background="#2A2E36"
+                                 Foreground="{StaticResource Accent}"
+                                 Background="{StaticResource ControlBackground}"
                                  BorderThickness="0"
                                  Visibility="Collapsed" />
                     <Button x:Name="DownloadUpdate"
                             Content="Download update"
-                            Style="{StaticResource OrangeButton}"
+                            Style="{StaticResource PrimaryButton}"
                             Margin="0,18,0,0"
                             HorizontalAlignment="Center"
                             Click="DownloadUpdate_Click" />
