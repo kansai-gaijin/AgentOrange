@@ -475,9 +475,12 @@ public partial class MainWindow
         var version = await EngineVersions.FindAsync(project.Engine, folder);
         if (version is null || _engineReads[projectId] != read || _database.GetProjectFolder(projectId) != folder) return;
         if (FindProject(projectId) is not { } latest || !GitTools.SameRepo(latest.RepoUrl, project.RepoUrl)) return;
-        if (latest.Engine != project.Engine || latest.EngineVersion == version) return;
+        if (latest.Engine != project.Engine) return;
 
+        // Always noted, even if it matches what's shown, as another PC can move what's shown on.
+        var changed = latest.EngineVersion != version;
         _database.SetEngineVersion(projectId, project.Engine, version);
+        if (!changed) return;
         _ = _sync.SyncNowAsync();
         RefreshProjects();
     }
@@ -1138,7 +1141,7 @@ public partial class MainWindow
         var name = Field(_replacementRepoName ?? "");
         name.Width = 260;
         name.TextChanged += (_, _) => _replacementRepoName = name.Text;
-        return Row("Repo name", "GitHub needs Latin letters and numbers.", name);
+        return Row("Repo name", "GitHub needs Latin letters and numbers. Anything else becomes a dash.", name);
     }
 
     private void AddFolderSettingsRow(List<FrameworkElement> rows, Project project, string folder)

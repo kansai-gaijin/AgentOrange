@@ -710,7 +710,7 @@ public static partial class GitTools
         // Git in a folder for one that's never going to exist.
         if (Headless.Active) return new GitResult(false, "Headless mode doesn't create real repos.");
 #endif
-        var repoName = RepoName(wantedName.Trim().Length > 0 ? wantedName : projectName);
+        var repoName = ChosenRepoName(wantedName, projectName);
         if (repoName.Length == 0) return new GitResult(false, "A repo's name can only use Latin letters and numbers, and this one has none. Give it a repo name that does, or enter a repo URL.");
 
         // Only the active account matters, because another one having expired fails this too.
@@ -951,6 +951,7 @@ public static partial class GitTools
         // don't handle long paths, even with Git set up to.
         var working = Path.Combine(parentFolder, $".ao-{Guid.NewGuid():N}"[..12]);
         workingFolder(working);
+        string? checkoutProblem = null;
         try
         {
             if (await DestinationTakenAsync(destination)) return new GitResult(false, $"{destination} already exists and isn't empty.");
@@ -969,15 +970,30 @@ public static partial class GitTools
                 progress?.Invoke(text);
             }
 
-            var result = await RunAsync("git", parentFolder, null, ["clone", "--progress", "--config", "core.longpaths=true", "--", form, working], cancel, await SshSettingsAsync(Path.GetTempPath()), ShowStage);
+            // Large files come afterward, on their own, because that can pick up where it left off
+            // and a problem with them shouldn't cost the rest.
+            var settings = await SshSettingsAsync(Path.GetTempPath()) ?? [];
+            settings["GIT_LFS_SKIP_SMUDGE"] = "1";
+
+            var result = await RunAsync("git", parentFolder, null, ["clone", "--progress", "--config", "core.longpaths=true", "--", form, working], cancel, settings, ShowStage);
             if (result is null) return new GitResult(false, "Git wasn't found on this PC.");
 
             if (result.ExitCode != 0)
             {
-                await TryDeleteOwnedFolderAsync(working);
-                if (cancel.IsCancellationRequested) return new GitResult(false, "The clone was cancelled.");
                 var reason = GitFailureReason(result.Errors);
-                return new GitResult(false, reason.Length == 0 ? "Couldn't clone that repo." : $"Couldn't clone that repo: {reason}");
+
+                // Everything arrived, and only putting the files in place failed, such as on a
+                // file name Windows can't use. That's hours of download, and it can be fixed.
+                if (!cancel.IsCancellationRequested && await RunAsync("git", working, "rev-parse", "--verify", "-q", "HEAD") is { ExitCode: 0 })
+                {
+                    checkoutProblem = $"Everything downloaded, but some files couldn't be put in place: {reason} Fix that, then run git restore --source=HEAD :/ in the folder.";
+                }
+                else
+                {
+                    await TryDeleteOwnedFolderAsync(working);
+                    if (cancel.IsCancellationRequested) return new GitResult(false, "The clone was cancelled.");
+                    return new GitResult(false, reason.Length == 0 ? "Couldn't clone that repo." : $"Couldn't clone that repo: {reason}");
+                }
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
@@ -1002,7 +1018,7 @@ public static partial class GitTools
             return new GitResult(false, $"The clone finished, but it couldn't be named {destination}. It's kept at {await KeepVisibleAsync(working, destination)}. You can rename it and select it.");
         }
 
-        var notes = new[] { await FetchSubmodulesAsync(destination, cancel, progress), await GitLfsNoteAsync(destination) }.OfType<string>().ToList();
+        var notes = new[] { checkoutProblem, await FetchSubmodulesAsync(destination, cancel, progress), await FetchLargeFilesAsync(destination, cancel, progress) }.OfType<string>().ToList();
         return new GitResult(true, destination, notes.Count > 0 ? string.Join(' ', notes) : null);
     }
 
@@ -1020,24 +1036,26 @@ public static partial class GitTools
         return $"The clone finished, but its submodules didn't. {reason} Run git submodule update --init --recursive in it to try again.";
     }
 
-    // Without it, a repo that uses it clones fine, with small placeholders instead of its big files.
-    private static async Task<string?> GitLfsNoteAsync(string folder)
+    // Git LFS keeps a repo's big files apart. Without it set up, a repo that uses it clones fine,
+    // with small placeholders instead. Asked of Git, as any folder can declare it, and a file here
+    // could be a link. A quota running out or a dropped connection only costs this step.
+    private static async Task<string?> FetchLargeFilesAsync(string folder, CancellationToken cancel, Action<string>? progress)
     {
-        var attributes = Path.Combine(folder, ".gitattributes");
-        var usesLfs = await Task.Run(() =>
+        if (await RunAsync("git", folder, "grep", "-q", "filter=lfs", "--", "*.gitattributes") is not { ExitCode: 0 }) return null;
+
+        var isInstalled = await RunAsync("git", Path.GetTempPath(), "lfs", "version") is { ExitCode: 0 };
+        var isSetUp = await RunAsync("git", folder, "config", "--get", "filter.lfs.smudge") is { ExitCode: 0 };
+        if (!isInstalled || !isSetUp)
         {
-            try
-            {
-                // Links aren't read, because opening one could reach a network share.
-                return File.Exists(attributes) && !SshConfigFile.IsLink(attributes) && new FileInfo(attributes).Length < 1_000_000 && File.ReadAllText(attributes).Contains("filter=lfs", StringComparison.Ordinal);
-            }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-            {
-                return false; // A virus scanner can hold a new file for a moment, and this is only a note.
-            }
-        });
-        if (!usesLfs || await RunAsync("git", Path.GetTempPath(), "lfs", "version") is { ExitCode: 0 }) return null;
-        return "This repo uses Git LFS, which isn't set up on this PC, so its big files are only small placeholders. Install it from git-lfs.com, then run git lfs pull in the folder.";
+            return "This repo uses Git LFS, which isn't set up on this PC, so its big files are only small placeholders. Install it from git-lfs.com, run git lfs install, then run git lfs pull in the folder.";
+        }
+
+        progress?.Invoke("Downloading large files");
+        var pulled = await RunAsync("git", folder, null, ["lfs", "pull"], cancel, await SshSettingsAsync(folder));
+        if (pulled is { ExitCode: 0 }) return null;
+
+        var reason = cancel.IsCancellationRequested ? "That was cancelled." : GitFailureReason(pulled?.Errors ?? "");
+        return $"The clone finished, but its large files didn't. {reason} Run git lfs pull in the folder to carry on, which picks up where it left off.";
     }
 
     /// <summary>
@@ -1367,12 +1385,18 @@ public static partial class GitTools
     private static bool UsesSsh(string url) =>
         ScpStyleRepo().IsMatch(url) || url.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase);
 
-    public static string RepoName(string projectName)
+    public static string RepoName(string projectName) => UsableRepoName(projectName.Trim().ToLowerInvariant());
+
+    /// <summary>What a typed name stays as, capitals included, or else what comes from the project's name.</summary>
+    public static string ChosenRepoName(string typed, string projectName) =>
+        typed.Trim().Length > 0 ? UsableRepoName(typed.Trim()) : RepoName(projectName);
+
+    private static string UsableRepoName(string text)
     {
-        var name = NotRepoSafe().Replace(projectName.Trim().ToLowerInvariant(), "-").Trim('-');
+        var name = NotRepoSafe().Replace(text, "-").Trim('-');
 
         // GitHub has no use for these, and asking comes after Git has been set up in the folder.
-        return name.Trim('.').Length == 0 || name == ".git" ? "" : name;
+        return name.Trim('.').Length == 0 || name.Equals(".git", StringComparison.OrdinalIgnoreCase) ? "" : name;
     }
 
     // The URL can come from another PC, so only a plain name can come out of it.
@@ -1440,7 +1464,7 @@ public static partial class GitTools
         }
 
         // Never a login window: the person has a GitHub CLI login by the time any of this runs.
-        var isClone = arguments is ["clone", ..] || arguments.Contains("submodule");
+        var isClone = arguments is ["clone", ..] or ["lfs", "pull"] || arguments.Contains("submodule");
         info.Environment["GCM_INTERACTIVE"] = "never";
 
         var isCreate = arguments is ["repo", "create", ..];
@@ -1597,6 +1621,6 @@ public static partial class GitTools
     [GeneratedRegex(@"https://github\.com/[\w.-]+/[\w.-]+")]
     private static partial Regex CreatedRepoUrl();
 
-    [GeneratedRegex(@"[^a-z0-9._-]+")]
+    [GeneratedRegex(@"[^A-Za-z0-9._-]+")]
     private static partial Regex NotRepoSafe();
 }

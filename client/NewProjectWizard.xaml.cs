@@ -431,7 +431,7 @@ public partial class NewProjectWizard : UserControl
                 _replacingUrl = url;
                 _replacementOfferedFor = check;
                 var where = check.Account is null ? "your active GitHub account" : $"the GitHub account {check.Account}";
-                var newName = GitTools.RepoName(_wantedRepoName.Trim().Length > 0 ? _wantedRepoName : project.Name);
+                var newName = GitTools.ChosenRepoName(_wantedRepoName, project.Name);
                 var called = newName.Length > 0 ? $"called {newName} " : "";
                 return ("", false, $"{gone}. {why} This folder is connected to it, so you can create a new, empty private repo {called}for the folder under {where} instead. You can set its name above. Nothing is pushed.");
             default:
