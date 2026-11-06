@@ -88,6 +88,9 @@ public sealed partial class AgentProviders(LocalDatabase database, string agentF
     /// <summary>Runs Codex's sign-in, which opens the browser, and waits for it to finish.</summary>
     public async Task<bool> SignInCodexAsync(AgentProvider provider, CancellationToken cancel)
     {
+#if DEBUG
+        if (Headless.Active) return false; // It would open a browser on someone's screen.
+#endif
         using var process = Process.Start(StartInfo(provider, "login", hidden: true));
         if (process is null) return false;
 
@@ -106,6 +109,9 @@ public sealed partial class AgentProviders(LocalDatabase database, string agentF
     /// <summary>Claude Code signs in interactively, so it gets a terminal of its own.</summary>
     public static void OpenClaudeSignIn(AgentProvider provider)
     {
+#if DEBUG
+        if (Headless.Active) return; // It would open a terminal on someone's screen.
+#endif
         var info = StartInfo(provider, "auth login", hidden: false);
         info.Arguments = info.Arguments.Replace("/c ", "/k ");
         Process.Start(info)?.Dispose();

@@ -34,7 +34,9 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(60) }; // Images can take a while.
 
-    public bool IsPaired => ReadToken(TokenSettingFor(server.Address)) is not null;
+    public bool IsPaired => HasLogin(server.Address);
+
+    public bool HasLogin(string address) => ReadToken(TokenSettingFor(address)) is not null;
 
     public event Action? PairingChanged;
 
@@ -57,9 +59,8 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
         }
     }
 
-    public async Task<PairResult> PairAsync(string key, string name)
+    public async Task<PairResult> PairAsync(string address, string key, string name)
     {
-        var address = server.Address;
         try
         {
             var response = await _http.PostAsJsonAsync($"{address}/v1/pair", new { key, name });
@@ -102,11 +103,11 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     }
 
     /// <summary>Returns null if the sync didn't go through, in which case nothing is lost.</summary>
-    public async Task<SyncResponse?> SyncAsync(long cursor, List<SyncChange> changes)
+    public async Task<SyncResponse?> SyncAsync(long cursor, List<SyncChange> changes, string? epoch)
     {
         try
         {
-            var response = await SendAsync(HttpMethod.Post, "/v1/sync", new { cursor, changes });
+            var response = await SendAsync(HttpMethod.Post, "/v1/sync", new { cursor, changes, epoch });
             if (response is null || !response.IsSuccessStatusCode) return null;
 
             // Something like a proxy can answer 200 with anything, and queued changes must only

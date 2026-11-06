@@ -26,28 +26,36 @@ public static partial class EngineVersions
         _ => Task.FromResult<string?>(null),
     };
 
-    // A repo often keeps the game one folder down, next to its docs or tools.
+    // A repo often keeps the game one folder down, next to its docs or tools. One folder that
+    // can't be read doesn't stop the others being looked at.
     private static string? Find(string folder, string pattern, Func<string, string?> parse)
     {
+        if (!Directory.Exists(folder)) return null;
+
+        var places = new List<string> { folder };
         try
         {
-            if (!Directory.Exists(folder)) return null;
+            places.AddRange(Directory.EnumerateDirectories(folder).Where(path => !Path.GetFileName(path).StartsWith('.')));
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            AppLog.Write($"Couldn't look through a project folder: {error.Message}");
+        }
 
-            var places = new[] { folder }.Concat(
-                Directory.EnumerateDirectories(folder).Where(path => !Path.GetFileName(path).StartsWith('.')));
-            foreach (var place in places)
+        foreach (var place in places)
+        {
+            try
             {
                 var file = Directory.EnumerateFiles(place, pattern).FirstOrDefault();
                 if (file is null) continue;
                 return new FileInfo(file).Length > MaxProjectFileBytes ? null : parse(File.ReadAllText(file));
             }
-            return null;
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
+            {
+                AppLog.Write($"Couldn't read the engine version: {error.Message}");
+            }
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
-        {
-            AppLog.Write($"Couldn't read the engine version: {error.Message}");
-            return null;
-        }
+        return null;
     }
 
     // EngineAssociation is a version for an installed engine, and an ID for one built from source.

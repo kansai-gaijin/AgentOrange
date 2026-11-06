@@ -44,7 +44,7 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
         RepoAccess.NotFoundOrNoAccess => ("Can't find this repo", "It was deleted, or your GitHub account doesn't have access. GitHub doesn't say which. If you should have access, ask the owner."),
         RepoAccess.GitCantReach => ("Git on this PC can't reach this repo", "Your GitHub account has access, but Git doesn't get through from here. Check this PC's Git setup, such as its SSH keys or a firewall, or run gh auth setup-git."),
         RepoAccess.BadUrl => ("This repo URL can't be used", "It has to be a GitHub repo, with no password or token in the URL. Change it in project settings."),
-        RepoAccess.Offline => ("Couldn't reach GitHub", "This PC seems to be offline, and it hasn't had access to this repo before."),
+        RepoAccess.Offline => ("Couldn't reach GitHub", "This PC seems to be offline or blocked from GitHub, and it hasn't had access to this repo before."),
         RepoAccess.Allowed => ("You have access", ""),
         _ => ("Couldn't check this repo", "GitHub gave an unexpected answer. Try again in a moment."),
     };
@@ -162,6 +162,9 @@ public static partial class GitTools
     /// <summary>Signing in is interactive, so it gets a terminal of its own.</summary>
     public static void OpenGitHubSignIn()
     {
+#if DEBUG
+        if (Headless.Active) return; // It would open a terminal on someone's screen.
+#endif
         var info = new ProcessStartInfo(CommandShell, "/d /k gh auth login")
         {
             UseShellExecute = false,
@@ -203,7 +206,8 @@ public static partial class GitTools
         if (origin.ExitCode == 0)
         {
             var remote = WithoutCredentials(origin.Output.Trim());
-            return new FolderRepo(true, true, remote, null, await GitHubFormAsync(remote));
+            var (gitHubForm, aliasProblem) = await GitHubFormAsync(remote, folder);
+            return new FolderRepo(true, true, remote, aliasProblem, gitHubForm);
         }
 
         // Git documents exit code 2 for a remote that doesn't exist.
@@ -244,17 +248,22 @@ public static partial class GitTools
     /// </summary>
     public static async Task<string?> ReachableFormAsync(string url)
     {
-        foreach (var form in new[] { url, OtherForm(url) })
+        foreach (var form in await FormsToTryAsync(url))
         {
             if (await LsRemoteAsync(form, Path.GetTempPath()) is { ExitCode: 0 }) return form;
         }
         return null;
     }
 
-    private static string OtherForm(string url) =>
-        url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
-            ? $"git@github.com:{GitHubPath(url)}.git"
-            : $"https://github.com/{GitHubPath(url)}.git";
+    // The one this PC's GitHub CLI is set to comes first. Anyone can read a public repo over
+    // HTTPS, so trying that first could choose a form this PC can't push with.
+    private static async Task<string[]> FormsToTryAsync(string url)
+    {
+        var https = $"https://github.com/{GitHubPath(url)}.git";
+        var ssh = $"git@github.com:{GitHubPath(url)}.git";
+        var protocol = await RunAsync("gh", Path.GetTempPath(), "config", "get", "git_protocol", "--host", "github.com");
+        return protocol is { ExitCode: 0 } && protocol.Output.Trim() == "ssh" ? [ssh, https] : [https, ssh];
+    }
 
     private static string GitHubPath(string url)
     {
@@ -281,9 +290,9 @@ public static partial class GitTools
 
     // Git's SSH form doesn't have to say github.com. A host can be an alias in the person's
     // SSH settings, which is common with more than one GitHub account.
-    private static async Task<string?> GitHubFormAsync(string remote)
+    private static async Task<(string? GitHubForm, string? Problem)> GitHubFormAsync(string remote, string folder)
     {
-        if (RepoUrlProblem(remote) is null) return remote;
+        if (RepoUrlProblem(remote) is null) return (remote, null);
 
         // The username can be left out, and come from the person's SSH settings instead.
         string host, user, path;
@@ -304,15 +313,17 @@ public static partial class GitTools
         }
         else
         {
-            return null;
+            return (null, null);
         }
 
-        if ((user.Length > 0 && user != "git") || !GitHubRepoPath().IsMatch($"/{path}") || !SafeSshHost().IsMatch(host)) return null;
-        if (user == "git" && IsGitHubSshHost(host)) return $"git@github.com:{path}";
+        if ((user.Length > 0 && user != "git") || !GitHubRepoPath().IsMatch($"/{path}") || !SafeSshHost().IsMatch(host)) return (null, null);
+        if (user == "git" && IsGitHubSshHost(host)) return ($"git@github.com:{path}", null);
 
-        var (realHost, realUser) = await ReadSshSettingsAsync(host);
+        var settings = await ReadSshSettingsAsync(host, folder);
+        if (settings is not var (realHost, realUser)) return (null, $"Couldn't check whether {host} is GitHub, because SSH didn't answer. Check that SSH works on this PC, then try again.");
+
         var effectiveUser = user.Length > 0 ? user : realUser;
-        return effectiveUser == "git" && realHost is not null && IsGitHubSshHost(realHost) ? $"git@github.com:{path}" : null;
+        return (effectiveUser == "git" && realHost is not null && IsGitHubSshHost(realHost) ? $"git@github.com:{path}" : null, null);
     }
 
     private static bool IsScpStyle(string remote) => ScpStyleRepo().IsMatch(remote) || BareScpRepo().IsMatch(remote);
@@ -320,10 +331,22 @@ public static partial class GitTools
     private static bool IsGitHubSshHost(string host) =>
         host.Equals("github.com", StringComparison.OrdinalIgnoreCase) || host.Equals("ssh.github.com", StringComparison.OrdinalIgnoreCase);
 
-    private static async Task<(string? Host, string? User)> ReadSshSettingsAsync(string host)
+    // Null means SSH itself couldn't answer. A folder's own SSH command can name its own settings
+    // file, and only that's taken from it: this reads, so it doesn't run the command itself.
+    private static async Task<(string? Host, string? User)?> ReadSshSettingsAsync(string host, string folder)
     {
-        var settings = await RunAsync("ssh", Path.GetTempPath(), "-G", host);
-        if (settings is not { ExitCode: 0 }) return (null, null);
+        var command = Environment.GetEnvironmentVariable("GIT_SSH_COMMAND");
+        if (string.IsNullOrEmpty(command))
+        {
+            var configured = await RunAsync("git", folder, "config", "--get", "core.sshCommand");
+            command = configured is { ExitCode: 0 } ? configured.Output.Trim() : "";
+        }
+
+        var file = SshConfigFile().Match(command);
+        string[] arguments = file.Success ? ["-G", "-F", file.Groups[1].Value.Trim('"', '\''), host] : ["-G", host];
+
+        var settings = await RunAsync("ssh", Path.GetTempPath(), arguments);
+        if (settings is not { ExitCode: 0 }) return null;
 
         var name = SshHostName().Match(settings.Output);
         var user = SshUser().Match(settings.Output);
@@ -351,14 +374,23 @@ public static partial class GitTools
     /// <summary>Changes a folder's remote to whichever of HTTPS and SSH works from this PC.</summary>
     public static async Task<GitResult> RepairRemoteAsync(string folder, string repoUrl)
     {
+        if (RepoUrlProblem(repoUrl) is { } problem) return new GitResult(false, problem);
+
+        // Only ever a different way to the same repo. Moving to another one is what Connect it is for.
+        var state = await InspectFolderAsync(folder);
+        if (state is null) return new GitResult(false, "Git wasn't found on this PC.");
+        if (state.Problem is not null) return new GitResult(false, state.Problem);
+        if (state.IsInsideAnotherRepo) return new GitResult(false, "That folder is inside another Git repo, so nothing was changed.");
+        if (state.Origin is not null && !SameRepo(state.OriginToCompare!, repoUrl))
+        {
+            return new GitResult(false, $"That folder uses a different repo: {state.Origin}. Nothing was changed.");
+        }
+
         if (await ReachableFormAsync(repoUrl) is not { } form)
         {
             return new GitResult(false, "Neither HTTPS nor SSH gets through from this PC, so nothing was changed.");
         }
 
-        var state = await InspectFolderAsync(folder);
-        if (state is null) return new GitResult(false, "Git wasn't found on this PC.");
-        if (state.Problem is not null) return new GitResult(false, state.Problem);
         if (state.Origin is null) return await ConnectFolderAsync(folder, form);
 
         var changed = await RunAsync("git", folder, "remote", "set-url", "origin", form);
@@ -373,6 +405,7 @@ public static partial class GitTools
         var state = await InspectFolderAsync(folder);
         if (state is null) return new GitResult(false, "Git wasn't found on this PC.");
         if (state.Problem is not null) return new GitResult(false, state.Problem);
+        if (state.IsInsideAnotherRepo) return new GitResult(false, "That folder is inside another Git repo.");
 
         if (!state.InsideRepo)
         {
@@ -393,6 +426,11 @@ public static partial class GitTools
     /// </summary>
     public static async Task<GitResult> CreatePrivateRepoAsync(string projectName, string folder, string? replacingRepo = null)
     {
+#if DEBUG
+        // Trying something out must never leave a real repo on someone's account, or set up
+        // Git in a folder for one that's never going to exist.
+        if (Headless.Active) return new GitResult(false, "Headless mode doesn't create real repos.");
+#endif
         var repoName = RepoName(projectName);
         if (repoName.Length == 0) return new GitResult(false, "That project name can't be used as a repo name. Rename the project, or enter a repo URL.");
 
@@ -444,6 +482,7 @@ public static partial class GitTools
 
         string? newOrigin = null;
         if (state.GitHubOrigin is not null) newOrigin = SameWayTo(state.Origin!, webUrl);
+        else if (state.Origin is not null) newOrigin = $"{webUrl}.git";
         else if (replacingRepo is not null && UsesSsh(replacingRepo) && webUrl.Length > 0) newOrigin = SameWayTo(replacingRepo, webUrl);
 
         if (newOrigin is not null && await RunAsync("git", folder, "remote", "set-url", "origin", newOrigin) is not { ExitCode: 0 })
@@ -621,10 +660,11 @@ public static partial class GitTools
     }
 
     // A GitHub login isn't enough, because Git may use a different key or credential on this
-    // PC. GitHub has just answered by now, so this PC isn't offline, even if Git can't get out.
+    // PC. If Git gets no answer at all, such as port 22 being blocked, that's the same as being
+    // offline. Only being turned away means this PC's setup is what's wrong.
     private static async Task<RepoCheck> CheckGitCanReachAsync(string url, string? folder)
     {
-        if (FindOnPath("git") is null) return new RepoCheck(RepoAccess.NoGit);
+        if (await Task.Run(() => FindOnPath("git")) is null) return new RepoCheck(RepoAccess.NoGit);
 
         // A connected folder is how this PC really works with the repo. It runs from inside
         // the folder because the folder's own Git settings can say which key to use.
@@ -632,11 +672,22 @@ public static partial class GitTools
         if (state?.OriginToCompare is { } origin && SameRepo(origin, url))
         {
             // By name, because the address on show has had any credentials taken out of it.
-            return new RepoCheck(await LsRemoteAsync("origin", folder!) is { ExitCode: 0 } ? RepoAccess.Allowed : RepoAccess.GitCantReach);
+            var viaFolder = await LsRemoteAsync("origin", folder!);
+            return new RepoCheck(viaFolder is { ExitCode: 0 } ? RepoAccess.Allowed : GitFailure(viaFolder));
         }
 
-        return new RepoCheck(await ReachableFormAsync(url) is not null ? RepoAccess.Allowed : RepoAccess.GitCantReach);
+        var noAnswer = false;
+        foreach (var form in await FormsToTryAsync(url))
+        {
+            var attempt = await LsRemoteAsync(form, Path.GetTempPath());
+            if (attempt is { ExitCode: 0 }) return new RepoCheck(RepoAccess.Allowed);
+            noAnswer |= GitFailure(attempt) == RepoAccess.Offline;
+        }
+        return new RepoCheck(noAnswer ? RepoAccess.Offline : RepoAccess.GitCantReach);
     }
+
+    private static RepoAccess GitFailure(CommandResult? result) =>
+        result is not null && LooksLikeNetworkFailure(result.Errors) ? RepoAccess.Offline : RepoAccess.GitCantReach;
 
     private static async Task<CommandResult?> LsRemoteAsync(string remote, string folder) =>
         await RunAsync("git", folder, null, ["ls-remote", "--", remote, "HEAD"], default, await SshSettingsAsync(folder));
@@ -726,9 +777,9 @@ public static partial class GitTools
     {
 #if DEBUG
         // Trying something out must never leave a real repo on someone's account.
-        if (Headless.Active && arguments is ["repo", "create", ..]) return new CommandResult(1, "", "Headless mode doesn't create real repos.");
+        if (Headless.Active && arguments is ["repo", "create", ..] or ["auth", "switch", ..]) return new CommandResult(1, "", "Headless mode doesn't change anything real on GitHub.");
 #endif
-        if (FindOnPath(program) is not { } programPath) return null;
+        if (await Task.Run(() => FindOnPath(program)) is not { } programPath) return null;
         if (!await FolderExistsAsync(folder)) return new CommandResult(-1, "", "That folder can't be reached.");
 
         var info = new ProcessStartInfo(programPath)
@@ -802,17 +853,17 @@ public static partial class GitTools
     }
 
     // The short form Git uses for SSH, like git@github.com:you/game.git.
-    [GeneratedRegex(@"^[\w.-]+@[\w.-]+:[\w./-]+$")]
+    [GeneratedRegex(@"^[\w.-]+@[\w.-]+:[\w./-]+\z")]
     private static partial Regex ScpStyleRepo();
 
-    [GeneratedRegex(@"^git@github\.com:[\w.-]+/[\w.-]+/?$", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^git@github\.com:[\w.-]+/[\w.-]+/?\z", RegexOptions.IgnoreCase)]
     private static partial Regex GitHubScpRepo();
 
-    [GeneratedRegex(@"^/[\w.-]+/[\w.-]+/?$")]
+    [GeneratedRegex(@"^/[\w.-]+/[\w.-]+/?\z")]
     private static partial Regex GitHubRepoPath();
 
     // Git's short form with no username, like work:you/game.git. One letter would be a drive.
-    [GeneratedRegex(@"^[A-Za-z0-9][\w.-]+:[\w.-]+/[\w./-]+$")]
+    [GeneratedRegex(@"^[A-Za-z0-9][\w.-]+:[\w.-]+/[\w./-]+\z")]
     private static partial Regex BareScpRepo();
 
     [GeneratedRegex(@"""isArchived""\s*:\s*true")]
@@ -821,7 +872,10 @@ public static partial class GitTools
     [GeneratedRegex(@"^user\s+(\S+)", RegexOptions.Multiline | RegexOptions.IgnoreCase)]
     private static partial Regex SshUser();
 
-    [GeneratedRegex(@"^[A-Za-z0-9][\w.-]*$")]
+    [GeneratedRegex(@"(?:^|\s)-F\s*(""[^""]+""|'[^']+'|\S+)")]
+    private static partial Regex SshConfigFile();
+
+    [GeneratedRegex(@"^[A-Za-z0-9][\w.-]*\z")]
     private static partial Regex SafeSshHost();
 
     [GeneratedRegex(@"^hostname\s+(\S+)", RegexOptions.Multiline | RegexOptions.IgnoreCase)]
@@ -848,7 +902,7 @@ public static partial class GitTools
     [GeneratedRegex(@"'[^']*'|""[^""]*""|\S+://\S+")]
     private static partial Regex QuotedText();
 
-    [GeneratedRegex(@"^[\w.-]+$")]
+    [GeneratedRegex(@"^[\w.-]+\z")]
     private static partial Regex SafeFolderName();
 
     [GeneratedRegex(@"Logged in to github\.com account (\S+)", RegexOptions.IgnoreCase)]

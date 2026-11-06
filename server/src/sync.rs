@@ -55,6 +55,9 @@ pub struct Change {
 pub struct SyncRequest {
     cursor: i64,
     changes: Vec<Change>,
+    /// Which data the device believes it's up to date with.
+    #[serde(default)]
+    epoch: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -82,6 +85,32 @@ pub async fn sync(
 
     if request.changes.len() > MAX_CHANGES_PER_REQUEST {
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    // A device ahead of everything here, on what it thinks is this same data, means this
+    // database was restored from a backup. It would otherwise miss changes without any sign
+    // until the numbers caught up, so this counts as new data and devices send theirs again.
+    if let Some(device_epoch) = &request.epoch {
+        let current = state
+            .db
+            .query_one(
+                "SELECT epoch, (SELECT COALESCE(MAX(seq), 0) FROM sync_records) FROM sync_meta",
+                &[],
+            )
+            .await
+            .map_err(internal_error)?;
+        let current_epoch: String = current.get(0);
+        let latest: i64 = current.get(1);
+        if *device_epoch == current_epoch && request.cursor > latest {
+            state
+                .db
+                .execute(
+                    "UPDATE sync_meta SET epoch = md5(random()::text || clock_timestamp()::text)",
+                    &[],
+                )
+                .await
+                .map_err(internal_error)?;
+        }
     }
 
     for change in &request.changes {

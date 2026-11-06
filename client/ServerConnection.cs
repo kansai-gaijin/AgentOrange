@@ -48,7 +48,8 @@ public sealed class ServerConnection
             return false;
         }
 
-        address = text;
+        // Lowercases the scheme and host, so Box and box are one server.
+        address = uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
         return true;
     }
 

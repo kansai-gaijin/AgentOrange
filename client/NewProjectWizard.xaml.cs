@@ -40,8 +40,10 @@ public partial class NewProjectWizard : UserControl
 
     public event Action<NewProject>? Created;
 
-    /// <summary>Gives the name of the project already using a folder, if there is one.</summary>
-    public Func<string, Task<string?>> FolderTakenBy { get; set; } = _ => Task.FromResult<string?>(null);
+    /// <summary>Holds a folder for a new project of this name. Gives the name of any project already using it.</summary>
+    public Func<string, string, Task<string?>> ClaimFolder { get; set; } = (_, _) => Task.FromResult<string?>(null);
+
+    public Action<string> ReleaseFolder { get; set; } = _ => { };
 
     public event Action? Closed;
 
@@ -218,24 +220,27 @@ public partial class NewProjectWizard : UserControl
             string? failure;
             string url;
             bool confirmed;
+            var claimed = false;
             try
             {
                 if (!await GitTools.FolderExistsAsync(path))
                 {
                     (url, confirmed, failure) = ("", false, "That folder doesn't exist.");
                 }
-                else if (await FolderTakenBy(path) is { } otherProject)
+                else if (await ClaimFolder(path, _name) is { } otherProject)
                 {
                     (url, confirmed, failure) = ("", false, $"{otherProject} already uses that folder. A folder can only be one project.");
                 }
                 else if (_replacingUrl is { } replacing)
                 {
+                    claimed = true;
                     progress.Text = "Creating a private repo on GitHub…";
                     var created = await GitTools.CreatePrivateRepoAsync(_name, path, replacing);
                     (url, confirmed, failure) = created.Worked ? (created.Value, true, (string?)null) : ("", false, created.Value);
                 }
                 else
                 {
+                    claimed = true;
                     (url, confirmed, failure) = await ResolveRepoAsync(submission, status => progress.Text = status);
                 }
             }
@@ -246,12 +251,14 @@ public partial class NewProjectWizard : UserControl
 
             if (failure is not null)
             {
+                if (claimed) ReleaseFolder(path);
                 ShowProblem(problem, failure);
                 if (_replacingUrl is not null) create.Content = "Create a new repo";
                 return;
             }
 
             Created?.Invoke(submission with { RepoUrl = url, RepoConfirmed = confirmed });
+            ReleaseFolder(path);
             Close();
         };
 

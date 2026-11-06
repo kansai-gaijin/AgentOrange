@@ -115,20 +115,20 @@ internal static partial class Headless
                 (await FindButtonAsync(window, parts[1])).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 break;
             case "set":
-                var field = Visible<TextBox>(window).ElementAt(int.Parse(parts[1]));
+                var field = await UntilThereAsync(window, () => Visible<TextBox>(window).ElementAtOrDefault(int.Parse(parts[1])), $"field {parts[1]}");
                 field.Text = parts[2];
 
                 // The window can't take focus, so leaving the field is done by hand.
                 field.RaiseEvent(new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice, Environment.TickCount, field, null) { RoutedEvent = Keyboard.LostKeyboardFocusEvent });
                 break;
             case "password":
-                Visible<PasswordBox>(window).First().Password = parts[1];
+                (await UntilThereAsync(window, () => Visible<PasswordBox>(window).FirstOrDefault(), "password field")).Password = parts[1];
                 break;
             case "select":
-                Visible<RadioButton>(window).Last(radio => Label(radio) == parts[1]).IsChecked = true;
+                (await UntilThereAsync(window, () => Visible<RadioButton>(window).LastOrDefault(radio => Matches(radio, parts[1])), parts[1])).IsChecked = true;
                 break;
             case "choose":
-                var box = Visible<ComboBox>(window).ElementAt(int.Parse(parts[1]));
+                var box = await UntilThereAsync(window, () => Visible<ComboBox>(window).ElementAtOrDefault(int.Parse(parts[1])), $"list {parts[1]}");
                 box.SelectedItem = box.Items.Cast<object>().First(item => (item as ContentControl)?.Content?.ToString() == parts[2] || item.ToString() == parts[2]);
                 break;
             case "answer":
@@ -162,18 +162,21 @@ internal static partial class Headless
         await Task.Delay(100);
     }
 
-    private static async Task<Button> FindButtonAsync(Window window, string name)
+    // A card's settings button is hidden until hovered, and there's no mouse here.
+    private static Task<Button> FindButtonAsync(Window window, string name) =>
+        UntilThereAsync(window, () => Descendants(window).OfType<Button>().LastOrDefault(candidate =>
+            candidate.IsEnabled
+            && Matches(candidate, name)
+            && (candidate.IsVisible || (candidate.Visibility == Visibility.Hidden && VisualTreeHelper.GetParent(candidate) is UIElement { IsVisible: true }))), name);
+
+    // Waits as a person would, because what's asked for may not have been drawn yet.
+    private static async Task<T> UntilThereAsync<T>(Window window, Func<T?> find, string what) where T : class
     {
         var limit = DateTime.UtcNow + WaitLimit;
         while (true)
         {
-            // A card's settings button is hidden until hovered, and there's no mouse here.
-            var button = Descendants(window).OfType<Button>().LastOrDefault(candidate =>
-                candidate.IsEnabled
-                && Label(candidate) == name
-                && (candidate.IsVisible || (candidate.Visibility == Visibility.Hidden && VisualTreeHelper.GetParent(candidate) is UIElement { IsVisible: true })));
-            if (button is not null) return button;
-            if (DateTime.UtcNow > limit) throw new InvalidOperationException($"No button called {name}. On screen: {string.Join(" | ", Texts(window))}");
+            if (find() is { } found) return found;
+            if (DateTime.UtcNow > limit) throw new InvalidOperationException($"Couldn't find {what}. On screen: {string.Join(" | ", Texts(window))}");
             await Task.Delay(100);
         }
     }
@@ -188,12 +191,10 @@ internal static partial class Headless
         }
     }
 
-    private static string? Label(ContentControl control)
-    {
-        var named = AutomationProperties.GetName(control);
-        if (!string.IsNullOrEmpty(named)) return named;
-        return control.Content as string ?? Descendants(control).OfType<TextBlock>().FirstOrDefault()?.Text;
-    }
+    private static bool Matches(ContentControl control, string name) =>
+        AutomationProperties.GetName(control) == name
+        || control.Content as string == name
+        || Descendants(control).OfType<TextBlock>().Any(block => block.Text == name);
 
     private static List<string> Texts(Window window) =>
         Visible<TextBlock>(window).Select(block => block.Text).Where(text => !string.IsNullOrWhiteSpace(text)).ToList();

@@ -253,7 +253,7 @@ public partial class ProjectSettingsModal : UserControl
             if (Find(projectId) is not { } current) return;
 
             var problem = await GitTools.FolderProblemAsync(chosen, current.RepoUrl);
-            if (problem is null && await _database.ProjectUsingFolderAsync(chosen, projectId) is { } other)
+            if (problem is null && await _database.ClaimFolderAsync(chosen, current) is { } other)
             {
                 problem = $"{other.Name} already uses that folder. A folder can only be one project.";
             }
@@ -263,8 +263,9 @@ public partial class ProjectSettingsModal : UserControl
                 return;
             }
 
+            if (Find(projectId) is not null) _database.SetProjectFolder(projectId, chosen);
+            _database.ReleaseFolder(chosen);
             if (Find(projectId) is null) return;
-            _database.SetProjectFolder(projectId, chosen);
             Changed?.Invoke();
             if (session != _session) return;
             ClearGeneralProblem();

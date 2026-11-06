@@ -23,6 +23,7 @@ public partial class SettingsModal : UserControl
 
     private ServerConnection _server = null!;
     private DeviceSession _devices = null!;
+    private bool _pairing; // The form finishes the job, once the address has moved too.
     private SyncEngine _sync = null!;
     private EditorMonitor _editors = null!;
     private Action? _refreshServerPage;
@@ -46,7 +47,7 @@ public partial class SettingsModal : UserControl
             // The server can turn this login down at any time, and then the page has to offer pairing.
             _devices.PairingChanged += () =>
             {
-                if (_currentPage.Name == "Server") ShowPage(_currentPage);
+                if (_currentPage.Name == "Server" && !_pairing) ShowPage(_currentPage);
             };
         }
     }
@@ -319,8 +320,19 @@ public partial class SettingsModal : UserControl
                 return;
             }
 
-            await Server.SetAddressAsync(cleaned);
-            await FillServerPageAsync(host);
+            if (cleaned == Server.Address) return;
+
+            // Only moves once there's a login at the new address, so a typo can't cut this PC off.
+            if (Devices.HasLogin(cleaned))
+            {
+                await Server.SetAddressAsync(cleaned);
+                ShowPage(_currentPage);
+                return;
+            }
+
+            _refreshServerPage = null;
+            host.Children.Clear();
+            ShowConnectForm(host, cleaned);
         }
 
         address.TextChanged += (_, _) =>
@@ -412,9 +424,9 @@ public partial class SettingsModal : UserControl
         _ => Status("No server set", false),
     };
 
-    private void ShowConnectForm(StackPanel host)
+    private void ShowConnectForm(StackPanel host, string? typedAddress = null)
     {
-        var address = Field(Server.Address);
+        var address = Field(typedAddress ?? Server.Address);
         address.Width = 300;
         var key = new PasswordBox { Style = (Style)FindResource("SecretField") };
         var name = Field(Environment.MachineName);
@@ -428,6 +440,7 @@ public partial class SettingsModal : UserControl
         void SetConnecting(bool value)
         {
             connecting = value;
+            _pairing = value;
             address.IsEnabled = !value;
             key.IsEnabled = !value;
             name.IsEnabled = !value;
@@ -444,6 +457,14 @@ public partial class SettingsModal : UserControl
                 return;
             }
 
+            // Already paired there, so the key isn't needed to go back.
+            if (Devices.HasLogin(cleaned))
+            {
+                if (cleaned != Server.Address) await Server.SetAddressAsync(cleaned);
+                ShowPage(_currentPage);
+                return;
+            }
+
             if (key.Password.Length == 0 || string.IsNullOrWhiteSpace(name.Text))
             {
                 ShowProblem(problem, "Enter the pairing key and a name for this PC.");
@@ -453,15 +474,15 @@ public partial class SettingsModal : UserControl
             problem.Visibility = Visibility.Collapsed;
             address.Text = cleaned;
             SetConnecting(true);
-            if (cleaned != Server.Address) await Server.SetAddressAsync(cleaned);
-            var result = await Devices.PairAsync(key.Password, name.Text);
+            var result = await Devices.PairAsync(cleaned, key.Password, name.Text);
+            if (result == PairResult.Paired && cleaned != Server.Address) await Server.SetAddressAsync(cleaned);
             SetConnecting(false);
 
             switch (result)
             {
                 case PairResult.Paired:
                     key.Clear();
-                    await FillServerPageAsync(host);
+                    ShowPage(_currentPage);
                     break;
                 case PairResult.WrongKey:
                     ShowProblem(problem, "That pairing key isn't right.");
@@ -492,6 +513,15 @@ public partial class SettingsModal : UserControl
             Row("Pairing key", "From your server. Each PC only needs it once.", key),
             Row("Device name", "Shown to your other devices.", name),
             Row("Connect", "Pair this PC with the server.", connect)));
+
+        if (typedAddress is not null && Devices.IsPaired)
+        {
+            var keep = ActionButton($"Keep using {Server.Address}");
+            keep.HorizontalAlignment = HorizontalAlignment.Left;
+            keep.Margin = new Thickness(16, 10, 0, 0);
+            keep.Click += (_, _) => ShowPage(_currentPage);
+            host.Children.Add(keep);
+        }
         host.Children.Add(problem);
     }
 

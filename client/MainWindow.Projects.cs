@@ -46,6 +46,7 @@ public partial class MainWindow
 
     // Refreshes are frequent during a big sync, and most covers haven't changed.
     private readonly Dictionary<string, (byte[] Bytes, ImageSource? Image)> _covers = [];
+    private (string ProjectId, byte[] Bytes, ImageSource? Image)? _header;
 
     private Button? _pressedCard;
     private Button? _draggedCard;
@@ -62,6 +63,8 @@ public partial class MainWindow
         }
 
         var projects = _database.ListProjects();
+        foreach (var gone in _covers.Keys.Except(projects.Select(project => project.Id)).ToList()) _covers.Remove(gone);
+
         ProjectGrid.Children.Clear();
         foreach (var project in projects) ProjectGrid.Children.Add(ProjectCard(project));
         NoProjects.Visibility = projects.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -424,9 +427,21 @@ public partial class MainWindow
         Margin = new Thickness(0, 60, 0, 0),
     };
 
+    // The page is drawn again for every batch of a sync, and the picture rarely changes.
+    private ImageSource? HeaderFor(string projectId)
+    {
+        var bytes = _database.GetProjectImage(projectId, ProjectImageKind.Header);
+        if (bytes is null) return null;
+        if (_header is { } cached && cached.ProjectId == projectId && cached.Bytes.AsSpan().SequenceEqual(bytes)) return cached.Image;
+
+        var image = ProjectImages.ToImage(bytes);
+        _header = (projectId, bytes, image);
+        return image;
+    }
+
     private Grid ProjectHero(Project project)
     {
-        var header = ProjectImages.ToImage(_database.GetProjectImage(project.Id, ProjectImageKind.Header));
+        var header = HeaderFor(project.Id);
         var hero = new Grid { Height = 240 };
         hero.Children.Add(new Border { Background = header is null ? PlaceholderFor(project.Id) : new ImageBrush(header) { Stretch = Stretch.UniformToFill } });
 
@@ -698,7 +713,7 @@ public partial class MainWindow
         }
 
         // Two projects can have copies of one repo, and this would take over the other's.
-        if (await _database.ProjectUsingFolderAsync(folder!, project.Id) is { } owner)
+        if (await _database.ClaimFolderAsync(folder!, project) is { } owner)
         {
             EndBusy();
             ShowPageProblem(project.Id, $"{owner.Name} already uses that folder. A folder can only be one project.");
@@ -707,7 +722,6 @@ public partial class MainWindow
 
         // Held until it's linked, so settings can't give it to another project meanwhile.
         var linkedBefore = _database.GetProjectFolder(project.Id);
-        _database.ReserveFolder(folder!, project);
         GitResult result;
         try
         {
@@ -963,14 +977,15 @@ public partial class MainWindow
     // Saved even if they've left the page, because the clone or the choice was real.
     private async Task UseFolderAsync(string projectId, string folder)
     {
-        if (FindProject(projectId) is null) return;
-        if (await _database.ProjectUsingFolderAsync(folder, projectId) is { } other)
+        if (FindProject(projectId) is not { } project) return;
+        if (await _database.ClaimFolderAsync(folder, project) is { } other)
         {
             ShowPageProblem(projectId, $"{other.Name} already uses {folder}. A folder can only be one project.");
             return;
         }
 
         _database.SetProjectFolder(projectId, folder);
+        _database.ReleaseFolder(folder);
         await ReadEngineVersionAsync(projectId);
         await RefreshThenRecheckAsync(projectId);
     }

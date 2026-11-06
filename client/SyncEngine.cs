@@ -56,7 +56,7 @@ public sealed class SyncEngine
             var epoch = _database.GetSetting(epochSetting);
             if (epoch is null)
             {
-                var first = await _devices.SyncAsync(long.MaxValue, []);
+                var first = await _devices.SyncAsync(long.MaxValue, [], null);
                 if (first?.Epoch is not { Length: > 0 } found) return;
                 epoch = found;
                 _database.SetSetting(epochSetting, epoch);
@@ -70,7 +70,7 @@ public sealed class SyncEngine
             while (_server.Address == address)
             {
                 var batch = _database.ReadOutbox(BatchSize, MaxBatchBytes);
-                var response = await _devices.SyncAsync(cursor, batch);
+                var response = await _devices.SyncAsync(cursor, batch, epoch);
                 if (response is null) return;
 
                 _database.RemoveFromOutbox(batch);

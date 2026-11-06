@@ -50,7 +50,12 @@ public partial class MainWindow : Window
         AppLog.Write($"Started {(_updates.IsInstalled ? $"v{_updates.CurrentVersion}" : "dev build")}");
 
         _database = new LocalDatabase(folders.DatabasePath);
-        ProjectWizard.FolderTakenBy = async folder => (await _database.ProjectUsingFolderAsync(folder))?.Name;
+        ProjectWizard.ClaimFolder = async (folder, name) =>
+            (await _database.ClaimFolderAsync(folder, new Project("new-project", name, "", "", "", "", DateTimeOffset.UtcNow)))?.Name;
+        ProjectWizard.ReleaseFolder = _database.ReleaseFolder;
+
+        // A delete interrupted last time can leave parts of a project behind.
+        _database.CleanUpDeletedProjects();
         Settings.Folders = folders;
         Settings.Database = _database;
         Settings.Providers = new AgentProviders(_database, folders.AgentFolder);

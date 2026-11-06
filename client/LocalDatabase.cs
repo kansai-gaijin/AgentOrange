@@ -40,6 +40,7 @@ public sealed class LocalDatabase
 
     private readonly string _connectionString;
     private readonly Dictionary<string, Project> _reservedFolders = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _folderClaims = new(1, 1);
 
     public LocalDatabase(string databasePath)
     {
@@ -206,8 +207,25 @@ public sealed class LocalDatabase
         }
     }
 
-    /// <summary>Holds a folder for a project during slow work, so nothing else can claim it before it's linked.</summary>
-    public void ReserveFolder(string folder, Project project) => _reservedFolders[folder] = project;
+    /// <summary>
+    /// Holds a folder for a project until ReleaseFolder, once it's linked or that's given up on.
+    /// One claim runs at a time, so two can't both find it free. Returns the project that
+    /// already has it, in which case nothing is held.
+    /// </summary>
+    public async Task<Project?> ClaimFolderAsync(string folder, Project claimant)
+    {
+        await _folderClaims.WaitAsync();
+        try
+        {
+            var owner = await ProjectUsingFolderAsync(folder, claimant.Id);
+            if (owner is null) _reservedFolders[folder] = claimant;
+            return owner;
+        }
+        finally
+        {
+            _folderClaims.Release();
+        }
+    }
 
     public void ReleaseFolder(string folder) => _reservedFolders.Remove(folder);
 
