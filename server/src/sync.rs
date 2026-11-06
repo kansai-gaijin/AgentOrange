@@ -20,6 +20,7 @@ use crate::{
 const MAX_CHANGES_PER_REQUEST: usize = 500;
 const MAX_KEY_LENGTH: usize = 128;
 const PAGE_SIZE: i64 = 500;
+const MAX_RESPONSE_BYTES: usize = 1_500_000;
 
 pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
     db.batch_execute(
@@ -117,17 +118,27 @@ pub async fn sync(
         .await
         .map_err(internal_error)?;
 
-    let has_more = rows.len() as i64 == PAGE_SIZE;
-    let cursor = rows.last().map_or(request.cursor, |row| row.get(4));
-    let changes = rows
-        .iter()
-        .map(|row| Change {
+    // Images make records large, and a slow PC has to finish each page within its
+    // time limit or it never gets past it. At least one row always goes out.
+    let mut has_more = rows.len() as i64 == PAGE_SIZE;
+    let mut cursor = request.cursor;
+    let mut bytes = 0;
+    let mut changes = Vec::new();
+    for row in &rows {
+        let data: String = row.get(2);
+        if !changes.is_empty() && bytes + data.len() > MAX_RESPONSE_BYTES {
+            has_more = true;
+            break;
+        }
+        bytes += data.len();
+        cursor = row.get(4);
+        changes.push(Change {
             collection: row.get(0),
             id: row.get(1),
-            data: row.get(2),
+            data,
             deleted: row.get(3),
-        })
-        .collect();
+        });
+    }
 
     Ok(Json(SyncResponse {
         cursor,

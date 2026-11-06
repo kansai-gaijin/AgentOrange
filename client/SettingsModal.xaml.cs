@@ -219,7 +219,16 @@ public partial class SettingsModal : UserControl
     private ApprovalSettings LoadApprovals()
     {
         var stored = Database.GetRecord("settings", "approvals");
-        return string.IsNullOrEmpty(stored) ? DefaultApprovals : JsonSerializer.Deserialize<ApprovalSettings>(stored, ApprovalJson) ?? DefaultApprovals;
+        if (string.IsNullOrEmpty(stored)) return DefaultApprovals;
+        try
+        {
+            return JsonSerializer.Deserialize<ApprovalSettings>(stored, ApprovalJson) ?? DefaultApprovals;
+        }
+        catch (JsonException error)
+        {
+            AppLog.Write($"Skipped unreadable approval settings: {error.Message}");
+            return DefaultApprovals;
+        }
     }
 
     // Approvals sync, because they're how agents should behave on every PC.

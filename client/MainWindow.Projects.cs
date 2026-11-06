@@ -10,38 +10,69 @@ using static AgentOrange.Ui;
 
 namespace AgentOrange;
 
-/// <summary>The project library and each project's page.</summary>
+/// <summary>
+/// The project library and each project's page. Checks and clones finish whenever
+/// they finish, so everything that continues after one re-reads the project and
+/// compares _navigation first, in case the person has moved on or the project changed.
+/// </summary>
 public partial class MainWindow
 {
     private const int CoverWidth = 176;
     private const int CoverHeight = 264;
+    private const double DragScrollEdge = 48;
+    private const double DragScrollStep = 18;
     private static readonly TimeSpan ClickSuppressionAfterDrag = TimeSpan.FromMilliseconds(400);
 
     private Project? _openProject;
     private RepoCheck? _projectCheck;
     private string? _folderProblem;
-    private bool _pageBusy;
+    private bool _folderExists;
+    private string? _pageProblem;
+    private bool _confirmingNewRepo;
+    private int _navigation;
+
+    // Only one long operation runs at a time. It keeps going if the person leaves the page.
+    private string? _busyProjectId;
+    private string? _busyText;
+    private CancellationTokenSource? _cloneCancel;
+
     private Button? _pressedCard;
     private Button? _draggedCard;
     private Point _pressPoint;
     private DateTimeOffset _dragEnded;
+    private bool _refreshAfterDrag;
 
     private void RefreshProjects()
     {
-        if (_draggedCard is not null) return;
+        if (_draggedCard is not null)
+        {
+            _refreshAfterDrag = true;
+            return;
+        }
 
         var projects = _database.ListProjects();
         ProjectGrid.Children.Clear();
         foreach (var project in projects) ProjectGrid.Children.Add(ProjectCard(project));
         NoProjects.Visibility = projects.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
-        if (_openProject is null || _pageBusy || ProjectSettings.Visibility == Visibility.Visible) return;
-        var current = projects.FirstOrDefault(project => project.Id == _openProject.Id);
-        if (current is not null) RenderProject(current);
-    }
+        ProjectSettings.ProjectsChanged();
+        if (_openProject is null) return;
 
-    private bool IsOnThisPc(Project project) =>
-        _database.GetProjectFolder(project.Id) is { } folder && Directory.Exists(folder);
+        // The open project may have changed on another PC.
+        var current = projects.FirstOrDefault(project => project.Id == _openProject.Id);
+        if (current is null)
+        {
+            BackToProjects();
+        }
+        else if (!GitTools.SameRepo(current.RepoUrl, _openProject.RepoUrl))
+        {
+            _ = OpenProjectAsync(current);
+        }
+        else if (current != _openProject)
+        {
+            RenderProject(current);
+        }
+    }
 
     // Library
 
@@ -92,14 +123,14 @@ public partial class MainWindow
             OpenProjectSettings(project.Id);
         };
 
+        var notHere = new TextBlock { Text = "Not on this PC", Foreground = (Brush)FindResource("Accent"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0), Visibility = Visibility.Collapsed };
+        _ = ShowIfNotOnThisPcAsync(project.Id, notHere);
+
         var coverArea = new Grid { Children = { cover, gear } };
         var content = new StackPanel { Children = { coverArea } };
         content.Children.Add(new TextBlock { Text = project.Name, Foreground = (Brush)FindResource("TextStrong"), FontSize = 14, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(2, 10, 2, 0), ToolTip = project.Name });
         content.Children.Add(new TextBlock { Text = project.Summary, Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(2, 2, 2, 0) });
-        if (!IsOnThisPc(project))
-        {
-            content.Children.Add(new TextBlock { Text = "Not on this PC", Foreground = (Brush)FindResource("Accent"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0) });
-        }
+        content.Children.Add(notHere);
 
         var card = new Button { Style = (Style)FindResource("ProjectCard"), Content = content, Tag = project.Id, AllowDrop = true };
         AutomationProperties.SetName(card, project.Name);
@@ -144,6 +175,14 @@ public partial class MainWindow
         return card;
     }
 
+    // A disconnected network drive can take a long time to answer, so this stays off the UI thread.
+    private async Task ShowIfNotOnThisPcAsync(string projectId, TextBlock label)
+    {
+        var folder = _database.GetProjectFolder(projectId);
+        var here = folder is not null && await Task.Run(() => Directory.Exists(folder));
+        label.Visibility = here ? Visibility.Collapsed : Visibility.Visible;
+    }
+
     // Colors picked from the id, so a project keeps its look on every PC.
     private static Brush PlaceholderFor(string projectId)
     {
@@ -167,16 +206,29 @@ public partial class MainWindow
         card.ReleaseMouseCapture();
 
         var before = CurrentOrder();
-        DragDrop.DoDragDrop(card, new DataObject(typeof(string), card.Tag), DragDropEffects.Move);
+        var result = DragDrop.DoDragDrop(card, new DataObject(typeof(string), card.Tag), DragDropEffects.Move);
 
         card.Opacity = 1;
         _draggedCard = null;
         _dragEnded = DateTimeOffset.UtcNow;
 
+        // Esc, or dropping outside the library, puts everything back.
         var after = CurrentOrder();
-        if (before.SequenceEqual(after)) return;
-        _database.SaveProjectOrder(after);
-        _ = _sync.SyncNowAsync();
+        if (result == DragDropEffects.Move && !before.SequenceEqual(after))
+        {
+            _database.SaveProjectOrder(after);
+            _ = _sync.SyncNowAsync();
+        }
+        else if (!before.SequenceEqual(after))
+        {
+            _refreshAfterDrag = true;
+        }
+
+        if (_refreshAfterDrag)
+        {
+            _refreshAfterDrag = false;
+            RefreshProjects();
+        }
     }
 
     private void MoveDraggedCardTo(Button target)
@@ -190,36 +242,70 @@ public partial class MainWindow
     private List<string> CurrentOrder() =>
         ProjectGrid.Children.OfType<Button>().Select(card => (string)card.Tag).ToList();
 
+    private void ProjectGrid_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = _draggedCard is null ? DragDropEffects.None : DragDropEffects.Move;
+        e.Handled = true;
+
+        // A long library has to scroll, or a card can't reach the far end in one move.
+        var y = e.GetPosition(ProjectScroller).Y;
+        if (y < DragScrollEdge) ProjectScroller.ScrollToVerticalOffset(ProjectScroller.VerticalOffset - DragScrollStep);
+        else if (y > ProjectScroller.ActualHeight - DragScrollEdge) ProjectScroller.ScrollToVerticalOffset(ProjectScroller.VerticalOffset + DragScrollStep);
+    }
+
+    private void ProjectGrid_Drop(object sender, DragEventArgs e)
+    {
+        e.Effects = _draggedCard is null ? DragDropEffects.None : DragDropEffects.Move;
+        e.Handled = true;
+    }
+
     // A project's page. Opening one first checks this PC is allowed to work on its repo.
 
     private async Task OpenProjectAsync(Project project)
     {
+        var navigation = ++_navigation;
         _openProject = project;
         _projectCheck = null;
         _folderProblem = null;
+        _folderExists = false;
+        _pageProblem = null;
+        _confirmingNewRepo = false;
         ProjectSelectView.Visibility = Visibility.Collapsed;
         ProjectView.Visibility = Visibility.Visible;
         RenderProject(project);
 
-        var check = project.RepoUrl.Length > 0
-            ? await GitTools.CheckRepoAccessAsync(project.RepoUrl)
-            : new RepoCheck(RepoAccess.NotFound);
+        var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl);
 
-        string? folderProblem = null;
-        if (check.Access is RepoAccess.Allowed or RepoAccess.CantCheck
-            && _database.GetProjectFolder(project.Id) is { } folder
-            && Directory.Exists(folder))
+        var folder = _database.GetProjectFolder(project.Id);
+        var folderExists = folder is not null && await Task.Run(() => Directory.Exists(folder));
+        var folderProblem = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline
+            ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl)
+            : null;
+
+        if (navigation != _navigation) return; // They moved on, or something newer started.
+
+        var latest = FindProject(project.Id);
+        if (latest is null)
         {
-            folderProblem = await GitTools.FolderProblemAsync(folder, project.RepoUrl);
+            BackToProjects();
+            return;
+        }
+        if (!GitTools.SameRepo(latest.RepoUrl, project.RepoUrl))
+        {
+            await OpenProjectAsync(latest);
+            return;
         }
 
-        if (_openProject?.Id != project.Id) return; // They moved on while this was checking.
+        if (check.Access == RepoAccess.Allowed) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(project.RepoUrl));
+        else if (check.IsDenied) _database.SetSetting(VerifiedSetting(project.Id), "");
 
-        if (check.Access == RepoAccess.Allowed) _database.SetSetting(VerifiedSetting(project.Id), "1");
         _projectCheck = check;
+        _folderExists = folderExists;
         _folderProblem = folderProblem;
-        RenderProject(project);
+        RenderProject(latest);
     }
+
+    private Project? FindProject(string id) => _database.ListProjects().FirstOrDefault(project => project.Id == id);
 
     private static string VerifiedSetting(string projectId) => $"project_verified:{projectId}";
 
@@ -236,12 +322,13 @@ public partial class MainWindow
 
         if (_projectCheck is not { } check)
         {
-            body.Children.Add(new TextBlock { Text = "Checking the repo…", Foreground = (Brush)FindResource("TextMuted"), FontSize = 14, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 60, 0, 0) });
+            body.Children.Add(CenteredNote("Checking the repo…"));
             return;
         }
 
-        // Being offline doesn't mean access was lost, so a PC that's been allowed before can keep working.
-        var workingOffline = check.Access == RepoAccess.CantCheck && _database.GetSetting(VerifiedSetting(project.Id)) == "1";
+        // Being offline doesn't mean access was lost, so a PC that's reached this exact repo before can keep working.
+        var workingOffline = check.Access == RepoAccess.Offline
+            && _database.GetSetting(VerifiedSetting(project.Id)) == GitTools.RepoKey(project.RepoUrl);
         if (check.Access != RepoAccess.Allowed && !workingOffline)
         {
             AddRepoProblem(body, project, check);
@@ -254,111 +341,23 @@ public partial class MainWindow
         }
 
         var folder = _database.GetProjectFolder(project.Id);
-        if (IsOnThisPc(project) && _folderProblem is null)
+        if (_folderExists && _folderProblem is null)
         {
             body.Children.Add(new TextBlock { Text = folder, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = folder });
-            body.Children.Add(new TextBlock { Text = "Nothing here yet.", Foreground = (Brush)FindResource("TextMuted"), FontSize = 14, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 60, 0, 0) });
+            body.Children.Add(CenteredNote("Nothing here yet."));
             return;
         }
 
         AddGetProjectOptions(body, project, folder);
     }
 
-    private void AddRepoProblem(StackPanel body, Project project, RepoCheck check)
+    private TextBlock CenteredNote(string text) => new()
     {
-        var problem = ProblemText();
-        var progress = new TextBlock { FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 10, 0, 0), Visibility = Visibility.Collapsed };
-        var actions = new List<FrameworkElement>();
-
-        var (heading, description) = check.Access switch
-        {
-            RepoAccess.NoGitHubCli => ("The GitHub CLI is needed", "Agent Orange uses it to check your access. Install it from cli.github.com, then try again."),
-            RepoAccess.SignedOut => ("Sign in to GitHub", "This PC isn't signed in, so your access to this project's repo can't be checked."),
-            RepoAccess.OtherAccount => ("Wrong GitHub account", $"Your active GitHub account can't see this repo, but {check.Account} can."),
-            RepoAccess.ReadOnly => ("You don't have access to this repo", $"{check.Account ?? "Your GitHub account"} can only read it, so you can't work on this project. Get write access, or change the repo in project settings."),
-            RepoAccess.NotFound => ("This project's repo doesn't exist", "It may have been deleted or renamed. Create a new private repo, or change the URL in project settings."),
-            RepoAccess.NotFoundOrNoAccess => ("Can't find this project's repo", "It was deleted, or your GitHub account doesn't have access. GitHub doesn't say which. If you should have access, ask the owner. Otherwise you can create a new private repo."),
-            RepoAccess.GitCantReach => ("Git on this PC can't reach this repo", "Check this PC's Git setup, such as its SSH keys, or run gh auth setup-git."),
-            _ => ("Couldn't check this project's repo", "This PC couldn't reach GitHub, and it hasn't had access to this project before."),
-        };
-
-        if (check.Access == RepoAccess.SignedOut)
-        {
-            var signIn = ActionButton("Sign in");
-            signIn.Click += (_, _) => GitTools.OpenGitHubSignIn();
-            actions.Add(signIn);
-        }
-
-        if (check.Access == RepoAccess.OtherAccount)
-        {
-            var switchAccount = ActionButton($"Switch to {check.Account}");
-            switchAccount.Click += async (_, _) =>
-            {
-                if (await GitTools.SwitchAccountAsync(check.Account!)) await OpenProjectAsync(project);
-                else ShowProblem(problem, "Couldn't switch accounts.");
-            };
-            actions.Add(switchAccount);
-        }
-
-        if (check.Access is RepoAccess.NotFound or RepoAccess.NotFoundOrNoAccess)
-        {
-            var create = ActionButton("Create new repo");
-            create.Click += async (_, _) => await CreateReplacementRepoAsync(project, create, problem, progress);
-            actions.Add(create);
-        }
-
-        var retry = ActionButton("Try again");
-        retry.Click += async (_, _) => await OpenProjectAsync(project);
-        actions.Add(retry);
-
-        body.Children.Add(Section(heading));
-        body.Children.Add(new TextBlock { Text = description, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(16, -4, 16, 12), TextWrapping = TextWrapping.Wrap });
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(16, 0, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
-        foreach (var action in actions)
-        {
-            action.Margin = new Thickness(0, 0, 8, 0);
-            buttons.Children.Add(action);
-        }
-        body.Children.Add(buttons);
-        body.Children.Add(progress);
-        body.Children.Add(problem);
-    }
-
-    private async Task CreateReplacementRepoAsync(Project project, Button create, TextBlock problem, TextBlock progress)
-    {
-        var folder = _database.GetProjectFolder(project.Id);
-        if (folder is null || !Directory.Exists(folder))
-        {
-            var dialog = new OpenFolderDialog { Title = $"Choose the folder for {project.Name}" };
-            if (dialog.ShowDialog() != true) return;
-            folder = dialog.FolderName;
-        }
-
-        _pageBusy = true;
-        create.IsEnabled = false;
-        problem.Visibility = Visibility.Collapsed;
-        progress.Text = "Creating a private repo on GitHub…";
-        progress.Visibility = Visibility.Visible;
-
-        var result = await GitTools.CreatePrivateRepoAsync(project.Name, folder);
-
-        progress.Visibility = Visibility.Collapsed;
-        create.IsEnabled = true;
-        _pageBusy = false;
-
-        if (!result.Worked)
-        {
-            ShowProblem(problem, result.Value);
-            return;
-        }
-
-        var updated = project with { RepoUrl = result.Value };
-        _database.SaveProject(updated);
-        _database.SetProjectFolder(project.Id, folder);
-        _ = _sync.SyncNowAsync();
-        RefreshProjects();
-        await OpenProjectAsync(updated);
-    }
+        Text = text,
+        Foreground = (Brush)FindResource("TextMuted"),
+        FontSize = 14,
+        Margin = new Thickness(0, 60, 0, 0),
+    };
 
     private Grid ProjectHero(Project project)
     {
@@ -400,37 +399,215 @@ public partial class MainWindow
         return button;
     }
 
-    private void AddGetProjectOptions(StackPanel body, Project project, string? missingFolder)
+    private void AddRepoProblem(StackPanel body, Project project, RepoCheck check)
     {
-        var problem = ProblemText();
-        var progress = new TextBlock { FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 10, 0, 0), Visibility = Visibility.Collapsed };
+        var actions = new List<FrameworkElement>();
+        var (heading, description) = check.Describe();
+        var busy = _busyProjectId is not null;
 
-        var select = ActionButton("Select folder");
-        var clone = ActionButton("Clone");
-
-        void SetBusy(bool busy)
+        if (check.Access == RepoAccess.SignedOut)
         {
-            _pageBusy = busy;
-            select.IsEnabled = !busy;
-            clone.IsEnabled = !busy && project.RepoUrl.Length > 0;
+            var signIn = ActionButton("Sign in");
+            signIn.Click += (_, _) => GitTools.OpenGitHubSignIn();
+            actions.Add(signIn);
         }
-        SetBusy(false);
+
+        if (check.Access == RepoAccess.OtherAccount)
+        {
+            var switchAccount = ActionButton($"Switch to {check.Account}");
+            switchAccount.Click += async (_, _) =>
+            {
+                if (await GitTools.SwitchAccountAsync(check.Account!))
+                {
+                    await RecheckIfStillOpenAsync(project.Id);
+                }
+                else if (_openProject?.Id == project.Id)
+                {
+                    _pageProblem = "Couldn't switch accounts.";
+                    RenderProject(_openProject);
+                }
+            };
+            actions.Add(switchAccount);
+        }
+
+        var canReplace = check.Access is RepoAccess.NotFound or RepoAccess.NotFoundOrNoAccess;
+        if (canReplace && !_confirmingNewRepo)
+        {
+            var create = ActionButton("Create new repo");
+            create.IsEnabled = !busy;
+            create.Click += (_, _) =>
+            {
+                _confirmingNewRepo = true;
+                RenderProject(project);
+            };
+            actions.Add(create);
+        }
+
+        var retry = ActionButton("Try again");
+        retry.IsEnabled = !busy;
+        retry.Click += async (_, _) => await RecheckIfStillOpenAsync(project.Id);
+        actions.Add(retry);
+
+        body.Children.Add(Section(heading));
+        body.Children.Add(new TextBlock { Text = canReplace ? $"{description} You can change the URL in project settings, or create a new private repo." : description, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(16, -4, 16, 12), TextWrapping = TextWrapping.Wrap });
+
+        if (canReplace && _confirmingNewRepo)
+        {
+            var confirm = new Button { Style = (Style)FindResource("PrimaryButton"), Content = "Yes, create it", IsEnabled = !busy };
+            confirm.Click += async (_, _) => await CreateReplacementRepoAsync(project);
+            var cancel = ActionButton("Cancel");
+            cancel.Click += (_, _) =>
+            {
+                _confirmingNewRepo = false;
+                RenderProject(project);
+            };
+            actions = [confirm, cancel];
+
+            body.Children.Add(new Border
+            {
+                BorderBrush = (Brush)FindResource("Line"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(14, 12, 14, 12),
+                Margin = new Thickness(16, 0, 16, 12),
+                Child = new TextBlock
+                {
+                    Text = $"This creates a new, empty private repo on GitHub and moves this project to it on all your PCs, replacing {project.RepoUrl}. Nothing is pushed, so push your work afterward for your other PCs to get it.",
+                    Foreground = (Brush)FindResource("TextNormal"),
+                    FontSize = 13,
+                    TextWrapping = TextWrapping.Wrap,
+                },
+            });
+        }
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(16, 0, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
+        foreach (var action in actions)
+        {
+            action.Margin = new Thickness(0, 0, 8, 0);
+            buttons.Children.Add(action);
+        }
+        body.Children.Add(buttons);
+        AddBusyAndProblem(body, project);
+    }
+
+    private async Task RecheckIfStillOpenAsync(string projectId)
+    {
+        if (_openProject?.Id != projectId) return;
+        if (FindProject(projectId) is { } latest) await OpenProjectAsync(latest);
+        else BackToProjects();
+    }
+
+    private void AddBusyAndProblem(StackPanel body, Project project)
+    {
+        if (_busyProjectId == project.Id && _busyText is not null)
+        {
+            body.Children.Add(new TextBlock { Text = _busyText, FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 10, 0, 0) });
+            if (_cloneCancel is { } clone)
+            {
+                var stop = ActionButton("Cancel");
+                stop.HorizontalAlignment = HorizontalAlignment.Left;
+                stop.Margin = new Thickness(16, 8, 0, 0);
+                stop.Click += (_, _) => clone.Cancel();
+                body.Children.Add(stop);
+            }
+        }
+
+        if (_pageProblem is not null)
+        {
+            var problem = ProblemText();
+            ShowProblem(problem, _pageProblem);
+            problem.TextWrapping = TextWrapping.Wrap;
+            body.Children.Add(problem);
+        }
+    }
+
+    private void StartBusy(Project project, string text)
+    {
+        _busyProjectId = project.Id;
+        _busyText = text;
+        _pageProblem = null;
+        if (_openProject?.Id == project.Id) RenderProject(_openProject);
+    }
+
+    private void EndBusy()
+    {
+        _busyProjectId = null;
+        _busyText = null;
+    }
+
+    // Shows the result if the person is still looking at this project.
+    private void ShowPageProblem(string projectId, string problem)
+    {
+        if (_openProject?.Id != projectId) return;
+        _pageProblem = problem;
+        RenderProject(_openProject);
+    }
+
+    private async Task CreateReplacementRepoAsync(Project project)
+    {
+        var folder = _database.GetProjectFolder(project.Id);
+        if (folder is null || !Directory.Exists(folder))
+        {
+            var dialog = new OpenFolderDialog { Title = $"Choose the folder for {project.Name}" };
+            if (dialog.ShowDialog() != true) return;
+            folder = dialog.FolderName;
+        }
+
+        StartBusy(project, "Creating a private repo on GitHub…");
+        var result = await GitTools.CreatePrivateRepoAsync(project.Name, folder, project.RepoUrl);
+        EndBusy();
+
+        if (!result.Worked)
+        {
+            ShowPageProblem(project.Id, result.Value);
+            return;
+        }
+
+        // Saved even if they've left the page, because the repo now exists.
+        if (FindProject(project.Id) is not { } latest || GitTools.RepoUrlProblem(result.Value) is not null)
+        {
+            ShowPageProblem(project.Id, "The repo was created, but the project couldn't be updated.");
+            return;
+        }
+
+        var updated = latest with { RepoUrl = result.Value };
+        _database.SaveProject(updated);
+        _database.SetProjectFolder(project.Id, folder);
+        _ = _sync.SyncNowAsync();
+        _confirmingNewRepo = false;
+        await RefreshThenRecheckAsync(updated.Id);
+    }
+
+    private async Task RefreshThenRecheckAsync(string projectId)
+    {
+        var wasOpen = _openProject?.Id == projectId;
+
+        // Already up to date, so the refresh doesn't see a changed repo and start its own check.
+        if (wasOpen && FindProject(projectId) is { } latest) _openProject = latest;
+
+        RefreshProjects();
+        if (wasOpen) await RecheckIfStillOpenAsync(projectId);
+    }
+
+    private void AddGetProjectOptions(StackPanel body, Project project, string? linkedFolder)
+    {
+        var busy = _busyProjectId is not null;
+        var select = ActionButton("Select folder");
+        select.IsEnabled = !busy;
+        var clone = ActionButton("Clone");
+        clone.IsEnabled = !busy && project.RepoUrl.Length > 0;
 
         select.Click += async (_, _) =>
         {
             var dialog = new OpenFolderDialog { Title = $"Find the folder for {project.Name}" };
             if (dialog.ShowDialog() != true) return;
 
-            SetBusy(true);
+            StartBusy(project, "Checking that folder…");
             var folderProblem = await GitTools.FolderProblemAsync(dialog.FolderName, project.RepoUrl);
-            SetBusy(false);
-            if (folderProblem is not null)
-            {
-                ShowProblem(problem, folderProblem);
-                return;
-            }
+            EndBusy();
 
-            UseFolder(project, dialog.FolderName);
+            if (folderProblem is null) await UseFolderAsync(project.Id, dialog.FolderName);
+            else ShowPageProblem(project.Id, folderProblem);
         };
 
         clone.Click += async (_, _) =>
@@ -438,45 +615,42 @@ public partial class MainWindow
             var dialog = new OpenFolderDialog { Title = "Choose where to put the project" };
             if (dialog.ShowDialog() != true) return;
 
-            SetBusy(true);
-            problem.Visibility = Visibility.Collapsed;
-            progress.Text = "Cloning…";
-            progress.Visibility = Visibility.Visible;
-            var result = await GitTools.CloneAsync(project.RepoUrl, dialog.FolderName);
-            progress.Visibility = Visibility.Collapsed;
-            SetBusy(false);
+            using var cancel = new CancellationTokenSource();
+            _cloneCancel = cancel;
+            StartBusy(project, "Cloning…");
+            var result = await GitTools.CloneAsync(project.RepoUrl, dialog.FolderName, cancel.Token);
+            _cloneCancel = null;
+            EndBusy();
 
-            if (result.Worked) UseFolder(project, result.Value);
-            else ShowProblem(problem, result.Value);
+            if (result.Worked) await UseFolderAsync(project.Id, result.Value);
+            else ShowPageProblem(project.Id, result.Value);
         };
 
-        var (heading, description) = (missingFolder, _folderProblem) switch
+        var (heading, description) = (linkedFolder, _folderProblem, _folderExists) switch
         {
-            (_, not null) => ("This project's folder doesn't match its repo", _folderProblem),
-            (null, _) => ("This project isn't on this PC yet", "Get a copy from its repo, or point to one you already have."),
-            _ => ("This project's folder is missing", $"It was at {missingFolder}."),
+            (_, not null, _) => ("This project's folder doesn't match its repo", _folderProblem),
+            (null, _, _) => ("This project isn't on this PC yet", "Get a copy from its repo, or point to one you already have."),
+            _ => ("This project's folder is missing", $"It was at {linkedFolder}."),
         };
         body.Children.Add(Section(heading));
         body.Children.Add(new TextBlock { Text = description, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(16, -4, 0, 10), TextWrapping = TextWrapping.Wrap });
         body.Children.Add(Card(
             Row("Clone from repo", project.RepoUrl.Length > 0 ? project.RepoUrl : "This project has no repo.", clone),
             Row("Select its folder", "It has to be connected to the same repo.", select)));
-        body.Children.Add(progress);
-        body.Children.Add(problem);
+        AddBusyAndProblem(body, project);
     }
 
-    private void UseFolder(Project project, string folder)
+    // Saved even if they've left the page, because the clone or the choice was real.
+    private async Task UseFolderAsync(string projectId, string folder)
     {
-        _database.SetProjectFolder(project.Id, folder);
-        _folderProblem = null;
-        RefreshProjects();
-        RenderProject(project);
+        if (FindProject(projectId) is null) return;
+        _database.SetProjectFolder(projectId, folder);
+        await RefreshThenRecheckAsync(projectId);
     }
 
     private void OpenProjectSettings(string projectId)
     {
-        var project = _database.ListProjects().FirstOrDefault(candidate => candidate.Id == projectId);
-        if (project is null) return;
+        if (FindProject(projectId) is not { } project) return;
 
         MainContent.IsEnabled = false;
         MainContent.Effect = new BlurEffect { Radius = 8 };
@@ -489,14 +663,21 @@ public partial class MainWindow
     {
         MainContent.Effect = null;
         MainContent.IsEnabled = _requiredUpdate is null;
-        RefreshProjects();
 
-        // The repo or folder may have changed, so check again.
-        if (_openProject is not null
-            && _database.ListProjects().FirstOrDefault(project => project.Id == _openProject.Id) is { } current)
+        var openId = _openProject?.Id;
+        if (openId is null)
         {
-            await OpenProjectAsync(current);
+            RefreshProjects();
+            return;
         }
+
+        // The repo or folder may have changed. Work already running gets to finish first.
+        if (_busyProjectId is not null)
+        {
+            RefreshProjects();
+            return;
+        }
+        await RefreshThenRecheckAsync(openId);
     }
 
     private void ProjectSettings_Deleted()
@@ -510,8 +691,10 @@ public partial class MainWindow
 
     private void BackToProjects()
     {
+        _navigation++;
         _openProject = null;
         _projectCheck = null;
+        _pageProblem = null;
         ProjectView.Visibility = Visibility.Collapsed;
         ProjectSelectView.Visibility = Visibility.Visible;
     }

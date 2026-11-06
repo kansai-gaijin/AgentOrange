@@ -48,8 +48,12 @@
                                    Margin="0,6,0,0"
                                    HorizontalAlignment="Center" />
                     </StackPanel>
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <WrapPanel x:Name="ProjectGrid" AllowDrop="True" Background="Transparent" />
+                    <ScrollViewer x:Name="ProjectScroller" VerticalScrollBarVisibility="Auto">
+                        <WrapPanel x:Name="ProjectGrid"
+                                   AllowDrop="True"
+                                   Background="Transparent"
+                                   DragOver="ProjectGrid_DragOver"
+                                   Drop="ProjectGrid_Drop" />
                     </ScrollViewer>
                 </Grid>
             </DockPanel>

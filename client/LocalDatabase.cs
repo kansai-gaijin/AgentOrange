@@ -74,7 +74,19 @@ public sealed class LocalDatabase
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            var data = JsonSerializer.Deserialize<ProjectData>(reader.GetString(1), JsonOptions)!;
+            // Records arrive from other PCs, so one bad record must not stop the app.
+            ProjectData? data;
+            try
+            {
+                data = JsonSerializer.Deserialize<ProjectData>(reader.GetString(1), JsonOptions);
+            }
+            catch (JsonException error)
+            {
+                AppLog.Write($"Skipped an unreadable project: {error.Message}");
+                continue;
+            }
+            if (data?.Name is null) continue;
+
             projects.Add(new Project(
                 reader.GetString(0),
                 data.Name,
@@ -125,7 +137,16 @@ public sealed class LocalDatabase
     private List<string> ProjectOrder()
     {
         var stored = GetRecord(SettingsCollection, ProjectOrderRecord);
-        return string.IsNullOrEmpty(stored) ? [] : JsonSerializer.Deserialize<List<string>>(stored, JsonOptions) ?? [];
+        if (string.IsNullOrEmpty(stored)) return [];
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(stored, JsonOptions) ?? [];
+        }
+        catch (JsonException error)
+        {
+            AppLog.Write($"Skipped an unreadable project order: {error.Message}");
+            return [];
+        }
     }
 
     /// <summary>Folders differ between PCs, so they stay on this one and never sync.</summary>
@@ -140,7 +161,16 @@ public sealed class LocalDatabase
     public byte[]? GetProjectImage(string projectId, ProjectImageKind kind)
     {
         var stored = GetRecord(ImagesCollection, ImageId(projectId, kind));
-        return string.IsNullOrEmpty(stored) ? null : Convert.FromBase64String(stored);
+        if (string.IsNullOrEmpty(stored)) return null;
+        try
+        {
+            return Convert.FromBase64String(stored);
+        }
+        catch (FormatException)
+        {
+            AppLog.Write("Skipped an unreadable project image.");
+            return null;
+        }
     }
 
     public void SetProjectImage(string projectId, ProjectImageKind kind, byte[]? image) =>

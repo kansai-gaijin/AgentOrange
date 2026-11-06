@@ -25,8 +25,12 @@ public static class ProjectChoices
         if (engine != "Unreal Engine") return "";
         var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Epic Games");
         if (!Directory.Exists(folder)) return "";
-        var newest = Directory.GetDirectories(folder, "UE_*").OrderByDescending(path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault();
-        return newest is null ? "" : Path.GetFileName(newest)["UE_".Length..];
+
+        return Directory.GetDirectories(folder, "UE_*")
+            .Select(path => Path.GetFileName(path)["UE_".Length..])
+            .Where(name => Version.TryParse(name, out _))
+            .OrderByDescending(Version.Parse)
+            .FirstOrDefault() ?? "";
     }
 }
 
@@ -41,6 +45,7 @@ public partial class NewProjectWizard : UserControl
     private string _gameType = ProjectChoices.GameTypes[0];
     private string _folder = "";
     private string _repoUrl = "";
+    private string _autoFilledRepo = "";
     private bool _working;
 
     public NewProjectWizard()
@@ -60,6 +65,7 @@ public partial class NewProjectWizard : UserControl
         _gameType = ProjectChoices.GameTypes[0];
         _folder = "";
         _repoUrl = "";
+        _autoFilledRepo = "";
         _working = false;
         Visibility = Visibility.Visible;
         ShowProjectStep();
@@ -163,6 +169,7 @@ public partial class NewProjectWizard : UserControl
         var repo = Field(_repoUrl);
         repo.Width = 300;
         var problem = ProblemText();
+        problem.TextWrapping = TextWrapping.Wrap;
         var progress = new TextBlock { FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 8, 0, 0), Visibility = Visibility.Collapsed };
 
         folder.TextChanged += (_, _) => _folder = folder.Text;
@@ -176,10 +183,31 @@ public partial class NewProjectWizard : UserControl
             if (dialog.ShowDialog() != true) return;
 
             folder.Text = dialog.FolderName;
-            if (repo.Text.Trim().Length == 0 && await GitTools.OriginOfAsync(dialog.FolderName) is { } origin) repo.Text = origin;
+
+            // A URL filled in from the previous folder doesn't belong to this one.
+            var typedItself = repo.Text.Trim().Length > 0 && repo.Text != _autoFilledRepo;
+            if (typedItself) return;
+            var state = await GitTools.InspectFolderAsync(dialog.FolderName);
+            if (folder.Text != dialog.FolderName) return;
+            _autoFilledRepo = state?.Origin ?? "";
+            repo.Text = _autoFilledRepo;
         };
 
+        var back = ControlButton("Back", ShowProjectStep);
         var create = PrimaryButton("Create project", () => { });
+
+        void SetWorking(bool working, string? status = null)
+        {
+            _working = working;
+            create.IsEnabled = !working;
+            back.IsEnabled = !working;
+            browse.IsEnabled = !working;
+            folder.IsEnabled = !working;
+            repo.IsEnabled = !working;
+            progress.Text = status ?? "";
+            progress.Visibility = status is null ? Visibility.Collapsed : Visibility.Visible;
+        }
+
         create.Click += async (_, _) =>
         {
             if (_working) return;
@@ -197,51 +225,30 @@ public partial class NewProjectWizard : UserControl
                 return;
             }
 
-            _working = true;
-            create.IsEnabled = false;
+            // What was entered is fixed here, and the wizard can't close until this finishes.
+            var typedUrl = repo.Text.Trim();
+            var submission = new NewProject(_name, _engine, ProjectChoices.HasEngineVersion(_engine) ? _engineVersion : "", _gameType, path, typedUrl);
+
+            SetWorking(true, "Checking…");
+            string? failure;
+            string url;
             try
             {
-                var url = repo.Text.Trim();
-                var origin = await GitTools.OriginOfAsync(path);
-                if (url.Length == 0)
-                {
-                    url = origin ?? "";
-                }
-                else if (origin is not null && !GitTools.SameRepo(origin, url))
-                {
-                    ShowProblem(problem, "That folder is connected to a different repo than that URL.");
-                    return;
-                }
-
-                if (url.Length == 0)
-                {
-                    progress.Text = "Creating a private repo on GitHub…";
-                    progress.Visibility = Visibility.Visible;
-                    var created = await GitTools.CreatePrivateRepoAsync(_name, path);
-                    progress.Visibility = Visibility.Collapsed;
-                    if (!created.Worked)
-                    {
-                        ShowProblem(problem, created.Value);
-                        return;
-                    }
-                    url = created.Value;
-                }
-
-                if (GitTools.RepoUrlProblem(url) is { } urlProblem)
-                {
-                    repo.Text = url;
-                    ShowProblem(problem, urlProblem);
-                    return;
-                }
-
-                Created?.Invoke(new NewProject(_name, _engine, ProjectChoices.HasEngineVersion(_engine) ? _engineVersion : "", _gameType, path, url));
-                Close();
+                (url, failure) = await ResolveRepoAsync(submission, status => progress.Text = status);
             }
             finally
             {
-                _working = false;
-                create.IsEnabled = true;
+                SetWorking(false);
             }
+
+            if (failure is not null)
+            {
+                ShowProblem(problem, failure);
+                return;
+            }
+
+            Created?.Invoke(submission with { RepoUrl = url });
+            Close();
         };
 
         var body = new StackPanel
@@ -262,25 +269,66 @@ public partial class NewProjectWizard : UserControl
             "Set up a new game.",
             Stepper(Steps, 2),
             body,
-            ControlButton("Back", ShowProjectStep),
+            back,
             create);
+    }
+
+    /// <summary>
+    /// Works out the project's repo, so a project is never created that can't then be opened.
+    /// Returns the URL, or a problem to show. Being offline doesn't block this, because
+    /// nothing says the repo is unusable, and opening the project checks again.
+    /// </summary>
+    private static async Task<(string Url, string? Failure)> ResolveRepoAsync(NewProject project, Action<string> status)
+    {
+        var state = await GitTools.InspectFolderAsync(project.Folder);
+        if (state is null) return ("", "Git wasn't found on this PC.");
+        if (state.IsInsideAnotherRepo) return ("", "That folder is inside a repo. Choose the repo's top folder.");
+
+        var url = project.RepoUrl;
+        if (url.Length == 0 && state.Origin is null)
+        {
+            status("Creating a private repo on GitHub…");
+            var created = await GitTools.CreatePrivateRepoAsync(project.Name, project.Folder);
+            return created.Worked ? (created.Value, null) : ("", created.Value);
+        }
+
+        if (url.Length == 0) url = state.Origin!;
+        if (GitTools.RepoUrlProblem(url) is { } urlProblem) return ("", urlProblem);
+        if (state.Origin is not null && !GitTools.SameRepo(state.Origin, url))
+        {
+            return ("", "That folder is connected to a different repo than that URL.");
+        }
+
+        var check = await GitTools.CheckRepoAccessAsync(url);
+        if (check.Access is not (RepoAccess.Allowed or RepoAccess.Offline))
+        {
+            var (heading, description) = check.Describe();
+            return ("", $"{heading}. {description}");
+        }
+
+        if (state.Origin is null)
+        {
+            status("Connecting the folder to the repo…");
+            var connected = await GitTools.ConnectFolderAsync(project.Folder, url);
+            if (!connected.Worked) return ("", connected.Value);
+        }
+
+        return (url, null);
     }
 
     private void Close()
     {
+        if (_working) return;
         Visibility = Visibility.Collapsed;
         Closed?.Invoke();
     }
 
     private void Wizard_KeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Escape && !_working) Close();
+        if (e.Key == Key.Escape) Close();
     }
 
-    private void Backdrop_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        if (!_working) Close();
-    }
+    private void Backdrop_MouseLeftButtonDown(object sender, MouseButtonEventArgs e) => Close();
 
     private void Card_MouseLeftButtonDown(object sender, MouseButtonEventArgs e) => e.Handled = true;
 }
