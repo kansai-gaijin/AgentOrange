@@ -43,12 +43,15 @@ public sealed class SyncEngine
 
         try
         {
-            var cursorSetting = $"sync_cursor:{_server.Address}";
+            // Everything here belongs to one server, and the address can change between requests.
+            var address = _server.Address;
+            var cursorSetting = $"sync_cursor:{address}";
+            var epochSetting = $"sync_epoch:{address}";
             var stored = _database.GetSetting(cursorSetting);
             if (stored is null) _database.QueueAllRecords();
             var cursor = stored is null ? 0 : long.Parse(stored);
 
-            while (true)
+            while (_server.Address == address)
             {
                 var batch = _database.ReadOutbox(BatchSize, MaxBatchCharacters);
                 var response = await _devices.SyncAsync(cursor, batch);
@@ -58,7 +61,6 @@ public sealed class SyncEngine
 
                 // A server that lost its data would never send anything past this PC's old
                 // cursor, and doesn't have what this PC has. So everything starts over.
-                var epochSetting = $"sync_epoch:{_server.Address}";
                 var knownEpoch = _database.GetSetting(epochSetting);
                 if (response.Epoch is { Length: > 0 } epoch && epoch != knownEpoch)
                 {

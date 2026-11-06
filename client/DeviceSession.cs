@@ -34,36 +34,35 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(60) }; // Images can take a while.
 
-    public bool IsPaired => Token is not null;
+    public bool IsPaired => ReadToken(TokenSettingFor(server.Address)) is not null;
 
     public event Action? PairingChanged;
 
-    // Keyed by address, so a login is only ever sent to the server that issued it.
-    private string TokenSetting => $"device_token:{server.Address}";
+    // Keyed by address, so a login is only ever sent to the server that issued it. The address
+    // can change while a request is out, so each request settles on its setting before it starts.
+    private static string TokenSettingFor(string address) => $"device_token:{address}";
 
-    private string? Token
+    private string? ReadToken(string setting)
     {
-        get
+        var stored = database.GetSetting(setting);
+        if (string.IsNullOrEmpty(stored)) return null;
+        try
         {
-            var stored = database.GetSetting(TokenSetting);
-            if (string.IsNullOrEmpty(stored)) return null;
-            try
-            {
-                var bytes = ProtectedData.Unprotect(Convert.FromBase64String(stored), null, DataProtectionScope.CurrentUser);
-                return Encoding.UTF8.GetString(bytes);
-            }
-            catch (Exception error) when (error is CryptographicException or FormatException)
-            {
-                return null; // Made by another Windows user or PC, so this PC has to pair again.
-            }
+            var bytes = ProtectedData.Unprotect(Convert.FromBase64String(stored), null, DataProtectionScope.CurrentUser);
+            return Encoding.UTF8.GetString(bytes);
+        }
+        catch (Exception error) when (error is CryptographicException or FormatException)
+        {
+            return null; // Made by another Windows user or PC, so this PC has to pair again.
         }
     }
 
     public async Task<PairResult> PairAsync(string key, string name)
     {
+        var address = server.Address;
         try
         {
-            var response = await _http.PostAsJsonAsync($"{server.Address}/v1/pair", new { key, name });
+            var response = await _http.PostAsJsonAsync($"{address}/v1/pair", new { key, name });
             switch (response.StatusCode)
             {
                 case HttpStatusCode.Unauthorized: return PairResult.WrongKey;
@@ -74,7 +73,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
 
             var paired = await response.Content.ReadFromJsonAsync<PairResponse>();
             var encrypted = ProtectedData.Protect(Encoding.UTF8.GetBytes(paired!.Token), null, DataProtectionScope.CurrentUser);
-            database.SetSetting(TokenSetting, Convert.ToBase64String(encrypted));
+            database.SetSetting(TokenSettingFor(address), Convert.ToBase64String(encrypted));
             PairingChanged?.Invoke();
             return PairResult.Paired;
         }
@@ -132,8 +131,9 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
 
     public async Task<bool> RemoveAsync(DeviceInfo device)
     {
+        var setting = TokenSettingFor(server.Address);
         var removed = await SucceedsAsync(HttpMethod.Delete, $"/v1/devices/{device.Id}", null);
-        if (removed && device.Current) ForgetLogin();
+        if (removed && device.Current) ForgetLogin(setting);
         return removed;
     }
 
@@ -152,21 +152,23 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
 
     private async Task<HttpResponseMessage?> SendAsync(HttpMethod method, string path, object? body = null)
     {
-        if (Token is not { } token) return null;
+        var address = server.Address;
+        var setting = TokenSettingFor(address);
+        if (ReadToken(setting) is not { } token) return null;
 
-        using var request = new HttpRequestMessage(method, server.Address + path);
+        using var request = new HttpRequestMessage(method, address + path);
         request.Headers.Authorization = new("Bearer", token);
         if (body is not null) request.Content = JsonContent.Create(body);
 
         var response = await _http.SendAsync(request);
         // This device was removed from the server, so its login is no use any more.
-        if (response.StatusCode == HttpStatusCode.Unauthorized) ForgetLogin();
+        if (response.StatusCode == HttpStatusCode.Unauthorized) ForgetLogin(setting);
         return response;
     }
 
-    private void ForgetLogin()
+    private void ForgetLogin(string setting)
     {
-        database.SetSetting(TokenSetting, "");
+        database.SetSetting(setting, "");
         PairingChanged?.Invoke();
     }
 

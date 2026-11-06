@@ -40,7 +40,7 @@ public partial class NewProjectWizard : UserControl
     public event Action<NewProject>? Created;
 
     /// <summary>Gives the name of the project already using a folder, if there is one.</summary>
-    public Func<string, string?> FolderTakenBy { get; set; } = _ => null;
+    public Func<string, Task<string?>> FolderTakenBy { get; set; } = _ => Task.FromResult<string?>(null);
 
     public event Action? Closed;
 
@@ -199,11 +199,6 @@ public partial class NewProjectWizard : UserControl
                 ShowProblem(problem, "Enter the folder's full path, or use Browse.");
                 return;
             }
-            if (FolderTakenBy(path) is { } otherProject)
-            {
-                ShowProblem(problem, $"{otherProject} already uses that folder. A folder can only be one project.");
-                return;
-            }
 
             // What was entered is fixed here, and the wizard can't close until this finishes.
             var typedUrl = repo.Text.Trim();
@@ -215,9 +210,18 @@ public partial class NewProjectWizard : UserControl
             bool confirmed;
             try
             {
-                (url, confirmed, failure) = await GitTools.FolderExistsAsync(path)
-                    ? await ResolveRepoAsync(submission, status => progress.Text = status)
-                    : ("", false, "That folder doesn't exist.");
+                if (!await GitTools.FolderExistsAsync(path))
+                {
+                    (url, confirmed, failure) = ("", false, "That folder doesn't exist.");
+                }
+                else if (await FolderTakenBy(path) is { } otherProject)
+                {
+                    (url, confirmed, failure) = ("", false, $"{otherProject} already uses that folder. A folder can only be one project.");
+                }
+                else
+                {
+                    (url, confirmed, failure) = await ResolveRepoAsync(submission, status => progress.Text = status);
+                }
             }
             finally
             {

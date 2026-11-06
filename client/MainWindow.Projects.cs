@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Automation;
@@ -137,7 +138,7 @@ public partial class MainWindow
         var coverArea = new Grid { Children = { cover, gear } };
         var content = new StackPanel { Children = { coverArea } };
         content.Children.Add(new TextBlock { Text = project.Name, Foreground = (Brush)FindResource("TextStrong"), FontSize = 14, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(2, 10, 2, 0), ToolTip = project.Name });
-        content.Children.Add(new TextBlock { Text = project.Summary, Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(2, 2, 2, 0) });
+        content.Children.Add(new TextBlock { Text = project.Summary, Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(2, 2, 2, 0), ToolTip = project.Summary });
         content.Children.Add(notHere);
 
         var card = new Button { Style = (Style)FindResource("ProjectCard"), Content = content, Tag = project.Id, AllowDrop = true };
@@ -630,6 +631,15 @@ public partial class MainWindow
         }
 
         StartBusy(project, "Creating a private repo on GitHub…");
+
+        // Two projects can have copies of one repo, and this would take over the other's.
+        if (await _database.ProjectUsingFolderAsync(folder!, project.Id) is { } owner)
+        {
+            EndBusy();
+            ShowPageProblem(project.Id, $"{owner.Name} already uses that folder. A folder can only be one project.");
+            return;
+        }
+
         var result = await GitTools.CreatePrivateRepoAsync(project.Name, folder!, project.RepoUrl);
         EndBusy();
 
@@ -684,14 +694,12 @@ public partial class MainWindow
             var dialog = new OpenFolderDialog { Title = $"Find the folder for {project.Name}" };
             if (dialog.ShowDialog() != true) return;
 
-            if (_database.ProjectUsingFolder(dialog.FolderName, project.Id) is { } other)
-            {
-                ShowPageProblem(project.Id, $"{other.Name} already uses that folder. A folder can only be one project.");
-                return;
-            }
-
             StartBusy(project, "Checking that folder…");
             var folderProblem = await GitTools.FolderProblemAsync(dialog.FolderName, project.RepoUrl);
+            if (folderProblem is null && await _database.ProjectUsingFolderAsync(dialog.FolderName, project.Id) is { } other)
+            {
+                folderProblem = $"{other.Name} already uses that folder. A folder can only be one project.";
+            }
             EndBusy();
 
             if (folderProblem is null) await UseFolderAsync(project.Id, dialog.FolderName);
@@ -706,7 +714,7 @@ public partial class MainWindow
             using var cancel = new CancellationTokenSource();
             _cloneCancel = cancel;
             StartBusy(project, "Cloning…");
-            var result = await GitTools.CloneAsync(project.RepoUrl, dialog.FolderName, cancel.Token, working => _database.SetSetting(CloneInProgressSetting, working));
+            var result = await GitTools.CloneAsync(project.RepoUrl, dialog.FolderName, cancel.Token, working => _database.SetSetting(CloneInProgressSetting, CloneRecord(working)));
             _database.SetSetting(CloneInProgressSetting, "");
             _cloneCancel = null;
             EndBusy();
@@ -754,12 +762,38 @@ public partial class MainWindow
         else ShowPageProblem(project.Id, result.Value);
     }
 
+    // Says who's cloning as well as where, so another window of the app can tell it isn't abandoned.
+    private static string CloneRecord(string folder)
+    {
+        using var self = Process.GetCurrentProcess();
+        return $"{self.Id}|{self.StartTime.Ticks}|{folder}";
+    }
+
     // The app closed in the middle of a clone last time.
     private async Task RemoveLeftoverCloneAsync()
     {
-        if (_database.GetSetting(CloneInProgressSetting) is not { Length: > 0 } folder) return;
-        await GitTools.RemoveLeftoverCloneAsync(folder);
+        if (_database.GetSetting(CloneInProgressSetting) is not { Length: > 0 } record) return;
+
+        var parts = record.Split('|', 3);
+        if (parts.Length != 3) return;
+        if (int.TryParse(parts[0], out var id) && long.TryParse(parts[1], out var started) && IsStillRunning(id, started)) return;
+
+        await GitTools.RemoveLeftoverCloneAsync(parts[2]);
         _database.SetSetting(CloneInProgressSetting, "");
+    }
+
+    // The start time rules out another program that has since been given the same ID.
+    private static bool IsStillRunning(int id, long startedTicks)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(id);
+            return process.StartTime.Ticks == startedTicks;
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
     }
 
     // Saved even if they've left the page, because the clone or the choice was real.

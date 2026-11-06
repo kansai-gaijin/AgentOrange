@@ -419,9 +419,22 @@ public partial class SettingsModal : UserControl
         name.Width = 300;
         var connect = ActionButton("Connect");
         var problem = ProblemText();
+        var connecting = false;
+
+        // Locked while pairing, so what's on screen is what the login gets saved under.
+        void SetConnecting(bool value)
+        {
+            connecting = value;
+            address.IsEnabled = !value;
+            key.IsEnabled = !value;
+            name.IsEnabled = !value;
+            connect.IsEnabled = !value;
+        }
 
         async Task ConnectNow()
         {
+            if (connecting) return;
+
             if (!ServerConnection.TryCleanAddress(address.Text, out var cleaned) || cleaned.Length == 0)
             {
                 ShowProblem(problem, "Enter a full https:// address.");
@@ -436,10 +449,10 @@ public partial class SettingsModal : UserControl
 
             problem.Visibility = Visibility.Collapsed;
             address.Text = cleaned;
-            connect.IsEnabled = false;
+            SetConnecting(true);
             if (cleaned != Server.Address) await Server.SetAddressAsync(cleaned);
             var result = await Devices.PairAsync(key.Password, name.Text);
-            connect.IsEnabled = true;
+            SetConnecting(false);
 
             switch (result)
             {

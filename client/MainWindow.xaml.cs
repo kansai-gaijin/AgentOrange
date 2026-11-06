@@ -47,7 +47,7 @@ public partial class MainWindow : Window
         AppLog.Write($"Started {(_updates.IsInstalled ? $"v{_updates.CurrentVersion}" : "dev build")}");
 
         _database = new LocalDatabase(folders.DatabasePath);
-        ProjectWizard.FolderTakenBy = folder => _database.ProjectUsingFolder(folder)?.Name;
+        ProjectWizard.FolderTakenBy = async folder => (await _database.ProjectUsingFolderAsync(folder))?.Name;
         Settings.Folders = folders;
         Settings.Database = _database;
         Settings.Providers = new AgentProviders(_database, folders.AgentFolder);

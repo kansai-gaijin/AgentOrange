@@ -160,23 +160,16 @@ public sealed class LocalDatabase
         }
     }
 
-    /// <summary>A folder can only be one project, so this finds who already has it.</summary>
-    public Project? ProjectUsingFolder(string folder, string? exceptProjectId = null) =>
-        ListProjects().FirstOrDefault(project =>
-            project.Id != exceptProjectId
-            && GetProjectFolder(project.Id) is { } linked
-            && SameFolder(linked, folder));
-
-    private static bool SameFolder(string a, string b)
+    /// <summary>A folder can only be one project, so this finds who already has it, by any path.</summary>
+    public async Task<Project?> ProjectUsingFolderAsync(string folder, string? exceptProjectId = null)
     {
-        try
-        {
-            return string.Equals(Path.GetFullPath(a).TrimEnd('\\', '/'), Path.GetFullPath(b).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
-        }
-        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            return false;
-        }
+        var linked = ListProjects()
+            .Where(project => project.Id != exceptProjectId)
+            .Select(project => (Project: project, Folder: GetProjectFolder(project.Id)))
+            .Where(link => link.Folder is not null)
+            .ToList();
+
+        return await Task.Run(() => linked.FirstOrDefault(link => FolderIdentity.Same(link.Folder!, folder)).Project);
     }
 
     public void SaveProjectOrder(IEnumerable<string> projectIds) =>

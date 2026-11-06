@@ -13,7 +13,11 @@ while IFS= read -r file; do
             ;;
     esac
 
-    if [ "$(git show ":$file" | head -c 15)" = "SQLite format 3" ]; then
+    # What can't be read can't be checked, so it doesn't get through.
+    if ! git cat-file -e ":$file" 2>/dev/null; then
+        echo "Blocked: couldn't read $file to check it." >&2
+        status=1
+    elif [ "$(git show ":$file" | head -c 15)" = "SQLite format 3" ]; then
         echo "Blocked: $file is a database, whatever its name says." >&2
         status=1
     elif git show ":$file" | grep -aqE 'BEGIN [A-Z ]*PRIVATE KEY|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}'; then
@@ -21,7 +25,7 @@ while IFS= read -r file; do
         status=1
     fi
 done <<EOF
-$(git diff --cached --name-only --diff-filter=ACMR)
+$(git -c core.quotePath=off diff --cached --name-only --diff-filter=ACMR)
 EOF
 
 exit $status
