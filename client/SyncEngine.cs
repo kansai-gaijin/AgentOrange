@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Windows.Threading;
 
 namespace AgentOrange;
@@ -13,10 +15,17 @@ public sealed class SyncEngine
     private readonly LocalDatabase _database;
     private readonly ServerConnection _server;
     private readonly DeviceSession _devices;
+    private readonly Mutex _syncTurn;
+    private bool _hasSyncTurn;
     private bool _running;
 
-    public SyncEngine(LocalDatabase database, ServerConnection server, DeviceSession devices)
+    public SyncEngine(LocalDatabase database, ServerConnection server, DeviceSession devices, string databasePath)
     {
+        // Several windows can share a database, and only one of them needs to do this at a time.
+        // Windows releases it if that window closes or crashes, and the next one takes over.
+        var name = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(databasePath.ToUpperInvariant())))[..32];
+        _syncTurn = new Mutex(false, $@"Local\AgentOrangeSync-{name}");
+
         _database = database;
         _server = server;
         _devices = devices;
@@ -41,9 +50,23 @@ public sealed class SyncEngine
 
     private static string CursorSetting(string epoch) => $"sync_cursor_for:{epoch}";
 
+    private bool HasSyncTurn()
+    {
+        if (_hasSyncTurn) return true;
+        try
+        {
+            _hasSyncTurn = _syncTurn.WaitOne(0);
+        }
+        catch (AbandonedMutexException)
+        {
+            _hasSyncTurn = true; // The window that had it crashed, and this one has it now.
+        }
+        return _hasSyncTurn;
+    }
+
     public async Task SyncNowAsync()
     {
-        if (_running || IsPaused() || _server.State != ServerState.Connected || !_devices.IsPaired) return;
+        if (_running || IsPaused() || _server.State != ServerState.Connected || !_devices.IsPaired || !HasSyncTurn()) return;
         _running = true;
 
         try

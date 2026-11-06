@@ -88,7 +88,19 @@ public partial class MainWindow : Window
         Closing += (_, closing) => closing.Cancel = !_restarting && !ConfirmStoppingClone("Closing");
 
         // Nothing stays compatible across a release, so a copy that has to update doesn't sync.
-        _sync = new SyncEngine(_database, _server, _devices) { IsPaused = () => _requiredVersion is not null };
+        _sync = new SyncEngine(_database, _server, _devices, folders.DatabasePath) { IsPaused = () => _requiredVersion is not null };
+
+        // Another window of the app may have changed something, and only one of them syncs.
+        var knownRecords = _database.RecordsSignature();
+        var otherWindowTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        otherWindowTimer.Tick += (_, _) =>
+        {
+            var latest = _database.RecordsSignature();
+            if (latest == knownRecords) return;
+            knownRecords = latest;
+            RefreshProjects();
+        };
+        otherWindowTimer.Start();
         _sync.RecordsChanged += () =>
         {
             _database.CleanUpDeletedProjects();

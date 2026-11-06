@@ -10,15 +10,21 @@ public sealed class ServerConnection
 {
     private const string AddressSetting = "server_address";
     private const string HealthyAnswer = "🍊";
+    private const int FailedChecksBeforeFallback = 2;
+    private static readonly TimeSpan BackToChosenInterval = TimeSpan.FromSeconds(30);
 
     private readonly LocalDatabase _database;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
     private string? _addressBeingChecked;
+    private string _chosenAddress;
+    private int _failedChecks;
+    private DateTimeOffset _triedChosenAt;
 
     public ServerConnection(LocalDatabase database)
     {
         _database = database;
         Address = database.GetSetting(AddressSetting) ?? "";
+        _chosenAddress = Address;
         State = Address.Length == 0 ? ServerState.NoAddress : ServerState.Connecting;
 
         var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
@@ -57,6 +63,8 @@ public sealed class ServerConnection
     {
         _database.SetSetting(AddressSetting, address);
         Address = address;
+        _chosenAddress = address;
+        _failedChecks = 0;
         await ReconnectAsync();
     }
 
@@ -72,20 +80,69 @@ public sealed class ServerConnection
         if (address.Length == 0 || _addressBeingChecked == address) return;
         _addressBeingChecked = address;
 
-        bool reachable;
-        try
+        var reachable = await IsHealthyAsync(address);
+
+        // A PC paired at more than one address, such as Tailscale and public HTTPS, carries on
+        // through another when this one stops answering, and goes back once it answers again.
+        // The chosen address stays what's saved.
+        if (address == Address)
         {
-            reachable = await _http.GetStringAsync($"{address}/v1/health") == HealthyAnswer;
-        }
-        catch (Exception error) when (error is HttpRequestException or TaskCanceledException or InvalidOperationException)
-        {
-            reachable = false;
+            _failedChecks = reachable ? 0 : _failedChecks + 1;
+            var moved = !reachable && _failedChecks >= FailedChecksBeforeFallback
+                ? await TryOtherAddressesAsync(address)
+                : reachable && address != _chosenAddress && await TryChosenAddressAsync(address);
+            if (moved)
+            {
+                if (_addressBeingChecked == address) _addressBeingChecked = null;
+                return;
+            }
         }
 
         if (_addressBeingChecked == address) _addressBeingChecked = null;
 
         // The address may have changed while this check was running.
         if (address == Address) SetState(reachable ? ServerState.Connected : ServerState.Disconnected);
+    }
+
+    private async Task<bool> IsHealthyAsync(string address)
+    {
+        try
+        {
+            return await _http.GetStringAsync($"{address}/v1/health") == HealthyAnswer;
+        }
+        catch (Exception error) when (error is HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private async Task<bool> TryOtherAddressesAsync(string failing)
+    {
+        foreach (var other in _database.AddressesWithLogin().Where(other => other != failing))
+        {
+            if (!await IsHealthyAsync(other) || Address != failing) continue;
+            MoveTo(other);
+            return true;
+        }
+        return false;
+    }
+
+    private async Task<bool> TryChosenAddressAsync(string current)
+    {
+        if (DateTimeOffset.UtcNow - _triedChosenAt < BackToChosenInterval) return false;
+        _triedChosenAt = DateTimeOffset.UtcNow;
+        if (!await IsHealthyAsync(_chosenAddress) || Address != current) return false;
+        MoveTo(_chosenAddress);
+        return true;
+    }
+
+    private void MoveTo(string address)
+    {
+        AppLog.Write($"The server stopped or started answering, so this PC moved to {address}.");
+        Address = address;
+        _failedChecks = 0;
+        State = ServerState.Connected;
+        StateChanged?.Invoke();
     }
 
     private void SetState(ServerState state)

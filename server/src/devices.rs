@@ -2,6 +2,7 @@
 //! pairing key and gets its own token. Only a hash of each token is stored, so
 //! reading the database doesn't reveal any logins.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,30 +20,37 @@ use crate::AppState;
 
 const MAX_NAME_LENGTH: usize = 64;
 const MAX_FAILED_PAIRINGS: u32 = 5;
+const MAX_FAILED_PAIRINGS_IN_ALL: u32 = 100;
 const FAILED_PAIRING_WINDOW: Duration = Duration::from_secs(60);
 
-/// Counts wrong pairing keys across all callers. Requests all arrive through a
-/// local tunnel, so there's no caller address to count per client.
+/// Counts wrong pairing keys per caller, so one caller guessing can't keep everyone else from
+/// pairing, with a much higher limit overall against guessing from many addresses at once.
+/// Requests all arrive through a local route. Cloudflare says who's calling and overwrites
+/// anything a caller claims, and requests with no such header can only have come over Tailscale,
+/// from machines already on the owner's tailnet, so those share one count.
 #[derive(Default)]
 pub struct PairingLimit {
     window_started: Option<Instant>,
-    failures: u32,
+    failures: HashMap<String, u32>,
+    total: u32,
 }
 
 impl PairingLimit {
-    fn is_blocked(&mut self) -> bool {
+    fn is_blocked(&mut self, caller: &str) -> bool {
         if self
             .window_started
             .is_some_and(|started| started.elapsed() >= FAILED_PAIRING_WINDOW)
         {
             *self = Self::default();
         }
-        self.failures >= MAX_FAILED_PAIRINGS
+        self.total >= MAX_FAILED_PAIRINGS_IN_ALL
+            || self.failures.get(caller).copied().unwrap_or(0) >= MAX_FAILED_PAIRINGS
     }
 
-    fn record_failure(&mut self) {
+    fn record_failure(&mut self, caller: &str) {
         self.window_started.get_or_insert_with(Instant::now);
-        self.failures += 1;
+        *self.failures.entry(caller.to_string()).or_insert(0) += 1;
+        self.total += 1;
     }
 }
 
@@ -54,7 +62,8 @@ pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
             token_hash TEXT NOT NULL UNIQUE,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )",
+        );
+        ALTER TABLE devices ADD COLUMN IF NOT EXISTS install_hash TEXT;",
     )
     .await
 }
@@ -63,6 +72,9 @@ pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
 pub struct PairRequest {
     key: String,
     name: String,
+    /// Says this is the same PC as an earlier pairing at another of this server's addresses.
+    #[serde(default)]
+    install: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -73,6 +85,7 @@ pub struct PairResponse {
 
 pub async fn pair(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(request): Json<PairRequest>,
 ) -> Result<Json<PairResponse>, StatusCode> {
     let expected = state
@@ -80,10 +93,14 @@ pub async fn pair(
         .as_deref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let name = clean_name(&request.name)?;
+    let caller = headers
+        .get("cf-connecting-ip")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("no-proxy");
 
     {
         let mut limit = state.pairing_limit.lock().unwrap();
-        if limit.is_blocked() {
+        if limit.is_blocked(caller) {
             return Err(StatusCode::TOO_MANY_REQUESTS);
         }
         let matches: bool = sha256(&request.key)
@@ -91,18 +108,19 @@ pub async fn pair(
             .ct_eq(sha256(expected).as_bytes())
             .into();
         if !matches {
-            limit.record_failure();
+            limit.record_failure(caller);
             return Err(StatusCode::UNAUTHORIZED);
         }
     }
 
     let id = random_hex::<16>();
     let token = random_hex::<32>();
+    let install_hash = request.install.as_deref().map(sha256);
     state
         .db
         .execute(
-            "INSERT INTO devices (id, name, token_hash) VALUES ($1, $2, $3)",
-            &[&id, &name, &sha256(&token)],
+            "INSERT INTO devices (id, name, token_hash, install_hash) VALUES ($1, $2, $3, $4)",
+            &[&id, &name, &sha256(&token), &install_hash],
         )
         .await
         .map_err(internal_error)?;
@@ -127,7 +145,7 @@ pub async fn list(
     let rows = state
         .db
         .query(
-            "SELECT id, name, EXTRACT(EPOCH FROM last_seen_at)::float8
+            "SELECT id, name, EXTRACT(EPOCH FROM last_seen_at)::float8, install_hash
              FROM devices ORDER BY created_at",
             &[],
         )
@@ -139,19 +157,36 @@ pub async fn list(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    Ok(Json(
-        rows.iter()
-            .map(|row| {
-                let id: String = row.get(0);
-                DeviceView {
-                    current: id == current,
-                    name: row.get(1),
-                    last_seen_at: row.get(2),
-                    id,
-                }
-            })
-            .collect(),
-    ))
+    // One PC paired at two of this server's addresses has a login for each, but it's one device.
+    let mut views: Vec<DeviceView> = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for row in &rows {
+        let id: String = row.get(0);
+        let is_current = id == current;
+        let last_seen_at: f64 = row.get(2);
+        let install_hash: Option<String> = row.get(3);
+
+        if let Some(&index) = install_hash.as_ref().and_then(|hash| seen.get(hash)) {
+            let view = &mut views[index];
+            view.last_seen_at = view.last_seen_at.max(last_seen_at);
+            if is_current {
+                view.current = true;
+                view.id = id;
+            }
+            continue;
+        }
+
+        if let Some(hash) = install_hash {
+            seen.insert(hash, views.len());
+        }
+        views.push(DeviceView {
+            current: is_current,
+            name: row.get(1),
+            last_seen_at,
+            id,
+        });
+    }
+    Ok(Json(views))
 }
 
 #[derive(Deserialize)]
@@ -169,13 +204,18 @@ pub async fn rename(
     let name = clean_name(&request.name)?;
     let changed = state
         .db
-        .execute("UPDATE devices SET name = $1 WHERE id = $2", &[&name, &id])
+        .execute(
+            "UPDATE devices SET name = $1 WHERE id = $2 OR install_hash =
+                (SELECT install_hash FROM devices WHERE id = $2)",
+            &[&name, &id],
+        )
         .await
         .map_err(internal_error)?;
     found_or_404(changed)
 }
 
-/// Removing a device ends its access. A device may remove itself to sign out.
+/// Removing a device ends its access, at every address it's paired at. A device may remove
+/// itself to sign out.
 pub async fn remove(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -184,7 +224,11 @@ pub async fn remove(
     authenticate(&state, &headers).await?;
     let removed = state
         .db
-        .execute("DELETE FROM devices WHERE id = $1", &[&id])
+        .execute(
+            "DELETE FROM devices WHERE id = $1 OR install_hash =
+                (SELECT install_hash FROM devices WHERE id = $1)",
+            &[&id],
+        )
         .await
         .map_err(internal_error)?;
     found_or_404(removed)

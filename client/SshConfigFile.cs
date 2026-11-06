@@ -68,7 +68,7 @@ internal static partial class SshConfigFile
 
     // A link, even one on a folder partway along, could lead onto a share, and following it would
     // do just what's refused above. Going from the top down means nothing past a link is touched.
-    private static bool HasLinkOnTheWay(string path)
+    internal static bool HasLinkOnTheWay(string path)
     {
         var root = Path.GetPathRoot(path)!;
         var current = root;

@@ -22,6 +22,10 @@ public static partial class EngineVersions
     /// <summary>Whether this engine's projects say what version they are.</summary>
     public static bool CanRead(string engine) => engine is "Unreal Engine" or "Godot";
 
+    /// <summary>Which engine a folder's own project file is for, if it has one.</summary>
+    public static Task<string?> DetectAsync(string folder) => Task.Run(() =>
+        Find(folder, "*.uproject", _ => "Unreal Engine") ?? Find(folder, "project.godot", _ => "Godot"));
+
     public static Task<string?> FindAsync(string engine, string folder) => engine switch
     {
         "Unreal Engine" => Task.Run(() => Find(folder, "*.uproject", FromUnrealProject)),

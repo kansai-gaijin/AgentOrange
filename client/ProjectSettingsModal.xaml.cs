@@ -100,6 +100,7 @@ public partial class ProjectSettingsModal : UserControl
     private TextBox? _folderField;
     private readonly List<Action<Project>> _refreshes = [];
     private bool _refreshing; // So showing another PC's change doesn't save it again as this one's.
+    private Action<Project>? _showNameToType;
     private TextBox? _nameField;
     private TextBox? _repoField;
     private Button? _doneButton;
@@ -290,6 +291,7 @@ public partial class ProjectSettingsModal : UserControl
         }
         if (Find(projectId) is { } named) ShowNameToType(named);
         _refreshes.Add(ShowNameToType);
+        _showNameToType = ShowNameToType;
 
         var card = Card(Row(
             "Delete this project",
@@ -467,6 +469,7 @@ public partial class ProjectSettingsModal : UserControl
     {
         if (Find(projectId) is not { } current) return;
         _database.SaveProject(change(current));
+        if (Find(projectId) is { } saved) _showNameToType?.Invoke(saved);
         ClearGeneralProblem();
         Changed?.Invoke();
     }

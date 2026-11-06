@@ -7,7 +7,8 @@ using System.Text.RegularExpressions;
 
 namespace AgentOrange;
 
-public sealed record GitResult(bool Worked, string Value);
+/// <summary>Note is something that didn't go as well as the rest, worth saying even though it worked.</summary>
+public sealed record GitResult(bool Worked, string Value, string? Note = null);
 
 /// <summary>How a folder's commits compare with its repo's. A repo with none can't say.</summary>
 public enum FolderHistory { CantTell, SharesCommits, SharesNothing }
@@ -665,15 +666,15 @@ public static partial class GitTools
     /// is pushed. A folder that already has a remote is only re-pointed when that remote
     /// is the repo being replaced, so an unrelated repo's remote can't be overwritten.
     /// </summary>
-    public static async Task<GitResult> CreatePrivateRepoAsync(string projectName, string folder, string? replacingRepo = null)
+    public static async Task<GitResult> CreatePrivateRepoAsync(string projectName, string folder, string? replacingRepo = null, string wantedName = "")
     {
 #if DEBUG
         // Trying something out must never leave a real repo on someone's account, or set up
         // Git in a folder for one that's never going to exist.
         if (Headless.Active) return new GitResult(false, "Headless mode doesn't create real repos.");
 #endif
-        var repoName = RepoName(projectName);
-        if (repoName.Length == 0) return new GitResult(false, "That project name can't be used as a repo name. Rename the project, or enter a repo URL.");
+        var repoName = RepoName(wantedName.Trim().Length > 0 ? wantedName : projectName);
+        if (repoName.Length == 0) return new GitResult(false, "A repo's name can only use Latin letters and numbers, and this one has none. Give it a repo name that does, or enter a repo URL.");
 
         // Only the active account matters, because another one having expired fails this too.
         var signedIn = await RunAsync("gh", Path.GetTempPath(), "auth", "status", "--active", "--hostname", "github.com");
@@ -815,10 +816,58 @@ public static partial class GitTools
 
     /// <summary>Set up for Git, with no files or commits, as git init leaves a folder.</summary>
     public static async Task<bool> FolderHoldsOnlyGitAsync(string folder) =>
-        await Task.Run(() => Directory.EnumerateFileSystemEntries(folder).All(entry => Path.GetFileName(entry) == ".git"))
+        await Task.Run(() =>
+        {
+            try
+            {
+                return Directory.EnumerateFileSystemEntries(folder).All(entry => Path.GetFileName(entry) == ".git");
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                return false; // A drive can drop while this is being asked.
+            }
+        })
         && await FolderHasNoCommitsAsync(folder) == true;
 
-    public static Task<bool> FolderIsLinkAsync(string folder) => Task.Run(() => new DirectoryInfo(folder).LinkTarget is not null);
+    public static Task<bool> FolderIsLinkAsync(string folder) => Task.Run(() =>
+    {
+        try
+        {
+            return new DirectoryInfo(folder).LinkTarget is not null;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            return true; // Can't be vouched for, so it isn't treated as an ordinary folder.
+        }
+    });
+
+    /// <summary>
+    /// A folder can send its pushes somewhere other than origin, for this branch or for all of
+    /// them. That's a normal way to work with a fork, so this is something to know, not a reason
+    /// to refuse. Gives where they'd go, if that isn't this project's repo.
+    /// </summary>
+    public static async Task<string?> PushesElsewhereAsync(string folder, string repoUrl)
+    {
+        var branch = await RunAsync("git", folder, "symbolic-ref", "--short", "-q", "HEAD");
+        var forBranch = branch is { ExitCode: 0 }
+            ? await RunAsync("git", folder, "config", "--get", $"branch.{branch.Output.Trim()}.pushRemote")
+            : null;
+        var chosen = forBranch is { ExitCode: 0 } ? forBranch : await RunAsync("git", folder, "config", "--get", "remote.pushDefault");
+        if (chosen is not { ExitCode: 0 }) return null;
+
+        var remote = chosen.Output.Trim();
+        if (remote.Length == 0 || remote == "origin") return null;
+
+        var addresses = await RunAsync("git", folder, "remote", "get-url", "--push", "--all", remote);
+        if (addresses is not { ExitCode: 0 }) return remote;
+        foreach (var line in addresses.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var address = WithoutCredentials(line);
+            var (gitHubForm, _) = await GitHubFormAsync(address, folder);
+            if (!SameRepo(gitHubForm ?? address, repoUrl)) return $"{remote} ({address})";
+        }
+        return null;
+    }
 
     /// <summary>
     /// Clones into a new folder inside the chosen one, or into exactFolder if it's empty, and
@@ -886,13 +935,45 @@ public static partial class GitTools
         try
         {
             await MoveIntoPlaceAsync(working, destination);
-            return new GitResult(true, destination);
+            return new GitResult(true, destination, await FetchSubmodulesAsync(destination, cancel, progress));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             AppLog.Write($"Couldn't name a finished clone: {error.Message}");
             return new GitResult(false, $"The clone finished, but it couldn't be named {destination}. It's kept at {await KeepVisibleAsync(working, destination)}. You can rename it and select it.");
         }
+    }
+
+    // After the clone is safely in place, because a submodule that can't be fetched, such as a
+    // private one, shouldn't cost everything else. Git's allowed protocols apply to these too.
+    private static async Task<string?> FetchSubmodulesAsync(string folder, CancellationToken cancel, Action<string>? progress)
+    {
+        if (!await Task.Run(() => File.Exists(Path.Combine(folder, ".gitmodules")))) return null;
+
+        progress?.Invoke("Fetching submodules");
+        var result = await RunAsync("git", folder, null, ["-c", "core.longpaths=true", "submodule", "update", "--init", "--recursive"], cancel, await SshSettingsAsync(folder));
+        if (result is { ExitCode: 0 }) return null;
+
+        var reason = cancel.IsCancellationRequested ? "That was cancelled." : GitFailureReason(result?.Errors ?? "");
+        return $"The clone finished, but its submodules didn't. {reason} Run git submodule update --init --recursive in it to try again.";
+    }
+
+    /// <summary>
+    /// GitHub follows renames and transfers, so a repo can keep passing under an old name. This
+    /// gives the repo's current address if it has moved, or null if it hasn't or that can't be told.
+    /// </summary>
+    public static async Task<string?> RenamedRepoUrlAsync(string url)
+    {
+        if (RepoUrlProblem(url) is not null) return null;
+
+        var parts = RepoIdentity(url).Split('/');
+        var slug = $"{parts[1]}/{parts[2]}";
+        var view = await RunAsync("gh", Path.GetTempPath(), "repo", "view", slug, "--json", "nameWithOwner", "--jq", ".nameWithOwner");
+        var current = view is { ExitCode: 0 } ? view.Output.Trim() : "";
+        if (current.Length == 0 || current.Equals(slug, StringComparison.OrdinalIgnoreCase)) return null;
+
+        var renamed = $"https://github.com/{current}.git";
+        return RepoUrlProblem(renamed) is null ? renamed : null;
     }
 
     // Git's real complaint, not its last line, which is often advice for a folder now gone.
@@ -1224,6 +1305,12 @@ public static partial class GitTools
         if (await Task.Run(() => FindOnPath(program)) is not { } programPath) return null;
         if (!await FolderExistsAsync(folder)) return new CommandResult(-1, "", "That folder can't be reached.");
 
+        // Before Git runs at all, because Git follows these just by starting up in the folder.
+        if (program == "git" && await Task.Run(() => GitFolderSafety.NetworkPathProblem(folder)) is { } networkProblem)
+        {
+            return new CommandResult(128, "", networkProblem);
+        }
+
         var info = new ProcessStartInfo(programPath)
         {
             WorkingDirectory = folder,
@@ -1254,7 +1341,7 @@ public static partial class GitTools
         }
 
         // Never a login window: the person has a GitHub CLI login by the time any of this runs.
-        var isClone = arguments.Length > 0 && arguments[0] == "clone";
+        var isClone = arguments is ["clone", ..] || arguments.Contains("submodule");
         info.Environment["GCM_INTERACTIVE"] = "never";
 
         var isCreate = arguments is ["repo", "create", ..];

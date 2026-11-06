@@ -266,7 +266,7 @@ public sealed class LocalDatabase
         }
 
         var order = ProjectOrder();
-        if (order.Remove(projectId)) SaveProjectOrder(order);
+        if (order.Remove(projectId)) SaveRecord(SettingsCollection, ProjectOrderRecord, JsonSerializer.Serialize(order, JsonOptions));
 
         SetProjectFolder(projectId, "");
         SetSetting($"project_verified:{projectId}", "");
@@ -346,8 +346,13 @@ public sealed class LocalDatabase
         return await Task.Run(() => linked.FirstOrDefault(link => FolderIdentity.Overlap(folder, link.Folder!)).Project);
     }
 
-    public void SaveProjectOrder(IEnumerable<string> projectIds) =>
-        SaveRecord(SettingsCollection, ProjectOrderRecord, JsonSerializer.Serialize(projectIds, JsonOptions));
+    /// <summary>Projects this PC hasn't received yet keep their place in line, behind these.</summary>
+    public void SaveProjectOrder(IEnumerable<string> projectIds)
+    {
+        var order = projectIds.ToList();
+        order.AddRange(ProjectOrder().Except(order));
+        SaveRecord(SettingsCollection, ProjectOrderRecord, JsonSerializer.Serialize(order, JsonOptions));
+    }
 
     private List<string> ProjectOrder()
     {
@@ -362,6 +367,41 @@ public sealed class LocalDatabase
             AppLog.Write($"Skipped an unreadable project order: {error.Message}");
             return [];
         }
+    }
+
+    /// <summary>Changes whenever a synced record does, including from another window of the app.</summary>
+    public string RecordsSignature()
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) || ':' || COALESCE(SUM(changed_at), 0) FROM records";
+        return command.ExecuteScalar() as string ?? "";
+    }
+
+    /// <summary>
+    /// Says one PC is the same PC at each of a server's addresses, so it's one device there. Not
+    /// a login: it gets nothing without the pairing key, and the server only keeps a hash of it.
+    /// </summary>
+    public string InstallId()
+    {
+        const string setting = "install_id";
+        if (GetSetting(setting) is { Length: > 0 } known) return known;
+        var id = Guid.NewGuid().ToString("N");
+        SetSetting(setting, id);
+        return id;
+    }
+
+    /// <summary>Every server address this PC has been paired with, whichever it's using now.</summary>
+    public List<string> AddressesWithLogin()
+    {
+        const string prefix = "device_token:";
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT key FROM settings WHERE key LIKE 'device_token:%' AND value <> ''";
+        var addresses = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read()) addresses.Add(reader.GetString(0)[prefix.Length..]);
+        return addresses;
     }
 
     /// <summary>Folders differ between PCs, so they stay on this one and never sync.</summary>
@@ -387,6 +427,9 @@ public sealed class LocalDatabase
     public bool FolderSharesRepo(string folder, string repoKey) => GetSetting(SharesRepoKey(folder)) == repoKey;
 
     public void RememberFolderSharesRepo(string folder, string repoKey) => SetSetting(SharesRepoKey(folder), repoKey);
+
+    /// <summary>The repo may be gone, and whatever's made at that address next is a different one.</summary>
+    public void ForgetFolderSharesRepo(string folder) => SetSetting(SharesRepoKey(folder), "");
 
     private static string SharesRepoKey(string folder) => $"folder_shares_repo:{folder}";
 

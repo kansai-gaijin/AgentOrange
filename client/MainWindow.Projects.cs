@@ -31,6 +31,8 @@ public partial class MainWindow
     private static readonly TimeSpan AccessCheckInterval = TimeSpan.FromMinutes(5);
     private DateTimeOffset _lastAccessCheck;
     private bool _folderExists;
+    private string? _folderEngine;
+    private string? _folderPushesTo;
     private bool _folderLacksFiles;
     private bool _folderMayNotMatch;
     private string? _scrolledToProblem;
@@ -347,6 +349,8 @@ public partial class MainWindow
         _projectCheck = null;
         _folderProblem = null;
         _folderExists = false;
+        _folderEngine = null;
+        _folderPushesTo = null;
         _folderLacksFiles = false;
         _folderMayNotMatch = false;
         _pageProblem = _heldProblems.Remove(project.Id, out var held) ? held : null;
@@ -378,6 +382,9 @@ public partial class MainWindow
             : FolderHistory.CantTell;
         if (history == FolderHistory.SharesCommits) _database.RememberFolderSharesRepo(folder!, repoKey);
         var mayNotMatch = history == FolderHistory.SharesNothing;
+        var folderEngine = folderExists && folderProblem is null ? await EngineVersions.DetectAsync(folder!) : null;
+        var pushesTo = folderExists && folderProblem is null ? await GitTools.PushesElsewhereAsync(folder!, project.RepoUrl) : null;
+        if (folderExists && check.IsDenied) _database.ForgetFolderSharesRepo(folder!);
 
         if (navigation != _navigation) return; // They moved on, or something newer started.
 
@@ -390,6 +397,19 @@ public partial class MainWindow
         if (!GitTools.SameRepo(latest.RepoUrl, project.RepoUrl))
         {
             await OpenProjectAsync(latest);
+            return;
+        }
+
+        // Renamed or moved on GitHub, which follows that for a while but won't forever. This is
+        // the same repo, so the project and its folder just move to the new address.
+        if (check.Access is RepoAccess.Allowed or RepoAccess.ReadOnly or RepoAccess.GitCantReach or RepoAccess.GitReadOnly
+            && await GitTools.RenamedRepoUrlAsync(latest.RepoUrl) is { } renamed
+            && GitTools.ProjectUsingRepo(renamed) is null)
+        {
+            _database.SaveProject(latest with { RepoUrl = renamed });
+            if (folderExists && folderProblem is null) await GitTools.PointFolderAtRepoAsync(folder!, renamed);
+            _ = _sync.SyncNowAsync();
+            if (navigation == _navigation && FindProject(project.Id) is { } moved) await OpenProjectAsync(moved);
             return;
         }
 
@@ -410,6 +430,8 @@ public partial class MainWindow
         _folderProblem = folderProblem;
         _folderLacksFiles = lacksFiles;
         _folderMayNotMatch = mayNotMatch;
+        _folderEngine = folderEngine;
+        _folderPushesTo = pushesTo;
         RenderProject(latest);
         await ReadEngineVersionAsync(latest.Id);
     }
@@ -510,6 +532,14 @@ public partial class MainWindow
         if (_folderExists && _folderProblem is null && !_folderLacksFiles)
         {
             body.Children.Add(new TextBlock { Text = folder, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = folder });
+            if (_folderPushesTo is { } pushesTo)
+            {
+                body.Children.Add(new TextBlock { Text = $"This folder pushes to {pushesTo}, not this project's repo. That's normal for a fork, but check that it's what you want.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+            }
+            if (_folderEngine is { } found && found != project.Engine)
+            {
+                body.Children.Add(new TextBlock { Text = $"This folder looks like a {found} project, but this project is set to {project.Engine}. You can change that in project settings.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+            }
             if (_folderMayNotMatch)
             {
                 body.Children.Add(new TextBlock { Text = "This folder doesn't have the repo's latest commits. It may just be behind, but it may not be the same project, so check before pushing.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
@@ -665,7 +695,7 @@ public partial class MainWindow
                 Margin = new Thickness(16, 0, 16, 12),
                 Child = new TextBlock
                 {
-                    Text = $"This creates a new, empty private repo called {GitTools.RepoName(project.Name)} under {destination} and moves this project to it on all your PCs, replacing {project.RepoUrl}.{mayStillExist} Nothing is pushed, so push your work afterward for your other PCs to get it.",
+                    Text = $"This creates a new, empty private repo{(GitTools.RepoName(project.Name) is { Length: > 0 } repoName ? $" called {repoName}" : "")} under {destination} and moves this project to it on all your PCs, replacing {project.RepoUrl}.{mayStillExist} Nothing is pushed, so push your work afterward for your other PCs to get it.",
                     Foreground = (Brush)FindResource("TextNormal"),
                     FontSize = 13,
                     TextWrapping = TextWrapping.Wrap,
@@ -985,16 +1015,19 @@ public partial class MainWindow
         {
             await RunCloneAsync(project, parentFolder, exactFolder);
         }
-        finally
+        catch (Exception)
         {
-            if (destination is not null) _database.ReleaseFolder(destination);
-
-            // If something unexpected went wrong, the page can't be left waiting forever.
+            // Something unexpected, and the page can't be left waiting forever.
             if (_busyProjectId == project.Id)
             {
                 _cloneCancel = null;
                 EndBusy();
             }
+            throw;
+        }
+        finally
+        {
+            if (destination is not null) _database.ReleaseFolder(destination);
         }
     }
 
@@ -1058,6 +1091,7 @@ public partial class MainWindow
         else
         {
             await UseFolderAsync(project, result.Value, folderBefore);
+            if (result.Note is not null) ShowPageProblem(project.Id, result.Note);
         }
     }
 

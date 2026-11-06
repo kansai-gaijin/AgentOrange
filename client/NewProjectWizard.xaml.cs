@@ -32,6 +32,7 @@ public partial class NewProjectWizard : UserControl
     private string _gameType = ProjectChoices.GameTypes[0];
     private string _folder = "";
     private string _repoUrl = "";
+    private string _wantedRepoName = "";
     private string _autoFilledRepo = "";
     private bool _working;
     private string? _replacingUrl;
@@ -64,6 +65,7 @@ public partial class NewProjectWizard : UserControl
         _gameType = ProjectChoices.GameTypes[0];
         _folder = "";
         _repoUrl = "";
+        _wantedRepoName = "";
         _autoFilledRepo = "";
         _working = false;
         Visibility = Visibility.Visible;
@@ -161,6 +163,9 @@ public partial class NewProjectWizard : UserControl
         repo.Width = 300;
         var problem = ProblemText();
         problem.TextWrapping = TextWrapping.Wrap;
+        var repoName = Field(_wantedRepoName);
+        repoName.Width = 300;
+        repoName.TextChanged += (_, _) => _wantedRepoName = repoName.Text;
         var progress = new TextBlock { FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 8, 0, 0), Visibility = Visibility.Collapsed };
 
         folder.TextChanged += (_, _) =>
@@ -213,6 +218,7 @@ public partial class NewProjectWizard : UserControl
             browse.IsEnabled = !working;
             folder.IsEnabled = !working;
             repo.IsEnabled = !working;
+            repoName.IsEnabled = !working;
             progress.Text = status ?? "";
             progress.Visibility = status is null ? Visibility.Collapsed : Visibility.Visible;
         }
@@ -271,7 +277,7 @@ public partial class NewProjectWizard : UserControl
                     {
                         IsCreatingRepo = true;
                         progress.Text = "Creating a private repo on GitHub…";
-                        var created = await GitTools.CreatePrivateRepoAsync(_name, path, replacing);
+                        var created = await GitTools.CreatePrivateRepoAsync(_name, path, replacing, _wantedRepoName);
                         (url, confirmed, failure) = created.Worked ? (created.Value, true, (string?)null) : ("", false, created.Value);
                     }
                 }
@@ -319,6 +325,7 @@ public partial class NewProjectWizard : UserControl
             {
                 Row("Project folder", "Where this game's files are on this PC.", folder, browse),
                 Row("Repo URL", "Leave blank to create a new, empty private repo on GitHub. Nothing is pushed, so push your work for your other PCs to get it.", repo),
+                Row("Repo name", "For a new repo. Leave blank to use the project's name. GitHub needs Latin letters and numbers.", repoName),
                 progress,
                 problem,
             },
@@ -358,7 +365,7 @@ public partial class NewProjectWizard : UserControl
 
             IsCreatingRepo = true;
             status("Creating a private repo on GitHub…");
-            var created = await GitTools.CreatePrivateRepoAsync(project.Name, project.Folder);
+            var created = await GitTools.CreatePrivateRepoAsync(project.Name, project.Folder, null, _wantedRepoName);
             return created.Worked ? (created.Value, true, null) : ("", false, created.Value);
         }
 
@@ -397,6 +404,8 @@ public partial class NewProjectWizard : UserControl
                 _offeringFolderSettings = true;
                 _shownFolderSettings = runnable.Fingerprint;
                 return ("", false, $"Git can't reach this repo without this folder's own Git settings, which can run programs or send your login somewhere else:\n{runnable.Shown}\nOnly use them if you trust where this folder came from.");
+            case RepoAccess.Archived:
+                return ("", false, "That repo is archived, so GitHub won't accept changes to it. Unarchive it on GitHub, or use a different repo.");
             case RepoAccess.SignedOut:
                 return ("", false, "This PC isn't signed in to GitHub. Run gh auth login in a terminal, then try again.");
             case RepoAccess.OtherAccount:
