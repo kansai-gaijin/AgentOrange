@@ -19,6 +19,7 @@ public partial class MainWindow
 {
     private const int CoverWidth = 176;
     private const int CoverHeight = 264;
+    private const string CloneInProgressSetting = "clone_in_progress";
     private const double DragScrollEdge = 48;
     private const double DragScrollStep = 18;
     private static readonly TimeSpan ClickSuppressionAfterDrag = TimeSpan.FromMilliseconds(400);
@@ -141,16 +142,16 @@ public partial class MainWindow
         var card = new Button { Style = (Style)FindResource("ProjectCard"), Content = content, Tag = project.Id, AllowDrop = true };
         AutomationProperties.SetName(card, project.Name);
 
-        card.MouseEnter += (_, _) =>
+        // The gear has to show for the keyboard too, or Tab can never reach it.
+        void ShowActive()
         {
-            cover.BorderBrush = (Brush)FindResource("Accent");
-            gear.Visibility = Visibility.Visible;
-        };
-        card.MouseLeave += (_, _) =>
-        {
-            cover.BorderBrush = Brushes.Transparent;
-            gear.Visibility = Visibility.Hidden;
-        };
+            var active = card.IsMouseOver || card.IsKeyboardFocusWithin;
+            cover.BorderBrush = active ? (Brush)FindResource("Accent") : Brushes.Transparent;
+            gear.Visibility = active ? Visibility.Visible : Visibility.Hidden;
+        }
+        card.MouseEnter += (_, _) => ShowActive();
+        card.MouseLeave += (_, _) => ShowActive();
+        card.IsKeyboardFocusWithinChanged += (_, _) => ShowActive();
         card.Click += async (_, _) =>
         {
             if (DateTimeOffset.UtcNow - _dragEnded < ClickSuppressionAfterDrag) return;
@@ -232,6 +233,7 @@ public partial class MainWindow
         card.Opacity = 1;
         _draggedCard = null;
         _dragEnded = DateTimeOffset.UtcNow;
+        Keyboard.ClearFocus(); // Or the card stays highlighted after the mouse has left it.
 
         // Esc, or dropping outside the library, puts everything back.
         var after = CurrentOrder();
@@ -659,6 +661,12 @@ public partial class MainWindow
             var dialog = new OpenFolderDialog { Title = $"Find the folder for {project.Name}" };
             if (dialog.ShowDialog() != true) return;
 
+            if (_database.ProjectUsingFolder(dialog.FolderName, project.Id) is { } other)
+            {
+                ShowPageProblem(project.Id, $"{other.Name} already uses that folder. A folder can only be one project.");
+                return;
+            }
+
             StartBusy(project, "Checking that folder…");
             var folderProblem = await GitTools.FolderProblemAsync(dialog.FolderName, project.RepoUrl);
             EndBusy();
@@ -675,7 +683,8 @@ public partial class MainWindow
             using var cancel = new CancellationTokenSource();
             _cloneCancel = cancel;
             StartBusy(project, "Cloning…");
-            var result = await GitTools.CloneAsync(project.RepoUrl, dialog.FolderName, cancel.Token);
+            var result = await GitTools.CloneAsync(project.RepoUrl, dialog.FolderName, cancel.Token, working => _database.SetSetting(CloneInProgressSetting, working));
+            _database.SetSetting(CloneInProgressSetting, "");
             _cloneCancel = null;
             EndBusy();
 
@@ -720,6 +729,14 @@ public partial class MainWindow
 
         if (result.Worked) await RefreshThenRecheckAsync(project.Id);
         else ShowPageProblem(project.Id, result.Value);
+    }
+
+    // The app closed in the middle of a clone last time.
+    private async Task RemoveLeftoverCloneAsync()
+    {
+        if (_database.GetSetting(CloneInProgressSetting) is not { Length: > 0 } folder) return;
+        await GitTools.RemoveLeftoverCloneAsync(folder);
+        _database.SetSetting(CloneInProgressSetting, "");
     }
 
     // Saved even if they've left the page, because the clone or the choice was real.

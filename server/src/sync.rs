@@ -34,7 +34,11 @@ pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
             updated_by TEXT NOT NULL,
             PRIMARY KEY (collection, id)
          );
-         CREATE INDEX IF NOT EXISTS sync_records_seq ON sync_records (seq);",
+         CREATE INDEX IF NOT EXISTS sync_records_seq ON sync_records (seq);
+         CREATE TABLE IF NOT EXISTS sync_meta (epoch TEXT NOT NULL);
+         INSERT INTO sync_meta (epoch)
+            SELECT md5(random()::text || clock_timestamp()::text)
+            WHERE NOT EXISTS (SELECT 1 FROM sync_meta);",
     )
     .await
 }
@@ -59,6 +63,9 @@ pub struct SyncResponse {
     cursor: i64,
     has_more: bool,
     changes: Vec<Change>,
+    /// Made once with the database. A new one tells a device this server has lost
+    /// what it had, so the device's cursor means nothing and it should send everything.
+    epoch: String,
 }
 
 /// Saves this device's changes, then returns everything newer than its cursor.
@@ -153,9 +160,17 @@ pub async fn sync(
         });
     }
 
+    let epoch = state
+        .db
+        .query_one("SELECT epoch FROM sync_meta", &[])
+        .await
+        .map_err(internal_error)?
+        .get(0);
+
     Ok(Json(SyncResponse {
         cursor,
         has_more,
         changes,
+        epoch,
     }))
 }

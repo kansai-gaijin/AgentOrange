@@ -24,7 +24,8 @@ public sealed record DeviceInfo(string Id, string Name, bool Current, double Las
     }
 }
 
-public sealed record SyncResponse(long Cursor, bool HasMore, List<SyncChange> Changes);
+/// <summary>Epoch is different if the server's data has started over.</summary>
+public sealed record SyncResponse(long Cursor, bool HasMore, List<SyncChange> Changes, string? Epoch);
 
 /// <summary>This PC's login to the server. It's stored encrypted, per server address.</summary>
 public sealed class DeviceSession(LocalDatabase database, ServerConnection server)

@@ -15,6 +15,7 @@ public enum RepoAccess
     SignedOut,
     OtherAccount,
     ReadOnly,
+    Restricted,
     NotFound,
     NotFoundOrNoAccess,
     GitCantReach,
@@ -27,7 +28,7 @@ public enum RepoAccess
 public sealed record RepoCheck(RepoAccess Access, string? Account = null)
 {
     /// <summary>The check got a clear answer that this PC can't use the repo, as opposed to not getting one.</summary>
-    public bool IsDenied => Access is RepoAccess.ReadOnly or RepoAccess.NotFound or RepoAccess.NotFoundOrNoAccess or RepoAccess.BadUrl;
+    public bool IsDenied => Access is RepoAccess.ReadOnly or RepoAccess.Restricted or RepoAccess.NotFound or RepoAccess.NotFoundOrNoAccess or RepoAccess.BadUrl;
 
     public (string Heading, string Description) Describe() => Access switch
     {
@@ -36,6 +37,7 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
         RepoAccess.SignedOut => ("Sign in to GitHub", "This PC isn't signed in, so your access to this repo can't be checked."),
         RepoAccess.OtherAccount => ("Wrong GitHub account", $"Your active GitHub account can't work on this repo, but {Account} can."),
         RepoAccess.ReadOnly => ("You don't have access to this repo", $"{Account ?? "Your GitHub account"} can only read it, so you can't work on it. Get write access, or use a different repo."),
+        RepoAccess.Restricted => ("GitHub is blocking this login from the repo", "An organization or token setting doesn't let this login see it, so trying again won't help. Authorize the login for the organization on GitHub, or sign in again with gh auth refresh."),
         RepoAccess.NotFound => ("This repo doesn't exist", "It may have been deleted or renamed, or your GitHub login may not be allowed to see it."),
         RepoAccess.NotFoundOrNoAccess => ("Can't find this repo", "It was deleted, or your GitHub account doesn't have access. GitHub doesn't say which. If you should have access, ask the owner."),
         RepoAccess.GitCantReach => ("Git on this PC can't reach this repo", "Check this PC's Git setup, such as its SSH keys, or run gh auth setup-git."),
@@ -119,6 +121,7 @@ public static partial class GitTools
         if (!readOnly && !notFound)
         {
             if (LooksLikeNetworkFailure(view.Errors)) return new RepoCheck(RepoAccess.Offline);
+            if (AccessBlocked().IsMatch(view.Errors)) return new RepoCheck(RepoAccess.Restricted, await ActiveAccountAsync());
             return new RepoCheck(SignedOutMessage().IsMatch(view.Errors) ? RepoAccess.SignedOut : RepoAccess.CheckFailed);
         }
 
@@ -135,7 +138,7 @@ public static partial class GitTools
             // If an account couldn't answer, nothing can be said about the repo being gone or
             // who can write to it. An account with an expired login just can't work on it.
             var errors = viewed?.Errors ?? "";
-            var answered = viewed is { ExitCode: 0 } || SaysRepoMissing(errors) || SignedOutMessage().IsMatch(errors);
+            var answered = viewed is { ExitCode: 0 } || SaysRepoMissing(errors) || SignedOutMessage().IsMatch(errors) || AccessBlocked().IsMatch(errors);
             if (!answered) inconclusive = errors;
         }
 
@@ -326,8 +329,11 @@ public static partial class GitTools
             : new GitResult(false, "The repo was created, but couldn't be linked to that folder.");
     }
 
-    /// <summary>Clones into a new folder inside the chosen one, and returns the new folder's path.</summary>
-    public static async Task<GitResult> CloneAsync(string url, string parentFolder, CancellationToken cancel)
+    /// <summary>
+    /// Clones into a new folder inside the chosen one, and returns the new folder's path.
+    /// workingFolder says where it's working, so that can be cleaned up if the app closes first.
+    /// </summary>
+    public static async Task<GitResult> CloneAsync(string url, string parentFolder, CancellationToken cancel, Action<string> workingFolder)
     {
         if (RepoUrlProblem(url) is { } problem) return new GitResult(false, problem);
         if (FolderNameFor(url) is not { } name) return new GitResult(false, "That repo URL doesn't name a folder to clone into.");
@@ -337,6 +343,7 @@ public static partial class GitTools
         // Cloning into a folder that only this clone owns means a failure can never remove
         // anything else, and the real name only appears once the clone is complete.
         var working = Path.Combine(parentFolder, $".{name}.cloning-{Guid.NewGuid():N}");
+        workingFolder(working);
         try
         {
             if (await DestinationTakenAsync(destination)) return new GitResult(false, $"{destination} already exists and isn't empty.");
@@ -360,6 +367,15 @@ public static partial class GitTools
             AppLog.Write($"Couldn't finish a clone: {error.Message}");
             await TryDeleteOwnedFolderAsync(working);
             return new GitResult(false, $"Couldn't put the project in {parentFolder}.");
+        }
+    }
+
+    /// <summary>Removes what a clone left when the app closed in the middle of it. Only ever touches a folder named by CloneAsync.</summary>
+    public static async Task RemoveLeftoverCloneAsync(string folder)
+    {
+        if (Path.IsPathFullyQualified(folder) && CloneWorkingFolderName().IsMatch(Path.GetFileName(folder)))
+        {
+            await TryDeleteOwnedFolderAsync(folder);
         }
     }
 
@@ -584,6 +600,7 @@ public static partial class GitTools
         {
             process = await Task.Run(() => Process.Start(info));
             if (process is null) return null;
+            ChildProcesses.Track(process);
             var output = process.StandardOutput.ReadToEndAsync(stop.Token);
             var errors = process.StandardError.ReadToEndAsync(stop.Token);
             await process.WaitForExitAsync(stop.Token);
@@ -633,6 +650,12 @@ public static partial class GitTools
 
     [GeneratedRegex(@"""viewerPermission""\s*:\s*""(ADMIN|MAINTAIN|WRITE)""")]
     private static partial Regex WritePermission();
+
+    [GeneratedRegex(@"SAML|not accessible by", RegexOptions.IgnoreCase)]
+    private static partial Regex AccessBlocked();
+
+    [GeneratedRegex(@"^\..+\.cloning-[0-9a-f]{32}$")]
+    private static partial Regex CloneWorkingFolderName();
 
     [GeneratedRegex(@"HTTP 401|gh auth login|not logged in", RegexOptions.IgnoreCase)]
     private static partial Regex SignedOutMessage();

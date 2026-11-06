@@ -12,7 +12,17 @@ public static class Program
         VelopackApp.Build().Run();
 
         var app = new App();
-        app.DispatcherUnhandledException += (_, e) => AppLog.Write($"Crashed: {e.Exception}");
+        app.DispatcherUnhandledException += (_, e) =>
+        {
+            AppLog.Write($"Crashed: {e.Exception}");
+            System.Windows.MessageBox.Show(
+                "Agent Orange hit an unexpected problem and has to close. What you've already saved is safe.\n\nThe details are in its logs. Settings > About has a link to them.",
+                "Agent Orange",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Error);
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => AppLog.Write($"Crashed: {e.ExceptionObject}");
+        TaskScheduler.UnobservedTaskException += (_, e) => AppLog.Write($"A background task failed: {e.Exception}");
         app.InitializeComponent();
         app.Run();
     }

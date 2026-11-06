@@ -131,6 +131,54 @@ public sealed class LocalDatabase
         SetSetting($"project_verified:{projectId}", "");
     }
 
+    /// <summary>
+    /// A project deleted on another PC leaves things behind here: its folder link, and any
+    /// image that was on its way when it was deleted, which would stay on the server forever.
+    /// </summary>
+    public void CleanUpDeletedProjects()
+    {
+        var deleted = new List<string>();
+        using (var connection = Open())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT id FROM records WHERE collection = $collection AND deleted = 1";
+            command.Parameters.AddWithValue("$collection", ProjectsCollection);
+            using var reader = command.ExecuteReader();
+            while (reader.Read()) deleted.Add(reader.GetString(0));
+        }
+
+        foreach (var projectId in deleted)
+        {
+            foreach (var kind in Enum.GetValues<ProjectImageKind>())
+            {
+                if (GetRecord(ImagesCollection, ImageId(projectId, kind)) is not null) SetProjectImage(projectId, kind, null);
+            }
+            foreach (var setting in new[] { $"project_folder:{projectId}", $"project_verified:{projectId}" })
+            {
+                if (!string.IsNullOrEmpty(GetSetting(setting))) SetSetting(setting, "");
+            }
+        }
+    }
+
+    /// <summary>A folder can only be one project, so this finds who already has it.</summary>
+    public Project? ProjectUsingFolder(string folder, string? exceptProjectId = null) =>
+        ListProjects().FirstOrDefault(project =>
+            project.Id != exceptProjectId
+            && GetProjectFolder(project.Id) is { } linked
+            && SameFolder(linked, folder));
+
+    private static bool SameFolder(string a, string b)
+    {
+        try
+        {
+            return string.Equals(Path.GetFullPath(a).TrimEnd('\\', '/'), Path.GetFullPath(b).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
     public void SaveProjectOrder(IEnumerable<string> projectIds) =>
         SaveRecord(SettingsCollection, ProjectOrderRecord, JsonSerializer.Serialize(projectIds, JsonOptions));
 

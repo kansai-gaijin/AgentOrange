@@ -291,7 +291,9 @@ public partial class ProjectSettingsModal : UserControl
         {
             if (Find(projectId) is not { } current) return;
 
-            var problem = await GitTools.FolderProblemAsync(chosen, current.RepoUrl);
+            var problem = _database.ProjectUsingFolder(chosen, projectId) is { } other
+                ? $"{other.Name} already uses that folder. A folder can only be one project."
+                : await GitTools.FolderProblemAsync(chosen, current.RepoUrl);
             if (problem is not null)
             {
                 if (session == _session) ReportProblem(problem);

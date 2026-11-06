@@ -47,6 +47,7 @@ public partial class MainWindow : Window
         AppLog.Write($"Started {(_updates.IsInstalled ? $"v{_updates.CurrentVersion}" : "dev build")}");
 
         _database = new LocalDatabase(folders.DatabasePath);
+        ProjectWizard.FolderTakenBy = folder => _database.ProjectUsingFolder(folder)?.Name;
         Settings.Folders = folders;
         Settings.Database = _database;
         Settings.Providers = new AgentProviders(_database, folders.AgentFolder);
@@ -64,7 +65,11 @@ public partial class MainWindow : Window
         Settings.Devices = _devices;
 
         _sync = new SyncEngine(_database, _server, _devices);
-        _sync.RecordsChanged += RefreshProjects;
+        _sync.RecordsChanged += () =>
+        {
+            _database.CleanUpDeletedProjects();
+            RefreshProjects();
+        };
         Settings.Sync = _sync;
         Settings.Start();
 
@@ -78,6 +83,7 @@ public partial class MainWindow : Window
 
         Loaded += async (_, _) =>
         {
+            await RemoveLeftoverCloneAsync();
             await _server.CheckAsync();
             if (_updates.IsInstalled) await CheckForUpdateAsync();
         };

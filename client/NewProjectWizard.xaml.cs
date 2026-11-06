@@ -56,6 +56,9 @@ public partial class NewProjectWizard : UserControl
 
     public event Action<NewProject>? Created;
 
+    /// <summary>Gives the name of the project already using a folder, if there is one.</summary>
+    public Func<string, string?> FolderTakenBy { get; set; } = _ => null;
+
     public event Action? Closed;
 
     public void Open()
@@ -224,6 +227,11 @@ public partial class NewProjectWizard : UserControl
             if (!Path.IsPathFullyQualified(path))
             {
                 ShowProblem(problem, "Enter the folder's full path, or use Browse.");
+                return;
+            }
+            if (FolderTakenBy(path) is { } otherProject)
+            {
+                ShowProblem(problem, $"{otherProject} already uses that folder. A folder can only be one project.");
                 return;
             }
 

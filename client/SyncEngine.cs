@@ -55,6 +55,24 @@ public sealed class SyncEngine
                 if (response is null) return;
 
                 _database.RemoveFromOutbox(batch);
+
+                // A server that lost its data would never send anything past this PC's old
+                // cursor, and doesn't have what this PC has. So everything starts over.
+                var epochSetting = $"sync_epoch:{_server.Address}";
+                var knownEpoch = _database.GetSetting(epochSetting);
+                if (response.Epoch is { Length: > 0 } epoch && epoch != knownEpoch)
+                {
+                    _database.SetSetting(epochSetting, epoch);
+                    if (knownEpoch is not null)
+                    {
+                        AppLog.Write("The server's data started over, so this PC is sending it everything again.");
+                        _database.QueueAllRecords();
+                        cursor = 0;
+                        _database.SetSetting(cursorSetting, "0");
+                        continue;
+                    }
+                }
+
                 if (_database.ApplyFromServer(response.Changes) > 0) RecordsChanged?.Invoke();
 
                 cursor = response.Cursor;

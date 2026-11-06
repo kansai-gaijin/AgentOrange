@@ -20,6 +20,7 @@ public partial class SettingsModal : UserControl
     private readonly Dictionary<string, Page> _pages = [];
     private readonly Dictionary<string, RadioButton> _navItems = [];
     private ServerConnection _server = null!;
+    private DeviceSession _devices = null!;
     private SyncEngine _sync = null!;
     private EditorMonitor _editors = null!;
     private Action? _refreshServerPage;
@@ -33,7 +34,20 @@ public partial class SettingsModal : UserControl
 
     public LocalDatabase Database { get; set; } = null!;
 
-    public DeviceSession Devices { get; set; } = null!;
+    public DeviceSession Devices
+    {
+        get => _devices;
+        set
+        {
+            _devices = value;
+
+            // The server can turn this login down at any time, and then the page has to offer pairing.
+            _devices.PairingChanged += () =>
+            {
+                if (_currentPage.Name == "Server") ShowPage(_currentPage);
+            };
+        }
+    }
 
     public AgentProviders Providers { get; set; } = null!;
 
