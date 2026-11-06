@@ -53,6 +53,7 @@ public partial class ProjectSettingsModal : UserControl
         _saves = Task.CompletedTask;
         _closing = false;
         _problemWhileClosing = false;
+        Card.IsEnabled = true;
         Visibility = Visibility.Visible;
         Build(project);
         Focus();
@@ -75,9 +76,25 @@ public partial class ProjectSettingsModal : UserControl
             _folderField.Text = linked;
             _folderField.ToolTip = linked.Length > 0 ? linked : null;
         }
+
+        // Another PC may have changed these. Anything being edited, or not yet saved, stays as it is.
+        if (Current() is not { } current) return;
+        RefreshIfUntouched(_nameField, current.Name);
+        RefreshIfUntouched(_repoField, current.RepoUrl);
+    }
+
+    private void RefreshIfUntouched(TextBox? field, string latest)
+    {
+        if (field is null || field.IsKeyboardFocusWithin || _invalidFields.ContainsKey(field)) return;
+        if (!_saved.TryGetValue(field, out var saved) || field.Text.Trim() != saved || saved == latest) return;
+        _saved[field] = latest;
+        field.Text = latest;
     }
 
     private TextBox? _folderField;
+    private TextBox? _nameField;
+    private TextBox? _repoField;
+    private Button? _doneButton;
 
     private Project? Find(string projectId) => _database.ListProjects().FirstOrDefault(project => project.Id == projectId);
 
@@ -91,6 +108,7 @@ public partial class ProjectSettingsModal : UserControl
         var name = Field(project.Name);
         name.Width = 300;
         name.MaxLength = ProjectChoices.MaxNameLength;
+        _nameField = name;
         var projectId = project.Id;
         SaveOnLeave(name, project.Name, value =>
         {
@@ -101,6 +119,7 @@ public partial class ProjectSettingsModal : UserControl
 
         var repo = Field(project.RepoUrl);
         repo.Width = 300;
+        _repoField = repo;
         var folder = Field(_database.GetProjectFolder(project.Id) ?? "");
         folder.Width = 140;
         folder.IsReadOnly = true;
@@ -109,7 +128,15 @@ public partial class ProjectSettingsModal : UserControl
         SaveOnLeave(repo, project.RepoUrl, value => SaveRepo(projectId, value));
 
         var browse = ActionButton("Browse");
-        browse.Click += async (_, _) => await ChooseFolderAsync(projectId, folder);
+        browse.Click += async (_, _) =>
+        {
+            await ChooseFolderAsync(projectId, folder);
+
+            // Checking a folder can take a while on a slow drive, with nothing else to show for it.
+            browse.Content = "Checking…";
+            await _saves;
+            browse.Content = "Browse";
+        };
 
         // Only forgets where it is on this PC. The folder itself isn't touched.
         var disconnect = ActionButton("Disconnect");
@@ -176,13 +203,14 @@ public partial class ProjectSettingsModal : UserControl
         DockPanel.SetDock(_problem, Dock.Bottom);
         var body = new DockPanel { Children = { _problem, scroller } };
 
+        _doneButton = PrimaryButton("Done", Close);
         Card.Child = WizardShell(
             Close,
             "Project settings",
             "Changes save as you make them.",
             null,
             body,
-            PrimaryButton("Done", Close));
+            _doneButton);
     }
 
     private Border DangerZone(string projectId)
@@ -203,6 +231,13 @@ public partial class ProjectSettingsModal : UserControl
                 return;
             }
 
+            // Another PC may have renamed it since this was typed.
+            if (confirmation.Text.Trim() != Find(projectId)?.Name)
+            {
+                delete.IsEnabled = false;
+                return;
+            }
+
             delete.IsEnabled = false;
 
             // Queued, so a slow save can't bring the project back afterward.
@@ -218,7 +253,7 @@ public partial class ProjectSettingsModal : UserControl
 
         var card = Card(Row(
             "Delete this project",
-            "Removes it from Agent Orange on every PC. Its folder and repo aren't touched. Type the project's name to confirm.",
+            "Removes it from Agent Orange on every PC. Its folder and repo aren't touched. Type the project's name, as it is at the top of this window, to confirm.",
             confirmation,
             delete));
         card.BorderBrush = (Brush)FindResource("Danger");
@@ -452,8 +487,16 @@ public partial class ProjectSettingsModal : UserControl
 
         var session = _session;
         Keyboard.ClearFocus(); // Saves a field that's still being edited.
+
+        // Nothing can be changed from here, or it could be queued after what this is waiting for
+        // and only go wrong once there's nothing left to show it on.
+        Card.IsEnabled = false;
+        if (_doneButton is not null) _doneButton.Content = "Saving…";
         await _saves; // So whatever opens next sees the saved values.
         if (session != _session || Visibility != Visibility.Visible) return;
+
+        Card.IsEnabled = true;
+        if (_doneButton is not null) _doneButton.Content = "Done";
 
         if (_problemWhileClosing)
         {

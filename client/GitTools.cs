@@ -357,6 +357,10 @@ public static partial class GitTools
         if (await InspectFolderAsync(folder) is not { NeedsSettingsApproval: true }) return;
         if (await FolderRunnableSettingsAsync(folder) is not { IsEmpty: false, CanBeApproved: true } settings) return;
 
+        // A message box can't scroll, and what's approved has to have been read. Not being asked
+        // leaves this saying it can't tell, and the page can still show them all.
+        if (settings.Shown.Length > MaxSettingsInDialog) return;
+
         if (Dialogs.Confirm($"To tell whether this folder's remote is on GitHub, its SSH settings have to run, and they can run programs or send your login somewhere else:\n\n{settings.Shown}\n\nOnly use them if you trust where this folder came from. Use them?"))
         {
             RememberAllowedFolderSettings(folder, settings.Fingerprint);
@@ -366,6 +370,7 @@ public static partial class GitTools
     internal const string CantTellSshSettings = "Couldn't tell whether";
     private const int MaxSettingsShown = 20;
     private const int MaxSettingShown = 600;
+    private const int MaxSettingsInDialog = 1000;
 
     private const string FolderSettingsThatMatter =
         @"^(core\.(sshcommand|askpass|gitproxy)|credential\..*|http\..*|url\..*|remote\..*\.(uploadpack|receivepack|vcs|proxy))$";
@@ -535,24 +540,36 @@ public static partial class GitTools
     }
 
     // A separate push address would otherwise keep sending work to the old repo. Returns a
-    // problem to show, or null once every address really is the new one.
+    // problem to show, or null once it has moved. Nothing is left half done either way.
     private static async Task<string?> MoveOriginAsync(string folder, string remote)
     {
+        if (await RemoteSetElsewhereAsync(folder) is { } elsewhere) return elsewhere;
+
         const string couldNotChange = "Couldn't change that folder's remote.";
+        var before = await RunAsync("git", folder, "config", "--get", "remote.origin.url");
         if (await RunAsync("git", folder, "config", "--replace-all", "remote.origin.url", remote) is not { ExitCode: 0 }) return couldNotChange;
 
         var pushUrl = await RunAsync("git", folder, "config", "--get-all", "remote.origin.pushurl");
-        if (pushUrl is { ExitCode: 0 } && await RunAsync("git", folder, "config", "--replace-all", "remote.origin.pushurl", remote) is not { ExitCode: 0 }) return couldNotChange;
+        if (pushUrl is not { ExitCode: 0 } || await RunAsync("git", folder, "config", "--replace-all", "remote.origin.pushurl", remote) is { ExitCode: 0 }) return null;
 
-        // Read from the settings as written, because Git's own view of an address can be rewritten.
+        if (before is { ExitCode: 0 }) await RunAsync("git", folder, "config", "--replace-all", "remote.origin.url", before.Output.Trim());
+        return couldNotChange;
+    }
+
+    // Only a folder's own settings file is changed here, because one it includes may be shared.
+    // An address set anywhere else would stay in use, so that's found out before changing anything.
+    private static async Task<string?> RemoteSetElsewhereAsync(string folder)
+    {
         foreach (var key in new[] { "remote.origin.url", "remote.origin.pushurl" })
         {
-            var addresses = await RunAsync("git", folder, "config", "--get-all", key);
-            if (addresses is null || addresses.ExitCode > 1) return couldNotChange;
-            if (addresses.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Any(address => !SameForm(address, remote)))
+            var everywhere = await RunAsync("git", folder, "config", "--get-all", key);
+            var own = await RunAsync("git", folder, "config", "--local", "--no-includes", "--get-all", key);
+            if (everywhere is null || own is null) return "Git wasn't found on this PC.";
+
+            static int Count(string output) => output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+            if (Count(everywhere.Output) != Count(own.Output))
             {
-                // Only the folder's own file was changed, because an included one may be shared.
-                return "That folder's remote is also set in a Git settings file it includes, so it would still use the old address. Remove it from that file, then try again.";
+                return "That folder's remote is also set in another Git settings file, which would keep it on the old address. Nothing was changed. Remove it from that file, then try again.";
             }
         }
         return null;
@@ -673,6 +690,9 @@ public static partial class GitTools
             return new GitResult(false, $"That folder is already connected to a different repo: {state.Origin}");
         }
 
+        // Before creating anything, because the new repo couldn't then be linked to this folder.
+        if (state.Origin is not null && await RemoteSetElsewhereAsync(folder) is { } elsewhere) return new GitResult(false, elsewhere);
+
         if (!state.InsideRepo)
         {
             var init = await RunAsync("git", folder, "init");
@@ -729,6 +749,9 @@ public static partial class GitTools
         var heads = await RunAsync("git", Path.GetTempPath(), null, ["ls-remote", "--heads", "--", form], default, await SshSettingsAsync(Path.GetTempPath()));
         return heads is { ExitCode: 0 } ? heads.Output.Trim().Length > 0 : null;
     }
+
+    public static async Task<bool> FolderHasNoCommitsAsync(string folder) =>
+        await RunAsync("git", folder, "rev-parse", "--verify", "-q", "HEAD") is { ExitCode: not 0 };
 
     public static Task<bool> FolderIsEmptyAsync(string folder) => Task.Run(() => Directory.Exists(folder) && !IsTaken(folder));
 
@@ -973,7 +996,12 @@ public static partial class GitTools
         {
             // By name, because the address on show has had any credentials taken out of it.
             var viaFolder = await LsRemoteAsync("origin", folder!);
-            if (viaFolder is { ExitCode: 0 }) return new RepoCheck(await GitRefusesPushAsync("origin", folder!) ? RepoAccess.GitReadOnly : RepoAccess.Allowed);
+            if (viaFolder is { ExitCode: 0 })
+            {
+                // A folder that pushes somewhere else gets reported as that, without contacting it.
+                if (await FolderProblemAsync(folder!, url) is not null) return new RepoCheck(RepoAccess.Allowed);
+                return new RepoCheck(await GitRefusesPushAsync("origin", folder!) ? RepoAccess.GitReadOnly : RepoAccess.Allowed);
+            }
 
             // No answer this way, such as a blocked SSH port, isn't being offline if there's
             // another way in. Saying so is what offers to repair the folder.
@@ -1108,7 +1136,7 @@ public static partial class GitTools
     private static bool UsesSsh(string url) =>
         ScpStyleRepo().IsMatch(url) || url.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase);
 
-    private static string RepoName(string projectName) =>
+    public static string RepoName(string projectName) =>
         NotRepoSafe().Replace(projectName.Trim().ToLowerInvariant(), "-").Trim('-');
 
     // The URL can come from another PC, so only a plain name can come out of it.
@@ -1261,7 +1289,7 @@ public static partial class GitTools
     [GeneratedRegex(@"^(Receiving objects|Resolving deltas|Updating files|Filtering content):\s+(\d+%)")]
     private static partial Regex CloneStage();
 
-    [GeneratedRegex(@"marked as read.only|Permission to \S+ denied|error: 403", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"marked as read.only|Permission to \S+ denied|error: 403|authentication failed|could not read username|invalid username", RegexOptions.IgnoreCase)]
     private static partial Regex PushRefusal();
 
     [GeneratedRegex(@"://[^/@\s]+@")]

@@ -29,6 +29,8 @@ public partial class MainWindow
     private RepoCheck? _projectCheck;
     private string? _folderProblem;
     private bool _folderExists;
+    private bool _folderLacksFiles;
+    private string? _scrolledToProblem;
     private string? _pageProblem;
     private bool _confirmingNewRepo;
     private int _navigation;
@@ -314,6 +316,7 @@ public partial class MainWindow
         _projectCheck = null;
         _folderProblem = null;
         _folderExists = false;
+        _folderLacksFiles = false;
         _pageProblem = _heldProblems.Remove(project.Id, out var held) ? held : null;
         _confirmingNewRepo = false;
         ProjectSelectView.Visibility = Visibility.Collapsed;
@@ -329,6 +332,10 @@ public partial class MainWindow
         var folderProblem = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitCantReach or RepoAccess.GitReadOnly
             ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl)
             : null;
+
+        // It may have been connected while offline, when nothing could say the repo had files.
+        var lacksFiles = check.Access == RepoAccess.Allowed && folderExists && folderProblem is null
+            && await GitTools.FolderHasNoCommitsAsync(folder!) && await GitTools.RepoHasContentAsync(project.RepoUrl) == true;
 
         if (navigation != _navigation) return; // They moved on, or something newer started.
 
@@ -351,6 +358,7 @@ public partial class MainWindow
         _settingsToAllow = useFolderSettings || runnable is null or { IsEmpty: true } ? null : runnable;
         _folderExists = folderExists;
         _folderProblem = folderProblem;
+        _folderLacksFiles = lacksFiles;
         RenderProject(latest);
         await ReadEngineVersionAsync(latest.Id);
     }
@@ -399,7 +407,7 @@ public partial class MainWindow
         body.Children.Add(new TextBlock { Text = project.RepoUrl, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 4, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = project.RepoUrl });
 
         // Two PCs can each add the same repo before they've synced, and only this can show that.
-        if (_database.ListProjects().FirstOrDefault(other => other.Id != project.Id && GitTools.SameRepo(other.RepoUrl, project.RepoUrl)) is { } twin)
+        if (project.RepoUrl.Length > 0 && _database.ListProjects().FirstOrDefault(other => other.Id != project.Id && GitTools.SameRepo(other.RepoUrl, project.RepoUrl)) is { } twin)
         {
             body.Children.Add(new TextBlock { Text = $"{twin.Name} uses this repo too, and a repo can only be one project. This can happen when two PCs add it before syncing. Delete the extra one in its project settings.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
         }
@@ -429,7 +437,7 @@ public partial class MainWindow
         }
 
         var folder = _database.GetProjectFolder(project.Id);
-        if (_folderExists && _folderProblem is null)
+        if (_folderExists && _folderProblem is null && !_folderLacksFiles)
         {
             body.Children.Add(new TextBlock { Text = folder, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = folder });
             body.Children.Add(CenteredNote("Nothing here yet."));
@@ -583,7 +591,7 @@ public partial class MainWindow
                 Margin = new Thickness(16, 0, 16, 12),
                 Child = new TextBlock
                 {
-                    Text = $"This creates a new, empty private repo under {destination} and moves this project to it on all your PCs, replacing {project.RepoUrl}.{mayStillExist} Nothing is pushed, so push your work afterward for your other PCs to get it.",
+                    Text = $"This creates a new, empty private repo called {GitTools.RepoName(project.Name)} under {destination} and moves this project to it on all your PCs, replacing {project.RepoUrl}.{mayStillExist} Nothing is pushed, so push your work afterward for your other PCs to get it.",
                     Foreground = (Brush)FindResource("TextNormal"),
                     FontSize = 13,
                     TextWrapping = TextWrapping.Wrap,
@@ -677,7 +685,11 @@ public partial class MainWindow
 
     private void AddPageProblem(StackPanel body)
     {
-        if (_pageProblem is null) return;
+        if (_pageProblem is null)
+        {
+            _scrolledToProblem = null;
+            return;
+        }
 
         var problem = ProblemText();
         ShowProblem(problem, _pageProblem);
@@ -685,7 +697,10 @@ public partial class MainWindow
         body.Children.Add(problem);
 
         // It goes below everything else, which on a small window is below the fold, and whoever
-        // just clicked something needs to see why nothing seemed to happen.
+        // just clicked something needs to see why nothing seemed to happen. Only once, because
+        // the page is drawn again as things sync and shouldn't keep moving under someone reading.
+        if (_scrolledToProblem == _pageProblem) return;
+        _scrolledToProblem = _pageProblem;
         Dispatcher.InvokeAsync(problem.BringIntoView, System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
@@ -859,7 +874,7 @@ public partial class MainWindow
         await OpenProjectAsync(project);
         if (_busyProjectId is not null)
         {
-            ShowPageProblem(projectId, "Something else is running. Clone this project when that finishes.");
+            ShowPageProblem(projectId, $"Something else is running. When that finishes, choose Clone and pick {folder} again.");
             return;
         }
 
@@ -977,6 +992,7 @@ public partial class MainWindow
 
         var (heading, description) = (linkedFolder, _folderProblem, _folderExists) switch
         {
+            _ when _folderLacksFiles => ("This folder doesn't have the repo's files yet", $"It's at {linkedFolder} and connected to the repo, but it has no commits, and the repo does. Pull them yourself and try again, or clone a fresh copy."),
             (_, not null, _) => ("This project's folder doesn't match its repo", $"It's at {linkedFolder}. {_folderProblem}"),
             (null, _, _) => ("This project isn't on this PC yet", "Get a copy from its repo, or point to one you already have."),
             _ => ("This project's folder is missing", $"It was at {linkedFolder}."),
