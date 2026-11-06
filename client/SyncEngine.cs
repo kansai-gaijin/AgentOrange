@@ -42,7 +42,7 @@ public sealed class SyncEngine
     public DateTimeOffset? LastSynced { get; private set; }
 
     /// <summary>Changes the server wouldn't take, set aside so everything else can still sync. They stay on this PC.</summary>
-    public int RefusedChanges { get; private set; }
+    public int RefusedChanges => _database.CountRefused();
 
     /// <summary>Another window of the app has the database's turn to sync.</summary>
     public bool OtherWindowSyncs { get; private set; }
@@ -68,8 +68,7 @@ public sealed class SyncEngine
         }
 
         AppLog.Write($"The server refused a change, so it was set aside and stays on this PC: {batch[0].Collection}/{batch[0].Id}");
-        _database.RemoveFromOutbox(batch);
-        RefusedChanges++;
+        _database.SetAsideRefused(batch[0]);
         _batchLimit = BatchSize;
     }
 

@@ -114,10 +114,16 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     /// <summary>Returns null if the sync didn't go through, in which case nothing is lost.</summary>
     public async Task<SyncResponse?> SyncAsync(long cursor, List<SyncChange> changes, string? epoch)
     {
+        // Only an answer to this request counts. A timeout says nothing about what was sent.
+        LastSyncRefused = false;
         try
         {
             var response = await SendAsync(HttpMethod.Post, "/v1/sync", new { cursor, changes, epoch });
-            LastSyncRefused = response?.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.RequestEntityTooLarge or HttpStatusCode.UnprocessableEntity;
+
+            // Only the server itself, not a proxy along the way, whose limits say nothing about the
+            // change. Anything else is just a sync that didn't go through, and everything stays queued.
+            LastSyncRefused = response is { StatusCode: HttpStatusCode.BadRequest or HttpStatusCode.RequestEntityTooLarge or HttpStatusCode.UnprocessableEntity }
+                && response.Headers.Contains("X-Agent-Orange");
             var versionsDiffer = response?.StatusCode == HttpStatusCode.UpgradeRequired;
             if (versionsDiffer != VersionsDiffer)
             {

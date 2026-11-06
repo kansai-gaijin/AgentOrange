@@ -85,6 +85,10 @@ public sealed class LocalDatabase
         AddColumn(connection, "records", "changed_at INTEGER NOT NULL DEFAULT 0");
         AddColumn(connection, "outbox", "changed_at INTEGER NOT NULL DEFAULT 0");
         AddColumn(connection, "outbox", "resend INTEGER NOT NULL DEFAULT 0");
+        Execute(connection, """
+            CREATE TABLE IF NOT EXISTS refused (collection TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (collection, id));
+            CREATE INDEX IF NOT EXISTS records_changed_at ON records (changed_at);
+            """);
         MoveOldProjectsTable(connection);
     }
 
@@ -491,6 +495,15 @@ public sealed class LocalDatabase
         var change = new SyncChange(collection, id, data, deleted, Math.Max(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), previous + 1));
         Upsert(connection, "records", change);
         Upsert(connection, "outbox", change);
+
+        // It's a new value now, and the server gets a fresh chance to take it.
+        using (var forgive = connection.CreateCommand())
+        {
+            forgive.CommandText = "DELETE FROM refused WHERE collection = $collection AND id = $id";
+            forgive.Parameters.AddWithValue("$collection", collection);
+            forgive.Parameters.AddWithValue("$id", id);
+            forgive.ExecuteNonQuery();
+        }
         transaction.Commit();
     }
 
@@ -544,12 +557,41 @@ public sealed class LocalDatabase
             using var command = connection.CreateCommand();
             command.CommandText = """
                 DELETE FROM outbox
-                WHERE collection = $collection AND id = $id AND data = $data AND deleted = $deleted
+                WHERE collection = $collection AND id = $id AND data = $data AND deleted = $deleted AND changed_at = $changedAt
                 """;
             AddChange(command, change);
             command.ExecuteNonQuery();
         }
         transaction.Commit();
+    }
+
+    /// <summary>The server won't take this, so it stops holding up everything behind it, and stays on this PC.</summary>
+    public void SetAsideRefused(SyncChange change)
+    {
+        using var connection = Open();
+        using var transaction = connection.BeginTransaction();
+        using (var note = connection.CreateCommand())
+        {
+            note.CommandText = "INSERT OR REPLACE INTO refused (collection, id) VALUES ($collection, $id)";
+            note.Parameters.AddWithValue("$collection", change.Collection);
+            note.Parameters.AddWithValue("$id", change.Id);
+            note.ExecuteNonQuery();
+        }
+        using (var remove = connection.CreateCommand())
+        {
+            remove.CommandText = "DELETE FROM outbox WHERE collection = $collection AND id = $id AND changed_at = $changedAt";
+            AddChange(remove, change);
+            remove.ExecuteNonQuery();
+        }
+        transaction.Commit();
+    }
+
+    public int CountRefused()
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM refused";
+        return Convert.ToInt32(command.ExecuteScalar());
     }
 
     /// <summary>Saves changes from the server. Local edits still waiting to be sent win for now.</summary>

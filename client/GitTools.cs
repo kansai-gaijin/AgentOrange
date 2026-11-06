@@ -913,7 +913,12 @@ public static partial class GitTools
         if (remote.Length == 0 || remote is "origin" or ".") return null;
 
         var addresses = await RunAsync("git", folder, "remote", "get-url", "--push", "--all", remote);
-        if (addresses is not { ExitCode: 0 }) return WithoutCredentials(remote); // It can be an address itself.
+        if (addresses is not { ExitCode: 0 })
+        {
+            // It can be an address itself, which can be this project's own.
+            var address = WithoutCredentials(remote);
+            return SameRepo(address, repoUrl) ? null : address;
+        }
         foreach (var line in addresses.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var address = WithoutCredentials(line);
@@ -990,14 +995,15 @@ public static partial class GitTools
         try
         {
             await MoveIntoPlaceAsync(working, destination);
-            var notes = new[] { await FetchSubmodulesAsync(destination, cancel, progress), await GitLfsNoteAsync(destination) }.OfType<string>().ToList();
-            return new GitResult(true, destination, notes.Count > 0 ? string.Join(' ', notes) : null);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             AppLog.Write($"Couldn't name a finished clone: {error.Message}");
             return new GitResult(false, $"The clone finished, but it couldn't be named {destination}. It's kept at {await KeepVisibleAsync(working, destination)}. You can rename it and select it.");
         }
+
+        var notes = new[] { await FetchSubmodulesAsync(destination, cancel, progress), await GitLfsNoteAsync(destination) }.OfType<string>().ToList();
+        return new GitResult(true, destination, notes.Count > 0 ? string.Join(' ', notes) : null);
     }
 
     // After the clone is safely in place, because a submodule that can't be fetched, such as a
@@ -1018,7 +1024,17 @@ public static partial class GitTools
     private static async Task<string?> GitLfsNoteAsync(string folder)
     {
         var attributes = Path.Combine(folder, ".gitattributes");
-        var usesLfs = await Task.Run(() => File.Exists(attributes) && new FileInfo(attributes).Length < 1_000_000 && File.ReadAllText(attributes).Contains("filter=lfs", StringComparison.Ordinal));
+        var usesLfs = await Task.Run(() =>
+        {
+            try
+            {
+                return File.Exists(attributes) && new FileInfo(attributes).Length < 1_000_000 && File.ReadAllText(attributes).Contains("filter=lfs", StringComparison.Ordinal);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                return false; // A virus scanner can hold a new file for a moment, and this is only a note.
+            }
+        });
         if (!usesLfs || await RunAsync("git", Path.GetTempPath(), "lfs", "version") is { ExitCode: 0 }) return null;
         return "This repo uses Git LFS, which isn't set up on this PC, so its big files are only small placeholders. Install it from git-lfs.com, then run git lfs pull in the folder.";
     }
