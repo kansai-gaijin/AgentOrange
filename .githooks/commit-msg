@@ -1,0 +1,10 @@
+#!/bin/sh
+# Commit messages are public too. See private-text for what's looked for.
+
+. "$(dirname "$0")/private-text"
+
+# Git's own comment lines can list file paths, and they don't end up in the commit.
+if ! grep -v '^#' "$1" | is_public_safe; then
+    echo "Blocked: that's about this commit's message." >&2
+    exit 1
+fi

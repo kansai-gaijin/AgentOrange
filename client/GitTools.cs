@@ -88,6 +88,7 @@ public static partial class GitTools
     private const string TimedOut = "timeout";
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan AfterExitLimit = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan WholeRepoTimeout = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan CreateTimeout = TimeSpan.FromMinutes(2);
 
     private sealed record CommandResult(int ExitCode, string Output, string Errors);
@@ -403,21 +404,26 @@ public static partial class GitTools
     /// <summary>
     /// A folder whose SSH settings file needs ssh's own handling can't be understood until it's
     /// allowed to run, and until then it would just be refused. So this asks, when choosing one.
+    /// Says whether it was allowed just now, as that shouldn't outlast the folder being refused.
     /// </summary>
-    public static async Task AskAboutUnreadableSshSettingsAsync(string folder)
+    public static async Task<bool> AskAboutUnreadableSshSettingsAsync(string folder)
     {
-        if (await InspectFolderAsync(folder) is not { NeedsSettingsApproval: true }) return;
-        if (await FolderRunnableSettingsAsync(folder) is not { IsEmpty: false, CanBeApproved: true } settings) return;
+        if (await InspectFolderAsync(folder) is not { NeedsSettingsApproval: true }) return false;
+        if (await FolderRunnableSettingsAsync(folder) is not { IsEmpty: false, CanBeApproved: true } settings) return false;
 
         // A message box can't scroll, and what's approved has to have been read. Not being asked
         // leaves this saying it can't tell, so the folder's remote has to say github.com instead.
-        if (settings.Shown.Length > MaxSettingsInDialog) return;
+        if (settings.Shown.Length > MaxSettingsInDialog) return false;
 
         if (Dialogs.Confirm($"To tell whether this folder's remote is on GitHub, its SSH settings have to run, and they can run programs or send your login somewhere else:\n\n{settings.Shown}\n\nOnly use them if you trust where this folder came from. Use them?"))
         {
             RememberAllowedFolderSettings(folder, settings.Fingerprint);
+            return true;
         }
+        return false;
     }
+
+    public static void ForgetAllowedFolderSettings(string folder) => RememberAllowedFolderSettings(folder, "");
 
     internal const string CantTellSshSettings = "Couldn't tell whether";
     private const int MaxSettingsShown = 20;
@@ -425,7 +431,7 @@ public static partial class GitTools
     private const int MaxSettingsInDialog = 1000;
 
     private const string SettingsThatRunWhileFinishing =
-        @"^(core\.(fsmonitor|hookspath)|submodule\..*\.update|filter\..*|lfs\.customtransfer\..*)$";
+        @"^(core\.(fsmonitor|hookspath)|submodule\..*\.update|filter\..*|lfs\.(customtransfer|extension)\..*)$";
 
     private const string FolderSettingsThatMatter =
         @"^(core\.(sshcommand|askpass|gitproxy)|credential\..*|http\..*|url\..*|remote\..*\.(uploadpack|receivepack|vcs|proxy))$";
@@ -1030,8 +1036,9 @@ public static partial class GitTools
 
                 // Everything arrived, and only putting the files in place failed, such as on a
                 // file name Windows can't use. That's hours of download, and it can be fixed.
-                // Only a real answer that there's nothing there can cost the download.
-                if (!cancel.IsCancellationRequested && await RunAsync("git", working, "rev-parse", "--verify", "-q", "HEAD") is { ExitCode: 0 or < 0 })
+                // Git removes the folder when the download itself fails. If it's still there, only a
+                // real answer that it holds no commits can cost what's in it.
+                if (!cancel.IsCancellationRequested && await FolderExistsAsync(working) && await RunAsync("git", working, "rev-parse", "--verify", "-q", "HEAD") is { ExitCode: 0 or < 0 })
                 {
                     checkoutProblem = $"Everything downloaded, but some files couldn't be put in place: {AsSentence(reason)} Fix that, then run git restore --source=HEAD --staged --worktree :/ in the folder.";
                 }
@@ -1612,7 +1619,10 @@ public static partial class GitTools
         info.Environment["GCM_INTERACTIVE"] = "never";
 
         var isCreate = arguments is ["repo", "create", ..];
-        using var timeout = new CancellationTokenSource(isClone ? Timeout.InfiniteTimeSpan : isCreate ? CreateTimeout : CommandTimeout);
+
+        // Before a clone can be called finished, on what can be a very large repo and a cold disk.
+        var readsWholeRepo = arguments is ["ls-files", "--deleted"] or ["diff-index", ..] or ["grep", ..];
+        using var timeout = new CancellationTokenSource(isClone ? Timeout.InfiniteTimeSpan : isCreate ? CreateTimeout : readsWholeRepo ? WholeRepoTimeout : CommandTimeout);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancel);
 
         Process? process = null;
@@ -1778,7 +1788,7 @@ public static partial class GitTools
     [GeneratedRegex(@"https://github\.com/[\w.-]+/[\w.-]+")]
     private static partial Regex CreatedRepoUrl();
 
-    [GeneratedRegex(@"^(filter\.lfs\.(clean|smudge|process)\ngit-lfs [^&|;<>`$]*$|filter\.lfs\.required\n(true|false)$|core\.fsmonitor\nfalse$|core\.hookspath\n/dev/null$|submodule\..*\.update\n(checkout|rebase|merge|none)$)", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    [GeneratedRegex(@"^(filter\.lfs\.(clean|smudge|process)\ngit-lfs [^&|;<>`$\r\n]*\z|filter\.lfs\.required\n(true|false)\z|core\.fsmonitor\nfalse\z|core\.hookspath\n/dev/null\z|submodule\.[^\r\n]*\.update\n(checkout|rebase|merge|none)\z)", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
     private static partial Regex HarmlessWhileFinishing();
 
     // What ssh itself says went wrong, which Git only follows with "Could not read from remote repository".

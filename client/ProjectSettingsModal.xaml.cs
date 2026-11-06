@@ -405,12 +405,13 @@ public partial class ProjectSettingsModal : UserControl
         {
             if (Find(projectId) is not { } current) return;
 
-            await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
+            var allowedJustNow = await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
             var problem = await GitTools.FolderProblemAsync(chosen, current.RepoUrl);
             if (problem is null && await _database.ClaimFolderAsync(chosen, current) is { } other)
             {
                 problem = $"{other.Name} already uses that folder, or one that overlaps it. Project folders can't overlap.";
             }
+            if (allowedJustNow && problem is not null) GitTools.ForgetAllowedFolderSettings(chosen);
             if (problem is not null)
             {
                 if (session == _session) ReportProblem(problem);

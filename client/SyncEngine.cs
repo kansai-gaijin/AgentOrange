@@ -15,7 +15,8 @@ public sealed class SyncEngine
     private readonly LocalDatabase _database;
     private readonly ServerConnection _server;
     private readonly DeviceSession _devices;
-    private readonly Mutex? _syncTurn;
+    private readonly string _syncTurnName;
+    private Mutex? _syncTurn;
     private bool _hasSyncTurn;
     private int _syncTurnThread;
     private bool _running;
@@ -26,15 +27,7 @@ public sealed class SyncEngine
         // Several windows can share a database, and only one of them needs to do this at a time.
         // Windows releases it if that window closes or crashes, and the next one takes over.
         var name = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(databasePath.ToUpperInvariant())))[..32];
-        try
-        {
-            _syncTurn = new Mutex(false, $@"Local\AgentOrangeSync-{name}");
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // Another window has it, running as administrator, and this one can't share it. Having
-            // no turn is right, because that window is the one that syncs.
-        }
+        _syncTurnName = $@"Local\AgentOrangeSync-{name}";
 
         _database = database;
         _server = server;
@@ -84,7 +77,16 @@ public sealed class SyncEngine
     private bool HasSyncTurn()
     {
         if (_hasSyncTurn) return true;
-        if (_syncTurn is null) return false;
+        try
+        {
+            _syncTurn ??= new Mutex(false, _syncTurnName);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // A window running as administrator has it, and that window is the one that syncs.
+            // This is tried again each time, so this one takes over once that closes.
+            return false;
+        }
         try
         {
             _hasSyncTurn = _syncTurn.WaitOne(0);

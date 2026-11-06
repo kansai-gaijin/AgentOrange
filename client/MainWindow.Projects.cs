@@ -874,7 +874,10 @@ public partial class MainWindow
         var stop = ActionButton("Cancel");
         stop.HorizontalAlignment = HorizontalAlignment.Left;
         stop.Margin = new Thickness(16, 8, 0, 0);
-        stop.Click += (_, _) => clone.Cancel();
+        stop.Click += (_, _) =>
+        {
+            if (_cloneCancel == clone) clone.Cancel();
+        };
         body.Children.Add(stop);
     }
 
@@ -1306,11 +1309,11 @@ public partial class MainWindow
 
         using var cancel = new CancellationTokenSource();
         _cloneCancel = cancel;
-        StartBusy(project, "Finishing the download…");
-        _downloadIsInPlace = true;
         string? missing;
         try
         {
+            StartBusy(project, "Finishing the download…");
+            _downloadIsInPlace = true;
             missing = await GitTools.FinishDownloadAsync(folder, cancel.Token, stage => ShowBusyStage("Finishing the download…", stage));
         }
         finally
@@ -1462,12 +1465,13 @@ public partial class MainWindow
             string? folderProblem;
             try
             {
-                await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
+                var allowedJustNow = await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
                 folderProblem = await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
                 if (folderProblem is null && await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other)
                 {
                     folderProblem = $"{other.Name} already uses that folder, or one that overlaps it. Project folders can't overlap.";
                 }
+                if (allowedJustNow && folderProblem is not null) GitTools.ForgetAllowedFolderSettings(chosen);
             }
             finally
             {
@@ -1649,6 +1653,7 @@ public partial class MainWindow
     private void BackToProjects()
     {
         _navigation++;
+        _openPageNeedsCheck = false;
         _openProject = null;
         _projectCheck = null;
         _pageProblem = null;

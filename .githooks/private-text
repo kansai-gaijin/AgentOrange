@@ -1,0 +1,38 @@
+# Shared by this folder's hooks. This repo is public, and that includes file names and commit messages.
+
+# Names that can't be told apart by a pattern, such as a server's public address. One per line, in a
+# file that lives inside .git, so the list itself can't be committed.
+private_words="$(git rev-parse --git-dir)/private-words"
+private_list=""
+if [ -f "$private_words" ]; then
+    private_list="$(tr -d '\r' < "$private_words" | tr '[:upper:]' '[:lower:]' | grep -v '^[[:space:]]*$')"
+fi
+
+# Reads text, and says why if it shouldn't go public.
+is_public_safe() {
+    # Kept as a file, because a shell variable would mangle a binary one, and hold all of a big one.
+    text="$(mktemp)"
+    cat > "$text"
+    checks_out "$text"
+    answer=$?
+    rm -f "$text"
+    return $answer
+}
+
+checks_out() {
+    if grep -IqE '[A-Za-z]:[\\/]+Users[\\/]+[A-Za-z0-9]|/(Users|home)/[A-Za-z0-9]|[[:alnum:]-]+\.ts\.net|\b100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]+\.[0-9]+\b|\b192\.168\.[0-9]+\.[0-9]+\b|\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+\b|\b10\.[0-9]+\.[0-9]+\.[0-9]+\b' "$1"; then
+        echo "Blocked: this seems to hold a personal path or a private address." >&2
+        return 1
+    fi
+    if grep -IoE '[[:alnum:]._%+-]+@([[:alnum:]-]+\.)+[[:alpha:]]{2,}' "$1" | grep -vqE '^git@github\.com$|@example\.(com|org)$|noreply'; then
+        echo "Blocked: this seems to hold an email address." >&2
+        return 1
+    fi
+    if [ -n "$private_list" ] && ! grep -Iq . "$1"; then
+        : # Empty or binary, with nothing to read.
+    elif [ -n "$private_list" ] && tr '[:upper:]' '[:lower:]' < "$1" | grep -qF -e "$private_list"; then
+        echo "Blocked: this holds something on this PC's private list." >&2
+        return 1
+    fi
+    return 0
+}

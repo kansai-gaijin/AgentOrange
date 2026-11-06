@@ -291,7 +291,7 @@ public partial class NewProjectWizard : UserControl
                 else
                 {
                     claimed = true;
-                    await GitTools.AskAboutUnreadableSshSettingsAsync(path);
+                    var allowedJustNow = await GitTools.AskAboutUnreadableSshSettingsAsync(path);
 
                     // Now its settings can be read, an address filled in from the folder may turn out to be GitHub.
                     if (typedUrl.Length > 0 && typedUrl == _autoFilledRepo && await GitTools.InspectFolderAsync(path) is { OriginToCompare: { } known } && known != typedUrl)
@@ -302,6 +302,7 @@ public partial class NewProjectWizard : UserControl
                     }
 
                     (url, confirmed, failure) = await ResolveRepoAsync(submission, status => progress.Text = status);
+                    if (allowedJustNow && failure is not null) GitTools.ForgetAllowedFolderSettings(path);
                 }
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
