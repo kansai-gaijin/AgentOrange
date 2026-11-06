@@ -271,6 +271,7 @@ public sealed class LocalDatabase
 
         SetProjectFolder(projectId, "");
         SetSetting($"project_verified:{projectId}", "");
+        SetSetting($"project_created_here:{projectId}", "");
     }
 
     /// <summary>
@@ -559,16 +560,29 @@ public sealed class LocalDatabase
         var applied = 0;
         foreach (var change in changes)
         {
-            // Something only being sent again gives way to a copy that's at least as new.
+            // A queued edit that's older would only be refused when it got there, and this copy
+            // of it would then never be corrected. Something only being sent again gives way to
+            // one that's just as new too.
             using (var superseded = connection.CreateCommand())
             {
                 superseded.CommandText = """
                     DELETE FROM outbox
-                    WHERE collection = $collection AND id = $id AND resend = 1
-                      AND $changedAt >= COALESCE((SELECT changed_at FROM records WHERE collection = $collection AND id = $id), 0)
+                    WHERE collection = $collection AND id = $id
+                      AND (changed_at < $changedAt OR (resend = 1 AND changed_at = $changedAt))
                     """;
                 AddChange(superseded, change);
                 superseded.ExecuteNonQuery();
+            }
+
+            // The same value can arrive with a newer time, and the next edit here has to beat that.
+            using (var sameValue = connection.CreateCommand())
+            {
+                sameValue.CommandText = """
+                    UPDATE records SET changed_at = $changedAt
+                    WHERE collection = $collection AND id = $id AND data = $data AND deleted = $deleted AND changed_at < $changedAt
+                    """;
+                AddChange(sameValue, change);
+                sameValue.ExecuteNonQuery();
             }
 
             using var command = connection.CreateCommand();

@@ -92,7 +92,8 @@ fn client_is_out_of_date(headers: &HeaderMap) -> bool {
 
 /// Saves this device's changes, then returns everything newer than its cursor. The newest edit of
 /// each record wins, whatever order they arrive in, so a PC coming back online can't undo what
-/// others did while it was away. Its own copy gets corrected by the answer to this same request.
+/// others did while it was away. A device drops a queued edit that's older than a copy it gets from
+/// here, so it can't end up holding on to one that was refused.
 ///
 /// The server has one database connection, so writes run one at a time and
 /// sequence numbers become visible in order. A cursor can't skip past a change

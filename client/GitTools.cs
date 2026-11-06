@@ -287,6 +287,9 @@ public static partial class GitTools
         if (state.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
         if (!SameRepo(state.OriginToCompare!, repoUrl)) return $"That folder uses a different repo: {state.Origin}";
 
+        // The same owner and name somewhere that isn't really GitHub, or in a way Git won't use.
+        if (RepoUrlProblem(state.OriginToCompare!) is not null) return $"That folder uses a different repo address, which isn't one GitHub uses: {state.Origin}";
+
         // Its work could otherwise go somewhere else entirely, without anyone seeing why. Git
         // pushes to every address listed, so all of them count.
         var push = await RunAsync("git", folder, "remote", "get-url", "--push", "--all", "origin");
@@ -299,7 +302,7 @@ public static partial class GitTools
 
             var (gitHubForm, aliasProblem) = await GitHubFormAsync(pushRemote, folder);
             if (aliasProblem is not null) return aliasProblem;
-            if (!SameRepo(gitHubForm ?? pushRemote, repoUrl)) return $"That folder pushes to a different repo: {pushRemote}";
+            if (!SameRepo(gitHubForm ?? pushRemote, repoUrl) || RepoUrlProblem(gitHubForm ?? pushRemote) is not null) return $"That folder pushes to a different repo: {pushRemote}";
         }
         return null;
     }

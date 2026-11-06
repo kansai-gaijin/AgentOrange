@@ -90,6 +90,9 @@ internal static partial class GitFolderSafety
 
         var directories = new List<string> { gitDirectory };
 
+        // Before anything in there is opened, as opening one is the risk.
+        if (Directory.Exists(gitDirectory) && HasLinkInside(gitDirectory)) return true;
+
         // A worktree shares most of its settings and data with the repo it came from.
         var shared = Path.Combine(gitDirectory, "commondir");
         if (File.Exists(shared))
@@ -102,7 +105,7 @@ internal static partial class GitFolderSafety
 
         foreach (var directory in directories.Where(Directory.Exists))
         {
-            if (HasLinkInside(directory) || HasLinkInside(Path.Combine(directory, "objects"))) return true;
+            if (HasLinkInside(directory)) return true;
             if (HasNetworkAlternate(chosen, directory)) return true;
             if (await SettingsPointAtNetworkAsync(chosen, Path.Combine(directory, "config"), 0, readSettingsFile)) return true;
             if (await SettingsPointAtNetworkAsync(chosen, Path.Combine(directory, "config.worktree"), 0, readSettingsFile)) return true;
@@ -110,9 +113,23 @@ internal static partial class GitFolderSafety
         return false;
     }
 
-    // Git LFS keeps its big files here, and moving them onto another drive with a link is normal.
-    private static bool HasLinkInside(string directory) =>
-        Directory.Exists(directory) && Directory.EnumerateFileSystemEntries(directory).Any(entry => Path.GetFileName(entry) != "lfs" && SshConfigFile.IsLink(entry));
+    // Git opens what it finds among a repo's own files, such as following a branch that's a link.
+    // Git LFS keeps its big files in lfs, and moving them onto another drive with a link is normal.
+    private static bool HasLinkInside(string gitDirectory)
+    {
+        var waiting = new Stack<string>();
+        waiting.Push(gitDirectory);
+        while (waiting.TryPop(out var directory))
+        {
+            foreach (var entry in new DirectoryInfo(directory).EnumerateFileSystemInfos())
+            {
+                if (directory == gitDirectory && entry.Name == "lfs") continue;
+                if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint) && entry.LinkTarget is not null) return true;
+                if (entry.Attributes.HasFlag(FileAttributes.Directory)) waiting.Push(entry.FullName);
+            }
+        }
+        return false;
+    }
 
     // Other places a repo borrows its history from. Git opens them to look for any commit.
     private static bool HasNetworkAlternate(string chosen, string gitDirectory)

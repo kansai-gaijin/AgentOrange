@@ -499,7 +499,9 @@ public partial class MainWindow
 
         // The folder may have changed too, as anything can happen to it while no one's looking.
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
-        var folderProblem = folderExists ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl) : null;
+        var folderProblem = folderExists && latest.Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitCantReach or RepoAccess.GitReadOnly
+            ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl)
+            : null;
         var changed = latest != shown || folderExists != _folderExists || folderProblem != _folderProblem;
         if (changed && _openProject?.Id == project.Id && _busyProjectId is null) await RecheckIfStillOpenAsync(project.Id);
     }
