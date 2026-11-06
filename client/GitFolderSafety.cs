@@ -77,8 +77,9 @@ internal static partial class GitFolderSafety
         }
     }
 
+    // Git goes by a .git first, so a project that just has folders with these names isn't one.
     private static bool LooksLikeBareRepo(string folder) =>
-        Path.GetFileName(folder) != ".git"
+        Path.GetFileName(folder) != ".git" && !Exists(Path.Combine(folder, ".git"))
         && Exists(Path.Combine(folder, "HEAD")) && Exists(Path.Combine(folder, "objects")) && Exists(Path.Combine(folder, "refs"));
 
     // How Git itself reads a path in these files, which is literally, apart from ~/ in settings.

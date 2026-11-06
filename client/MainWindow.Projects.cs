@@ -34,6 +34,8 @@ public partial class MainWindow
     private string? _renamedRepoHeldBy;
     private string? _folderEngine;
     private string? _folderPushesTo;
+    private string? _checkedFolder;
+    private bool _downloadIsInPlace;
     private bool _folderLacksFiles;
     private bool _folderMayNotMatch;
     private string? _scrolledToProblem;
@@ -441,6 +443,7 @@ public partial class MainWindow
         }
 
         _projectCheck = check;
+        _checkedFolder = folder;
         _settingsToAllow = useFolderSettings || runnable is null or { IsEmpty: true } ? null : runnable;
         _folderExists = folderExists;
         _folderProblem = folderProblem;
@@ -510,7 +513,7 @@ public partial class MainWindow
         var folderProblem = folderExists && latest.Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitCantReach or RepoAccess.GitReadOnly
             ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl)
             : null;
-        var changed = latest != shown || folderExists != _folderExists || folderProblem != _folderProblem;
+        var changed = latest != shown || folder != _checkedFolder || folderExists != _folderExists || folderProblem != _folderProblem;
         if (changed && _openProject?.Id == project.Id && _busyProjectId is null) await RecheckIfStillOpenAsync(project.Id);
     }
 
@@ -574,6 +577,15 @@ public partial class MainWindow
             if (_folderMayNotMatch)
             {
                 body.Children.Add(new TextBlock { Text = "This folder doesn't have the repo's latest commits. It may just be behind, but it may not be the same project, so check before pushing.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+            }
+            if (_busyProjectId is null && folder is not null && _database.DownloadIsUnfinished(folder))
+            {
+                body.Children.Add(new TextBlock { Text = "This folder's download never finished, so some of its big files or submodules may be missing, or be small placeholders. Finishing picks up where it left off.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+                var finish = ActionButton("Finish the download");
+                finish.HorizontalAlignment = HorizontalAlignment.Left;
+                finish.Margin = new Thickness(0, 8, 0, 0);
+                finish.Click += async (_, _) => await FinishDownloadAsync(project, folder);
+                body.Children.Add(finish);
             }
             body.Children.Add(CenteredNote("Nothing here yet."));
             AddOwnBusy(body, project);
@@ -851,6 +863,7 @@ public partial class MainWindow
         _busyProjectId = null;
         _busyText = null;
         _busyCardText = null;
+        _downloadIsInPlace = false;
         if (UpdateOverlay.IsVisible && !_downloading) ShowUpdateMessage();
         if (_openProject is null)
         {
@@ -1093,33 +1106,24 @@ public partial class MainWindow
             }
             cloneRecord = CloneRecord(working);
             SaveCloneRecords(CloneRecords().Append(cloneRecord));
-        }, exactFolder, stage =>
-        {
-            // Just the words, because drawing the page again would keep taking focus off Cancel.
-            _busyText = $"Cloning… {stage}";
-            _busyCardText = $"Cloning… {stage[(stage.LastIndexOf(' ') + 1)..]}";
-            if (_busyLabel is not null) _busyLabel.Text = _busyText;
-            if (_busyCardLabel is not null)
-            {
-                _busyCardLabel.Text = _busyCardText;
-                _busyCardLabel.ToolTip = _busyText;
-            }
-        });
+        }, exactFolder, stage => ShowBusyStage("Cloning…", stage));
 
         // One that couldn't be fully removed stays on the list, to be tried again next start.
         if (cloneRecord is not null && (workingFolder is null || !await GitTools.FolderExistsAsync(workingFolder)))
         {
             SaveCloneRecords(CloneRecords().Where(record => record != cloneRecord));
         }
-        _cloneCancel = null;
-        EndBusy();
 
         if (!result.Worked)
         {
+            _cloneCancel = null;
+            EndBusy();
             ShowPageProblem(project.Id, result.Value);
         }
         else if (FindProject(project.Id) is null)
         {
+            _cloneCancel = null;
+            EndBusy();
             Dialogs.Notify($"{project.Name} was deleted while it was cloning, so the clone wasn't linked to anything. It's still at {result.Value}.");
         }
         else if (FindProject(project.Id) is { } latest
@@ -1127,12 +1131,67 @@ public partial class MainWindow
                 || (!GitTools.SameRepo(latest.RepoUrl, project.RepoUrl) && !GitTools.SameRepo(await GitTools.RenamedRepoUrlAsync(project.RepoUrl) ?? "", latest.RepoUrl))))
         {
             // Settings stay open during a clone, and what was chosen there is more recent.
+            _cloneCancel = null;
+            EndBusy();
             await RecheckThenShowAsync(project.Id, $"Cloned to {result.Value}, but this project changed while that ran, so it wasn't linked. The clone is still there.");
         }
         else
         {
-            await UseFolderAsync(project, result.Value, folderBefore);
-            if (result.Note is not null) ShowPageProblem(project.Id, result.Note);
+            // Linked first, so an app closing during what comes next leaves a project that knows
+            // about this folder, and says what's still missing from it.
+            _downloadIsInPlace = true;
+            await UseFolderAsync(FindProject(project.Id) ?? project, result.Value, folderBefore);
+            var isLinked = _database.GetProjectFolder(project.Id) == result.Value;
+            var missing = isLinked ? await GitTools.FinishDownloadAsync(result.Value, cancel.Token, stage => ShowBusyStage("Cloning…", stage)) : null;
+            _cloneCancel = null;
+            EndBusy();
+
+            var notes = new[] { result.Note, missing }.OfType<string>().ToList();
+            if (notes.Count > 0) ShowPageProblem(project.Id, string.Join(' ', notes));
+        }
+    }
+
+    private async Task FinishDownloadAsync(Project project, string folder)
+    {
+        if (_busyProjectId is not null) return;
+
+        // These run in the folder, and it can have picked up settings since it was last looked at.
+        var runnable = await GitTools.FolderRunnableSettingsAsync(folder);
+        if (runnable is null || !GitTools.AreAllowed(folder, runnable))
+        {
+            await RecheckIfStillOpenAsync(project.Id);
+            return;
+        }
+        if (_busyProjectId is not null) return;
+
+        using var cancel = new CancellationTokenSource();
+        _cloneCancel = cancel;
+        StartBusy(project, "Finishing the download…");
+        _downloadIsInPlace = true;
+        string? missing;
+        try
+        {
+            missing = await GitTools.FinishDownloadAsync(folder, cancel.Token, stage => ShowBusyStage("Finishing the download…", stage));
+        }
+        finally
+        {
+            _cloneCancel = null;
+            EndBusy();
+        }
+        if (missing is not null) ShowPageProblem(project.Id, missing);
+    }
+
+    // Just the words, because drawing the page again would keep taking focus off Cancel.
+    private void ShowBusyStage(string doing, string stage)
+    {
+        var last = stage[(stage.LastIndexOf(' ') + 1)..];
+        _busyText = $"{doing} {stage}";
+        _busyCardText = last.EndsWith('%') ? $"{doing} {last}" : doing;
+        if (_busyLabel is not null) _busyLabel.Text = _busyText;
+        if (_busyCardLabel is not null)
+        {
+            _busyCardLabel.Text = _busyCardText;
+            _busyCardLabel.ToolTip = _busyText;
         }
     }
 

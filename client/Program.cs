@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using Velopack;
 
 namespace AgentOrange;
@@ -16,8 +17,28 @@ public static class Program
 #endif
 
         var app = new App();
+        var toldAboutDatabase = DateTimeOffset.MinValue;
         app.DispatcherUnhandledException += (_, e) =>
         {
+            // The database can be on a drive that drops, and closing would also stop a running
+            // clone. What's already saved is safe, and it can carry on once the drive's back.
+            if (e.Exception is SqliteException && app.MainWindow is { IsLoaded: true })
+            {
+                AppLog.Write($"Couldn't use the database: {e.Exception.Message}");
+                e.Handled = true;
+#if DEBUG
+                if (Headless.Active) return;
+#endif
+                if (DateTimeOffset.UtcNow - toldAboutDatabase < TimeSpan.FromMinutes(5)) return;
+                toldAboutDatabase = DateTimeOffset.UtcNow;
+                System.Windows.MessageBox.Show(
+                    "Agent Orange can't reach its database right now, so changes may not be saved until it's back. If it's on a drive that was disconnected, reconnect it. Otherwise, restart the app.",
+                    "Agent Orange",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Warning);
+                return;
+            }
+
             AppLog.Write($"Crashed: {e.Exception}");
 #if DEBUG
             if (Headless.Active) return; // Nothing goes on the screen, and the log has it.

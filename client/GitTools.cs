@@ -297,34 +297,16 @@ public static partial class GitTools
                 state = await InspectFolderAsync(folder);
                 if (state?.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
             }
-            else if (await RenamedRepoUrlAsync(repoUrl) is { } current && SameRepo(current, state.OriginToCompare!))
-            {
-                repoUrl = current; // The project has the old name here, and moves on when it's next opened.
-            }
-            else
+
+            // The project can be the one with the old name, and it moves on when it's next opened.
+            else if (await RenamedRepoUrlAsync(repoUrl) is not { } current || !SameRepo(current, state.OriginToCompare!))
             {
                 return $"That folder uses a different repo: {state.Origin}";
             }
         }
 
         // The same owner and name somewhere that isn't really GitHub, or in a way Git won't use.
-        if (RepoUrlProblem(state.OriginToCompare!) is not null) return $"That folder uses a different repo address, which isn't one GitHub uses: {state.Origin}";
-
-        // Its work could otherwise go somewhere else entirely, without anyone seeing why. Git
-        // pushes to every address listed, so all of them count.
-        var push = await RunAsync("git", folder, "remote", "get-url", "--push", "--all", "origin");
-        if (push is null) return "Git wasn't found on this PC.";
-        if (push.ExitCode != 0) return GitProblem("Git couldn't read where that folder pushes to", push.Errors);
-        foreach (var line in push.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            var pushRemote = WithoutCredentials(line);
-            if (pushRemote == state.Origin) continue;
-
-            var (gitHubForm, aliasProblem) = await GitHubFormAsync(pushRemote, folder);
-            if (aliasProblem is not null) return aliasProblem;
-            if (!SameRepo(gitHubForm ?? pushRemote, repoUrl) || RepoUrlProblem(gitHubForm ?? pushRemote) is not null) return $"That folder pushes to a different repo: {pushRemote}";
-        }
-        return null;
+        return RepoUrlProblem(state.OriginToCompare!) is not null ? $"That folder uses a different repo address, which isn't one GitHub uses: {state.Origin}" : null;
     }
 
     /// <summary>
@@ -393,6 +375,9 @@ public static partial class GitTools
     public static Func<string, string?> AllowedFolderSettings { get; set; } = _ => null;
 
     public static Action<string, string> RememberAllowedFolderSettings { get; set; } = (_, _) => { };
+
+    /// <summary>Set up when the app starts, because this has to outlast the app closing mid-download.</summary>
+    public static Action<string, bool> RememberUnfinishedDownload { get; set; } = (_, _) => { };
 
     /// <summary>Set up when the app starts. Gives the name of a project already on this repo.</summary>
     public static Func<string, string?> ProjectUsingRepo { get; set; } = _ => null;
@@ -852,7 +837,6 @@ public static partial class GitTools
     /// <summary>Whether a problem with a folder is that it's on another repo, which is what moving it to this one fixes.</summary>
     public static bool ConnectingCanFix(string folderProblem) =>
         folderProblem.StartsWith("That folder uses a different repo", StringComparison.Ordinal)
-        || folderProblem.StartsWith("That folder pushes to a different repo", StringComparison.Ordinal)
         || folderProblem.StartsWith("That folder isn't connected to a repo", StringComparison.Ordinal);
 
     /// <summary>Whether a repo has anything in it, or null if that couldn't be found out.</summary>
@@ -902,9 +886,10 @@ public static partial class GitTools
     });
 
     /// <summary>
-    /// A folder can send its pushes somewhere other than origin, for this branch or for all of
-    /// them. That's a normal way to work with a fork, so this is something to know, not a reason
-    /// to refuse. Gives where they'd go, if that isn't this project's repo.
+    /// A folder can send its pushes somewhere other than this project's repo, for this branch or
+    /// for all of them, including through a push address on origin itself. That's a normal way to
+    /// work with a fork, so this is something to know, not a reason to refuse. Gives where they'd
+    /// go, if that isn't this project's repo.
     /// </summary>
     public static async Task<string?> PushesElsewhereAsync(string folder, string repoUrl)
     {
@@ -917,23 +902,29 @@ public static partial class GitTools
         {
             chosen = await RunAsync("git", folder, "config", "--get", $"branch.{branch.Output.Trim()}.remote"); // Git's last resort.
         }
-        if (chosen is not { ExitCode: 0 }) return null;
+        var remote = chosen is { ExitCode: 0 } && chosen.Output.Trim() is { Length: > 0 } named ? named : "origin";
+        if (remote == ".") return null;
 
-        var remote = chosen.Output.Trim();
-        if (remote.Length == 0 || remote is "origin" or ".") return null;
+        return await PushAddressElsewhereAsync(folder, remote, repoUrl) is { } elsewhere
+            ? remote == elsewhere ? elsewhere : $"{remote} ({elsewhere})"
+            : null;
+    }
 
+    // Git pushes to every address a remote lists, so all of them count.
+    private static async Task<string?> PushAddressElsewhereAsync(string folder, string remote, string repoUrl)
+    {
         var addresses = await RunAsync("git", folder, "remote", "get-url", "--push", "--all", remote);
         if (addresses is not { ExitCode: 0 })
         {
             // It can be an address itself, which can be this project's own.
             var address = WithoutCredentials(remote);
-            return SameRepo(address, repoUrl) ? null : address;
+            return remote == "origin" || SameRepo(address, repoUrl) ? null : address;
         }
         foreach (var line in addresses.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var address = WithoutCredentials(line);
             var (gitHubForm, _) = await GitHubFormAsync(address, folder);
-            if (!SameRepo(gitHubForm ?? address, repoUrl)) return $"{remote} ({address})";
+            if (!SameRepo(gitHubForm ?? address, repoUrl) || RepoUrlProblem(gitHubForm ?? address) is not null) return address;
         }
         return null;
     }
@@ -942,7 +933,8 @@ public static partial class GitTools
     /// Clones into a new folder inside the chosen one, or into exactFolder if it's empty, and
     /// returns the resulting folder's path. workingFolder says where it's working, so that can
     /// be cleaned up if the app closes first, and is told null once that folder holds a finished
-    /// clone that must not be cleaned up.
+    /// clone that must not be cleaned up. Its large files and submodules aren't fetched yet, and
+    /// that's FinishDownloadAsync, once the folder is linked.
     /// </summary>
     public static async Task<GitResult> CloneAsync(string url, string parentFolder, CancellationToken cancel, Action<string?> workingFolder, string? exactFolder = null, Action<string>? progress = null)
     {
@@ -1018,6 +1010,7 @@ public static partial class GitTools
         // From here it's a finished clone, which could have taken hours, so it's never deleted,
         // including by the cleanup at the next start if the app closes during this.
         workingFolder(null);
+        RememberUnfinishedDownload(destination, true);
         try
         {
             await MoveIntoPlaceAsync(working, destination);
@@ -1025,11 +1018,24 @@ public static partial class GitTools
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             AppLog.Write($"Couldn't name a finished clone: {error.Message}");
-            return new GitResult(false, $"The clone finished, but it couldn't be named {destination}. It's kept at {await KeepVisibleAsync(working, destination)}. You can rename it and select it.");
+            RememberUnfinishedDownload(destination, false);
+            return new GitResult(false, $"The clone finished, but it couldn't be named {destination}. It's kept at {await KeepVisibleAsync(working, destination)}. You can rename it and select it. If it uses large files or submodules, get them with git lfs pull and git submodule update --init --recursive.");
         }
+        return new GitResult(true, destination, checkoutProblem);
+    }
 
-        var notes = new[] { checkoutProblem, await FetchSubmodulesAsync(destination, cancel, progress), await FetchLargeFilesAsync(destination, cancel, progress) }.OfType<string>().ToList();
-        return new GitResult(true, destination, notes.Count > 0 ? string.Join(' ', notes) : null);
+    /// <summary>
+    /// The last of a clone, which can take longer than the rest and can pick up where it left off.
+    /// Until this has worked, nothing in the folder would say that files are missing or are only
+    /// placeholders, so it stays remembered. Returns what's still missing, or null if nothing is.
+    /// </summary>
+    public static async Task<string?> FinishDownloadAsync(string folder, CancellationToken cancel = default, Action<string>? progress = null)
+    {
+        var notes = new[] { await FetchSubmodulesAsync(folder, cancel, progress), await FetchLargeFilesAsync(folder, cancel, progress) }.OfType<string>().ToList();
+        if (notes.Count > 0) return string.Join(' ', notes);
+
+        RememberUnfinishedDownload(folder, false);
+        return null;
     }
 
     // After the clone is safely in place, because a submodule that can't be fetched, such as a
@@ -1265,7 +1271,7 @@ public static partial class GitTools
             if (viaFolder is { ExitCode: 0 })
             {
                 // A folder that pushes somewhere else gets reported as that, without contacting it.
-                if (await FolderProblemAsync(folder!, url) is not null) return new RepoCheck(RepoAccess.Allowed);
+                if (await FolderProblemAsync(folder!, url) is not null || await PushAddressElsewhereAsync(folder!, "origin", url) is not null) return new RepoCheck(RepoAccess.Allowed);
                 return new RepoCheck(await GitRefusesPushAsync("origin", folder!) ? RepoAccess.GitReadOnly : RepoAccess.Allowed);
             }
 

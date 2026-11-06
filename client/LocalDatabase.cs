@@ -441,6 +441,13 @@ public sealed class LocalDatabase
         SetSetting($"project_folder:{projectId}", folder);
     }
 
+    /// <summary>A clone whose large files or submodules may not all have arrived. By folder, as it may not be linked to anything yet.</summary>
+    public bool DownloadIsUnfinished(string folder) => GetSetting(UnfinishedDownloadKey(folder)) == "1";
+
+    public void SetDownloadUnfinished(string folder, bool unfinished) => SetSetting(UnfinishedDownloadKey(folder), unfinished ? "1" : "");
+
+    private static string UnfinishedDownloadKey(string folder) => $"download_unfinished:{Path.TrimEndingDirectorySeparator(folder).ToLowerInvariant()}";
+
     /// <summary>Whether this folder has been seen to share a commit with this repo, which stands until it's disconnected.</summary>
     public bool FolderSharesRepo(string folder, string repoKey) => GetSetting(SharesRepoKey(folder)) == repoKey;
 

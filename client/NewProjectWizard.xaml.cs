@@ -303,6 +303,12 @@ public partial class NewProjectWizard : UserControl
                     (url, confirmed, failure) = await ResolveRepoAsync(submission, status => progress.Text = status);
                 }
             }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                // A drive can drop at any point in all of that.
+                AppLog.Write($"Couldn't use a project folder: {error.Message}");
+                (url, confirmed, failure) = ("", false, $"That folder stopped being available: {error.Message}");
+            }
             finally
             {
                 SetWorking(false);

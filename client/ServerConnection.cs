@@ -28,7 +28,11 @@ public sealed class ServerConnection
         State = Address.Length == 0 ? ServerState.NoAddress : ServerState.Connecting;
 
         var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-        timer.Tick += async (_, _) => await CheckAsync();
+        timer.Tick += async (_, _) =>
+        {
+            FollowSavedAddress();
+            await CheckAsync();
+        };
         timer.Start();
     }
 
@@ -70,6 +74,18 @@ public sealed class ServerConnection
         _chosenAddress = address;
         _failedChecks = 0;
         await ReconnectAsync();
+    }
+
+    // Windows of the app share this setting, and the one that syncs may not be the one it was changed in.
+    private void FollowSavedAddress()
+    {
+        var saved = _database.GetSetting(AddressSetting) ?? "";
+        if (saved == _chosenAddress) return;
+
+        Address = saved;
+        _chosenAddress = saved;
+        _failedChecks = 0;
+        SetState(saved.Length == 0 ? ServerState.NoAddress : ServerState.Connecting);
     }
 
     public async Task ReconnectAsync()

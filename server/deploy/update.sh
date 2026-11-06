@@ -70,9 +70,9 @@ fi
 
 echo "Installing $latest (was: ${previous:-nothing})."
 point_current_at "releases/$latest"
-restart_server || true
 
-if is_healthy; then
+# If it couldn't restart, the old release is what would answer the health check.
+if restart_server && is_healthy; then
     echo "$latest is healthy."
     exit 0
 fi

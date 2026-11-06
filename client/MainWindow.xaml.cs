@@ -62,6 +62,7 @@ public partial class MainWindow : Window
         GitTools.ProjectUsingRepo = url => _database.ListProjects().FirstOrDefault(project => GitTools.SameRepo(project.RepoUrl, url))?.Name;
         GitTools.AllowedFolderSettings = _database.AllowedFolderSettings;
         GitTools.RememberAllowedFolderSettings = _database.AllowFolderSettings;
+        GitTools.RememberUnfinishedDownload = _database.SetDownloadUnfinished;
         ProjectSettings.ProjectIsBusy = projectId => _busyProjectId == projectId;
 
         // A delete interrupted last time can leave parts of a project behind.
@@ -96,9 +97,18 @@ public partial class MainWindow : Window
         otherWindowTimer.Tick += (_, _) =>
         {
             var latest = _database.RecordsSignature();
-            if (latest == knownRecords) return;
-            knownRecords = latest;
-            RefreshProjects();
+            if (latest != knownRecords)
+            {
+                knownRecords = latest;
+                RefreshProjects();
+            }
+
+            // Folders don't sync, so they're not records, and a clone there can finish at any time.
+            if (_openProject is { } open && _projectCheck is not null && _busyProjectId is null
+                && ProjectSettings.Visibility != Visibility.Visible && _database.GetProjectFolder(open.Id) != _checkedFolder)
+            {
+                _ = RecheckIfStillOpenAsync(open.Id);
+            }
         };
         otherWindowTimer.Start();
         _sync.RecordsChanged += () =>
@@ -331,6 +341,10 @@ public partial class MainWindow : Window
 #if DEBUG
         if (Headless.Active) return true;
 #endif
+        if (_downloadIsInPlace && CloningProjectName() is { } finishing)
+        {
+            return Dialogs.Confirm($"{finishing} is still downloading its large files and submodules. {action} stops that. What's arrived is kept, and its page will offer to finish the rest. Do it anyway?");
+        }
         if (CloningProjectName() is { } name)
         {
             return Dialogs.Confirm($"{name} is still cloning. {action} stops that, and what's been downloaded so far is thrown away. Do it anyway?");

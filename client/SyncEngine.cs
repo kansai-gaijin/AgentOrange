@@ -17,6 +17,7 @@ public sealed class SyncEngine
     private readonly DeviceSession _devices;
     private readonly Mutex _syncTurn;
     private bool _hasSyncTurn;
+    private int _syncTurnThread;
     private bool _running;
     private int _batchLimit = BatchSize;
 
@@ -83,12 +84,27 @@ public sealed class SyncEngine
         {
             _hasSyncTurn = true; // The window that had it crashed, and this one has it now.
         }
+        if (_hasSyncTurn) _syncTurnThread = Environment.CurrentManagedThreadId;
         return _hasSyncTurn;
+    }
+
+    // A window that can't sync right now shouldn't stop another one that can. Only the thread that
+    // took a mutex can let it go.
+    private void GiveUpSyncTurn()
+    {
+        if (!_hasSyncTurn || _syncTurnThread != Environment.CurrentManagedThreadId) return;
+        _syncTurn.ReleaseMutex();
+        _hasSyncTurn = false;
     }
 
     public async Task SyncNowAsync()
     {
-        if (_running || IsPaused() || _server.State != ServerState.Connected || !_devices.IsPaired) return;
+        if (_running) return;
+        if (IsPaused() || _server.State != ServerState.Connected || !_devices.IsPaired)
+        {
+            GiveUpSyncTurn();
+            return;
+        }
 
         var hasTurn = HasSyncTurn();
         if (OtherWindowSyncs == hasTurn)
