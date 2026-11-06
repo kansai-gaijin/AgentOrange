@@ -613,11 +613,11 @@ public partial class MainWindow
             {
                 body.Children.Add(new TextBlock { Text = "This folder doesn't have the repo's latest commits. It may just be behind, but it may not be the same project, so check before pushing.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
             }
-            if (_busyProjectId is null && _shownDownloadState.Held)
+            if (_busyProjectId != project.Id && _shownDownloadState.Held)
             {
                 body.Children.Add(new TextBlock { Text = "Another window of the app is finishing this folder's download.", Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
             }
-            else if (_busyProjectId is null && _shownDownloadState.Unfinished)
+            else if (_busyProjectId != project.Id && _shownDownloadState.Unfinished)
             {
                 body.Children.Add(new TextBlock { Text = "This folder's download never finished, so some of its files or submodules may be missing, or be small placeholders. Finishing picks up where it left off.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
                 if (_settingsToAllow is not null || _finishSettingsToAllow is not null)
@@ -635,8 +635,13 @@ public partial class MainWindow
                     var finish = ActionButton("Finish the download");
                     finish.HorizontalAlignment = HorizontalAlignment.Left;
                     finish.Margin = new Thickness(0, 8, 0, 0);
+                    finish.IsEnabled = _busyProjectId is null;
                     finish.Click += async (_, _) => await FinishDownloadAsync(project, folder!);
                     body.Children.Add(finish);
+                    if (_busyProjectId is { } busyId)
+                    {
+                        body.Children.Add(new TextBlock { Text = $"{FindProject(busyId)?.Name ?? "Another project"} is busy. This will be available when it finishes.", FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+                    }
                 }
             }
             body.Children.Add(CenteredNote("Nothing here yet."));
@@ -1532,7 +1537,7 @@ public partial class MainWindow
     private static string CloneRecord(string folder)
     {
         using var self = Process.GetCurrentProcess();
-        return $"{self.Id}|{self.StartTime.Ticks}|{folder}";
+        return $"{self.Id}|{self.StartTime.ToUniversalTime().Ticks}|{folder}";
     }
 
     // The app closed in the middle of a clone last time. There can be more than one, because
@@ -1564,7 +1569,7 @@ public partial class MainWindow
         try
         {
             using var process = Process.GetProcessById(id);
-            return process.StartTime.Ticks == startedTicks;
+            return process.StartTime.ToUniversalTime().Ticks == startedTicks;
         }
         catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {

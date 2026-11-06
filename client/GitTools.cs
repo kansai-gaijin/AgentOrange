@@ -608,37 +608,53 @@ public static partial class GitTools
         if (await RemoteSetElsewhereAsync(folder) is { } elsewhere) return elsewhere;
 
         const string couldNotChange = "Couldn't change that folder's remote.";
-        var before = await RunAsync("git", folder, "config", "--get", "remote.origin.url");
-        if (await RunAsync("git", folder, "config", "--replace-all", "remote.origin.url", remote) is not { ExitCode: 0 }) return couldNotChange;
 
-        var pushUrls = await RunAsync("git", folder, "config", "--get-all", "remote.origin.pushurl");
-        if (pushUrls is not { ExitCode: 0 }) return null;
-
-        var current = pushUrls.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var oldAddress = before is { ExitCode: 0 } ? before.Output.Trim() : null;
+        // A remote can list several addresses, and the first is the one Git fetches from.
+        var urls = await AddressesInAsync(folder, "remote.origin.url");
+        var pushUrls = await AddressesInAsync(folder, "remote.origin.pushurl");
+        if (urls is null || pushUrls is null) return couldNotChange;
+        if (urls.Length == 0) return await SetAddressesAsync(folder, "remote.origin.url", [remote]) ? null : couldNotChange;
 
         // An SSH alias, as a second GitHub account uses, has to be read as the repo it really is.
-        var oldRepo = oldAddress is null ? null : (await GitHubFormAsync(oldAddress, folder)).Item1 ?? oldAddress;
-        var moved = new List<string>();
-        foreach (var address in current)
+        var oldRepo = (await GitHubFormAsync(urls[0], folder)).Item1 ?? urls[0];
+        async Task<string[]> MovedAsync(string[] addresses)
         {
-            var (gitHubForm, _) = await GitHubFormAsync(address, folder);
-            moved.Add(oldRepo is not null && SameRepo(gitHubForm ?? address, oldRepo) ? remote : address);
+            var moved = new List<string>();
+            foreach (var address in addresses)
+            {
+                var (gitHubForm, _) = await GitHubFormAsync(address, folder);
+                moved.Add(SameRepo(gitHubForm ?? address, oldRepo) ? remote : address);
+            }
+            return moved.Distinct().ToArray();
         }
-        if (moved.SequenceEqual(current)) return null;
-        if (await SetPushAddressesAsync(folder, moved.Distinct().ToArray())) return null;
 
-        await SetPushAddressesAsync(folder, current);
-        if (before is { ExitCode: 0 }) await RunAsync("git", folder, "config", "--replace-all", "remote.origin.url", before.Output.Trim());
+        var movedUrls = await MovedAsync(urls);
+        var movedPushUrls = await MovedAsync(pushUrls);
+        if (await SetAddressesAsync(folder, "remote.origin.url", movedUrls) && (movedPushUrls.Length == 0 || await SetAddressesAsync(folder, "remote.origin.pushurl", movedPushUrls))) return null;
+
+        await SetAddressesAsync(folder, "remote.origin.url", urls);
+        if (pushUrls.Length > 0) await SetAddressesAsync(folder, "remote.origin.pushurl", pushUrls);
         return couldNotChange;
     }
 
-    private static async Task<bool> SetPushAddressesAsync(string folder, string[] addresses)
+    // Null if that couldn't be read. A setting that isn't there is an ordinary answer, and an empty list.
+    private static async Task<string[]?> AddressesInAsync(string folder, string key)
     {
-        if (await RunAsync("git", folder, "config", "--replace-all", "remote.origin.pushurl", addresses[0]) is not { ExitCode: 0 }) return false;
+        var read = await RunAsync("git", folder, "config", "--get-all", key);
+        return read switch
+        {
+            { ExitCode: 0 } => read.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+            { ExitCode: 1 } => [],
+            _ => null,
+        };
+    }
+
+    private static async Task<bool> SetAddressesAsync(string folder, string key, string[] addresses)
+    {
+        if (await RunAsync("git", folder, "config", "--replace-all", key, addresses[0]) is not { ExitCode: 0 }) return false;
         foreach (var address in addresses.Skip(1))
         {
-            if (await RunAsync("git", folder, "config", "--add", "remote.origin.pushurl", address) is not { ExitCode: 0 }) return false;
+            if (await RunAsync("git", folder, "config", "--add", key, address) is not { ExitCode: 0 }) return false;
         }
         return true;
     }
@@ -1036,9 +1052,9 @@ public static partial class GitTools
 
                 // Everything arrived, and only putting the files in place failed, such as on a
                 // file name Windows can't use. That's hours of download, and it can be fixed.
-                // Git removes the folder when the download itself fails. If it's still there, only a
-                // real answer that it holds no commits can cost what's in it.
-                if (!cancel.IsCancellationRequested && await FolderExistsAsync(working) && await RunAsync("git", working, "rev-parse", "--verify", "-q", "HEAD") is { ExitCode: 0 or < 0 })
+                // Git removes the folder when the download itself fails. If it's still there, only
+                // Git's own answer that it holds no commits can cost what's in it.
+                if (!cancel.IsCancellationRequested && await FolderExistsAsync(working) && !SaysNoCommits(await RunAsync("git", working, "rev-parse", "--verify", "-q", "HEAD")))
                 {
                     checkoutProblem = $"Everything downloaded, but some files couldn't be put in place: {AsSentence(reason)} Fix that, then run git restore --source=HEAD --staged --worktree :/ in the folder.";
                 }
@@ -1110,6 +1126,9 @@ public static partial class GitTools
         RememberUnfinishedDownload(folder, false);
         return null;
     }
+
+    private static bool SaysNoCommits(CommandResult? headCheck) =>
+        headCheck is { ExitCode: 1 } || (headCheck is { ExitCode: 128 } && headCheck.Errors.Contains("not a git repository", StringComparison.OrdinalIgnoreCase));
 
     // The database can be on a drive that's dropped, and nothing being noted is worth more than the clone.
     private static void TryNoting(Action note)
@@ -1607,6 +1626,12 @@ public static partial class GitTools
         info.Environment["LC_ALL"] = "C.UTF-8"; // Some answers are read by this app, in English.
         info.Environment["GH_HOST"] = "github.com"; // Repos are on github.com, whatever else this PC is set up for.
         info.Environment["GIT_TERMINAL_PROMPT"] = "0";
+
+        // Set if this app was started from a Git hook, and every answer would be about that repo.
+        foreach (var inherited in new[] { "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX" })
+        {
+            info.Environment.Remove(inherited);
+        }
         info.Environment["GIT_ALLOW_PROTOCOL"] = "https:ssh";
         if (gitHubToken is not null) info.Environment["GH_TOKEN"] = gitHubToken;
         if (extraSettings is not null)

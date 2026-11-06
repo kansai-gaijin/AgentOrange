@@ -270,9 +270,8 @@ public sealed class LocalDatabase
             if (GetRecord(FieldsCollection, FieldId(projectId, field)) is not null) SaveRecord(FieldsCollection, FieldId(projectId, field), "", deleted: true);
         }
 
-        var order = ProjectOrder();
-        if (order.Remove(projectId)) SaveRecord(SettingsCollection, ProjectOrderRecord, JsonSerializer.Serialize(order, JsonOptions));
-
+        // The library's order stays as it is. Nobody reordered anything, so saving it would look like
+        // a newer choice than one made on another PC, and a project that's gone is ignored in it.
         SetProjectFolder(projectId, "");
         SetSetting($"project_verified:{projectId}", "");
         SetSetting($"project_created_here:{projectId}", "");

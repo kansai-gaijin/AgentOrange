@@ -41,6 +41,7 @@ public partial class NewProjectWizard : UserControl
     private string _shownFolderSettings = "";
     private RepoCheck? _replacementOfferedFor;
     private bool _cloneIntoFolder;
+    private bool _allowedForThisTry;
 
     public NewProjectWizard()
     {
@@ -301,8 +302,11 @@ public partial class NewProjectWizard : UserControl
                         submission = submission with { RepoUrl = known };
                     }
 
+                    _allowedForThisTry = false;
                     (url, confirmed, failure) = await ResolveRepoAsync(submission, status => progress.Text = status);
-                    if (allowedJustNow && failure is not null) GitTools.ForgetAllowedFolderSettings(path);
+
+                    // An approval only stands if the folder then gets used.
+                    if ((allowedJustNow || _allowedForThisTry) && failure is not null) GitTools.ForgetAllowedFolderSettings(path);
                 }
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
@@ -427,7 +431,11 @@ public partial class NewProjectWizard : UserControl
         // Only what was actually shown gets approved. If it has changed since, it's shown again.
         if (_offeringFolderSettings)
         {
-            if (runnable?.Fingerprint == _shownFolderSettings) GitTools.RememberAllowedFolderSettings(project.Folder, _shownFolderSettings);
+            if (runnable?.Fingerprint == _shownFolderSettings)
+            {
+                GitTools.RememberAllowedFolderSettings(project.Folder, _shownFolderSettings);
+                _allowedForThisTry = true;
+            }
             _offeringFolderSettings = false;
         }
         var useFolderSettings = state.Origin is not null && runnable is not null && GitTools.AreAllowed(project.Folder, runnable);

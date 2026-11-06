@@ -239,7 +239,8 @@ internal static partial class GitFolderSafety
             if (StartsLikeShare(value) || value.StartsWith("%(prefix)", StringComparison.Ordinal) || NamesNetworkDrive(value)) return named;
 
             // Pointing a setting at nothing is the usual way to turn off a repo's hooks.
-            if (PathSetting().IsMatch(parts[0]) && value != "/dev/null" && IsUnsafeGitPath(chosen, value, directory, true, out _)) return named;
+            // Git can read these from either place, depending on what's asking.
+            if (PathSetting().IsMatch(parts[0]) && value != "/dev/null" && (IsUnsafeGitPath(chosen, value, directory, true, out _) || IsUnsafeGitPath(chosen, value, chosen, true, out _))) return named;
 
             if (!IncludeSetting().IsMatch(parts[0])) continue;
             if (IsUnsafeGitPath(chosen, value, directory, true, out var included)) return named;
