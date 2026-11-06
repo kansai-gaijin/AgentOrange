@@ -185,13 +185,16 @@ internal static partial class GitFolderSafety
         {
             foreach (var entry in new DirectoryInfo(directory).EnumerateFileSystemInfos())
             {
-                if (directory == gitDirectory && entry.Name == "lfs") continue;
+                if (entry.Name == "lfs" && (directory == gitDirectory || IsSubmoduleData(gitDirectory, directory))) continue;
                 if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint) && entry.LinkTarget is not null) return entry.FullName;
                 if (entry.Attributes.HasFlag(FileAttributes.Directory)) waiting.Push(entry.FullName);
             }
         }
         return null;
     }
+
+    private static bool IsSubmoduleData(string gitDirectory, string directory) =>
+        directory.StartsWith(Path.Combine(gitDirectory, "modules") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) && Exists(Path.Combine(directory, "HEAD"));
 
     // Other places a repo borrows its history from, and those can borrow from others in turn. Git
     // opens them all to look for any commit.

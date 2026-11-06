@@ -41,6 +41,7 @@ public partial class MainWindow
     private bool _databaseWasLost;
     private bool _openPageNeedsCheck; // Kept until nothing's busy, as a long clone can be running.
     private FolderGitSettings? _finishSettingsToAllow;
+    private (string? Folder, string? RepoUrl) _settingsOpenedWith;
     private bool _folderLacksFiles;
     private bool _folderMayNotMatch;
     private string? _scrolledToProblem;
@@ -1609,6 +1610,7 @@ public partial class MainWindow
             }
 
             _database.SetProjectFolder(projectId, folder);
+            await GitTools.PickUpUnfinishedNoteAsync(folder);
         }
         finally
         {
@@ -1624,6 +1626,7 @@ public partial class MainWindow
         if (FindProject(projectId) is not { } project) return;
 
         _settingsProjectId = projectId;
+        _settingsOpenedWith = (_database.GetProjectFolder(projectId), project.RepoUrl);
         MainContent.IsEnabled = false;
         MainContent.Effect = new BlurEffect { Radius = 8 };
         ProjectSettings.Open(_database, project);
@@ -1653,7 +1656,8 @@ public partial class MainWindow
             RefreshProjects();
             return;
         }
-        KeepProblemThroughReopen(openId);
+        // What it says still stands, unless the folder or repo it was about has just been changed.
+        if (_settingsOpenedWith == (_database.GetProjectFolder(openId), FindProject(openId)?.RepoUrl)) KeepProblemThroughReopen(openId);
         await RefreshThenRecheckAsync(openId);
     }
 

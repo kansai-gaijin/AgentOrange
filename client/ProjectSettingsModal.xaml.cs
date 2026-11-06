@@ -430,6 +430,7 @@ public partial class ProjectSettingsModal : UserControl
                 }
 
                 _database.SetProjectFolder(projectId, chosen);
+                await GitTools.PickUpUnfinishedNoteAsync(chosen);
             }
             finally
             {

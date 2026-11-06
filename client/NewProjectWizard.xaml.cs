@@ -425,6 +425,10 @@ public partial class NewProjectWizard : UserControl
             {
                 return ("", false, "That folder is connected to a different repo than that URL.");
             }
+            else
+            {
+                url = renamed;
+            }
         }
 
         // The same check as selecting a folder for an existing project, such as where it pushes to.

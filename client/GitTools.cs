@@ -149,13 +149,14 @@ public static partial class GitTools
         if (view.ExitCode == 0 && WritePermission().IsMatch(view.Output)) return await CheckGitCanReachAsync(url, folder, useFolderSettings);
 
         var readOnly = view.ExitCode == 0;
-        var notFound = SaysRepoMissing(view.Errors);
+        var status = readOnly ? null : await RepoStatusAsync(slug, null);
+        var notFound = status == 404 || SaysRepoMissing(view.Errors);
         RepoCheck? activeAccountsAnswer = null;
         if (!readOnly && !notFound)
         {
-            if (LooksLikeNetworkFailure(view.Errors)) return new RepoCheck(RepoAccess.Offline);
-            if (AccessBlocked().IsMatch(view.Errors)) activeAccountsAnswer = new RepoCheck(RepoAccess.Restricted, await ActiveAccountAsync());
-            else if (SignedOutMessage().IsMatch(view.Errors)) activeAccountsAnswer = new RepoCheck(RepoAccess.SignedOut);
+            if (status is null && LooksLikeNetworkFailure(view.Errors)) return new RepoCheck(RepoAccess.Offline);
+            if (MeansBlocked(status) || AccessBlocked().IsMatch(view.Errors)) activeAccountsAnswer = new RepoCheck(RepoAccess.Restricted, await ActiveAccountAsync());
+            else if (status == 401 || SignedOutMessage().IsMatch(view.Errors)) activeAccountsAnswer = new RepoCheck(RepoAccess.SignedOut);
             else return new RepoCheck(RepoAccess.CheckFailed);
         }
 
@@ -191,8 +192,10 @@ public static partial class GitTools
             // who can write to it. An account with an expired login just can't work on it.
             if (viewed is { ExitCode: 0 }) otherCanRead ??= account;
             var errors = viewed?.Errors ?? "";
-            if (AccessBlocked().IsMatch(errors)) otherIsBlocked ??= account;
-            var answered = viewed is { ExitCode: 0 } || SaysRepoMissing(errors) || SignedOutMessage().IsMatch(errors) || AccessBlocked().IsMatch(errors);
+            var accountStatus = viewed is { ExitCode: 0 } ? null : await RepoStatusAsync(slug, token.Output.Trim());
+            var isBlocked = MeansBlocked(accountStatus) || AccessBlocked().IsMatch(errors);
+            if (isBlocked) otherIsBlocked ??= account;
+            var answered = viewed is { ExitCode: 0 } || isBlocked || accountStatus is 404 or 401 || SaysRepoMissing(errors) || SignedOutMessage().IsMatch(errors);
             if (!answered) inconclusive = errors;
         }
 
@@ -649,10 +652,15 @@ public static partial class GitTools
         var movedPushUrls = await MovedAsync(pushUrls);
         if (movedUrls.SequenceEqual(urls) && movedPushUrls.SequenceEqual(pushUrls)) return null; // Already there.
 
-        if (await SetAddressesAsync(folder, "remote.origin.url", movedUrls) && (movedPushUrls.Length == 0 || await SetAddressesAsync(folder, "remote.origin.pushurl", movedPushUrls))) return null;
+        var urlsMoved = await SetAddressesAsync(folder, "remote.origin.url", movedUrls);
+        if (urlsMoved && (movedPushUrls.Length == 0 || await SetAddressesAsync(folder, "remote.origin.pushurl", movedPushUrls))) return null;
 
-        await SetAddressesAsync(folder, "remote.origin.url", urls);
-        if (pushUrls.Length > 0) await SetAddressesAsync(folder, "remote.origin.pushurl", pushUrls);
+        // Another window can be moving this too, and Git's lock turned this one away. What's there
+        // now is then that window's, so only what this attempt wrote gets put back.
+        var now = await AddressesInAsync(folder, "remote.origin.url");
+        var wroteHalf = now is not null && !now.SequenceEqual(urls) && !now.SequenceEqual(movedUrls);
+        if (urlsMoved || wroteHalf) await SetAddressesAsync(folder, "remote.origin.url", urls);
+        if (urlsMoved && pushUrls.Length > 0) await SetAddressesAsync(folder, "remote.origin.pushurl", pushUrls);
         return couldNotChange;
     }
 
@@ -1026,7 +1034,9 @@ public static partial class GitTools
         if (RepoUrlProblem(url) is { } problem) return new GitResult(false, problem);
 
         // A repo inside a repo gets picked up by the outer one's next commit.
-        if (await InspectFolderAsync(parentFolder) is { InsideRepo: true }) return new GitResult(false, $"{parentFolder} is inside a Git repo, and a project can't be cloned into another repo. Choose somewhere else.");
+        var parent = await InspectFolderAsync(parentFolder);
+        if (parent is { InsideRepo: true }) return new GitResult(false, $"{parentFolder} is inside a Git repo, and a project can't be cloned into another repo. Choose somewhere else.");
+        if (parent?.Problem is { } parentProblem) return new GitResult(false, $"Couldn't clone into {parentFolder}. {parentProblem}");
         if ((exactFolder ?? CloneDestination(url, parentFolder)) is not { } destination) return new GitResult(false, "That repo URL doesn't name a folder to clone into.");
 
         var form = await ReachableFormAsync(url, cancel) ?? url;
@@ -1108,6 +1118,7 @@ public static partial class GitTools
             TryNoting(() => RememberUnfinishedDownload(destination, false));
             return new GitResult(false, $"The clone finished, but it couldn't be named {destination}. It's kept at {await KeepVisibleAsync(working, destination)}. You can rename it and select it. If it uses large files or submodules, get them with git lfs pull and git submodule update --init --recursive.");
         }
+        await NoteUnfinishedInFolderAsync(destination, true);
         return new GitResult(true, destination, checkoutProblem);
     }
 
@@ -1144,8 +1155,46 @@ public static partial class GitTools
         if (notes.Count > 0) return string.Join(' ', notes);
 
         RememberUnfinishedDownload(folder, false);
+        await NoteUnfinishedInFolderAsync(folder, false);
         return null;
     }
+
+    private const string UnfinishedNoteFile = "agent-orange-unfinished";
+
+    // Also kept with the clone itself, as a folder that gets moved leaves what's remembered by its path behind.
+    private static Task NoteUnfinishedInFolderAsync(string folder, bool unfinished) => Task.Run(() =>
+    {
+        try
+        {
+            var note = Path.Combine(folder, ".git", UnfinishedNoteFile);
+            if (unfinished) File.WriteAllText(note, "");
+            else File.Delete(note);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write($"Couldn't note a clone's unfinished download in its folder: {error.Message}");
+        }
+    });
+
+    /// <summary>A clone chosen after being moved still has what it had when it was left unfinished.</summary>
+    public static async Task PickUpUnfinishedNoteAsync(string folder)
+    {
+        if (await Task.Run(() => File.Exists(Path.Combine(folder, ".git", UnfinishedNoteFile)))) RememberUnfinishedDownload(folder, true);
+    }
+
+    // What GitHub answered, as a number that doesn't change the way the wording of a message can.
+    // Null if it didn't answer at all.
+    private static async Task<int?> RepoStatusAsync(string slug, string? token)
+    {
+        var asked = await RunAsync("gh", Path.GetTempPath(), token, ["api", $"repos/{slug}", "--include"]);
+        if (asked is null || HttpStatusLine().Match(asked.Output) is not { Success: true } line) return null;
+        var status = int.Parse(line.Groups[1].Value);
+
+        // Running out of requests is a 403 too, and says nothing about the repo.
+        return status == 403 && RateLimited().IsMatch(asked.Output) ? null : status;
+    }
+
+    private static bool MeansBlocked(int? status) => status is 403 or 451;
 
     private static bool SaysNoCommits(CommandResult? headCheck) =>
         headCheck is { ExitCode: 1 } || (headCheck is { ExitCode: 128 } && headCheck.Errors.Contains("not a git repository", StringComparison.OrdinalIgnoreCase));
@@ -1817,6 +1866,12 @@ public static partial class GitTools
 
     [GeneratedRegex(@"timeout|timed out|schannel: failed to receive handshake|ssl_connect|unexpected disconnect|could not resolve host|no such host|dial tcp|could not connect|failed to connect|error connecting to|check your internet connection|connection (was )?(refused|reset|closed)|returned error: 5\d\d|remote end hung up|empty reply from server|network is unreachable|tls handshake|proxyconnect|temporary failure", RegexOptions.IgnoreCase)]
     private static partial Regex NetworkFailure();
+
+    [GeneratedRegex(@"^HTTP/\S+\s+(\d{3})\b", RegexOptions.Multiline)]
+    private static partial Regex HttpStatusLine();
+
+    [GeneratedRegex(@"x-ratelimit-remaining:\s*0\b|rate limit", RegexOptions.IgnoreCase)]
+    private static partial Regex RateLimited();
 
     [GeneratedRegex(@"returned error: 4\d\d|\bnot found\b|permission denied|authentication failed|access denied", RegexOptions.IgnoreCase)]
     private static partial Regex ServerRefusal();

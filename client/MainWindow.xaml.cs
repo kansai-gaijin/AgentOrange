@@ -204,7 +204,11 @@ public partial class MainWindow : Window
         var id = _database.CreateProject(project.Name, project.Engine, project.GameType, project.RepoUrl);
 
         // Folders differ between PCs, so this stays here and only the rest syncs.
-        if (!project.CloneIntoFolder) _database.SetProjectFolder(id, project.Folder);
+        if (!project.CloneIntoFolder)
+        {
+            _database.SetProjectFolder(id, project.Folder);
+            _ = GitTools.PickUpUnfinishedNoteAsync(project.Folder);
+        }
         if (project.RepoConfirmed) _database.SetSetting(VerifiedSetting(id), GitTools.RepoKey(project.RepoUrl));
         else _database.SetSetting(CreatedHereSetting(id), GitTools.RepoKey(project.RepoUrl));
 
