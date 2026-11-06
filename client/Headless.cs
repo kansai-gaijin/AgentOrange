@@ -146,6 +146,9 @@ internal static partial class Headless
             case "say":
                 _log?.WriteLine(parts[1]);
                 break;
+            case "last":
+                _log?.WriteLine(Texts(window).LastOrDefault() ?? "");
+                break;
             case "texts":
                 _log?.WriteLine(string.Join(" | ", Texts(window)));
                 break;

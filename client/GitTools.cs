@@ -320,7 +320,7 @@ public static partial class GitTools
         if (user == "git" && IsGitHubSshHost(host)) return ($"git@github.com:{path}", null);
 
         var settings = await ReadSshSettingsAsync(host, folder);
-        if (settings is not var (realHost, realUser)) return (null, $"Couldn't check whether {host} is GitHub, because SSH didn't answer. Check that SSH works on this PC, then try again.");
+        if (settings is not var (realHost, realUser)) return (null, $"Couldn't tell whether {host} is GitHub from this folder's SSH settings. Check that they work, or use a remote that says github.com.");
 
         var effectiveUser = user.Length > 0 ? user : realUser;
         return (effectiveUser == "git" && realHost is not null && IsGitHubSshHost(realHost) ? $"git@github.com:{path}" : null, null);
@@ -331,8 +331,8 @@ public static partial class GitTools
     private static bool IsGitHubSshHost(string host) =>
         host.Equals("github.com", StringComparison.OrdinalIgnoreCase) || host.Equals("ssh.github.com", StringComparison.OrdinalIgnoreCase);
 
-    // Null means SSH itself couldn't answer. A folder's own SSH command can name its own settings
-    // file, and only that's taken from it: this reads, so it doesn't run the command itself.
+    // Null means there's no way to tell. A folder's own SSH command can name its own settings
+    // file, which is read here and never given to ssh, because ssh would run commands in it.
     private static async Task<(string? Host, string? User)?> ReadSshSettingsAsync(string host, string folder)
     {
         var command = Environment.GetEnvironmentVariable("GIT_SSH_COMMAND");
@@ -342,10 +342,15 @@ public static partial class GitTools
             command = configured is { ExitCode: 0 } ? configured.Output.Trim() : "";
         }
 
-        var file = SshConfigFile().Match(command);
-        string[] arguments = file.Success ? ["-G", "-F", file.Groups[1].Value.Trim('"', '\''), host] : ["-G", host];
+        var file = SshConfigOption().Match(command);
+        if (file.Success)
+        {
+            var path = SshConfigFile.Resolve(file.Groups[1].Value.Trim('"', '\''), folder);
+            return await Task.Run(() => SshConfigFile.Read(path, host));
+        }
 
-        var settings = await RunAsync("ssh", Path.GetTempPath(), arguments);
+        // This PC's own SSH settings, which belong to the person and not to the folder.
+        var settings = await RunAsync("ssh", Path.GetTempPath(), "-G", host);
         if (settings is not { ExitCode: 0 }) return null;
 
         var name = SshHostName().Match(settings.Output);
@@ -365,10 +370,19 @@ public static partial class GitTools
         if (state.Origin is null) return await ConnectFolderAsync(folder, await ReachableFormAsync(repoUrl) ?? repoUrl);
 
         var newRemote = state.GitHubOrigin is not null ? SameWayTo(state.Origin, repoUrl) : await ReachableFormAsync(repoUrl) ?? repoUrl;
-        var changed = await RunAsync("git", folder, "remote", "set-url", "origin", newRemote);
-        return changed is { ExitCode: 0 }
+        return await MoveOriginAsync(folder, newRemote)
             ? new GitResult(true, repoUrl)
             : new GitResult(false, "Couldn't connect that folder to the repo.");
+    }
+
+    // A separate push address would otherwise keep sending work to the old repo.
+    private static async Task<bool> MoveOriginAsync(string folder, string remote)
+    {
+        if (await RunAsync("git", folder, "remote", "set-url", "origin", remote) is not { ExitCode: 0 }) return false;
+
+        var pushUrl = await RunAsync("git", folder, "config", "--get", "remote.origin.pushurl");
+        if (pushUrl is not { ExitCode: 0 }) return true;
+        return await RunAsync("git", folder, "remote", "set-url", "--push", "origin", remote) is { ExitCode: 0 };
     }
 
     /// <summary>Changes a folder's remote to whichever of HTTPS and SSH works from this PC.</summary>
@@ -485,7 +499,7 @@ public static partial class GitTools
         else if (state.Origin is not null) newOrigin = $"{webUrl}.git";
         else if (replacingRepo is not null && UsesSsh(replacingRepo) && webUrl.Length > 0) newOrigin = SameWayTo(replacingRepo, webUrl);
 
-        if (newOrigin is not null && await RunAsync("git", folder, "remote", "set-url", "origin", newOrigin) is not { ExitCode: 0 })
+        if (newOrigin is not null && !await MoveOriginAsync(folder, newOrigin))
         {
             return new GitResult(false, "The repo was created, but couldn't be linked to that folder.");
         }
@@ -873,7 +887,7 @@ public static partial class GitTools
     private static partial Regex SshUser();
 
     [GeneratedRegex(@"(?:^|\s)-F\s*(""[^""]+""|'[^']+'|\S+)")]
-    private static partial Regex SshConfigFile();
+    private static partial Regex SshConfigOption();
 
     [GeneratedRegex(@"^[A-Za-z0-9][\w.-]*\z")]
     private static partial Regex SafeSshHost();
@@ -893,7 +907,7 @@ public static partial class GitTools
     [GeneratedRegex(@"HTTP 401|gh auth login|not logged in", RegexOptions.IgnoreCase)]
     private static partial Regex SignedOutMessage();
 
-    [GeneratedRegex(@"timeout|timed out|could not resolve host|no such host|dial tcp|could not connect|failed to connect|error connecting to|check your internet connection|connection (refused|reset|closed)|network is unreachable|tls handshake|proxyconnect|temporary failure", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"timeout|timed out|could not resolve host|no such host|dial tcp|could not connect|failed to connect|error connecting to|check your internet connection|connection (was )?(refused|reset|closed)|returned error: 5\d\d|remote end hung up|empty reply from server|network is unreachable|tls handshake|proxyconnect|temporary failure", RegexOptions.IgnoreCase)]
     private static partial Regex NetworkFailure();
 
     [GeneratedRegex(@"returned error: 4\d\d|\bnot found\b|permission denied|authentication failed|access denied", RegexOptions.IgnoreCase)]

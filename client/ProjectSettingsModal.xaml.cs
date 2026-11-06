@@ -38,6 +38,9 @@ public partial class ProjectSettingsModal : UserControl
 
     public event Action? Closed;
 
+    /// <summary>Whether a long operation is running for this project.</summary>
+    public Func<string, bool> ProjectIsBusy { get; set; } = _ => false;
+
     public event Action? Deleted;
 
     public void Open(LocalDatabase database, Project project)
@@ -147,6 +150,13 @@ public partial class ProjectSettingsModal : UserControl
         confirmation.TextChanged += (_, _) => delete.IsEnabled = confirmation.Text.Trim() == Find(projectId)?.Name;
         delete.Click += (_, _) =>
         {
+            // Creating a repo can finish after this, and nothing would be left to report it on.
+            if (ProjectIsBusy(projectId))
+            {
+                ReportProblem("This project is busy. Delete it when that finishes.");
+                return;
+            }
+
             delete.IsEnabled = false;
 
             // Queued, so a slow save can't bring the project back afterward.

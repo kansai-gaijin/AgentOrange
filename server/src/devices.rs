@@ -134,6 +134,11 @@ pub async fn list(
         .await
         .map_err(internal_error)?;
 
+    // Removed by another PC between those two steps, so this login is no longer good.
+    if !rows.iter().any(|row| row.get::<_, String>(0) == current) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
     Ok(Json(
         rows.iter()
             .map(|row| {

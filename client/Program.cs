@@ -19,6 +19,9 @@ public static class Program
         app.DispatcherUnhandledException += (_, e) =>
         {
             AppLog.Write($"Crashed: {e.Exception}");
+#if DEBUG
+            if (Headless.Active) return; // Nothing goes on the screen, and the log has it.
+#endif
             System.Windows.MessageBox.Show(
                 "Agent Orange hit an unexpected problem and has to close. What you've already saved is safe.\n\nThe details are in its logs. Settings > About has a link to them.",
                 "Agent Orange",

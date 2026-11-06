@@ -387,7 +387,8 @@ public partial class SettingsModal : UserControl
             return;
         }
 
-        if (devices is null)
+        // This PC being missing means it was removed a moment ago. Trying again finds that out.
+        if (devices is null || !devices.Any(device => device.Current))
         {
             var retry = ActionButton("Try again");
             retry.Click += async (_, _) => await FillServerPageAsync(host);
@@ -612,6 +613,13 @@ public partial class SettingsModal : UserControl
             }
 
             // Everything open still points at the old database, so start fresh.
+#if DEBUG
+            if (Headless.Active)
+            {
+                Application.Current.Shutdown();
+                return;
+            }
+#endif
             Process.Start(Environment.ProcessPath!);
             Application.Current.Shutdown();
         };
@@ -643,6 +651,9 @@ public partial class SettingsModal : UserControl
 
     private static void OpenInExplorer(string folder)
     {
+#if DEBUG
+        if (Headless.Active) return; // It would open a window on someone's screen.
+#endif
         var explorer = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
         Process.Start(explorer, $"\"{folder}\"")?.Dispose();
     }

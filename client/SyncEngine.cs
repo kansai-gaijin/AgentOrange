@@ -62,6 +62,8 @@ public sealed class SyncEngine
                 _database.SetSetting(epochSetting, epoch);
             }
 
+            // The second setting is where cursors used to be kept. A PC updating from then still
+            // has it, and without it would send its whole copy over everyone's newer changes.
             var cursorSetting = CursorSetting(epoch);
             var stored = _database.GetSetting(cursorSetting) ?? _database.GetSetting($"sync_cursor:{address}");
             if (stored is null) _database.QueueAllRecords();

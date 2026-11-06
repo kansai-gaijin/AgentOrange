@@ -5,6 +5,8 @@ namespace AgentOrange;
 /// <summary>A plain text log, for finding out what happened after something goes wrong.</summary>
 public static class AppLog
 {
+    private const long MaxBytes = 5_000_000;
+
     private static string? _file;
 
     public static void Start(string folder)
@@ -13,6 +15,9 @@ public static class AppLog
         {
             Directory.CreateDirectory(folder);
             _file = Path.Combine(folder, "agent-orange.log");
+
+            // One older log is kept, so this never grows without limit.
+            if (File.Exists(_file) && new FileInfo(_file).Length > MaxBytes) File.Move(_file, Path.ChangeExtension(_file, ".old.log"), overwrite: true);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {

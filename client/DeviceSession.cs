@@ -113,7 +113,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
             // Something like a proxy can answer 200 with anything, and queued changes must only
             // be cleared by a real answer.
             var answer = await response.Content.ReadFromJsonAsync<SyncResponse>();
-            return answer is { Changes: not null } ? answer : null;
+            return answer is { Changes: not null, Epoch.Length: > 0 } ? answer : null;
         }
         catch (Exception error) when (IsNetworkFailure(error))
         {

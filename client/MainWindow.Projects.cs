@@ -311,7 +311,7 @@ public partial class MainWindow
         var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl, folder);
 
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
-        var folderProblem = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed
+        var folderProblem = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitCantReach
             ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl)
             : null;
 
@@ -577,7 +577,15 @@ public partial class MainWindow
         {
             var selectRow = Row("Select its folder", "If a copy on this PC can already reach this repo, that's enough.", SelectFolderButton(project));
             Border options;
-            if (_database.GetProjectFolder(project.Id) is { } linked)
+            var linked = _database.GetProjectFolder(project.Id);
+            if (linked is not null && _folderExists && _folderProblem is not null)
+            {
+                // The project moved repos elsewhere, and this PC may only get in the way this folder does.
+                var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linked));
+                connect.IsEnabled = !busy;
+                options = Card(Row("Keep using this folder", "If the project moved repos, this points the folder's remote at the new one, the same way it connects now. Its files don't change.", connect), selectRow);
+            }
+            else if (linked is not null)
             {
                 var repair = TwoClickAction("Repair it", () => RepairRemoteAsync(project, linked));
                 repair.IsEnabled = !busy;
@@ -942,16 +950,17 @@ public partial class MainWindow
     // a folder on an unplugged drive stays on the list until it can be reached.
     private async Task RemoveLeftoverCloneAsync()
     {
-        var remaining = new List<string>();
+        var finished = new List<string>();
         foreach (var record in CloneRecords())
         {
             var parts = record.Split('|', 3);
-            if (parts.Length != 3) continue;
-
-            var stillRunning = int.TryParse(parts[0], out var id) && long.TryParse(parts[1], out var started) && IsStillRunning(id, started);
-            if (stillRunning || !await GitTools.RemoveLeftoverCloneAsync(parts[2])) remaining.Add(record);
+            var stillRunning = parts.Length == 3 && int.TryParse(parts[0], out var id) && long.TryParse(parts[1], out var started) && IsStillRunning(id, started);
+            if (stillRunning) continue;
+            if (parts.Length != 3 || await GitTools.RemoveLeftoverCloneAsync(parts[2])) finished.Add(record);
         }
-        SaveCloneRecords(remaining);
+
+        // Read again, because a new clone can have started while a slow drive held this up.
+        SaveCloneRecords(CloneRecords().Except(finished));
     }
 
     private List<string> CloneRecords() =>
