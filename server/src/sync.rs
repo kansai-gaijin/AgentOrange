@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::State,
+    extract::{State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
 };
 use serde::{Deserialize, Serialize};
@@ -94,11 +94,13 @@ fn client_is_out_of_date(headers: &HeaderMap) -> bool {
 pub async fn sync(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<SyncRequest>,
+    request: Result<Json<SyncRequest>, JsonRejection>,
 ) -> Result<Json<SyncResponse>, StatusCode> {
+    // First, because another release's requests may not even parse.
     if client_is_out_of_date(&headers) {
         return Err(StatusCode::UPGRADE_REQUIRED);
     }
+    let Json(request) = request.map_err(|rejection| rejection.status())?;
 
     let device = authenticate(&state, &headers).await?;
 

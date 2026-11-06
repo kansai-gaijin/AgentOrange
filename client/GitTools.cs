@@ -102,9 +102,9 @@ public static partial class GitTools
             return notGitHub;
         }
 
-        var hasCredentials = uri.Query.Length > 0
-            || uri.Fragment.Length > 0
-            || (uri.Scheme == "ssh" ? uri.UserInfo.Contains(':') : uri.UserInfo.Length > 0);
+        if (uri.Query.Length > 0 || uri.Fragment.Length > 0) return "Enter just the repo's URL, like https://github.com/you/game.git.";
+
+        var hasCredentials = uri.Scheme == "ssh" ? uri.UserInfo.Contains(':') : uri.UserInfo.Length > 0;
         if (hasCredentials) return "Take the password or token out of that URL.";
         return uri.Scheme == "ssh" && uri.UserInfo != "git" ? notGitHub : null;
     }
@@ -342,6 +342,9 @@ public static partial class GitTools
 
     public static Action<string, string> RememberAllowedFolderSettings { get; set; } = (_, _) => { };
 
+    /// <summary>Set up when the app starts. Gives the name of a project already on this repo.</summary>
+    public static Func<string, string?> ProjectUsingRepo { get; set; } = _ => null;
+
     public static bool AreAllowed(string folder, FolderGitSettings settings) =>
         settings.IsEmpty || (settings.CanBeApproved && AllowedFolderSettings(folder) == settings.Fingerprint);
 
@@ -526,19 +529,33 @@ public static partial class GitTools
         if (state.Origin is null) return await ConnectFolderAsync(folder, await ReachableFormAsync(repoUrl) ?? repoUrl);
 
         var newRemote = state.GitHubOrigin is not null ? SameWayTo(state.Origin, repoUrl) : await ReachableFormAsync(repoUrl) ?? repoUrl;
-        return await MoveOriginAsync(folder, newRemote)
-            ? new GitResult(true, repoUrl)
-            : new GitResult(false, "Couldn't connect that folder to the repo.");
+        return await MoveOriginAsync(folder, newRemote) is { } moveProblem
+            ? new GitResult(false, moveProblem)
+            : new GitResult(true, repoUrl);
     }
 
-    // A separate push address would otherwise keep sending work to the old repo.
-    private static async Task<bool> MoveOriginAsync(string folder, string remote)
+    // A separate push address would otherwise keep sending work to the old repo. Returns a
+    // problem to show, or null once every address really is the new one.
+    private static async Task<string?> MoveOriginAsync(string folder, string remote)
     {
-        if (await RunAsync("git", folder, "config", "--replace-all", "remote.origin.url", remote) is not { ExitCode: 0 }) return false;
+        const string couldNotChange = "Couldn't change that folder's remote.";
+        if (await RunAsync("git", folder, "config", "--replace-all", "remote.origin.url", remote) is not { ExitCode: 0 }) return couldNotChange;
 
         var pushUrl = await RunAsync("git", folder, "config", "--get-all", "remote.origin.pushurl");
-        if (pushUrl is not { ExitCode: 0 }) return true;
-        return await RunAsync("git", folder, "config", "--replace-all", "remote.origin.pushurl", remote) is { ExitCode: 0 };
+        if (pushUrl is { ExitCode: 0 } && await RunAsync("git", folder, "config", "--replace-all", "remote.origin.pushurl", remote) is not { ExitCode: 0 }) return couldNotChange;
+
+        // Read from the settings as written, because Git's own view of an address can be rewritten.
+        foreach (var key in new[] { "remote.origin.url", "remote.origin.pushurl" })
+        {
+            var addresses = await RunAsync("git", folder, "config", "--get-all", key);
+            if (addresses is null || addresses.ExitCode > 1) return couldNotChange;
+            if (addresses.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Any(address => !SameForm(address, remote)))
+            {
+                // Only the folder's own file was changed, because an included one may be shared.
+                return "That folder's remote is also set in a Git settings file it includes, so it would still use the old address. Remove it from that file, then try again.";
+            }
+        }
+        return null;
     }
 
     private static bool SameForm(string a, string b)
@@ -579,14 +596,14 @@ public static partial class GitTools
         if (state.Origin is null) return await ConnectFolderAsync(folder, form);
 
         // Repair can only change the address. If that's already right, it can't help.
-        if (state.Origin is not null && SameForm(state.Origin, form))
+        if (SameForm(state.Origin, form))
         {
             return new GitResult(false, "That folder already connects this way, and this way works from outside the folder, so its own Git settings are the likely problem. Nothing was changed.");
         }
 
-        return await MoveOriginAsync(folder, form)
-            ? new GitResult(true, form)
-            : new GitResult(false, "Couldn't change that folder's connection.");
+        return await MoveOriginAsync(folder, form) is { } moveProblem
+            ? new GitResult(false, moveProblem)
+            : new GitResult(true, form);
     }
 
     /// <summary>Connects a folder with no remote to a repo, setting up Git in it if needed.</summary>
@@ -636,6 +653,17 @@ public static partial class GitTools
                 : "Sign in to the GitHub CLI first, with gh auth login.");
         }
 
+        // A deleted repo's name is free on GitHub, but a project can still be pointing at that
+        // address, and it would then pass the guard on a repo it never held.
+        if (await ActiveAccountAsync() is { } owner)
+        {
+            var address = $"https://github.com/{owner}/{repoName}.git";
+            if ((replacingRepo is null || !SameRepo(address, replacingRepo)) && ProjectUsingRepo(address) is { } otherProject)
+            {
+                return new GitResult(false, $"{otherProject} still points at {owner}/{repoName}, so a new repo can't use that name. Rename this project, or change {otherProject}'s repo first.");
+            }
+        }
+
         var state = await InspectFolderAsync(folder);
         if (state is null) return new GitResult(false, "Git wasn't found on this PC.");
         if (state.Problem is not null) return new GitResult(false, state.Problem);
@@ -675,9 +703,9 @@ public static partial class GitTools
         else if (state.Origin is not null) newOrigin = $"{webUrl}.git";
         else if (replacingRepo is not null && UsesSsh(replacingRepo) && webUrl.Length > 0) newOrigin = SameWayTo(replacingRepo, webUrl);
 
-        if (newOrigin is not null && !await MoveOriginAsync(folder, newOrigin))
+        if (newOrigin is not null && await MoveOriginAsync(folder, newOrigin) is { } moveProblem)
         {
-            return new GitResult(false, "The repo was created, but couldn't be linked to that folder.");
+            return new GitResult(false, $"The repo was created, but couldn't be linked to that folder. {moveProblem}");
         }
 
         var finalState = await InspectFolderAsync(folder);

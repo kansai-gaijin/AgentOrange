@@ -43,6 +43,7 @@ public partial class MainWindow
     // Only one long operation runs at a time. It keeps going if the person leaves the page.
     private string? _busyProjectId;
     private string? _busyText;
+    private string? _busyCardText; // Cards are narrow, so they get just the number.
     private TextBlock? _busyLabel;
     private TextBlock? _busyCardLabel;
     private CancellationTokenSource? _cloneCancel;
@@ -153,7 +154,7 @@ public partial class MainWindow
         content.Children.Add(notHere);
 
         // Long operations carry on after leaving the page, so the card says how it's going.
-        var cardStatus = _busyProjectId == project.Id ? _busyText : _heldProblems.ContainsKey(project.Id) ? "Open it to see what happened" : null;
+        var cardStatus = _busyProjectId == project.Id ? _busyCardText ?? _busyText : _heldProblems.ContainsKey(project.Id) ? "Open it to see what happened" : null;
         if (cardStatus is not null)
         {
             var statusLabel = new TextBlock { Text = cardStatus, Foreground = (Brush)FindResource("Accent"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = cardStatus };
@@ -688,6 +689,7 @@ public partial class MainWindow
     {
         _busyProjectId = project.Id;
         _busyText = text;
+        _busyCardText = null;
         _pageProblem = null;
         if (UpdateOverlay.IsVisible && !_downloading) ShowUpdateMessage();
         if (_openProject?.Id == project.Id) RenderProject(_openProject);
@@ -698,6 +700,7 @@ public partial class MainWindow
     {
         _busyProjectId = null;
         _busyText = null;
+        _busyCardText = null;
         if (UpdateOverlay.IsVisible && !_downloading) ShowUpdateMessage();
         if (_openProject is null)
         {
@@ -860,12 +863,13 @@ public partial class MainWindow
         if (FindProject(projectId) is { } latest) await CloneProjectAsync(latest, Path.GetDirectoryName(exact)!, exact);
     }
 
+    // Holds where it's going until the end, because a clone can take hours and another project
+    // choosing that folder meanwhile would only find out when it finished.
     private async Task CloneProjectAsync(Project project, string parentFolder, string? exactFolder = null)
     {
         StartBusy(project, "Checking that folder…");
-        var owner = (exactFolder ?? GitTools.CloneDestination(project.RepoUrl, parentFolder)) is { } destination
-            ? await _database.ProjectUsingFolderAsync(destination, project.Id)
-            : null;
+        var destination = exactFolder ?? GitTools.CloneDestination(project.RepoUrl, parentFolder);
+        var owner = destination is null ? null : await _database.ClaimFolderAsync(destination, project);
         EndBusy();
         if (owner is not null)
         {
@@ -873,6 +877,18 @@ public partial class MainWindow
             return;
         }
 
+        try
+        {
+            await RunCloneAsync(project, parentFolder, exactFolder);
+        }
+        finally
+        {
+            if (destination is not null) _database.ReleaseFolder(destination);
+        }
+    }
+
+    private async Task RunCloneAsync(Project project, string parentFolder, string? exactFolder)
+    {
         var folderBefore = _database.GetProjectFolder(project.Id);
 
         using var cancel = new CancellationTokenSource();
@@ -897,10 +913,11 @@ public partial class MainWindow
         {
             // Just the words, because drawing the page again would keep taking focus off Cancel.
             _busyText = $"Cloning… {stage}";
+            _busyCardText = $"Cloning… {stage[(stage.LastIndexOf(' ') + 1)..]}";
             if (_busyLabel is not null) _busyLabel.Text = _busyText;
             if (_busyCardLabel is not null)
             {
-                _busyCardLabel.Text = _busyText;
+                _busyCardLabel.Text = _busyCardText;
                 _busyCardLabel.ToolTip = _busyText;
             }
         });
@@ -947,7 +964,11 @@ public partial class MainWindow
                 return;
             }
 
-            await CloneProjectAsync(latest, parentFolder);
+            // An empty folder is where the project goes, not a place to put another folder in.
+            var chosen = Path.TrimEndingDirectorySeparator(parentFolder);
+            var aboveIt = Path.GetDirectoryName(chosen);
+            var intoIt = aboveIt is not null && await GitTools.FolderIsEmptyAsync(chosen) && !await GitTools.FolderIsLinkAsync(chosen);
+            await (intoIt ? CloneProjectAsync(latest, aboveIt!, chosen) : CloneProjectAsync(latest, parentFolder));
         };
 
         var (heading, description) = (linkedFolder, _folderProblem, _folderExists) switch

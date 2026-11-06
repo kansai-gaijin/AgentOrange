@@ -19,6 +19,9 @@ public static partial class EngineVersions
         AllowTrailingCommas = true,
     };
 
+    /// <summary>Whether this engine's projects say what version they are.</summary>
+    public static bool CanRead(string engine) => engine is "Unreal Engine" or "Godot";
+
     public static Task<string?> FindAsync(string engine, string folder) => engine switch
     {
         "Unreal Engine" => Task.Run(() => Find(folder, "*.uproject", FromUnrealProject)),

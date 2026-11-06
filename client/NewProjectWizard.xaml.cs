@@ -19,7 +19,7 @@ public static class ProjectChoices
 {
     public static readonly string[] Engines = ["Unreal Engine", "Godot", "Web", "Other"];
     public static readonly string[] GameTypes = ["3D", "2D", "2.5D", "Other"];
-
+    public const int MaxNameLength = 100;
 }
 
 /// <summary>Creating a project: what it is, then where its files are.</summary>
@@ -52,9 +52,6 @@ public partial class NewProjectWizard : UserControl
 
     public Action<string> ReleaseFolder { get; set; } = _ => { };
 
-    /// <summary>Gives the name of a project already on this repo.</summary>
-    public Func<string, string?> ProjectUsingRepo { get; set; } = _ => null;
-
     public event Action? Closed;
 
     public void Open()
@@ -74,6 +71,7 @@ public partial class NewProjectWizard : UserControl
     {
         var name = Field(_name);
         name.Width = 300;
+        name.MaxLength = ProjectChoices.MaxNameLength;
         var problem = ProblemText();
 
         void Next()
@@ -349,7 +347,7 @@ public partial class NewProjectWizard : UserControl
         }
 
         if (GitTools.RepoUrlProblem(url) is { } urlProblem) return ("", false, urlProblem);
-        if (ProjectUsingRepo(url) is { } otherProject) return ("", false, $"{otherProject} already uses that repo. A repo can only be one project.");
+        if (GitTools.ProjectUsingRepo(url) is { } otherProject) return ("", false, $"{otherProject} already uses that repo. A repo can only be one project.");
         if (state.Origin is not null && !GitTools.SameRepo(state.OriginToCompare!, url))
         {
             return ("", false, "That folder is connected to a different repo than that URL.");

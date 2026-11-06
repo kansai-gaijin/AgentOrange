@@ -58,15 +58,26 @@ public partial class ProjectSettingsModal : UserControl
         Focus();
     }
 
-    /// <summary>The project may have been deleted on another PC.</summary>
+    /// <summary>The project may have been deleted on another PC, or a clone may have just linked its folder.</summary>
     public void ProjectsChanged()
     {
-        if (Visibility == Visibility.Visible && !_closing && Current() is null)
+        if (Visibility != Visibility.Visible || _closing) return;
+        if (Current() is null)
         {
             Visibility = Visibility.Collapsed;
             Closed?.Invoke();
+            return;
+        }
+
+        var linked = _database.GetProjectFolder(_projectId) ?? "";
+        if (_folderField is not null && _folderField.Text != linked)
+        {
+            _folderField.Text = linked;
+            _folderField.ToolTip = linked.Length > 0 ? linked : null;
         }
     }
+
+    private TextBox? _folderField;
 
     private Project? Find(string projectId) => _database.ListProjects().FirstOrDefault(project => project.Id == projectId);
 
@@ -79,6 +90,7 @@ public partial class ProjectSettingsModal : UserControl
 
         var name = Field(project.Name);
         name.Width = 300;
+        name.MaxLength = ProjectChoices.MaxNameLength;
         var projectId = project.Id;
         SaveOnLeave(name, project.Name, value =>
         {
@@ -93,6 +105,7 @@ public partial class ProjectSettingsModal : UserControl
         folder.Width = 140;
         folder.IsReadOnly = true;
         folder.ToolTip = folder.Text.Length > 0 ? folder.Text : null;
+        _folderField = folder;
         SaveOnLeave(repo, project.RepoUrl, value => SaveRepo(projectId, value));
 
         var browse = ActionButton("Browse");
@@ -113,17 +126,24 @@ public partial class ProjectSettingsModal : UserControl
 
         // Read from the project and can't be edited. The latest is read on closing.
         const string CheckedOnClosing = "Checked when this closes";
+        const string DoesNotApply = "Doesn't apply";
+        var chosenEngine = project.Engine;
         var version = new TextBlock
         {
-            Text = project.EngineVersion.Length > 0 ? project.EngineVersion : "Not found",
+            Text = !EngineVersions.CanRead(project.Engine) ? DoesNotApply : project.EngineVersion.Length > 0 ? project.EngineVersion : "Not found",
             FontSize = 13.5,
             Foreground = (Brush)FindResource("TextNormal"),
             VerticalAlignment = VerticalAlignment.Center,
         };
-        folder.TextChanged += (_, _) => version.Text = CheckedOnClosing;
+        folder.TextChanged += (_, _) =>
+        {
+            // With no folder left there's nothing to read, so what's known stays.
+            if (folder.Text.Length > 0 && EngineVersions.CanRead(chosenEngine)) version.Text = CheckedOnClosing;
+        };
         var engine = Choice(ProjectChoices.Engines, project.Engine, value =>
         {
-            version.Text = CheckedOnClosing;
+            chosenEngine = value;
+            version.Text = EngineVersions.CanRead(value) ? CheckedOnClosing : DoesNotApply;
             QueueUpdate(projectId, current => current with { Engine = value });
         });
 
