@@ -3,6 +3,15 @@
 # Turn it on after cloning with: git config core.hooksPath .githooks
 
 status=0
+
+# Names that can't be told apart by a pattern, such as a server's public address. One per line, in a
+# file that lives inside .git, so the list itself can't be committed.
+private_words="$(git rev-parse --git-dir)/private-words"
+private_list=""
+if [ -f "$private_words" ]; then
+    private_list="$(tr -d '\r' < "$private_words" | tr '[:upper:]' '[:lower:]' | grep -v '^[[:space:]]*$')"
+fi
+
 while IFS= read -r file; do
     # A commit that only deletes or rewords has no files to check.
     [ -n "$file" ] || continue
@@ -26,11 +35,14 @@ while IFS= read -r file; do
     elif git show ":$file" | grep -aqE 'BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|TunnelSecret|postgres(ql)?://[^:$[:space:]]+:[^@$[:space:]]+@|AGENT_ORANGE_PAIRING_KEY=[^$[:space:]]'; then
         echo "Blocked: $file seems to hold a private key or token." >&2
         status=1
-    elif git show ":$file" | grep -IqE '[A-Za-z]:[\\/]+Users[\\/]+[A-Za-z0-9]|/(Users|home)/[A-Za-z0-9]|[[:alnum:]-]+\.ts\.net|\b100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]+\.[0-9]+\b|\b192\.168\.[0-9]+\.[0-9]+\b'; then
+    elif git show ":$file" | grep -IqE '[A-Za-z]:[\\/]+Users[\\/]+[A-Za-z0-9]|/(Users|home)/[A-Za-z0-9]|[[:alnum:]-]+\.ts\.net|\b100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]+\.[0-9]+\b|\b192\.168\.[0-9]+\.[0-9]+\b|\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+\b|\b10\.[0-9]+\.[0-9]+\.[0-9]+\b'; then
         echo "Blocked: $file seems to hold a personal path or a private address." >&2
         status=1
     elif git show ":$file" | grep -IoE '[[:alnum:]._%+-]+@([[:alnum:]-]+\.)+[[:alpha:]]{2,}' | grep -vqE '^git@github\.com$|@example\.(com|org)$|noreply'; then
         echo "Blocked: $file seems to hold an email address." >&2
+        status=1
+    elif [ -n "$private_list" ] && git show ":$file" | tr '[:upper:]' '[:lower:]' | grep -IqF -e "$private_list"; then
+        echo "Blocked: $file holds something on this PC's private list." >&2
         status=1
     fi
 done <<EOF

@@ -435,6 +435,7 @@ public sealed class LocalDatabase
         if (GetProjectFolder(projectId) is { } old && old != folder)
         {
             SetSetting(AllowedSettingsKey(old), "");
+            SetSetting(AllowedSettingsKey(GitTools.FinishApprovalKey(old)), "");
             SetSetting(SharesRepoKey(old), "");
             SetSetting(EngineHereKey(projectId), "");
         }

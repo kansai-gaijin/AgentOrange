@@ -39,6 +39,8 @@ public partial class MainWindow
     private bool _downloadIsInPlace;
     private (bool Unfinished, bool Held) _shownDownloadState;
     private bool _databaseWasLost;
+    private bool _openPageNeedsCheck; // Kept until nothing's busy, as a long clone can be running.
+    private FolderGitSettings? _finishSettingsToAllow;
     private bool _folderLacksFiles;
     private bool _folderMayNotMatch;
     private string? _scrolledToProblem;
@@ -367,7 +369,9 @@ public partial class MainWindow
         {
             _databaseWasLost = true; // So the check runs again, as nothing else will finish it.
             ProjectPage.Children.Clear();
-            ProjectPage.Children.Add(CenteredNote("The app's database can't be reached right now. This page comes back once it can be."));
+            var note = CenteredNote("The app's database can't be reached right now. This page comes back once it can be.");
+            note.Margin = new Thickness(40, 40, 40, 0);
+            ProjectPage.Children.Add(note);
             throw;
         }
     }
@@ -383,6 +387,7 @@ public partial class MainWindow
         _renamedRepoHeldBy = null;
         _folderEngine = null;
         _folderPushesTo = null;
+        _finishSettingsToAllow = null;
         _folderLacksFiles = false;
         _folderMayNotMatch = false;
         _pageProblem = _heldProblems.Remove(project.Id, out var held) ? held : null;
@@ -444,6 +449,7 @@ public partial class MainWindow
         if (renamed is not null && renamedHeldBy is null)
         {
             _database.SaveProject(latest with { RepoUrl = renamed });
+            if (check.Access == RepoAccess.Allowed) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(renamed));
             if (folderExists && folderProblem is null) await GitTools.PointFolderAtRepoAsync(folder!, renamed);
             _ = _sync.SyncNowAsync();
             KeepProblemThroughReopen(project.Id);
@@ -614,11 +620,12 @@ public partial class MainWindow
             else if (_busyProjectId is null && _shownDownloadState.Unfinished)
             {
                 body.Children.Add(new TextBlock { Text = "This folder's download never finished, so some of its files or submodules may be missing, or be small placeholders. Finishing picks up where it left off.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
-                if (_settingsToAllow is not null)
+                if (_settingsToAllow is not null || _finishSettingsToAllow is not null)
                 {
                     // Finishing runs Git in the folder, so these have to be looked at first.
                     var rows = new List<FrameworkElement>();
                     AddFolderSettingsRow(rows, project, folder!);
+                    AddFinishSettingsRow(rows, project, folder!);
                     var allow = Card(rows.ToArray());
                     allow.Margin = new Thickness(0, 8, 0, 0);
                     body.Children.Add(allow);
@@ -986,7 +993,7 @@ public partial class MainWindow
         if (!folderIsUsable)
         {
             folder = Dialogs.PickFolder($"Choose the folder for {project.Name}");
-            if (folder is null) return;
+            if (folder is null || _busyProjectId is not null) return;
 
             // The dialog can stay open a long time, and what they agreed to named an account.
             StartBusy(project, "Checking the repo again…");
@@ -1275,6 +1282,19 @@ public partial class MainWindow
             await RecheckIfStillOpenAsync(project.Id); // That draws the row for allowing them.
             return;
         }
+
+        var finishing = await GitTools.FolderFinishSettingsAsync(folder);
+        if (finishing is null)
+        {
+            ShowPageProblem(project.Id, "Couldn't read this folder's own Git settings, so nothing was run in it. Check that Git works in that folder, then try again.");
+            return;
+        }
+        if (!GitTools.AreAllowed(GitTools.FinishApprovalKey(folder), finishing))
+        {
+            _finishSettingsToAllow = finishing;
+            if (_openProject?.Id == project.Id) RenderProject(_openProject);
+            return;
+        }
         if (_busyProjectId is not null) return;
 
         // Two of these at once would run into each other's locks.
@@ -1337,6 +1357,25 @@ public partial class MainWindow
         var allow = TwoClickAction("Allow", () => AllowFolderSettingsAsync(project, folder, settings.Fingerprint));
         allow.IsEnabled = _busyProjectId is null;
         rows.Add(Row("Use this folder's own Git settings", $"They can run programs or send your login somewhere else, so only allow them if you trust where this folder came from: {settings.Shown}", allow));
+    }
+
+    private void AddFinishSettingsRow(List<FrameworkElement> rows, Project project, string folder)
+    {
+        if (_finishSettingsToAllow is not { } settings) return;
+        if (!settings.CanBeApproved)
+        {
+            rows.Add(Row("This folder's own Git settings can't be used", "There are too many of them to show here, and they can only be allowed once you've been able to read them all. Cut them down, or use another copy."));
+            return;
+        }
+
+        var allow = TwoClickAction("Allow", async () =>
+        {
+            GitTools.RememberAllowedFolderSettings(GitTools.FinishApprovalKey(folder), settings.Fingerprint);
+            _finishSettingsToAllow = null;
+            await FinishDownloadAsync(project, folder);
+        });
+        allow.IsEnabled = _busyProjectId is null;
+        rows.Add(Row("Finishing would use this folder's own Git settings", $"They can run programs, so only allow them if you trust where this folder came from: {settings.Shown}", allow));
     }
 
     private void AddGetProjectOptions(StackPanel body, Project project, string? linkedFolder)
@@ -1416,7 +1455,7 @@ public partial class MainWindow
         select.IsEnabled = _busyProjectId is null;
         select.Click += async (_, _) =>
         {
-            if (Dialogs.PickFolder($"Find the folder for {project.Name}") is not { } chosen) return;
+            if (Dialogs.PickFolder($"Find the folder for {project.Name}") is not { } chosen || _busyProjectId is not null) return;
 
             var folderBefore = _database.GetProjectFolder(project.Id);
             StartBusy(project, "Checking that folder…");

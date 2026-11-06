@@ -328,13 +328,26 @@ public static partial class GitTools
     /// are only used once the person has seen them. Null means that couldn't be found out,
     /// which has to be treated as not being safe to use them.
     /// </summary>
-    public static async Task<FolderGitSettings?> FolderRunnableSettingsAsync(string folder)
+    public static Task<FolderGitSettings?> FolderRunnableSettingsAsync(string folder) =>
+        ReadFolderSettingsAsync(folder, FolderSettingsThatMatter, null);
+
+    /// <summary>
+    /// Finishing a download checks out files and fetches submodules, and settings for those can run
+    /// programs too. A folder usually has none, as what Git LFS and submodules set up for themselves
+    /// doesn't count. Approved apart from the ones for reaching a remote.
+    /// </summary>
+    public static Task<FolderGitSettings?> FolderFinishSettingsAsync(string folder) =>
+        ReadFolderSettingsAsync(folder, SettingsThatRunWhileFinishing, setting => HarmlessWhileFinishing().IsMatch(setting));
+
+    public static string FinishApprovalKey(string folder) => $"{folder}|finish";
+
+    private static async Task<FolderGitSettings?> ReadFolderSettingsAsync(string folder, string wanted, Func<string, bool>? harmless)
     {
         if (!await FolderExistsAsync(folder)) return FolderGitSettings.None;
 
         // Asked for by scope, because a folder's settings can also be in a file only used per
         // worktree, or in one it includes. NUL-separated, so a value can't hide on a second line.
-        var found = await RunAsync("git", folder, "config", "--show-scope", "--includes", "-z", "--get-regexp", FolderSettingsThatMatter);
+        var found = await RunAsync("git", folder, "config", "--show-scope", "--includes", "-z", "--get-regexp", wanted);
         if (found is null) return null;
         if (found.ExitCode == 1) return FolderGitSettings.None;
         if (found.ExitCode != 0) return null;
@@ -343,7 +356,7 @@ public static partial class GitTools
         var settings = new List<string>();
         for (var i = 0; i + 1 < parts.Length; i += 2)
         {
-            if (parts[i] is "local" or "worktree") settings.Add(parts[i + 1]);
+            if (parts[i] is "local" or "worktree" && harmless?.Invoke(parts[i + 1]) != true) settings.Add(parts[i + 1]);
         }
         if (settings.Count == 0) return FolderGitSettings.None;
 
@@ -410,6 +423,9 @@ public static partial class GitTools
     private const int MaxSettingsShown = 20;
     private const int MaxSettingShown = 600;
     private const int MaxSettingsInDialog = 1000;
+
+    private const string SettingsThatRunWhileFinishing =
+        @"^(core\.(fsmonitor|hookspath)|submodule\..*\.update|filter\..*|lfs\.customtransfer\..*)$";
 
     private const string FolderSettingsThatMatter =
         @"^(core\.(sshcommand|askpass|gitproxy)|credential\..*|http\..*|url\..*|remote\..*\.(uploadpack|receivepack|vcs|proxy))$";
@@ -593,12 +609,15 @@ public static partial class GitTools
         if (pushUrls is not { ExitCode: 0 }) return null;
 
         var current = pushUrls.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var oldAddress = before is { ExitCode: 0 } ? before.Output.Trim() : null;
+
+        // An SSH alias, as a second GitHub account uses, has to be read as the repo it really is.
+        var oldRepo = oldAddress is null ? null : (await GitHubFormAsync(oldAddress, folder)).Item1 ?? oldAddress;
         var moved = new List<string>();
         foreach (var address in current)
         {
             var (gitHubForm, _) = await GitHubFormAsync(address, folder);
-            var wasOnOldRepo = before is { ExitCode: 0 } && SameRepo(gitHubForm ?? address, before.Output.Trim());
-            moved.Add(wasOnOldRepo ? remote : address);
+            moved.Add(oldRepo is not null && SameRepo(gitHubForm ?? address, oldRepo) ? remote : address);
         }
         if (moved.SequenceEqual(current)) return null;
         if (await SetPushAddressesAsync(folder, moved.Distinct().ToArray())) return null;
@@ -1011,7 +1030,8 @@ public static partial class GitTools
 
                 // Everything arrived, and only putting the files in place failed, such as on a
                 // file name Windows can't use. That's hours of download, and it can be fixed.
-                if (!cancel.IsCancellationRequested && await RunAsync("git", working, "rev-parse", "--verify", "-q", "HEAD") is { ExitCode: 0 })
+                // Only a real answer that there's nothing there can cost the download.
+                if (!cancel.IsCancellationRequested && await RunAsync("git", working, "rev-parse", "--verify", "-q", "HEAD") is { ExitCode: 0 or < 0 })
                 {
                     checkoutProblem = $"Everything downloaded, but some files couldn't be put in place: {AsSentence(reason)} Fix that, then run git restore --source=HEAD --staged --worktree :/ in the folder.";
                 }
@@ -1104,17 +1124,31 @@ public static partial class GitTools
     /// </summary>
     public static IDisposable? TryTakeDownload(string folder)
     {
-        var hold = new Mutex(false, DownloadHoldName(folder), out var isFirst);
-        if (isFirst) return hold;
-        hold.Dispose();
-        return null;
+        try
+        {
+            var hold = new Mutex(false, DownloadHoldName(folder), out var isFirst);
+            if (isFirst) return hold;
+            hold.Dispose();
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null; // Another window has it, running as administrator.
+        }
     }
 
     public static bool DownloadIsHeld(string folder)
     {
-        if (!Mutex.TryOpenExisting(DownloadHoldName(folder), out var hold)) return false;
-        hold.Dispose();
-        return true;
+        try
+        {
+            if (!Mutex.TryOpenExisting(DownloadHoldName(folder), out var hold)) return false;
+            hold.Dispose();
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return true; // There is one, and it belongs to a window running as administrator.
+        }
     }
 
     private static string DownloadHoldName(string folder) =>
@@ -1743,6 +1777,9 @@ public static partial class GitTools
 
     [GeneratedRegex(@"https://github\.com/[\w.-]+/[\w.-]+")]
     private static partial Regex CreatedRepoUrl();
+
+    [GeneratedRegex(@"^(filter\.lfs\.(clean|smudge|process)\ngit-lfs [^&|;<>`$]*$|filter\.lfs\.required\n(true|false)$|core\.fsmonitor\nfalse$|core\.hookspath\n/dev/null$|submodule\..*\.update\n(checkout|rebase|merge|none)$)", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex HarmlessWhileFinishing();
 
     // What ssh itself says went wrong, which Git only follows with "Could not read from remote repository".
     [GeneratedRegex(@"(Permission denied|Host key verification failed|Connection (timed out|refused|closed|reset)|Could not resolve hostname|^ssh: |^kex_exchange)", RegexOptions.IgnoreCase)]

@@ -99,6 +99,7 @@ public partial class MainWindow : Window
         {
             var wasLost = _databaseWasLost;
             _databaseWasLost = false;
+            _openPageNeedsCheck |= wasLost;
             try
             {
                 var latest = _database.RecordsSignature();
@@ -113,8 +114,15 @@ public partial class MainWindow : Window
                 if (_openProject is { } open && _busyProjectId is null && ProjectSettings.Visibility != Visibility.Visible)
                 {
                     var folder = _database.GetProjectFolder(open.Id);
-                    if (wasLost || (_projectCheck is not null && folder != _checkedFolder)) _ = RecheckIfStillOpenAsync(open.Id);
-                    else if (_projectCheck is not null && DownloadStateOf(folder) != _shownDownloadState) RenderProject(open);
+                    if (_openPageNeedsCheck || (_projectCheck is not null && folder != _checkedFolder))
+                    {
+                        _openPageNeedsCheck = false;
+                        _ = RecheckIfStillOpenAsync(open.Id);
+                    }
+                    else if (_projectCheck is not null && DownloadStateOf(folder) != _shownDownloadState)
+                    {
+                        RenderProject(open);
+                    }
                 }
             }
             catch (SqliteException error)
