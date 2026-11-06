@@ -111,9 +111,21 @@ public partial class ProjectSettingsModal : UserControl
             return Task.CompletedTask;
         });
 
-        // The version for the new engine is read from the project on closing.
+        // Read from the project and can't be edited. The latest is read on closing.
+        const string CheckedOnClosing = "Checked when this closes";
+        var version = new TextBlock
+        {
+            Text = project.EngineVersion.Length > 0 ? project.EngineVersion : "Not found",
+            FontSize = 13.5,
+            Foreground = (Brush)FindResource("TextNormal"),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        folder.TextChanged += (_, _) => version.Text = CheckedOnClosing;
         var engine = Choice(ProjectChoices.Engines, project.Engine, value =>
-            QueueUpdate(projectId, current => current with { Engine = value }));
+        {
+            version.Text = CheckedOnClosing;
+            QueueUpdate(projectId, current => current with { Engine = value });
+        });
 
         var details = new StackPanel
         {
@@ -123,6 +135,7 @@ public partial class ProjectSettingsModal : UserControl
                 Card(
                     Row("Name", null, name),
                     Row("Engine", null, engine),
+                    Row("Engine version", "Read from the project's files.", version),
                     Row("Game type", null, Choice(ProjectChoices.GameTypes, project.GameType, value => QueueUpdate(projectId, current => current with { GameType = value }))),
                     Row("Repo URL", null, repo),
                     Row("Folder on this PC", "Doesn't sync, because it's different on each PC.", folder, browse, disconnect)),
@@ -259,6 +272,10 @@ public partial class ProjectSettingsModal : UserControl
     {
         if (url.Length == 0) return Task.FromResult<string?>("A project needs a repo.");
         if (GitTools.RepoUrlProblem(url) is { } problem) return Task.FromResult<string?>(problem);
+        if (_database.ListProjects().FirstOrDefault(other => other.Id != projectId && GitTools.SameRepo(other.RepoUrl, url)) is { } taken)
+        {
+            return Task.FromResult<string?>($"{taken.Name} already uses that repo. A repo can only be one project.");
+        }
 
         Update(projectId, current => current with { RepoUrl = url });
         return Task.FromResult<string?>(null);
@@ -279,7 +296,7 @@ public partial class ProjectSettingsModal : UserControl
             var problem = await GitTools.FolderProblemAsync(chosen, current.RepoUrl);
             if (problem is null && await _database.ClaimFolderAsync(chosen, current) is { } other)
             {
-                problem = $"{other.Name} already uses that folder. A folder can only be one project.";
+                problem = $"{other.Name} already uses that folder, or one inside it. A folder can only be one project.";
             }
             if (problem is not null)
             {

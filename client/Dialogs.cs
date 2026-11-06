@@ -37,7 +37,7 @@ internal static class Dialogs
             return Headless.NextAnswer() == "yes";
         }
 #endif
-        return System.Windows.MessageBox.Show(message, "Agent Orange", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning) == System.Windows.MessageBoxResult.Yes;
+        return System.Windows.MessageBox.Show(message, "Agent Orange", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning, System.Windows.MessageBoxResult.No) == System.Windows.MessageBoxResult.Yes;
     }
 
     public static string? PickFile(string title, string filter)

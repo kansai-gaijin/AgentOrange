@@ -170,8 +170,9 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
         if (body is not null) request.Content = JsonContent.Create(body);
 
         var response = await _http.SendAsync(request);
-        // This device was removed from the server, so its login is no use any more.
-        if (response.StatusCode == HttpStatusCode.Unauthorized) ForgetLogin(setting, token);
+        // This device was removed from the server, so its login is no use any more. Only the
+        // server itself can say so, not a proxy or access rule along the way.
+        if (response.StatusCode == HttpStatusCode.Unauthorized && response.Headers.Contains("X-Agent-Orange")) ForgetLogin(setting, token);
         return response;
     }
 

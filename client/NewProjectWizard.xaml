@@ -11,6 +11,7 @@
                 BorderThickness="1"
                 CornerRadius="12"
                 Width="620"
+                Margin="0,24"
                 HorizontalAlignment="Center"
                 VerticalAlignment="Center"
                 MouseLeftButtonDown="Card_MouseLeftButtonDown" />

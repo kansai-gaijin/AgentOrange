@@ -20,9 +20,10 @@ internal static partial class SshConfigFile
         {
             if (!IsOnThisPc(path)) return null;
 
-            // A link could lead onto a share, and opening it would then do just what's refused above.
+            if (HasLinkOnTheWay(path)) return null;
+
             var file = new FileInfo(path);
-            if (!file.Exists || file.LinkTarget is not null || file.Length > MaxBytes) return null;
+            if (!file.Exists || file.Length > MaxBytes) return null;
 
             string? hostName = null;
             string? user = null;
@@ -63,6 +64,20 @@ internal static partial class SshConfigFile
         if (path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal)) return false;
         var root = Path.GetPathRoot(path);
         return !string.IsNullOrEmpty(root) && new DriveInfo(root).DriveType is DriveType.Fixed or DriveType.Removable;
+    }
+
+    // A link, even one on a folder partway along, could lead onto a share, and following it would
+    // do just what's refused above. Going from the top down means nothing past a link is touched.
+    private static bool HasLinkOnTheWay(string path)
+    {
+        var root = Path.GetPathRoot(path)!;
+        var current = root;
+        foreach (var part in path[root.Length..].Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, part);
+            if (File.GetAttributes(current).HasFlag(FileAttributes.ReparsePoint)) return true;
+        }
+        return false;
     }
 
     /// <summary>Works out a path the way Git's shell would, from inside the folder.</summary>

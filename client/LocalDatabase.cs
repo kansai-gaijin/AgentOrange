@@ -227,7 +227,10 @@ public sealed class LocalDatabase
 
     public void ReleaseFolder(string folder) => _reservedFolders.Remove(folder);
 
-    /// <summary>A folder can only be one project, so this finds who already has it, by any path.</summary>
+    /// <summary>
+    /// A folder can only be one project, so this finds who already has it, by any path. A folder
+    /// holding another project's folder counts too, since its repo and engine files would mix with it.
+    /// </summary>
     public async Task<Project?> ProjectUsingFolderAsync(string folder, string? exceptProjectId = null)
     {
         var linked = ListProjects()
@@ -239,7 +242,16 @@ public sealed class LocalDatabase
                 .Select(reserved => (Project: reserved.Value, Folder: (string?)reserved.Key)))
             .ToList();
 
-        return await Task.Run(() => linked.FirstOrDefault(link => FolderIdentity.Same(link.Folder!, folder)).Project);
+        return await Task.Run(() => linked.FirstOrDefault(link => IsOrHolds(folder, link.Folder!)).Project);
+    }
+
+    private static bool IsOrHolds(string folder, string other)
+    {
+        for (var at = other; at is not null; at = Path.GetDirectoryName(at))
+        {
+            if (FolderIdentity.Same(at, folder)) return true;
+        }
+        return false;
     }
 
     public void SaveProjectOrder(IEnumerable<string> projectIds) =>

@@ -12,6 +12,7 @@ namespace AgentOrange;
 public partial class MainWindow : Window
 {
     private const string UpdateFeedUrl = "https://github.com/kansai-gaijin/AgentOrange/releases/latest/download";
+    private const string RequiredUpdateSetting = "required_update";
     private static readonly Brush ConnectedBrush = new SolidColorBrush(Color.FromRgb(0x5F, 0xD0, 0x8A));
     private static readonly Brush DisconnectedBrush = new SolidColorBrush(Color.FromRgb(0xE8, 0x6B, 0x6B));
     private static readonly Brush MutedBrush = new SolidColorBrush(Color.FromRgb(0x9A, 0xA0, 0xAA));
@@ -23,6 +24,7 @@ public partial class MainWindow : Window
     private readonly SyncEngine _sync;
 
     private UpdateInfo? _requiredUpdate;
+    private string? _requiredVersion; // Can be known from an earlier run without the details to download it.
     private bool _downloading;
 
     public MainWindow()
@@ -56,6 +58,7 @@ public partial class MainWindow : Window
         ProjectWizard.ClaimFolder = async (folder, name) =>
             (await _database.ClaimFolderAsync(folder, new Project("new-project", name, "", "", "", "", DateTimeOffset.UtcNow)))?.Name;
         ProjectWizard.ReleaseFolder = _database.ReleaseFolder;
+        ProjectWizard.ProjectUsingRepo = url => _database.ListProjects().FirstOrDefault(project => GitTools.SameRepo(project.RepoUrl, url))?.Name;
         GitTools.AllowedFolderSettings = _database.AllowedFolderSettings;
         GitTools.RememberAllowedFolderSettings = _database.AllowFolderSettings;
         ProjectSettings.ProjectIsBusy = projectId => _busyProjectId == projectId;
@@ -90,6 +93,13 @@ public partial class MainWindow : Window
         // Dev builds aren't installed, so there's nothing for them to update.
         if (_updates.IsInstalled)
         {
+            // Required stays required, even if restarting without a connection hides it for now.
+            if (RememberedUpdate() is { } remembered)
+            {
+                _requiredVersion = remembered;
+                ShowUpdateRequired(remembered);
+            }
+
             var updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
             updateTimer.Tick += async (_, _) => await CheckForUpdateAsync();
             updateTimer.Start();
@@ -116,7 +126,7 @@ public partial class MainWindow : Window
     private void ProjectWizard_Closed()
     {
         MainContent.Effect = null;
-        MainContent.IsEnabled = _requiredUpdate is null;
+        MainContent.IsEnabled = _requiredVersion is null;
     }
 
     private void ProjectWizard_Created(NewProject project)
@@ -124,12 +134,12 @@ public partial class MainWindow : Window
         var id = _database.CreateProject(project.Name, project.Engine, project.GameType, project.RepoUrl);
 
         // Folders differ between PCs, so this stays here and only the rest syncs.
-        _database.SetProjectFolder(id, project.Folder);
+        if (!project.CloneIntoFolder) _database.SetProjectFolder(id, project.Folder);
         if (project.RepoConfirmed) _database.SetSetting(VerifiedSetting(id), GitTools.RepoKey(project.RepoUrl));
 
         RefreshProjects();
         _ = _sync.SyncNowAsync();
-        _ = ReadEngineVersionAsync(id);
+        _ = project.CloneIntoFolder ? CloneIntoChosenFolderAsync(id, project.Folder) : ReadEngineVersionAsync(id);
     }
 
     private void OpenSettings_Click(object sender, RoutedEventArgs e)
@@ -144,7 +154,7 @@ public partial class MainWindow : Window
     {
         Settings.Visibility = Visibility.Collapsed;
         MainContent.Effect = null;
-        MainContent.IsEnabled = _requiredUpdate is null;
+        MainContent.IsEnabled = _requiredVersion is null;
     }
 
     private void ShowServerState()
@@ -190,16 +200,43 @@ public partial class MainWindow : Window
             return null; // Offline, say. The next check tries again, and a known update stays required.
         }
 
-        if (update is null) return false;
+        if (update is null)
+        {
+            StopRequiringUpdate();
+            return false;
+        }
         if (_downloading) return true;
 
-        var isNewVersion = _requiredUpdate?.TargetFullRelease.Version != update.TargetFullRelease.Version;
+        var version = update.TargetFullRelease.Version.ToString();
+        var isNewVersion = _requiredVersion != version;
         _requiredUpdate = update;
-        if (isNewVersion) ShowUpdateRequired(update);
+        _requiredVersion = version;
+        _database.SetSetting(RequiredUpdateSetting, version);
+        if (isNewVersion) ShowUpdateRequired(version);
         return true;
     }
 
-    private void ShowUpdateRequired(UpdateInfo update)
+    // Only one newer than this copy still counts, which also clears it once it's installed.
+    private string? RememberedUpdate() =>
+        SemanticVersion.TryParse(_database.GetSetting(RequiredUpdateSetting) ?? "", out var version) && _updates.CurrentVersion is { } current && version > current
+            ? version.ToString()
+            : null;
+
+    // The feed answered and has nothing newer, such as a release having been withdrawn.
+    private void StopRequiringUpdate()
+    {
+        if (_requiredVersion is null) return;
+        _requiredVersion = null;
+        _requiredUpdate = null;
+        _database.SetSetting(RequiredUpdateSetting, "");
+        UpdateOverlay.Visibility = Visibility.Collapsed;
+        ProjectWizard.IsEnabled = true;
+        ProjectSettings.IsEnabled = true;
+        Settings.IsEnabled = true;
+        MainContent.IsEnabled = ProjectWizard.Visibility != Visibility.Visible && ProjectSettings.Visibility != Visibility.Visible && Settings.Visibility != Visibility.Visible;
+    }
+
+    private void ShowUpdateRequired(string version)
     {
         // The keyboard can reach what's under the overlay, and that includes an open modal's Delete.
         MainContent.IsEnabled = false;
@@ -207,7 +244,7 @@ public partial class MainWindow : Window
         ProjectSettings.IsEnabled = false;
         Settings.IsEnabled = false;
         UpdateOverlay.Visibility = Visibility.Visible;
-        UpdateTitle.Text = $"Update to v{update.TargetFullRelease.Version}";
+        UpdateTitle.Text = $"Update to v{version}";
         UpdateMessage.Text = "This update is required to keep using Agent Orange.";
         UpdateProgress.Visibility = Visibility.Collapsed;
         DownloadUpdate.Content = "Download update";
@@ -216,7 +253,7 @@ public partial class MainWindow : Window
 
     private async void DownloadUpdate_Click(object sender, RoutedEventArgs e)
     {
-        if (_downloading || _requiredUpdate is null) return;
+        if (_downloading || _requiredVersion is null) return;
         _downloading = true;
 
         DownloadUpdate.Visibility = Visibility.Collapsed;
@@ -227,7 +264,15 @@ public partial class MainWindow : Window
         try
         {
             _requiredUpdate = await _updates.CheckForUpdatesAsync() ?? _requiredUpdate;
-            UpdateTitle.Text = $"Update to v{_requiredUpdate.TargetFullRelease.Version}";
+            if (_requiredUpdate is null)
+            {
+                StopRequiringUpdate();
+                return;
+            }
+
+            _requiredVersion = _requiredUpdate.TargetFullRelease.Version.ToString();
+            _database.SetSetting(RequiredUpdateSetting, _requiredVersion);
+            UpdateTitle.Text = $"Update to v{_requiredVersion}";
             await _updates.DownloadUpdatesAsync(
                 _requiredUpdate,
                 percent => Dispatcher.Invoke(() => UpdateProgress.Value = percent));

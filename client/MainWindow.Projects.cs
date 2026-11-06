@@ -595,9 +595,16 @@ public partial class MainWindow
             var linked = _database.GetProjectFolder(project.Id);
             if (linked is not null && _settingsToAllow is { } settings)
             {
-                var allow = TwoClickAction("Allow", () => AllowFolderSettingsAsync(project, linked, settings.Fingerprint));
-                allow.IsEnabled = !busy;
-                rows.Add(Row("Use this folder's own Git settings", $"They can run programs or send your login somewhere else, so only allow them if you trust where this folder came from: {settings.Shown}", allow));
+                if (settings.CanBeApproved)
+                {
+                    var allow = TwoClickAction("Allow", () => AllowFolderSettingsAsync(project, linked, settings.Fingerprint));
+                    allow.IsEnabled = !busy;
+                    rows.Add(Row("Use this folder's own Git settings", $"They can run programs or send your login somewhere else, so only allow them if you trust where this folder came from: {settings.Shown}", allow));
+                }
+                else
+                {
+                    rows.Add(Row("This folder's own Git settings can't be used", "There are too many of them to show here, and they can only be allowed once you've been able to read them all. Cut them down, or use another copy."));
+                }
             }
 
             if (linked is not null && _folderExists && _folderProblem is not null)
@@ -754,11 +761,11 @@ public partial class MainWindow
             return;
         }
 
-        // Two projects can have copies of one repo, and this would take over the other's.
+        // Another project may have a copy of the repo that's being replaced, on a PC where the two synced together.
         if (await _database.ClaimFolderAsync(folder!, project) is { } owner)
         {
             EndBusy();
-            ShowPageProblem(project.Id, $"{owner.Name} already uses that folder. A folder can only be one project.");
+            ShowPageProblem(project.Id, $"{owner.Name} already uses that folder, or one inside it. A folder can only be one project.");
             return;
         }
 
@@ -823,6 +830,81 @@ public partial class MainWindow
         if (wasOpen) await RecheckIfStillOpenAsync(projectId);
     }
 
+    // A new project whose repo already has files, and an empty folder for them. Running as an
+    // ordinary clone, on its page, means it shows progress and can be cancelled.
+    private async Task CloneIntoChosenFolderAsync(string projectId, string folder)
+    {
+        if (FindProject(projectId) is not { } project) return;
+        await OpenProjectAsync(project);
+        if (_busyProjectId is not null)
+        {
+            ShowPageProblem(projectId, "Something else is running. Clone this project when that finishes.");
+            return;
+        }
+
+        var exact = Path.TrimEndingDirectorySeparator(folder);
+        if (FindProject(projectId) is { } latest) await CloneProjectAsync(latest, Path.GetDirectoryName(exact)!, exact);
+    }
+
+    private async Task CloneProjectAsync(Project project, string parentFolder, string? exactFolder = null)
+    {
+        StartBusy(project, "Checking that folder…");
+        var owner = (exactFolder ?? GitTools.CloneDestination(project.RepoUrl, parentFolder)) is { } destination
+            ? await _database.ProjectUsingFolderAsync(destination, project.Id)
+            : null;
+        EndBusy();
+        if (owner is not null)
+        {
+            ShowPageProblem(project.Id, $"{owner.Name} already uses the folder this would clone into. A folder can only be one project.");
+            return;
+        }
+
+        var folderBefore = _database.GetProjectFolder(project.Id);
+
+        using var cancel = new CancellationTokenSource();
+        _cloneCancel = cancel;
+        StartBusy(project, "Cloning…");
+        string? cloneRecord = null;
+        string? workingFolder = null;
+        var result = await GitTools.CloneAsync(project.RepoUrl, parentFolder, cancel.Token, working =>
+        {
+            workingFolder = working;
+            if (working is null)
+            {
+                // Finished, so the cleanup at the next start has to leave it alone from now on.
+                var finished = cloneRecord;
+                SaveCloneRecords(CloneRecords().Where(record => record != finished));
+                cloneRecord = null;
+                return;
+            }
+            cloneRecord = CloneRecord(working);
+            SaveCloneRecords(CloneRecords().Append(cloneRecord));
+        }, exactFolder);
+
+        // One that couldn't be fully removed stays on the list, to be tried again next start.
+        if (cloneRecord is not null && (workingFolder is null || !await GitTools.FolderExistsAsync(workingFolder)))
+        {
+            SaveCloneRecords(CloneRecords().Where(record => record != cloneRecord));
+        }
+        _cloneCancel = null;
+        EndBusy();
+
+        if (!result.Worked)
+        {
+            ShowPageProblem(project.Id, result.Value);
+        }
+        else if (FindProject(project.Id) is { } latest
+            && (_database.GetProjectFolder(project.Id) != folderBefore || !GitTools.SameRepo(latest.RepoUrl, project.RepoUrl)))
+        {
+            // Settings stay open during a clone, and what was chosen there is more recent.
+            await RecheckThenShowAsync(project.Id, $"Cloned to {result.Value}, but this project changed while that ran, so it wasn't linked. The clone is still there.");
+        }
+        else
+        {
+            await UseFolderAsync(project, result.Value, folderBefore);
+        }
+    }
+
     private void AddGetProjectOptions(StackPanel body, Project project, string? linkedFolder)
     {
         var busy = _busyProjectId is not null;
@@ -841,61 +923,7 @@ public partial class MainWindow
                 return;
             }
 
-            StartBusy(project, "Checking that folder…");
-            var owner = GitTools.CloneDestination(project.RepoUrl, parentFolder) is { } destination
-                ? await _database.ProjectUsingFolderAsync(destination, project.Id)
-                : null;
-            EndBusy();
-            if (owner is not null)
-            {
-                ShowPageProblem(project.Id, $"{owner.Name} already uses the folder this would clone into. A folder can only be one project.");
-                return;
-            }
-
-            var folderBefore = _database.GetProjectFolder(project.Id);
-
-            using var cancel = new CancellationTokenSource();
-            _cloneCancel = cancel;
-            StartBusy(project, "Cloning…");
-            string? cloneRecord = null;
-            string? workingFolder = null;
-            var result = await GitTools.CloneAsync(project.RepoUrl, parentFolder, cancel.Token, working =>
-            {
-                workingFolder = working;
-                if (working is null)
-                {
-                    // Finished, so the cleanup at the next start has to leave it alone from now on.
-                    var finished = cloneRecord;
-                    SaveCloneRecords(CloneRecords().Where(record => record != finished));
-                    cloneRecord = null;
-                    return;
-                }
-                cloneRecord = CloneRecord(working);
-                SaveCloneRecords(CloneRecords().Append(cloneRecord));
-            });
-
-            // One that couldn't be fully removed stays on the list, to be tried again next start.
-            if (cloneRecord is not null && (workingFolder is null || !await GitTools.FolderExistsAsync(workingFolder)))
-            {
-                SaveCloneRecords(CloneRecords().Where(record => record != cloneRecord));
-            }
-            _cloneCancel = null;
-            EndBusy();
-
-            if (!result.Worked)
-            {
-                ShowPageProblem(project.Id, result.Value);
-            }
-            else if (FindProject(project.Id) is { } latest
-                && (_database.GetProjectFolder(project.Id) != folderBefore || !GitTools.SameRepo(latest.RepoUrl, project.RepoUrl)))
-            {
-                // Settings stay open during a clone, and what was chosen there is more recent.
-                await RecheckThenShowAsync(project.Id, $"Cloned to {result.Value}, but this project changed while that ran, so it wasn't linked. The clone is still there.");
-            }
-            else
-            {
-                await UseFolderAsync(project, result.Value, folderBefore);
-            }
+            await CloneProjectAsync(project, parentFolder);
         };
 
         var (heading, description) = (linkedFolder, _folderProblem, _folderExists) switch
@@ -951,7 +979,7 @@ public partial class MainWindow
             var folderProblem = await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
             if (folderProblem is null && await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other)
             {
-                folderProblem = $"{other.Name} already uses that folder. A folder can only be one project.";
+                folderProblem = $"{other.Name} already uses that folder, or one inside it. A folder can only be one project.";
             }
             EndBusy();
 

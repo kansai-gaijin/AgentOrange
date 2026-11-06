@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use axum::{
     Router,
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
+    middleware::map_response,
+    response::Response,
     routing::{get, patch, post},
 };
 use tokio_postgres::{Client, NoTls};
@@ -70,6 +72,7 @@ async fn main() {
             "/v1/devices/{id}",
             patch(devices::rename).delete(devices::remove),
         )
+        .layer(map_response(mark_as_ours))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -83,6 +86,14 @@ async fn main() {
         })
         .await
         .expect("server stopped unexpectedly");
+}
+
+/// Clients only give up a login when told to by this server, and not by a proxy on the way to it.
+async fn mark_as_ours(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert("x-agent-orange", HeaderValue::from_static("1"));
+    response
 }
 
 async fn health() -> &'static str {

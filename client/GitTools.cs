@@ -53,7 +53,7 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
 }
 
 /// <summary>A folder's own Git settings that matter. The fingerprint says whether they've changed, without keeping them.</summary>
-public sealed record FolderGitSettings(string Shown, string Fingerprint)
+public sealed record FolderGitSettings(string Shown, string Fingerprint, bool CanBeApproved = true)
 {
     public static readonly FolderGitSettings None = new("", "");
 
@@ -150,10 +150,19 @@ public static partial class GitTools
         string? inconclusive = null;
         string? otherCanRead = null;
         var accounts = await SignedInAccountsAsync();
+
+        // An account just answered, so finding none means the list couldn't be read.
+        if (accounts.Count == 0) inconclusive = "";
         foreach (var account in accounts)
         {
             var token = await RunAsync("gh", Path.GetTempPath(), "auth", "token", "--hostname", "github.com", "--user", account);
-            if (token is not { ExitCode: 0 }) continue;
+            if (token is not { ExitCode: 0 })
+            {
+                // Couldn't ask this account, so it can't be ruled out. One with no login left can.
+                var why = token?.Errors ?? "";
+                if (!SignedOutMessage().IsMatch(why) && !why.Contains("no oauth token", StringComparison.OrdinalIgnoreCase)) inconclusive = why;
+                continue;
+            }
             var viewed = await ViewRepoAsync(slug, token.Output.Trim());
             if (viewed is { ExitCode: 0 } && WritePermission().IsMatch(viewed.Output)) return new RepoCheck(RepoAccess.OtherAccount, account);
 
@@ -302,13 +311,15 @@ public static partial class GitTools
 
         // Only a fingerprint is kept, because these can hold live logins.
         var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\0', settings))));
-        var shown = settings.Take(MaxSettingsShown).Select(ForShowing).ToList();
-        if (settings.Count > MaxSettingsShown) shown.Add($"and {settings.Count - MaxSettingsShown} more");
+
+        // Everything approved has to have been read, so what can't all be shown can't be approved.
+        var shown = settings.Select(ForShowing).ToList();
+        if (shown.Count > MaxSettingsShown || shown.Any(line => line.Length > MaxSettingShown)) return new FolderGitSettings("", fingerprint, false);
         return new FolderGitSettings(string.Join('\n', shown), fingerprint);
     }
 
     // Enough to judge what a setting does, without putting a login on the screen. A value can't
-    // fake extra lines in the prompt, and a long one says it's been cut.
+    // fake extra lines in the prompt.
     private static string ForShowing(string setting)
     {
         var parts = setting.Split('\n', 2);
@@ -316,8 +327,7 @@ public static partial class GitTools
         if (parts.Length == 1) return key;
         if (SensitiveSetting().IsMatch(parts[0])) return $"{key} (hidden)";
 
-        var value = OneLine(HideLogins(parts[1]));
-        return value.Length <= MaxSettingShown ? $"{key} {value}" : $"{key} {value[..MaxSettingShown]}… ({value.Length - MaxSettingShown} more characters)";
+        return $"{key} {OneLine(HideLogins(parts[1]))}";
     }
 
     private static string OneLine(string text) => WhiteSpaceRun().Replace(text, " ").Trim();
@@ -331,7 +341,7 @@ public static partial class GitTools
     public static Action<string, string> RememberAllowedFolderSettings { get; set; } = (_, _) => { };
 
     public static bool AreAllowed(string folder, FolderGitSettings settings) =>
-        settings.IsEmpty || AllowedFolderSettings(folder) == settings.Fingerprint;
+        settings.IsEmpty || (settings.CanBeApproved && AllowedFolderSettings(folder) == settings.Fingerprint);
 
     /// <summary>
     /// A folder whose SSH settings file needs ssh's own handling can't be understood until it's
@@ -340,7 +350,7 @@ public static partial class GitTools
     public static async Task AskAboutUnreadableSshSettingsAsync(string folder)
     {
         if (await InspectFolderAsync(folder) is not { NeedsSettingsApproval: true }) return;
-        if (await FolderRunnableSettingsAsync(folder) is not { IsEmpty: false } settings) return;
+        if (await FolderRunnableSettingsAsync(folder) is not { IsEmpty: false, CanBeApproved: true } settings) return;
 
         if (Dialogs.Confirm($"To tell whether this folder's remote is on GitHub, its SSH settings have to run, and they can run programs or send your login somewhere else:\n\n{settings.Shown}\n\nOnly use them if you trust where this folder came from. Use them?"))
         {
@@ -349,8 +359,8 @@ public static partial class GitTools
     }
 
     internal const string CantTellSshSettings = "Couldn't tell whether";
-    private const int MaxSettingsShown = 12;
-    private const int MaxSettingShown = 300;
+    private const int MaxSettingsShown = 20;
+    private const int MaxSettingShown = 600;
 
     private const string FolderSettingsThatMatter =
         @"^(core\.(sshcommand|askpass|gitproxy)|credential\..*|http\..*|url\..*|remote\..*\.(uploadpack|receivepack|vcs|proxy))$";
@@ -670,17 +680,27 @@ public static partial class GitTools
     public static string? CloneDestination(string url, string parentFolder) =>
         FolderNameFor(url) is { } name ? Path.Combine(parentFolder, name) : null;
 
+    /// <summary>Whether a repo has anything in it. Not being able to tell counts as no.</summary>
+    public static async Task<bool> RepoHasContentAsync(string url)
+    {
+        var form = await ReachableFormAsync(url) ?? url;
+        var heads = await RunAsync("git", Path.GetTempPath(), null, ["ls-remote", "--heads", "--", form], default, await SshSettingsAsync(Path.GetTempPath()));
+        return heads is { ExitCode: 0 } && heads.Output.Trim().Length > 0;
+    }
+
+    public static Task<bool> FolderIsEmptyAsync(string folder) => Task.Run(() => Directory.Exists(folder) && !IsTaken(folder));
+
     /// <summary>
-    /// Clones into a new folder inside the chosen one, and returns the new folder's path.
-    /// workingFolder says where it's working, so that can be cleaned up if the app closes first,
-    /// and is told null once that folder holds a finished clone that must not be cleaned up.
+    /// Clones into a new folder inside the chosen one, or into exactFolder if it's empty, and
+    /// returns the resulting folder's path. workingFolder says where it's working, so that can
+    /// be cleaned up if the app closes first, and is told null once that folder holds a finished
+    /// clone that must not be cleaned up.
     /// </summary>
-    public static async Task<GitResult> CloneAsync(string url, string parentFolder, CancellationToken cancel, Action<string?> workingFolder)
+    public static async Task<GitResult> CloneAsync(string url, string parentFolder, CancellationToken cancel, Action<string?> workingFolder, string? exactFolder = null)
     {
         if (RepoUrlProblem(url) is { } problem) return new GitResult(false, problem);
-        if (FolderNameFor(url) is not { } name) return new GitResult(false, "That repo URL doesn't name a folder to clone into.");
+        if ((exactFolder ?? CloneDestination(url, parentFolder)) is not { } destination) return new GitResult(false, "That repo URL doesn't name a folder to clone into.");
 
-        var destination = Path.Combine(parentFolder, name);
         var form = await ReachableFormAsync(url) ?? url;
 
         // Cloning into a folder that only this clone owns means a failure can never remove
@@ -1105,7 +1125,7 @@ public static partial class GitTools
     [GeneratedRegex(@"^[A-Za-z0-9][\w.-]+:[\w.-]+/[\w./-]+\z")]
     private static partial Regex BareScpRepo();
 
-    [GeneratedRegex(@"extraheader|\.password$|token", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"\.(extraheader|password|oauthrefreshtoken)$", RegexOptions.IgnoreCase)]
     private static partial Regex SensitiveSetting();
 
     [GeneratedRegex(@"\s+")]

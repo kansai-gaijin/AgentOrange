@@ -10,7 +10,8 @@ using static AgentOrange.Ui;
 namespace AgentOrange;
 
 /// <summary>RepoConfirmed means GitHub just said this PC can work on the repo, rather than it not being asked.</summary>
-public sealed record NewProject(string Name, string Engine, string GameType, string Folder, string RepoUrl, bool RepoConfirmed = false);
+/// <summary>CloneIntoFolder means the folder is empty and the repo isn't, so the folder hasn't been connected and still needs a clone.</summary>
+public sealed record NewProject(string Name, string Engine, string GameType, string Folder, string RepoUrl, bool RepoConfirmed = false, bool CloneIntoFolder = false);
 
 public static class ProjectChoices
 {
@@ -35,6 +36,7 @@ public partial class NewProjectWizard : UserControl
     private bool _offeringFolderSettings;
     private string _shownFolderSettings = "";
     private RepoCheck? _replacementOfferedFor;
+    private bool _cloneIntoFolder;
 
     public NewProjectWizard()
     {
@@ -47,6 +49,9 @@ public partial class NewProjectWizard : UserControl
     public Func<string, string, Task<string?>> ClaimFolder { get; set; } = (_, _) => Task.FromResult<string?>(null);
 
     public Action<string> ReleaseFolder { get; set; } = _ => { };
+
+    /// <summary>Gives the name of a project already on this repo.</summary>
+    public Func<string, string?> ProjectUsingRepo { get; set; } = _ => null;
 
     public event Action? Closed;
 
@@ -222,6 +227,7 @@ public partial class NewProjectWizard : UserControl
             var submission = new NewProject(_name, _engine, _gameType, path, typedUrl);
 
             SetWorking(true, "Checking…");
+            _cloneIntoFolder = false;
             string? failure;
             string url;
             bool confirmed;
@@ -234,7 +240,7 @@ public partial class NewProjectWizard : UserControl
                 }
                 else if (await ClaimFolder(path, _name) is { } otherProject)
                 {
-                    (url, confirmed, failure) = ("", false, $"{otherProject} already uses that folder. A folder can only be one project.");
+                    (url, confirmed, failure) = ("", false, $"{otherProject} already uses that folder, or one inside it. A folder can only be one project.");
                 }
                 else if (_replacingUrl is { } replacing)
                 {
@@ -260,6 +266,15 @@ public partial class NewProjectWizard : UserControl
                 {
                     claimed = true;
                     await GitTools.AskAboutUnreadableSshSettingsAsync(path);
+
+                    // Now its settings can be read, an address filled in from the folder may turn out to be GitHub.
+                    if (typedUrl.Length > 0 && typedUrl == _autoFilledRepo && await GitTools.InspectFolderAsync(path) is { OriginToCompare: { } known } && known != typedUrl)
+                    {
+                        _autoFilledRepo = known;
+                        repo.Text = known;
+                        submission = submission with { RepoUrl = known };
+                    }
+
                     (url, confirmed, failure) = await ResolveRepoAsync(submission, status => progress.Text = status);
                 }
             }
@@ -272,11 +287,12 @@ public partial class NewProjectWizard : UserControl
             {
                 if (claimed) ReleaseFolder(path);
                 ShowProblem(problem, failure);
+                _ = Dispatcher.InvokeAsync(problem.BringIntoView, System.Windows.Threading.DispatcherPriority.Loaded);
                 create.Content = _replacingUrl is not null ? "Create a new repo" : _offeringFolderSettings ? "Use its Git settings" : "Create project";
                 return;
             }
 
-            Created?.Invoke(submission with { RepoUrl = url, RepoConfirmed = confirmed });
+            Created?.Invoke(submission with { RepoUrl = url, RepoConfirmed = confirmed, CloneIntoFolder = _cloneIntoFolder });
             ReleaseFolder(path);
             Close();
         };
@@ -298,9 +314,12 @@ public partial class NewProjectWizard : UserControl
             "New project",
             "Set up a new game.",
             Stepper(Steps, 2),
-            body,
+            new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = body },
             back,
             create);
+
+        // Rebuilding the step took focus away, and Esc only works with it inside the wizard.
+        Dispatcher.InvokeAsync(() => folder.Focus(), System.Windows.Threading.DispatcherPriority.Input);
     }
 
     /// <summary>
@@ -328,6 +347,7 @@ public partial class NewProjectWizard : UserControl
         }
 
         if (GitTools.RepoUrlProblem(url) is { } urlProblem) return ("", false, urlProblem);
+        if (ProjectUsingRepo(url) is { } otherProject) return ("", false, $"{otherProject} already uses that repo. A repo can only be one project.");
         if (state.Origin is not null && !GitTools.SameRepo(state.OriginToCompare!, url))
         {
             return ("", false, "That folder is connected to a different repo than that URL.");
@@ -355,6 +375,8 @@ public partial class NewProjectWizard : UserControl
         {
             case RepoAccess.Allowed or RepoAccess.Offline:
                 break;
+            case RepoAccess.GitCantReach when !useFolderSettings && runnable is { CanBeApproved: false }:
+                return ("", false, "Git can't reach this repo without this folder's own Git settings, and there are too many of them to show here for you to check. Cut them down, or choose another copy.");
             case RepoAccess.GitCantReach when !useFolderSettings && runnable is { IsEmpty: false }:
                 _offeringFolderSettings = true;
                 _shownFolderSettings = runnable.Fingerprint;
@@ -376,6 +398,23 @@ public partial class NewProjectWizard : UserControl
 
         if (state.Origin is null)
         {
+            // Connecting a folder to a repo that already has work in it doesn't bring that work
+            // over, so the two would just look like the same project without being it.
+            if (check.Access == RepoAccess.Allowed && await GitTools.RepoHasContentAsync(url))
+            {
+                var hasParent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(project.Folder)) is not null;
+                if (hasParent && await GitTools.FolderIsEmptyAsync(project.Folder))
+                {
+                    _cloneIntoFolder = true;
+                    return (url, true, null);
+                }
+
+                if (!Dialogs.Confirm("That repo already has files, and this folder has its own and isn't connected to it, so they may not be the same project.\n\nConnecting them changes no files and pushes nothing, but Git may then treat their histories as unrelated. Connect them anyway?"))
+                {
+                    return ("", false, "Nothing was changed. To get a copy of that repo, choose an empty folder. Or choose a folder that's already connected to it.");
+                }
+            }
+
             status("Connecting the folder to the repo…");
             var form = check.Access == RepoAccess.Allowed ? await GitTools.ReachableFormAsync(url) ?? url : url;
             var connected = await GitTools.ConnectFolderAsync(project.Folder, form);
