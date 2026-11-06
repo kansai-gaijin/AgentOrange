@@ -173,6 +173,12 @@
                            FontSize="14"
                            Margin="0,6,0,0"
                            TextTrimming="CharacterEllipsis" />
+                <TextBlock x:Name="OpenProjectRepo"
+                           DockPanel.Dock="Top"
+                           Foreground="#9AA0AA"
+                           FontSize="14"
+                           Margin="0,4,0,0"
+                           TextTrimming="CharacterEllipsis" />
                 <TextBlock Text="Nothing here yet."
                            Foreground="#9AA0AA"
                            FontSize="14"

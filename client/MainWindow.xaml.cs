@@ -105,7 +105,7 @@ public partial class MainWindow : Window
 
     private void ProjectWizard_Created(NewProject project)
     {
-        var id = _database.CreateProject(project.Name, project.Engine);
+        var id = _database.CreateProject(project.Name, project.Engine, project.RepoUrl);
 
         // Folders differ between PCs, so this stays here and only the rest syncs.
         if (project.Folder.Length > 0) _database.SetSetting(ProjectFolderSetting(id), project.Folder);
@@ -123,6 +123,8 @@ public partial class MainWindow : Window
         OpenProjectName.Text = project.Name;
         OpenProjectDetails.Text = $"{project.Engine} · {(string.IsNullOrEmpty(folder) ? "No folder on this PC" : folder)}";
         OpenProjectDetails.ToolTip = folder;
+        OpenProjectRepo.Text = string.IsNullOrEmpty(project.RepoUrl) ? "No repo" : project.RepoUrl;
+        OpenProjectRepo.ToolTip = project.RepoUrl;
         ShowView(ProjectView);
     }
 

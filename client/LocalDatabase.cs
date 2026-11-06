@@ -5,7 +5,7 @@ using Microsoft.Data.Sqlite;
 
 namespace AgentOrange;
 
-public sealed record Project(string Id, string Name, string Engine, DateTimeOffset CreatedAt)
+public sealed record Project(string Id, string Name, string Engine, DateTimeOffset CreatedAt, string RepoUrl)
 {
     public string Summary =>
         $"{Engine} · Created {CreatedAt.ToLocalTime().ToString("MMM d, yyyy", CultureInfo.InvariantCulture)}";
@@ -23,7 +23,7 @@ public sealed class LocalDatabase
 {
     private const string ProjectsCollection = "projects";
     private const string UnknownEngine = "Other";
-    private sealed record ProjectData(string Name, DateTimeOffset CreatedAt, string? Engine = null);
+    private sealed record ProjectData(string Name, DateTimeOffset CreatedAt, string? Engine = null, string? RepoUrl = null);
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -70,15 +70,15 @@ public sealed class LocalDatabase
         while (reader.Read())
         {
             var data = JsonSerializer.Deserialize<ProjectData>(reader.GetString(1), JsonOptions)!;
-            projects.Add(new Project(reader.GetString(0), data.Name, data.Engine ?? UnknownEngine, data.CreatedAt));
+            projects.Add(new Project(reader.GetString(0), data.Name, data.Engine ?? UnknownEngine, data.CreatedAt, data.RepoUrl ?? ""));
         }
         return projects.OrderByDescending(project => project.CreatedAt).ToList();
     }
 
-    public string CreateProject(string name, string engine)
+    public string CreateProject(string name, string engine, string repoUrl)
     {
         var id = Guid.NewGuid().ToString();
-        var data = new ProjectData(name, DateTimeOffset.UtcNow, engine);
+        var data = new ProjectData(name, DateTimeOffset.UtcNow, engine, repoUrl);
         SaveRecord(ProjectsCollection, id, JsonSerializer.Serialize(data, JsonOptions));
         return id;
     }

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -9,17 +10,18 @@ using static AgentOrange.Ui;
 
 namespace AgentOrange;
 
-public sealed record NewProject(string Name, string Engine, string Folder);
+public sealed record NewProject(string Name, string Engine, string Folder, string RepoUrl);
 
-/// <summary>Creating a project: its name and engine, then where its files are on this PC.</summary>
+/// <summary>Creating a project: its name and engine, then where its files are.</summary>
 public partial class NewProjectWizard : UserControl
 {
     private static readonly string[] Engines = ["Unreal Engine", "Godot", "Web", "Other"];
-    private static readonly string[] Steps = ["Project", "Folder"];
+    private static readonly string[] Steps = ["Project", "Location"];
 
     private string _name = "";
     private string _engine = Engines[0];
     private string _folder = "";
+    private string _repoUrl = "";
 
     public NewProjectWizard()
     {
@@ -35,6 +37,7 @@ public partial class NewProjectWizard : UserControl
         _name = "";
         _engine = Engines[0];
         _folder = "";
+        _repoUrl = "";
         Visibility = Visibility.Visible;
         ShowProjectStep();
     }
@@ -117,6 +120,10 @@ public partial class NewProjectWizard : UserControl
         var problem = ProblemText();
         folder.TextChanged += (_, _) => _folder = folder.Text;
 
+        var repo = Field(_repoUrl);
+        repo.Width = 300;
+        repo.TextChanged += (_, _) => _repoUrl = repo.Text;
+
         var browse = ActionButton("Browse");
         browse.Click += (_, _) =>
         {
@@ -134,7 +141,14 @@ public partial class NewProjectWizard : UserControl
                 return;
             }
 
-            Created?.Invoke(new NewProject(_name, _engine, path));
+            var url = repo.Text.Trim();
+            if (RepoUrlProblem(url) is { } urlProblem)
+            {
+                ShowProblem(problem, urlProblem);
+                return;
+            }
+
+            Created?.Invoke(new NewProject(_name, _engine, path, url));
             Close();
         }
 
@@ -144,6 +158,7 @@ public partial class NewProjectWizard : UserControl
             Children =
             {
                 Row("Project folder", "Where this game's files are on this PC. You can add it later.", folder, browse),
+                Row("Repo URL", "Where this game's code is hosted. You can add it later.", repo),
                 problem,
             },
         };
@@ -157,6 +172,28 @@ public partial class NewProjectWizard : UserControl
             ControlButton("Back", ShowProjectStep),
             PrimaryButton("Create project", Create));
     }
+
+    // The URL syncs to the server and other PCs, so it must not carry a password or token.
+    private static string? RepoUrlProblem(string url)
+    {
+        if (url.Length == 0 || ScpStyleRepo().IsMatch(url)) return null;
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || uri.Scheme is not ("https" or "http" or "ssh" or "git")
+            || uri.Host.Length == 0)
+        {
+            return "Enter a repo URL, like https://github.com/you/game.git.";
+        }
+
+        var hasCredentials = uri.Scheme == "ssh"
+            ? uri.UserInfo.Contains(':')
+            : uri.UserInfo.Length > 0;
+        return hasCredentials ? "Take the password or token out of that URL." : null;
+    }
+
+    // The short form Git uses for SSH, like git@github.com:you/game.git.
+    [GeneratedRegex(@"^[\w.-]+@[\w.-]+:[\w./-]+$")]
+    private static partial Regex ScpStyleRepo();
 
     private void Close()
     {
