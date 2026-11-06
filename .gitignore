@@ -483,3 +483,11 @@ $RECYCLE.BIN/
 
 # Rust
 server/target/
+
+# Local databases and test data. These can hold logins and private addresses.
+testdb/
+testdl/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
