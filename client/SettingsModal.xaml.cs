@@ -361,12 +361,14 @@ public partial class SettingsModal : UserControl
 
         var lastSynced = Value("");
         var waiting = Value("");
+        var refused = Value("");
         var previousRefresh = _refreshServerPage;
         _refreshServerPage = () =>
         {
             previousRefresh();
             lastSynced.Text = LastSyncedLabel();
             waiting.Text = Sync.WaitingToSync.ToString();
+            refused.Text = Sync.RefusedChanges.ToString();
         };
         _refreshServerPage();
 
@@ -377,6 +379,7 @@ public partial class SettingsModal : UserControl
         host.Children.Add(Card(
             Row("Last synced", "Everything works offline and syncs when it can.", lastSynced),
             Row("Waiting to sync", "Changes made on this PC that the server doesn't have yet.", waiting),
+            Row("Refused by the server", "Changes it wouldn't take, which stay on this PC. The log says which. Editing one tries again.", refused),
             Row("Sync now", "Send and receive changes now.", syncNow)));
 
         var devices = await Devices.ListAsync();
@@ -413,7 +416,6 @@ public partial class SettingsModal : UserControl
 
     private string LastSyncedLabel()
     {
-        if (Sync.RefusedChanges > 0) return $"The server refused {Sync.RefusedChanges} change(s), which stay on this PC. See the log.";
         if (Sync.OtherWindowSyncs) return "Another window of the app is syncing";
 
         // Whichever is behind updates itself soon, and changes wait on this PC until then.

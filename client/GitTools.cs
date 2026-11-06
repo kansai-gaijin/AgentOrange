@@ -849,8 +849,8 @@ public static partial class GitTools
     public static async Task<bool?> RepoHasContentAsync(string url)
     {
         var form = await ReachableFormAsync(url) ?? url;
-        var heads = await RunAsync("git", Path.GetTempPath(), null, ["ls-remote", "--heads", "--", form], default, await SshSettingsAsync(Path.GetTempPath()));
-        return heads is { ExitCode: 0 } ? heads.Output.Trim().Length > 0 : null;
+        var refs = await RunAsync("git", Path.GetTempPath(), null, ["ls-remote", "--", form], default, await SshSettingsAsync(Path.GetTempPath()));
+        return refs is { ExitCode: 0 } ? refs.Output.Trim().Length > 0 : null;
     }
 
     /// <summary>Null if that couldn't be found out, such as a slow drive not answering in time.</summary>
@@ -1028,9 +1028,10 @@ public static partial class GitTools
         {
             try
             {
-                return File.Exists(attributes) && new FileInfo(attributes).Length < 1_000_000 && File.ReadAllText(attributes).Contains("filter=lfs", StringComparison.Ordinal);
+                // Links aren't read, because opening one could reach a network share.
+                return File.Exists(attributes) && !SshConfigFile.IsLink(attributes) && new FileInfo(attributes).Length < 1_000_000 && File.ReadAllText(attributes).Contains("filter=lfs", StringComparison.Ordinal);
             }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
             {
                 return false; // A virus scanner can hold a new file for a moment, and this is only a note.
             }
@@ -1133,7 +1134,7 @@ public static partial class GitTools
 
     // A link there isn't an empty folder to take over. Removing it would put the clone somewhere else.
     private static bool IsTaken(string destination) =>
-        HasAnything(destination) || (Directory.Exists(destination) && new DirectoryInfo(destination).LinkTarget is not null);
+        HasAnything(destination) || File.Exists(destination) || (Directory.Exists(destination) && new DirectoryInfo(destination).LinkTarget is not null);
 
     // Files can stay locked for a moment after a stopped clone exits, so this tries a few times.
     private static async Task TryDeleteOwnedFolderAsync(string folder)
@@ -1366,8 +1367,13 @@ public static partial class GitTools
     private static bool UsesSsh(string url) =>
         ScpStyleRepo().IsMatch(url) || url.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase);
 
-    public static string RepoName(string projectName) =>
-        NotRepoSafe().Replace(projectName.Trim().ToLowerInvariant(), "-").Trim('-');
+    public static string RepoName(string projectName)
+    {
+        var name = NotRepoSafe().Replace(projectName.Trim().ToLowerInvariant(), "-").Trim('-');
+
+        // GitHub has no use for these, and asking comes after Git has been set up in the folder.
+        return name.Trim('.').Length == 0 || name == ".git" ? "" : name;
+    }
 
     // The URL can come from another PC, so only a plain name can come out of it.
     private static string? FolderNameFor(string url)

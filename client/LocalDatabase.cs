@@ -561,8 +561,18 @@ public sealed class LocalDatabase
                 """;
             AddChange(command, change);
             command.ExecuteNonQuery();
+            ForgiveRefused(connection, change);
         }
         transaction.Commit();
+    }
+
+    // The server has taken it, or something newer has replaced it, so it isn't only on this PC now.
+    private static void ForgiveRefused(SqliteConnection connection, SyncChange change)
+    {
+        using var forgive = connection.CreateCommand();
+        forgive.CommandText = "DELETE FROM refused WHERE collection = $collection AND id = $id";
+        AddChange(forgive, change);
+        forgive.ExecuteNonQuery();
     }
 
     /// <summary>The server won't take this, so it stops holding up everything behind it, and stays on this PC.</summary>
@@ -636,7 +646,9 @@ public sealed class LocalDatabase
                 ON CONFLICT (collection, id) DO UPDATE SET data = excluded.data, deleted = excluded.deleted, changed_at = excluded.changed_at
                 """;
             AddChange(command, change);
-            applied += command.ExecuteNonQuery();
+            var changed = command.ExecuteNonQuery();
+            if (changed > 0) ForgiveRefused(connection, change);
+            applied += changed;
         }
         transaction.Commit();
         return applied;

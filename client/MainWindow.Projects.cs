@@ -200,7 +200,7 @@ public partial class MainWindow
         card.PreviewKeyDown += (_, e) =>
         {
             if (Keyboard.Modifiers != ModifierKeys.Control) return;
-            var step = e.Key switch { Key.Left or Key.Up => -1, Key.Right or Key.Down => 1, _ => 0 };
+            var step = e.Key switch { Key.Left => -1, Key.Right => 1, Key.Up => -CardsPerRow(card), Key.Down => CardsPerRow(card), _ => 0 };
             if (step == 0) return;
             e.Handled = true;
             MoveCardBy(project.Id, step);
@@ -230,6 +230,9 @@ public partial class MainWindow
         return card;
     }
 
+    private int CardsPerRow(FrameworkElement card) =>
+        Math.Max(1, (int)(ProjectGrid.ActualWidth / Math.Max(1, card.ActualWidth + card.Margin.Left + card.Margin.Right)));
+
     private void MoveCardBy(string projectId, int step)
     {
         var order = CurrentOrder();
@@ -237,7 +240,8 @@ public partial class MainWindow
         var to = from + step;
         if (from < 0 || to < 0 || to >= order.Count) return;
 
-        (order[from], order[to]) = (order[to], order[from]);
+        order.RemoveAt(from);
+        order.Insert(to, projectId);
         _database.SaveProjectOrder(order);
         _ = _sync.SyncNowAsync();
         RefreshProjects();
