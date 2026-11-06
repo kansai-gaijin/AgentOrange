@@ -7,6 +7,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Only the newest counts. Runs overlapping could otherwise publish an older one last, which would
+# make it the latest, moving the server back and leaving PCs on the newer one unable to sync.
+concurrency:
+  group: release
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

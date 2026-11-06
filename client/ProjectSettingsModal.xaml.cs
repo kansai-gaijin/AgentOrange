@@ -166,7 +166,7 @@ public partial class ProjectSettingsModal : UserControl
         const string DoesNotApply = "Doesn't apply";
         var chosenEngine = project.Engine;
         var shownVersion = project.EngineVersion;
-        static string VersionText(Project of) => !EngineVersions.CanRead(of.Engine) ? DoesNotApply : of.EngineVersion.Length > 0 ? of.EngineVersion : "Not found";
+        string VersionText(Project of) => !EngineVersions.CanRead(of.Engine) ? DoesNotApply : of.EngineVersion.Length > 0 ? of.EngineVersion : folder.Text.Length > 0 ? "Not found" : "Needs a folder";
         var version = new TextBlock
         {
             Text = VersionText(project),

@@ -237,8 +237,8 @@ public partial class MainWindow
     {
         var order = CurrentOrder();
         var from = order.IndexOf(projectId);
-        var to = from + step;
-        if (from < 0 || to < 0 || to >= order.Count) return;
+        var to = Math.Clamp(from + step, 0, order.Count - 1); // A shorter last row still has a place to go.
+        if (from < 0 || to == from) return;
 
         order.RemoveAt(from);
         order.Insert(to, projectId);

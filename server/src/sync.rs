@@ -147,6 +147,10 @@ pub async fn sync(
             || change.id.is_empty()
             || change.collection.len() > MAX_KEY_LENGTH
             || change.id.len() > MAX_KEY_LENGTH
+            || [&change.collection, &change.id, &change.data]
+                .iter()
+                .any(|text| text.contains('\0'))
+        // Postgres can't store this, and a 500 would be retried forever.
         {
             return Err(StatusCode::BAD_REQUEST);
         }

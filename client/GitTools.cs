@@ -781,7 +781,7 @@ public static partial class GitTools
         // The folder keeps reaching GitHub the way it does now. With no remote yet, a PC whose
         // project was on SSH may have no other way in.
         var webUrl = CreatedRepoUrl().Match(created.Output).Value;
-        if (state.Origin is not null && webUrl.Length == 0) return new GitResult(false, "The repo was created, but couldn't be linked to that folder.");
+        if (state.Origin is not null && webUrl.Length == 0) return new GitResult(false, $"The repo {repoName} was created, but couldn't be linked to that folder. Enter its URL to use it.");
 
         string? newOrigin = null;
         if (state.GitHubOrigin is not null) newOrigin = SameWayTo(state.Origin!, webUrl);
@@ -790,11 +790,11 @@ public static partial class GitTools
 
         if (newOrigin is not null && await MoveOriginAsync(folder, newOrigin) is { } moveProblem)
         {
-            return new GitResult(false, $"The repo was created, but couldn't be linked to that folder. {moveProblem}");
+            return new GitResult(false, $"The repo {repoName} was created, but couldn't be linked to that folder. {moveProblem}");
         }
 
         var finalState = await InspectFolderAsync(folder);
-        if (finalState?.Origin is null) return new GitResult(false, "The repo was created, but couldn't be linked to that folder.");
+        if (finalState?.Origin is null) return new GitResult(false, $"The repo {repoName} was created, but couldn't be linked to that folder. Enter its URL to use it.");
 
         // What syncs says which repo this is. How this PC's folder reaches it stays in the folder.
         var projectUrl = webUrl.Length > 0 ? $"{webUrl}.git" : finalState.OriginToCompare!;
@@ -986,7 +986,7 @@ public static partial class GitTools
                 // file name Windows can't use. That's hours of download, and it can be fixed.
                 if (!cancel.IsCancellationRequested && await RunAsync("git", working, "rev-parse", "--verify", "-q", "HEAD") is { ExitCode: 0 })
                 {
-                    checkoutProblem = $"Everything downloaded, but some files couldn't be put in place: {reason} Fix that, then run git restore --source=HEAD :/ in the folder.";
+                    checkoutProblem = $"Everything downloaded, but some files couldn't be put in place: {AsSentence(reason)} Fix that, then run git restore --source=HEAD :/ in the folder.";
                 }
                 else
                 {
@@ -1033,7 +1033,7 @@ public static partial class GitTools
         if (result is { ExitCode: 0 }) return null;
 
         var reason = cancel.IsCancellationRequested ? "That was cancelled." : GitFailureReason(result?.Errors ?? "");
-        return $"The clone finished, but its submodules didn't. {reason} Run git submodule update --init --recursive in it to try again.";
+        return $"The clone finished, but its submodules didn't. {AsSentence(reason)} Run git submodule update --init --recursive in it to try again.";
     }
 
     // Git LFS keeps a repo's big files apart. Without it set up, a repo that uses it clones fine,
@@ -1041,7 +1041,12 @@ public static partial class GitTools
     // could be a link. A quota running out or a dropped connection only costs this step.
     private static async Task<string?> FetchLargeFilesAsync(string folder, CancellationToken cancel, Action<string>? progress)
     {
-        if (await RunAsync("git", folder, "grep", "-q", "filter=lfs", "--", "*.gitattributes") is not { ExitCode: 0 }) return null;
+        var declared = await RunAsync("git", folder, "grep", "-q", "filter=lfs", "--", "*.gitattributes");
+        if (declared is { ExitCode: 1 }) return null;
+        if (declared is not { ExitCode: 0 })
+        {
+            return "Couldn't check whether this repo uses Git LFS. If its big files look like small text files, run git lfs pull in the folder.";
+        }
 
         var isInstalled = await RunAsync("git", Path.GetTempPath(), "lfs", "version") is { ExitCode: 0 };
         var isSetUp = await RunAsync("git", folder, "config", "--get", "filter.lfs.smudge") is { ExitCode: 0 };
@@ -1055,7 +1060,7 @@ public static partial class GitTools
         if (pulled is { ExitCode: 0 }) return null;
 
         var reason = cancel.IsCancellationRequested ? "That was cancelled." : GitFailureReason(pulled?.Errors ?? "");
-        return $"The clone finished, but its large files didn't. {reason} Run git lfs pull in the folder to carry on, which picks up where it left off.";
+        return $"The clone finished, but its large files didn't. {AsSentence(reason)} Run git lfs pull in the folder to carry on, which picks up where it left off.";
     }
 
     /// <summary>
@@ -1075,6 +1080,8 @@ public static partial class GitTools
         var renamed = $"https://github.com/{current}.git";
         return RepoUrlProblem(renamed) is null ? renamed : null;
     }
+
+    private static string AsSentence(string reason) => reason.Length == 0 ? "" : $"{reason.TrimEnd('.')}.";
 
     // Git's real complaint, not its last line, which is often advice for a folder now gone.
     private static string GitFailureReason(string errors)
@@ -1261,11 +1268,12 @@ public static partial class GitTools
         return new RepoCheck(await TryFormsAsync(url));
     }
 
-    // Only offline if nothing answered at all. Being turned away by one form, while another
-    // gets no answer, means something on this PC needs fixing, and it should get the chance.
+    // If neither way works, what the way this PC usually connects says is what counts. No answer
+    // there is a network or GitHub problem, even if the other way turns it away, as it would on a
+    // PC with no SSH key. Being turned away there means something on this PC needs fixing.
     private static async Task<RepoAccess> TryFormsAsync(string url)
     {
-        var turnedAway = false;
+        RepoAccess? usualWay = null;
         var readOnly = false;
         foreach (var form in await FormsToTryAsync(url))
         {
@@ -1276,9 +1284,9 @@ public static partial class GitTools
                 readOnly = true;
                 continue;
             }
-            turnedAway |= GitFailure(attempt) != RepoAccess.Offline;
+            usualWay ??= GitFailure(attempt);
         }
-        return readOnly ? RepoAccess.GitReadOnly : turnedAway ? RepoAccess.GitCantReach : RepoAccess.Offline;
+        return readOnly ? RepoAccess.GitReadOnly : usualWay ?? RepoAccess.Offline;
     }
 
     // Reading works with a read-only deploy key too, so this asks whether Git could push. It's a

@@ -41,6 +41,13 @@ if [[ "$previous" == "releases/$latest" ]]; then
     exit 0
 fi
 
+# Never backward, as clients only go forward and sync needs the two to match.
+installed="${previous#releases/}"
+if [[ -n "$installed" && "$(printf '%s\n%s\n' "$latest" "$installed" | sort -V | tail -n 1)" != "$latest" ]]; then
+    echo "Skipping $latest: $installed is already installed, and it's newer." >&2
+    exit 0
+fi
+
 failed_marker="$AO_ROOT/releases/$latest.failed"
 if [[ -e "$failed_marker" ]]; then
     echo "Skipping $latest: it failed its health check before." >&2
