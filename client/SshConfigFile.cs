@@ -18,6 +18,8 @@ internal static partial class SshConfigFile
     {
         try
         {
+            if (!IsOnThisPc(path)) return null;
+
             var file = new FileInfo(path);
             if (!file.Exists || file.Length > MaxBytes) return null;
 
@@ -51,6 +53,15 @@ internal static partial class SshConfigFile
         {
             return null;
         }
+    }
+
+    // Just opening a file on a network share can send the person's Windows login to whoever
+    // runs that share, and a folder someone was handed gets to name this path.
+    private static bool IsOnThisPc(string path)
+    {
+        if (path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal)) return false;
+        var root = Path.GetPathRoot(path);
+        return !string.IsNullOrEmpty(root) && new DriveInfo(root).DriveType is DriveType.Fixed or DriveType.Removable;
     }
 
     /// <summary>Works out a path the way Git's shell would, from inside the folder.</summary>

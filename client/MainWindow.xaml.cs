@@ -53,6 +53,8 @@ public partial class MainWindow : Window
         ProjectWizard.ClaimFolder = async (folder, name) =>
             (await _database.ClaimFolderAsync(folder, new Project("new-project", name, "", "", "", "", DateTimeOffset.UtcNow)))?.Name;
         ProjectWizard.ReleaseFolder = _database.ReleaseFolder;
+        ProjectWizard.FolderSettingsAllowed = (folder, settings) => _database.GetSetting(FolderSettingsAllowedSetting(folder)) == settings;
+        ProjectWizard.AllowFolderSettings = (folder, settings) => _database.SetSetting(FolderSettingsAllowedSetting(folder), settings);
         ProjectSettings.ProjectIsBusy = projectId => _busyProjectId == projectId;
 
         // A delete interrupted last time can leave parts of a project behind.

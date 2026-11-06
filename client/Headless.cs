@@ -65,6 +65,8 @@ internal static partial class Headless
         }, TaskScheduler.Default);
     }
 
+    public static void Say(string message) => _log?.WriteLine(message);
+
     /// <summary>What a file or folder dialog would have returned. Null is the same as Cancel.</summary>
     public static string? NextAnswer() => Answers.TryDequeue(out var answer) ? answer : null;
 

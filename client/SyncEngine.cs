@@ -57,7 +57,7 @@ public sealed class SyncEngine
             if (epoch is null)
             {
                 var first = await _devices.SyncAsync(long.MaxValue, [], null);
-                if (first?.Epoch is not { Length: > 0 } found) return;
+                if (first?.Epoch is not { Length: > 0 } found || _server.Address != address) return;
                 epoch = found;
                 _database.SetSetting(epochSetting, epoch);
             }

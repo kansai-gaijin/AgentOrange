@@ -36,6 +36,7 @@ public partial class MainWindow
     // A long operation can finish after they've left its project, and what happened still has to reach them.
     private readonly Dictionary<string, string> _heldProblems = [];
     private string? _settingsProjectId;
+    private string? _settingsToAllow;
     private bool _recheckAfterBusy;
     private readonly Dictionary<string, int> _engineReads = [];
 
@@ -308,7 +309,9 @@ public partial class MainWindow
         RenderProject(project);
 
         var folder = _database.GetProjectFolder(project.Id);
-        var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl, folder);
+        var runnable = folder is null ? "" : await GitTools.FolderRunnableSettingsAsync(folder);
+        var useFolderSettings = runnable.Length == 0 || (folder is not null && _database.GetSetting(FolderSettingsAllowedSetting(folder)) == runnable);
+        var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl, folder, useFolderSettings);
 
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
         var folderProblem = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitCantReach
@@ -333,6 +336,7 @@ public partial class MainWindow
         else if (check.IsDenied) _database.SetSetting(VerifiedSetting(project.Id), "");
 
         _projectCheck = check;
+        _settingsToAllow = useFolderSettings ? null : runnable;
         _folderExists = folderExists;
         _folderProblem = folderProblem;
         RenderProject(latest);
@@ -371,6 +375,9 @@ public partial class MainWindow
     private Project? FindProject(string id) => _database.ListProjects().FirstOrDefault(project => project.Id == id);
 
     private static string VerifiedSetting(string projectId) => $"project_verified:{projectId}";
+
+    // Only on this PC, and for the settings as they were when they were seen.
+    private static string FolderSettingsAllowedSetting(string folder) => $"folder_settings_allowed:{folder}";
 
     private void RenderProject(Project project)
     {
@@ -495,6 +502,7 @@ public partial class MainWindow
         if (check.Access == RepoAccess.OtherAccount)
         {
             var switchAccount = ActionButton($"Switch to {check.Account}");
+            switchAccount.IsEnabled = !busy;
             switchAccount.Click += async (_, _) =>
             {
                 if (await GitTools.SwitchAccountAsync(check.Account!))
@@ -575,26 +583,31 @@ public partial class MainWindow
         // A copy on this PC may reach the repo in a way the URL alone doesn't, such as its own SSH setup.
         if (check.Access == RepoAccess.GitCantReach)
         {
-            var selectRow = Row("Select its folder", "If a copy on this PC can already reach this repo, that's enough.", SelectFolderButton(project));
-            Border options;
+            var rows = new List<FrameworkElement>();
             var linked = _database.GetProjectFolder(project.Id);
+            if (linked is not null && _settingsToAllow is { } settings)
+            {
+                var allow = TwoClickAction("Allow", () => AllowFolderSettingsAsync(project, linked, settings));
+                allow.IsEnabled = !busy;
+                rows.Add(Row("Use this folder's own Git settings", $"They can run programs, so only allow them if you trust where this folder came from: {settings}", allow));
+            }
+
             if (linked is not null && _folderExists && _folderProblem is not null)
             {
                 // The project moved repos elsewhere, and this PC may only get in the way this folder does.
                 var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linked));
                 connect.IsEnabled = !busy;
-                options = Card(Row("Keep using this folder", "If the project moved repos, this points the folder's remote at the new one, the same way it connects now. Its files don't change.", connect), selectRow);
+                rows.Add(Row("Keep using this folder", "If the project moved repos, this points the folder's remote at the new one, the same way it connects now. Its files don't change.", connect));
             }
-            else if (linked is not null)
+            else if (linked is not null && _folderExists)
             {
                 var repair = TwoClickAction("Repair it", () => RepairRemoteAsync(project, linked));
                 repair.IsEnabled = !busy;
-                options = Card(Row("Repair this folder's connection", "Switches it between HTTPS and SSH, whichever works from this PC.", repair), selectRow);
+                rows.Add(Row("Repair this folder's connection", "Switches it between HTTPS and SSH, whichever works from this PC.", repair));
             }
-            else
-            {
-                options = Card(selectRow);
-            }
+            rows.Add(Row("Select its folder", "If a copy on this PC can already reach this repo, that's enough.", SelectFolderButton(project)));
+
+            var options = Card(rows.ToArray());
             options.Margin = new Thickness(0, 12, 0, 0);
             body.Children.Add(options);
         }
@@ -672,6 +685,13 @@ public partial class MainWindow
     // Shows the result if the person is still looking at this project.
     private void ShowPageProblem(string projectId, string problem)
     {
+        // Deleted elsewhere in the meantime, so no page will ever show this.
+        if (FindProject(projectId) is null)
+        {
+            Dialogs.Notify(problem);
+            return;
+        }
+
         if (_openProject?.Id != projectId)
         {
             _heldProblems[projectId] = problem;
@@ -751,7 +771,7 @@ public partial class MainWindow
         // in the meantime was chosen more recently, so it stays.
         if (FindProject(project.Id) is not { } latest || GitTools.RepoUrlProblem(result.Value) is not null)
         {
-            ShowPageProblem(project.Id, "The repo was created, but the project couldn't be updated.");
+            ShowPageProblem(project.Id, $"The repo was created at {result.Value}, but the project couldn't be updated.");
             return;
         }
         if (!GitTools.SameRepo(latest.RepoUrl, project.RepoUrl))
@@ -852,7 +872,7 @@ public partial class MainWindow
             }
             else
             {
-                await UseFolderAsync(project.Id, result.Value);
+                await UseFolderAsync(project, result.Value, folderBefore);
             }
         };
 
@@ -903,6 +923,7 @@ public partial class MainWindow
         {
             if (Dialogs.PickFolder($"Find the folder for {project.Name}") is not { } chosen) return;
 
+            var folderBefore = _database.GetProjectFolder(project.Id);
             StartBusy(project, "Checking that folder…");
             var folderProblem = await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
             if (folderProblem is null && await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other)
@@ -911,10 +932,16 @@ public partial class MainWindow
             }
             EndBusy();
 
-            if (folderProblem is null) await UseFolderAsync(project.Id, chosen);
+            if (folderProblem is null) await UseFolderAsync(project, chosen, folderBefore);
             else ShowPageProblem(project.Id, folderProblem);
         };
         return select;
+    }
+
+    private async Task AllowFolderSettingsAsync(Project project, string folder, string settings)
+    {
+        _database.SetSetting(FolderSettingsAllowedSetting(folder), settings);
+        await RecheckIfStillOpenAsync(project.Id);
     }
 
     private async Task RepairRemoteAsync(Project project, string folder)
@@ -984,12 +1011,21 @@ public partial class MainWindow
     }
 
     // Saved even if they've left the page, because the clone or the choice was real.
-    private async Task UseFolderAsync(string projectId, string folder)
+    private async Task UseFolderAsync(Project chosenFor, string folder, string? folderBefore)
     {
+        var projectId = chosenFor.Id;
         if (FindProject(projectId) is not { } project) return;
         if (await _database.ClaimFolderAsync(folder, project) is { } other)
         {
             ShowPageProblem(projectId, $"{other.Name} already uses {folder}. A folder can only be one project.");
+            return;
+        }
+
+        // Settings stay open during slow work, and what was chosen there is more recent.
+        if (_database.GetProjectFolder(projectId) != folderBefore || !GitTools.SameRepo(project.RepoUrl, chosenFor.RepoUrl))
+        {
+            _database.ReleaseFolder(folder);
+            await RecheckThenShowAsync(projectId, $"{folder} wasn't linked, because this project's folder or repo changed while that was being checked.");
             return;
         }
 

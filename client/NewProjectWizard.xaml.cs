@@ -32,6 +32,7 @@ public partial class NewProjectWizard : UserControl
     private string _autoFilledRepo = "";
     private bool _working;
     private string? _replacingUrl;
+    private bool _offeringFolderSettings;
 
     public NewProjectWizard()
     {
@@ -44,6 +45,11 @@ public partial class NewProjectWizard : UserControl
     public Func<string, string, Task<string?>> ClaimFolder { get; set; } = (_, _) => Task.FromResult<string?>(null);
 
     public Action<string> ReleaseFolder { get; set; } = _ => { };
+
+    /// <summary>Whether the person has already allowed this folder's own Git settings, as they are now.</summary>
+    public Func<string, string, bool> FolderSettingsAllowed { get; set; } = (_, _) => false;
+
+    public Action<string, string> AllowFolderSettings { get; set; } = (_, _) => { };
 
     public event Action? Closed;
 
@@ -142,6 +148,7 @@ public partial class NewProjectWizard : UserControl
     private void ShowLocationStep()
     {
         _replacingUrl = null;
+        _offeringFolderSettings = false;
         var folder = Field(_folder);
         folder.Width = 300;
         var repo = Field(_repoUrl);
@@ -178,6 +185,7 @@ public partial class NewProjectWizard : UserControl
         void ForgetOffer()
         {
             _replacingUrl = null;
+            _offeringFolderSettings = false;
             create.Content = "Create project";
         }
         folder.TextChanged += (_, _) => ForgetOffer();
@@ -253,7 +261,7 @@ public partial class NewProjectWizard : UserControl
             {
                 if (claimed) ReleaseFolder(path);
                 ShowProblem(problem, failure);
-                if (_replacingUrl is not null) create.Content = "Create a new repo";
+                create.Content = _replacingUrl is not null ? "Create a new repo" : _offeringFolderSettings ? "Use its Git settings" : "Create project";
                 return;
             }
 
@@ -314,11 +322,29 @@ public partial class NewProjectWizard : UserControl
             return ("", false, "That folder is connected to a different repo than that URL.");
         }
 
-        var check = await GitTools.CheckRepoAccessAsync(url, state.Origin is not null ? project.Folder : null);
+        // The same check as selecting a folder for an existing project, such as where it pushes to.
+        if (state.Origin is not null && await GitTools.FolderProblemAsync(project.Folder, url) is { } folderProblem)
+        {
+            return ("", false, folderProblem);
+        }
+
+        // A folder's own Git settings can run programs, so they're only used once they've been seen.
+        var runnable = state.Origin is not null ? await GitTools.FolderRunnableSettingsAsync(project.Folder) : "";
+        if (_offeringFolderSettings)
+        {
+            AllowFolderSettings(project.Folder, runnable);
+            _offeringFolderSettings = false;
+        }
+        var useFolderSettings = state.Origin is not null && (runnable.Length == 0 || FolderSettingsAllowed(project.Folder, runnable));
+
+        var check = await GitTools.CheckRepoAccessAsync(url, state.Origin is not null ? project.Folder : null, useFolderSettings);
         switch (check.Access)
         {
             case RepoAccess.Allowed or RepoAccess.Offline:
                 break;
+            case RepoAccess.GitCantReach when !useFolderSettings && runnable.Length > 0:
+                _offeringFolderSettings = true;
+                return ("", false, $"Git can't reach this repo without this folder's own Git settings, which can run programs:\n{runnable}\nOnly use them if you trust where this folder came from.");
             case RepoAccess.SignedOut:
                 return ("", false, "This PC isn't signed in to GitHub. Run gh auth login in a terminal, then try again.");
             case RepoAccess.OtherAccount:

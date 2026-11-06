@@ -90,13 +90,26 @@ public partial class ProjectSettingsModal : UserControl
         var repo = Field(project.RepoUrl);
         repo.Width = 300;
         var folder = Field(_database.GetProjectFolder(project.Id) ?? "");
-        folder.Width = 230;
+        folder.Width = 140;
         folder.IsReadOnly = true;
         folder.ToolTip = folder.Text.Length > 0 ? folder.Text : null;
         SaveOnLeave(repo, project.RepoUrl, value => SaveRepo(projectId, value));
 
         var browse = ActionButton("Browse");
         browse.Click += async (_, _) => await ChooseFolderAsync(projectId, folder);
+
+        // Only forgets where it is on this PC. The folder itself isn't touched.
+        var disconnect = ActionButton("Disconnect");
+        disconnect.Visibility = folder.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        folder.TextChanged += (_, _) => disconnect.Visibility = folder.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        disconnect.Click += (_, _) => QueueWork(() =>
+        {
+            _database.SetProjectFolder(projectId, "");
+            folder.Text = "";
+            folder.ToolTip = null;
+            Changed?.Invoke();
+            return Task.CompletedTask;
+        });
 
         // The version for the new engine is read from the project on closing.
         var engine = Choice(ProjectChoices.Engines, project.Engine, value =>
@@ -112,7 +125,7 @@ public partial class ProjectSettingsModal : UserControl
                     Row("Engine", null, engine),
                     Row("Game type", null, Choice(ProjectChoices.GameTypes, project.GameType, value => QueueUpdate(projectId, current => current with { GameType = value }))),
                     Row("Repo URL", null, repo),
-                    Row("Folder on this PC", "Doesn't sync, because it's different on each PC.", folder, browse)),
+                    Row("Folder on this PC", "Doesn't sync, because it's different on each PC.", folder, browse, disconnect)),
                 Section("Images"),
                 Card(
                     ImageRow(projectId, "Thumbnail", "Shown on the project list.", ProjectImageKind.Thumbnail, 44, 66),

@@ -15,6 +15,19 @@ internal static class Dialogs
         return dialog.ShowDialog() == true ? dialog.FolderName : null;
     }
 
+    /// <summary>For something the person has to know, when there's no page left to show it on.</summary>
+    public static void Notify(string message)
+    {
+#if DEBUG
+        if (Headless.Active)
+        {
+            Headless.Say(message);
+            return;
+        }
+#endif
+        System.Windows.MessageBox.Show(message, "Agent Orange", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+    }
+
     public static string? PickFile(string title, string filter)
     {
 #if DEBUG

@@ -108,9 +108,10 @@ public static partial class GitTools
     /// Whether this PC can work on a repo. GitHub answers "not found" both for a repo
     /// that's gone and for a private one you can't see, so a repo outside your own
     /// accounts can only be reported as one or the other. The URL says which repo this is,
-    /// but not how this PC gets to it, so a folder that's connected to it is what gets tried.
+    /// but not how this PC gets to it, so a folder that's connected to it is what gets tried,
+    /// if its own Git settings are allowed to run. See FolderRunnableSettingsAsync.
     /// </summary>
-    public static async Task<RepoCheck> CheckRepoAccessAsync(string url, string? folder = null)
+    public static async Task<RepoCheck> CheckRepoAccessAsync(string url, string? folder = null, bool useFolderSettings = false)
     {
         // Synced URLs come from other PCs, so they're checked before anything runs them.
         if (RepoUrlProblem(url) is not null) return new RepoCheck(RepoAccess.BadUrl);
@@ -121,7 +122,7 @@ public static partial class GitTools
         if (view is null) return new RepoCheck(RepoAccess.NoGitHubCli);
 
         if (view.ExitCode == 0 && ArchivedRepo().IsMatch(view.Output)) return new RepoCheck(RepoAccess.Archived);
-        if (view.ExitCode == 0 && WritePermission().IsMatch(view.Output)) return await CheckGitCanReachAsync(url, folder);
+        if (view.ExitCode == 0 && WritePermission().IsMatch(view.Output)) return await CheckGitCanReachAsync(url, folder, useFolderSettings);
 
         var readOnly = view.ExitCode == 0;
         var notFound = SaysRepoMissing(view.Errors);
@@ -149,8 +150,9 @@ public static partial class GitTools
             if (!answered) inconclusive = errors;
         }
 
-        if (inconclusive is not null) return new RepoCheck(LooksLikeNetworkFailure(inconclusive) ? RepoAccess.Offline : RepoAccess.CheckFailed);
+        // GitHub clearly said read-only, and no other account has shown it can do better.
         if (readOnly) return new RepoCheck(RepoAccess.ReadOnly, await ActiveAccountAsync());
+        if (inconclusive is not null) return new RepoCheck(LooksLikeNetworkFailure(inconclusive) ? RepoAccess.Offline : RepoAccess.CheckFailed);
 
         var ownerIsYours = accounts.Contains(parts[1], StringComparer.OrdinalIgnoreCase);
         return new RepoCheck(ownerIsYours ? RepoAccess.NotFound : RepoAccess.NotFoundOrNoAccess, await ActiveAccountAsync());
@@ -227,7 +229,28 @@ public static partial class GitTools
         if (state.Problem is not null) return state.Problem;
         if (state.IsInsideAnotherRepo) return "That folder is inside a repo. Choose the repo's top folder.";
         if (state.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
-        return SameRepo(state.OriginToCompare!, repoUrl) ? null : $"That folder uses a different repo: {state.Origin}";
+        if (!SameRepo(state.OriginToCompare!, repoUrl)) return $"That folder uses a different repo: {state.Origin}";
+
+        // Its work could otherwise go somewhere else entirely, without anyone seeing why.
+        var push = await RunAsync("git", folder, "remote", "get-url", "--push", "origin");
+        if (push is not { ExitCode: 0 }) return null;
+        var pushRemote = WithoutCredentials(push.Output.Trim());
+        if (pushRemote == state.Origin) return null;
+
+        var (gitHubForm, _) = await GitHubFormAsync(pushRemote, folder);
+        return SameRepo(gitHubForm ?? pushRemote, repoUrl) ? null : $"That folder pushes to a different repo: {pushRemote}";
+    }
+
+    /// <summary>
+    /// Settings in a folder that make Git run a program when it reaches a remote. A folder can
+    /// come from anyone, as a zip or on a shared drive, so these are only used once the person
+    /// has seen them. Empty if there are none.
+    /// </summary>
+    public static async Task<string> FolderRunnableSettingsAsync(string folder)
+    {
+        if (!await FolderExistsAsync(folder)) return "";
+        var found = await RunAsync("git", folder, "config", "--local", "--includes", "--get-regexp", @"^(core\.(sshcommand|askpass|gitproxy)|credential\..*|remote\..*\.(uploadpack|receivepack|vcs))$");
+        return found is { ExitCode: 0 } ? found.Output.Trim().Replace("\r\n", "\n") : "";
     }
 
     /// <summary>A disconnected network drive can take a long time to answer, so this stays off the UI thread.</summary>
@@ -407,8 +430,7 @@ public static partial class GitTools
 
         if (state.Origin is null) return await ConnectFolderAsync(folder, form);
 
-        var changed = await RunAsync("git", folder, "remote", "set-url", "origin", form);
-        return changed is { ExitCode: 0 }
+        return await MoveOriginAsync(folder, form)
             ? new GitResult(true, form)
             : new GitResult(false, "Couldn't change that folder's connection.");
     }
@@ -676,18 +698,24 @@ public static partial class GitTools
     // A GitHub login isn't enough, because Git may use a different key or credential on this
     // PC. If Git gets no answer at all, such as port 22 being blocked, that's the same as being
     // offline. Only being turned away means this PC's setup is what's wrong.
-    private static async Task<RepoCheck> CheckGitCanReachAsync(string url, string? folder)
+    private static async Task<RepoCheck> CheckGitCanReachAsync(string url, string? folder, bool useFolderSettings)
     {
         if (await Task.Run(() => FindOnPath("git")) is null) return new RepoCheck(RepoAccess.NoGit);
 
         // A connected folder is how this PC really works with the repo. It runs from inside
         // the folder because the folder's own Git settings can say which key to use.
         var state = folder is not null && await FolderExistsAsync(folder) ? await InspectFolderAsync(folder) : null;
-        if (state?.OriginToCompare is { } origin && SameRepo(origin, url))
+        if (useFolderSettings && state?.OriginToCompare is { } origin && SameRepo(origin, url))
         {
             // By name, because the address on show has had any credentials taken out of it.
             var viaFolder = await LsRemoteAsync("origin", folder!);
-            return new RepoCheck(viaFolder is { ExitCode: 0 } ? RepoAccess.Allowed : GitFailure(viaFolder));
+            if (viaFolder is { ExitCode: 0 }) return new RepoCheck(RepoAccess.Allowed);
+
+            // No answer this way, such as a blocked SSH port, isn't being offline if there's
+            // another way in. Saying so is what offers to repair the folder.
+            var failure = GitFailure(viaFolder);
+            if (failure == RepoAccess.Offline && await ReachableFormAsync(url) is not null) failure = RepoAccess.GitCantReach;
+            return new RepoCheck(failure);
         }
 
         var noAnswer = false;
@@ -785,8 +813,7 @@ public static partial class GitTools
     private static Task<CommandResult?> RunAsync(string program, string folder, params string[] arguments) =>
         RunAsync(program, folder, null, arguments);
 
-    // Checks have a time limit and can't pop up a login. A clone can take as long as it
-    // needs, and stops only when cancelled.
+    // Checks have a time limit. A clone can take as long as it needs, and stops only when cancelled.
     private static async Task<CommandResult?> RunAsync(string program, string folder, string? gitHubToken, string[] arguments, CancellationToken cancel = default, Dictionary<string, string>? extraSettings = null)
     {
 #if DEBUG
@@ -804,6 +831,13 @@ public static partial class GitTools
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
+        // Projects need the GitHub CLI anyway, so its login backs up whatever Git has of its own.
+        // Helpers given here come after the person's own, so theirs still goes first.
+        if (program == "git" && await Task.Run(() => FindOnPath("gh")) is { } gitHubCli)
+        {
+            info.ArgumentList.Add("-c");
+            info.ArgumentList.Add($"credential.https://github.com.helper=!'{gitHubCli.Replace('\\', '/')}' auth git-credential");
+        }
         foreach (var argument in arguments) info.ArgumentList.Add(argument);
         info.Environment["PATH"] = CurrentPath(); // gh runs git itself.
         info.Environment["LC_ALL"] = "C.UTF-8"; // Some answers are read by this app, in English.
@@ -816,8 +850,9 @@ public static partial class GitTools
             foreach (var (key, value) in extraSettings) info.Environment[key] = value;
         }
 
+        // Never a login window: the person has a GitHub CLI login by the time any of this runs.
         var isClone = arguments.Length > 0 && arguments[0] == "clone";
-        if (!isClone) info.Environment["GCM_INTERACTIVE"] = "never";
+        info.Environment["GCM_INTERACTIVE"] = "never";
 
         var isCreate = arguments is ["repo", "create", ..];
         using var timeout = new CancellationTokenSource(isClone ? Timeout.InfiniteTimeSpan : isCreate ? CreateTimeout : CommandTimeout);
