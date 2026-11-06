@@ -47,7 +47,10 @@ internal static partial class Headless
     public static void Configure(string[] args)
     {
         var at = Array.IndexOf(args, "--headless");
-        if (at < 0 || at + 3 >= args.Length) return;
+        if (at < 0) return;
+
+        // Carrying on would open the normal window, on the real dev data.
+        if (at + 3 >= args.Length) Environment.Exit(2);
 
         DataFolder = Path.GetFullPath(args[at + 1]);
         _script = Path.GetFullPath(args[at + 2]);

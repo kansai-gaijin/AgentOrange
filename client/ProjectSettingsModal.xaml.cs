@@ -104,6 +104,8 @@ public partial class ProjectSettingsModal : UserControl
         folder.TextChanged += (_, _) => disconnect.Visibility = folder.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         disconnect.Click += (_, _) => QueueWork(() =>
         {
+            // A folder connected again later is looked at again, including its own Git settings.
+            if (folder.Text.Length > 0) _database.SetSetting(MainWindow.FolderSettingsAllowedSetting(folder.Text), "");
             _database.SetProjectFolder(projectId, "");
             folder.Text = "";
             folder.ToolTip = null;
@@ -286,9 +288,17 @@ public partial class ProjectSettingsModal : UserControl
                 return;
             }
 
-            if (Find(projectId) is not null) _database.SetProjectFolder(projectId, chosen);
+            // Sync can have moved the project to another repo while this folder was being checked.
+            var latest = Find(projectId);
+            if (latest is null || latest.RepoUrl != current.RepoUrl)
+            {
+                _database.ReleaseFolder(chosen);
+                if (latest is not null && session == _session) ReportProblem("This project's repo changed while that folder was being checked, so it wasn't linked.");
+                return;
+            }
+
+            _database.SetProjectFolder(projectId, chosen);
             _database.ReleaseFolder(chosen);
-            if (Find(projectId) is null) return;
             Changed?.Invoke();
             if (session != _session) return;
             ClearGeneralProblem();

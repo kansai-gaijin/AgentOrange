@@ -231,27 +231,49 @@ public static partial class GitTools
         if (state.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
         if (!SameRepo(state.OriginToCompare!, repoUrl)) return $"That folder uses a different repo: {state.Origin}";
 
-        // Its work could otherwise go somewhere else entirely, without anyone seeing why.
-        var push = await RunAsync("git", folder, "remote", "get-url", "--push", "origin");
+        // Its work could otherwise go somewhere else entirely, without anyone seeing why. Git
+        // pushes to every address listed, so all of them count.
+        var push = await RunAsync("git", folder, "remote", "get-url", "--push", "--all", "origin");
         if (push is not { ExitCode: 0 }) return null;
-        var pushRemote = WithoutCredentials(push.Output.Trim());
-        if (pushRemote == state.Origin) return null;
+        foreach (var line in push.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var pushRemote = WithoutCredentials(line);
+            if (pushRemote == state.Origin) continue;
 
-        var (gitHubForm, _) = await GitHubFormAsync(pushRemote, folder);
-        return SameRepo(gitHubForm ?? pushRemote, repoUrl) ? null : $"That folder pushes to a different repo: {pushRemote}";
+            var (gitHubForm, _) = await GitHubFormAsync(pushRemote, folder);
+            if (!SameRepo(gitHubForm ?? pushRemote, repoUrl)) return $"That folder pushes to a different repo: {pushRemote}";
+        }
+        return null;
     }
 
     /// <summary>
-    /// Settings in a folder that make Git run a program when it reaches a remote. A folder can
-    /// come from anyone, as a zip or on a shared drive, so these are only used once the person
-    /// has seen them. Empty if there are none.
+    /// Settings in a folder that make Git run a program or send a login somewhere else when it
+    /// reaches a remote. A folder can come from anyone, as a zip or on a shared drive, so these
+    /// are only used once the person has seen them. Empty if there are none, and null if that
+    /// couldn't be found out, which has to be treated as not being safe to use them.
     /// </summary>
-    public static async Task<string> FolderRunnableSettingsAsync(string folder)
+    public static async Task<string?> FolderRunnableSettingsAsync(string folder)
     {
         if (!await FolderExistsAsync(folder)) return "";
-        var found = await RunAsync("git", folder, "config", "--local", "--includes", "--get-regexp", @"^(core\.(sshcommand|askpass|gitproxy)|credential\..*|remote\..*\.(uploadpack|receivepack|vcs))$");
-        return found is { ExitCode: 0 } ? found.Output.Trim().Replace("\r\n", "\n") : "";
+
+        // Asked for by scope, because a folder's settings can also be in a file only used per
+        // worktree, or in one it includes. NUL-separated, so a value can't hide on a second line.
+        var found = await RunAsync("git", folder, "config", "--show-scope", "--includes", "-z", "--get-regexp", FolderSettingsThatMatter);
+        if (found is null) return null;
+        if (found.ExitCode == 1) return "";
+        if (found.ExitCode != 0) return null;
+
+        var parts = found.Output.Split('\0');
+        var settings = new List<string>();
+        for (var i = 0; i + 1 < parts.Length; i += 2)
+        {
+            if (parts[i] is "local" or "worktree") settings.Add(parts[i + 1].Replace('\n', ' ').Trim());
+        }
+        return string.Join('\n', settings);
     }
+
+    private const string FolderSettingsThatMatter =
+        @"^(core\.(sshcommand|askpass|gitproxy)|credential\..*|http\..*|url\..*|remote\..*\.(uploadpack|receivepack|vcs|proxy))$";
 
     /// <summary>A disconnected network drive can take a long time to answer, so this stays off the UI thread.</summary>
     public static Task<bool> FolderExistsAsync(string folder) => Task.Run(() => Directory.Exists(folder));
@@ -403,9 +425,19 @@ public static partial class GitTools
     {
         if (await RunAsync("git", folder, "remote", "set-url", "origin", remote) is not { ExitCode: 0 }) return false;
 
-        var pushUrl = await RunAsync("git", folder, "config", "--get", "remote.origin.pushurl");
+        var pushUrl = await RunAsync("git", folder, "config", "--get-all", "remote.origin.pushurl");
         if (pushUrl is not { ExitCode: 0 }) return true;
-        return await RunAsync("git", folder, "remote", "set-url", "--push", "origin", remote) is { ExitCode: 0 };
+        return await RunAsync("git", folder, "config", "--replace-all", "remote.origin.pushurl", remote) is { ExitCode: 0 };
+    }
+
+    private static bool SameForm(string a, string b)
+    {
+        static string Plain(string url)
+        {
+            var text = url.Trim().TrimEnd('/');
+            return text.EndsWith(".git", StringComparison.OrdinalIgnoreCase) ? text[..^4] : text;
+        }
+        return string.Equals(Plain(a), Plain(b), StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Changes a folder's remote to whichever of HTTPS and SSH works from this PC.</summary>
@@ -429,6 +461,12 @@ public static partial class GitTools
         }
 
         if (state.Origin is null) return await ConnectFolderAsync(folder, form);
+
+        // Repair can only change the address. If that's already right, it can't help.
+        if (state.Origin is not null && SameForm(state.Origin, form))
+        {
+            return new GitResult(false, "That folder already connects this way, and this way works from outside the folder, so its own Git settings are the likely problem. Nothing was changed.");
+        }
 
         return await MoveOriginAsync(folder, form)
             ? new GitResult(true, form)
@@ -502,6 +540,9 @@ public static partial class GitTools
             : await RunAsync("gh", folder, "repo", "create", repoName, "--private");
         if (created is not { ExitCode: 0 })
         {
+            // A folder that wasn't a repo before this shouldn't become one for a repo that doesn't exist.
+            if (!state.InsideRepo && created?.Errors != TimedOut) await TryDeleteOwnedFolderAsync(Path.Combine(folder, ".git"));
+
             if (created?.Errors == TimedOut) return new GitResult(false, $"GitHub took too long to answer, so {repoName} may have been created anyway. Check GitHub before trying again.");
             if (created?.Errors.Contains("already exists", StringComparison.OrdinalIgnoreCase) == true)
             {
@@ -841,7 +882,7 @@ public static partial class GitTools
         foreach (var argument in arguments) info.ArgumentList.Add(argument);
         info.Environment["PATH"] = CurrentPath(); // gh runs git itself.
         info.Environment["LC_ALL"] = "C.UTF-8"; // Some answers are read by this app, in English.
-        info.Environment.Remove("GH_HOST"); // Repos are on github.com, whatever else this PC is set up for.
+        info.Environment["GH_HOST"] = "github.com"; // Repos are on github.com, whatever else this PC is set up for.
         info.Environment["GIT_TERMINAL_PROMPT"] = "0";
         info.Environment["GIT_ALLOW_PROTOCOL"] = "https:ssh";
         if (gitHubToken is not null) info.Environment["GH_TOKEN"] = gitHubToken;

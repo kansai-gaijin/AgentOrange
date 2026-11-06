@@ -35,6 +35,9 @@ public partial class MainWindow : Window
 
         // Kept outside the install folder, which updates replace.
         var folders = new AppFolders(_updates.IsInstalled);
+#if DEBUG
+        if (Headless.Active && !folders.DatabaseFolderExists) folders.UseDefaultDatabaseFolder();
+#endif
         if (!folders.DatabaseFolderExists)
         {
             var answer = MessageBox.Show(

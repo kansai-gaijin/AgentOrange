@@ -33,6 +33,7 @@ public partial class NewProjectWizard : UserControl
     private bool _working;
     private string? _replacingUrl;
     private bool _offeringFolderSettings;
+    private string _shownFolderSettings = "";
 
     public NewProjectWizard()
     {
@@ -330,21 +331,24 @@ public partial class NewProjectWizard : UserControl
 
         // A folder's own Git settings can run programs, so they're only used once they've been seen.
         var runnable = state.Origin is not null ? await GitTools.FolderRunnableSettingsAsync(project.Folder) : "";
+
+        // Only what was actually shown gets approved. If it has changed since, it's shown again.
         if (_offeringFolderSettings)
         {
-            AllowFolderSettings(project.Folder, runnable);
+            if (runnable == _shownFolderSettings) AllowFolderSettings(project.Folder, _shownFolderSettings);
             _offeringFolderSettings = false;
         }
-        var useFolderSettings = state.Origin is not null && (runnable.Length == 0 || FolderSettingsAllowed(project.Folder, runnable));
+        var useFolderSettings = state.Origin is not null && runnable is not null && (runnable.Length == 0 || FolderSettingsAllowed(project.Folder, runnable));
 
         var check = await GitTools.CheckRepoAccessAsync(url, state.Origin is not null ? project.Folder : null, useFolderSettings);
         switch (check.Access)
         {
             case RepoAccess.Allowed or RepoAccess.Offline:
                 break;
-            case RepoAccess.GitCantReach when !useFolderSettings && runnable.Length > 0:
+            case RepoAccess.GitCantReach when !useFolderSettings && runnable is { Length: > 0 }:
                 _offeringFolderSettings = true;
-                return ("", false, $"Git can't reach this repo without this folder's own Git settings, which can run programs:\n{runnable}\nOnly use them if you trust where this folder came from.");
+                _shownFolderSettings = runnable;
+                return ("", false, $"Git can't reach this repo without this folder's own Git settings, which can run programs or send your login somewhere else:\n{runnable}\nOnly use them if you trust where this folder came from.");
             case RepoAccess.SignedOut:
                 return ("", false, "This PC isn't signed in to GitHub. Run gh auth login in a terminal, then try again.");
             case RepoAccess.OtherAccount:

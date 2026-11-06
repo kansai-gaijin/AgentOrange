@@ -310,7 +310,7 @@ public partial class MainWindow
 
         var folder = _database.GetProjectFolder(project.Id);
         var runnable = folder is null ? "" : await GitTools.FolderRunnableSettingsAsync(folder);
-        var useFolderSettings = runnable.Length == 0 || (folder is not null && _database.GetSetting(FolderSettingsAllowedSetting(folder)) == runnable);
+        var useFolderSettings = runnable is not null && (runnable.Length == 0 || (folder is not null && _database.GetSetting(FolderSettingsAllowedSetting(folder)) == runnable));
         var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl, folder, useFolderSettings);
 
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
@@ -336,7 +336,7 @@ public partial class MainWindow
         else if (check.IsDenied) _database.SetSetting(VerifiedSetting(project.Id), "");
 
         _projectCheck = check;
-        _settingsToAllow = useFolderSettings ? null : runnable;
+        _settingsToAllow = useFolderSettings || string.IsNullOrEmpty(runnable) ? null : runnable;
         _folderExists = folderExists;
         _folderProblem = folderProblem;
         RenderProject(latest);
@@ -377,7 +377,7 @@ public partial class MainWindow
     private static string VerifiedSetting(string projectId) => $"project_verified:{projectId}";
 
     // Only on this PC, and for the settings as they were when they were seen.
-    private static string FolderSettingsAllowedSetting(string folder) => $"folder_settings_allowed:{folder}";
+    internal static string FolderSettingsAllowedSetting(string folder) => $"folder_settings_allowed:{folder}";
 
     private void RenderProject(Project project)
     {
@@ -589,7 +589,7 @@ public partial class MainWindow
             {
                 var allow = TwoClickAction("Allow", () => AllowFolderSettingsAsync(project, linked, settings));
                 allow.IsEnabled = !busy;
-                rows.Add(Row("Use this folder's own Git settings", $"They can run programs, so only allow them if you trust where this folder came from: {settings}", allow));
+                rows.Add(Row("Use this folder's own Git settings", $"They can run programs or send your login somewhere else, so only allow them if you trust where this folder came from: {settings}", allow));
             }
 
             if (linked is not null && _folderExists && _folderProblem is not null)
@@ -1021,8 +1021,13 @@ public partial class MainWindow
             return;
         }
 
-        // Settings stay open during slow work, and what was chosen there is more recent.
-        if (_database.GetProjectFolder(projectId) != folderBefore || !GitTools.SameRepo(project.RepoUrl, chosenFor.RepoUrl))
+        // Settings stay open during slow work, and sync keeps running, so this has to look again now.
+        if (FindProject(projectId) is not { } latest)
+        {
+            _database.ReleaseFolder(folder);
+            return;
+        }
+        if (_database.GetProjectFolder(projectId) != folderBefore || !GitTools.SameRepo(latest.RepoUrl, chosenFor.RepoUrl))
         {
             _database.ReleaseFolder(folder);
             await RecheckThenShowAsync(projectId, $"{folder} wasn't linked, because this project's folder or repo changed while that was being checked.");

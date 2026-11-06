@@ -69,6 +69,15 @@ public sealed class AppFolders
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
+            // A partial copy would stop trying again, by looking like a database already there.
+            try
+            {
+                File.Delete(newPath);
+            }
+            catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException)
+            {
+                AppLog.Write($"Couldn't remove a partial database copy: {cleanup.Message}");
+            }
             return "Couldn't move the database to that folder.";
         }
 
