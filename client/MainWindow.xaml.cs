@@ -102,6 +102,7 @@ public partial class MainWindow : Window
 
         // Folders differ between PCs, so this stays here and only the rest syncs.
         _database.SetProjectFolder(id, project.Folder);
+        if (project.RepoConfirmed) _database.SetSetting(VerifiedSetting(id), GitTools.RepoKey(project.RepoUrl));
 
         RefreshProjects();
         _ = _sync.SyncNowAsync();
@@ -176,7 +177,11 @@ public partial class MainWindow : Window
 
     private void ShowUpdateRequired(UpdateInfo update)
     {
+        // The keyboard can reach what's under the overlay, and that includes an open modal's Delete.
         MainContent.IsEnabled = false;
+        ProjectWizard.IsEnabled = false;
+        ProjectSettings.IsEnabled = false;
+        Settings.IsEnabled = false;
         UpdateOverlay.Visibility = Visibility.Visible;
         UpdateTitle.Text = $"Update to v{update.TargetFullRelease.Version}";
         UpdateMessage.Text = "This update is required to keep using Agent Orange.";

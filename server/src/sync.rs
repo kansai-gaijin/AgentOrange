@@ -108,19 +108,32 @@ pub async fn sync(
             .map_err(internal_error)?;
     }
 
+    // Images make records large, so rows past the limit are left out here instead of
+    // being loaded and thrown away. pg_column_size reads a value's stored size without
+    // fetching the value. It's the compressed size, so the loop below has the final say.
     let rows = state
         .db
         .query(
-            "SELECT collection, id, data, deleted, seq FROM sync_records
-             WHERE seq > $1 ORDER BY seq LIMIT $2",
-            &[&request.cursor, &PAGE_SIZE],
+            "SELECT collection, id, data, deleted, seq, page_rows FROM (
+                SELECT collection, id, data, deleted, seq,
+                       COUNT(*) OVER () AS page_rows,
+                       SUM(pg_column_size(data)) OVER (ORDER BY seq) - pg_column_size(data) AS bytes_before
+                FROM (
+                    SELECT collection, id, data, deleted, seq FROM sync_records
+                    WHERE seq > $1 ORDER BY seq LIMIT $2
+                ) AS page
+             ) AS sized
+             WHERE bytes_before < $3 ORDER BY seq",
+            &[&request.cursor, &PAGE_SIZE, &(MAX_RESPONSE_BYTES as i64)],
         )
         .await
         .map_err(internal_error)?;
 
-    // Images make records large, and a slow PC has to finish each page within its
-    // time limit or it never gets past it. At least one row always goes out.
-    let mut has_more = rows.len() as i64 == PAGE_SIZE;
+    let page_rows: i64 = rows.first().map_or(0, |row| row.get(5));
+
+    // A slow PC has to finish each page within its time limit or it never gets past
+    // it. At least one row always goes out.
+    let mut has_more = page_rows == PAGE_SIZE || (rows.len() as i64) < page_rows;
     let mut cursor = request.cursor;
     let mut bytes = 0;
     let mut changes = Vec::new();

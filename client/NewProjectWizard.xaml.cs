@@ -9,7 +9,8 @@ using static AgentOrange.Ui;
 
 namespace AgentOrange;
 
-public sealed record NewProject(string Name, string Engine, string EngineVersion, string GameType, string Folder, string RepoUrl);
+/// <summary>RepoConfirmed means GitHub just said this PC can work on the repo, rather than it not being asked.</summary>
+public sealed record NewProject(string Name, string Engine, string EngineVersion, string GameType, string Folder, string RepoUrl, bool RepoConfirmed = false);
 
 public static class ProjectChoices
 {
@@ -220,6 +221,11 @@ public partial class NewProjectWizard : UserControl
                 ShowProblem(problem, "Choose the project folder.");
                 return;
             }
+            if (!Path.IsPathFullyQualified(path))
+            {
+                ShowProblem(problem, "Enter the folder's full path, or use Browse.");
+                return;
+            }
 
             // What was entered is fixed here, and the wizard can't close until this finishes.
             var typedUrl = repo.Text.Trim();
@@ -228,11 +234,12 @@ public partial class NewProjectWizard : UserControl
             SetWorking(true, "Checking…");
             string? failure;
             string url;
+            bool confirmed;
             try
             {
-                (url, failure) = await GitTools.FolderExistsAsync(path)
+                (url, confirmed, failure) = await GitTools.FolderExistsAsync(path)
                     ? await ResolveRepoAsync(submission, status => progress.Text = status)
-                    : ("", "That folder doesn't exist.");
+                    : ("", false, "That folder doesn't exist.");
             }
             finally
             {
@@ -245,7 +252,7 @@ public partial class NewProjectWizard : UserControl
                 return;
             }
 
-            Created?.Invoke(submission with { RepoUrl = url });
+            Created?.Invoke(submission with { RepoUrl = url, RepoConfirmed = confirmed });
             Close();
         };
 
@@ -276,43 +283,52 @@ public partial class NewProjectWizard : UserControl
     /// Returns the URL, or a problem to show. Being offline doesn't block this, because
     /// nothing says the repo is unusable, and opening the project checks again.
     /// </summary>
-    private static async Task<(string Url, string? Failure)> ResolveRepoAsync(NewProject project, Action<string> status)
+    private static async Task<(string Url, bool Confirmed, string? Failure)> ResolveRepoAsync(NewProject project, Action<string> status)
     {
         var state = await GitTools.InspectFolderAsync(project.Folder);
-        if (state is null) return ("", "Git wasn't found on this PC.");
-        if (state.Problem is not null) return ("", state.Problem);
-        if (state.IsInsideAnotherRepo) return ("", "That folder is inside a repo. Choose the repo's top folder.");
+        if (state is null) return ("", false, "Git wasn't found on this PC.");
+        if (state.Problem is not null) return ("", false, state.Problem);
+        if (state.IsInsideAnotherRepo) return ("", false, "That folder is inside a repo. Choose the repo's top folder.");
 
         var url = project.RepoUrl;
-        if (url.Length == 0 && state.Origin is null)
+        if (url.Length == 0)
         {
+            // Blank promises a new repo, which this folder can't have without losing its remote.
+            if (state.Origin is not null) return ("", false, $"That folder already uses {state.Origin}. Enter that URL to use it, or choose a folder with no repo to create a new one.");
+
             status("Creating a private repo on GitHub…");
             var created = await GitTools.CreatePrivateRepoAsync(project.Name, project.Folder);
-            return created.Worked ? (created.Value, null) : ("", created.Value);
+            return created.Worked ? (created.Value, true, null) : ("", false, created.Value);
         }
 
-        if (url.Length == 0) url = state.Origin!;
-        if (GitTools.RepoUrlProblem(url) is { } urlProblem) return ("", urlProblem);
+        if (GitTools.RepoUrlProblem(url) is { } urlProblem) return ("", false, urlProblem);
         if (state.Origin is not null && !GitTools.SameRepo(state.Origin, url))
         {
-            return ("", "That folder is connected to a different repo than that URL.");
+            return ("", false, "That folder is connected to a different repo than that URL.");
         }
 
         var check = await GitTools.CheckRepoAccessAsync(url);
-        if (check.Access is not (RepoAccess.Allowed or RepoAccess.Offline))
+        switch (check.Access)
         {
-            var (heading, description) = check.Describe();
-            return ("", $"{heading}. {description}");
+            case RepoAccess.Allowed or RepoAccess.Offline:
+                break;
+            case RepoAccess.SignedOut:
+                return ("", false, "This PC isn't signed in to GitHub. Run gh auth login in a terminal, then try again.");
+            case RepoAccess.OtherAccount:
+                return ("", false, $"Your active GitHub account can't work on this repo, but {check.Account} can. Run gh auth switch --user {check.Account} in a terminal, then try again.");
+            default:
+                var (heading, description) = check.Describe();
+                return ("", false, $"{heading}. {description}");
         }
 
         if (state.Origin is null)
         {
             status("Connecting the folder to the repo…");
             var connected = await GitTools.ConnectFolderAsync(project.Folder, url);
-            if (!connected.Worked) return ("", connected.Value);
+            if (!connected.Worked) return ("", false, connected.Value);
         }
 
-        return (url, null);
+        return (url, check.Access == RepoAccess.Allowed, null);
     }
 
     private void Close()

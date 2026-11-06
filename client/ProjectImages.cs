@@ -23,10 +23,21 @@ public static class ProjectImages
 
         try
         {
+            // Reading the size first means a huge picture is decoded small, not in full.
+            var fit = 1.0;
+            var decodeWidth = 0;
+            using (var file = File.OpenRead(path))
+            {
+                var frame = BitmapDecoder.Create(file, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None).Frames[0];
+                fit = Math.Max((double)width / frame.PixelWidth, (double)height / frame.PixelHeight);
+                if (fit < 1) decodeWidth = (int)Math.Ceiling(frame.PixelWidth * fit);
+            }
+
             var source = new BitmapImage();
             source.BeginInit();
             source.CacheOption = BitmapCacheOption.OnLoad;
             source.UriSource = new Uri(path);
+            source.DecodePixelWidth = decodeWidth;
             source.EndInit();
             source.Freeze();
 
@@ -49,7 +60,7 @@ public static class ProjectImages
             AppLog.Write("That image was too detailed to fit, even at low quality.");
             return null;
         }
-        catch (Exception error) when (error is NotSupportedException or FileFormatException or IOException or ArgumentException or UriFormatException or InvalidOperationException or UnauthorizedAccessException)
+        catch (Exception error) when (error is NotSupportedException or FileFormatException or IOException or ArgumentException or UriFormatException or InvalidOperationException or UnauthorizedAccessException or OutOfMemoryException or System.Runtime.InteropServices.ExternalException)
         {
             AppLog.Write($"Couldn't use that image: {error.Message}");
             return null;

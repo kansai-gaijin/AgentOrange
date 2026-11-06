@@ -36,6 +36,9 @@ public partial class MainWindow
     private string? _busyText;
     private CancellationTokenSource? _cloneCancel;
 
+    // Refreshes are frequent during a big sync, and most covers haven't changed.
+    private readonly Dictionary<string, (byte[] Bytes, ImageSource? Image)> _covers = [];
+
     private Button? _pressedCard;
     private Button? _draggedCard;
     private Point _pressPoint;
@@ -81,7 +84,7 @@ public partial class MainWindow
 
     private Button ProjectCard(Project project)
     {
-        var thumbnail = ProjectImages.ToImage(_database.GetProjectImage(project.Id, ProjectImageKind.Thumbnail), CoverWidth * 2);
+        var thumbnail = CoverFor(project.Id);
         var cover = new Border
         {
             Width = CoverWidth,
@@ -176,6 +179,21 @@ public partial class MainWindow
         };
 
         return card;
+    }
+
+    private ImageSource? CoverFor(string projectId)
+    {
+        var bytes = _database.GetProjectImage(projectId, ProjectImageKind.Thumbnail);
+        if (bytes is null)
+        {
+            _covers.Remove(projectId);
+            return null;
+        }
+        if (_covers.TryGetValue(projectId, out var cached) && cached.Bytes.AsSpan().SequenceEqual(bytes)) return cached.Image;
+
+        var image = ProjectImages.ToImage(bytes, CoverWidth * 2);
+        _covers[projectId] = (bytes, image);
+        return image;
     }
 
     // A disconnected network drive can take a long time to answer, so this stays off the UI thread.
@@ -457,7 +475,7 @@ public partial class MainWindow
         if (canReplace && _confirmingNewRepo)
         {
             var confirm = new Button { Style = (Style)FindResource("PrimaryButton"), Content = "Yes, create it", IsEnabled = !busy };
-            confirm.Click += async (_, _) => await CreateReplacementRepoAsync(project);
+            confirm.Click += async (_, _) => await CreateReplacementRepoAsync(project, check);
             var cancel = ActionButton("Cancel");
             cancel.IsEnabled = !busy;
             cancel.Click += (_, _) =>
@@ -557,17 +575,26 @@ public partial class MainWindow
         RenderProject(_openProject);
     }
 
-    private async Task CreateReplacementRepoAsync(Project project)
+    private async Task CreateReplacementRepoAsync(Project project, RepoCheck shownCheck)
     {
         // Busy from the first click, so a second one can't create a second repo.
         if (_busyProjectId is not null) return;
-        StartBusy(project, "Checking the project's folder…");
+        StartBusy(project, "Checking the repo again…");
 
-        // The linked folder only qualifies if it's still connected to the repo being replaced.
+        // The page may have been open a while. Access may have come back, or a different
+        // account be active, and what they agreed to named the account it would go under.
+        var latestCheck = await GitTools.CheckRepoAccessAsync(project.RepoUrl);
+        if (latestCheck != shownCheck)
+        {
+            EndBusy();
+            _confirmingNewRepo = false;
+            await RecheckIfStillOpenAsync(project.Id);
+            return;
+        }
+
+        // The linked folder only qualifies if it can really move to the new repo.
         var folder = _database.GetProjectFolder(project.Id);
-        var folderIsUsable = folder is not null
-            && await GitTools.FolderExistsAsync(folder)
-            && !await GitTools.FolderUsesOtherRepoAsync(folder, project.RepoUrl);
+        var folderIsUsable = folder is not null && await GitTools.FolderCanReplaceRepoAsync(folder, project.RepoUrl);
         EndBusy();
 
         if (!folderIsUsable)
@@ -658,16 +685,41 @@ public partial class MainWindow
 
         var (heading, description) = (linkedFolder, _folderProblem, _folderExists) switch
         {
-            (_, not null, _) => ("This project's folder doesn't match its repo", _folderProblem),
+            (_, not null, _) => ("This project's folder doesn't match its repo", $"It's at {linkedFolder}. {_folderProblem}"),
             (null, _, _) => ("This project isn't on this PC yet", "Get a copy from its repo, or point to one you already have."),
             _ => ("This project's folder is missing", $"It was at {linkedFolder}."),
         };
         body.Children.Add(Section(heading));
         body.Children.Add(new TextBlock { Text = description, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(16, -4, 0, 10), TextWrapping = TextWrapping.Wrap });
-        body.Children.Add(Card(
-            Row("Clone from repo", project.RepoUrl.Length > 0 ? project.RepoUrl : "This project has no repo.", clone),
-            Row("Select its folder", "It has to be connected to the same repo.", select)));
+
+        var cloneRow = Row("Clone from repo", project.RepoUrl.Length > 0 ? project.RepoUrl : "This project has no repo.", clone);
+        var selectRow = Row("Select its folder", "It has to be connected to the same repo.", select);
+        if (linkedFolder is not null && _folderExists && _folderProblem is not null)
+        {
+            // The project may have moved to a new repo on another PC, with this copy's work unpushed.
+            var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linkedFolder));
+            connect.IsEnabled = !busy;
+            body.Children.Add(Card(
+                Row("Keep using this folder", "If the project moved repos, this points the folder's remote at the new one. Its files don't change.", connect),
+                cloneRow,
+                selectRow));
+        }
+        else
+        {
+            body.Children.Add(Card(cloneRow, selectRow));
+        }
         AddBusyAndProblem(body, project);
+    }
+
+    private async Task PointFolderAtRepoAsync(Project project, string folder)
+    {
+        if (_busyProjectId is not null) return;
+        StartBusy(project, "Connecting the folder…");
+        var result = await GitTools.PointFolderAtRepoAsync(folder, project.RepoUrl);
+        EndBusy();
+
+        if (result.Worked) await RefreshThenRecheckAsync(project.Id);
+        else ShowPageProblem(project.Id, result.Value);
     }
 
     // Saved even if they've left the page, because the clone or the choice was real.

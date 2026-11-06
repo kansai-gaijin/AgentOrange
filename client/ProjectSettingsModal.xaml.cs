@@ -4,7 +4,6 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
-using Microsoft.Data.Sqlite;
 using Microsoft.Win32;
 using static AgentOrange.Ui;
 
@@ -20,11 +19,13 @@ namespace AgentOrange;
 public partial class ProjectSettingsModal : UserControl
 {
     private readonly Dictionary<TextBox, string> _invalidFields = [];
+    private readonly Dictionary<TextBox, string> _saved = [];
     private LocalDatabase _database = null!;
     private string _projectId = "";
     private TextBlock _problem = ProblemText();
     private Task _saves = Task.CompletedTask;
     private bool _closing;
+    private bool _problemWhileClosing;
     private int _session;
 
     public ProjectSettingsModal()
@@ -45,8 +46,10 @@ public partial class ProjectSettingsModal : UserControl
         _projectId = project.Id;
         _session++;
         _invalidFields.Clear();
+        _saved.Clear();
         _saves = Task.CompletedTask;
         _closing = false;
+        _problemWhileClosing = false;
         Visibility = Visibility.Visible;
         Build(project);
         Focus();
@@ -107,8 +110,12 @@ public partial class ProjectSettingsModal : UserControl
         {
             var hasVersion = ProjectChoices.HasEngineVersion(value);
             versionRow.Visibility = hasVersion ? Visibility.Visible : Visibility.Collapsed;
-            if (!hasVersion) version.Text = "";
-            Update(projectId, current => current with { Engine = value, EngineVersion = hasVersion ? current.EngineVersion : "" });
+            if (!hasVersion)
+            {
+                version.Text = "";
+                _saved[version] = "";
+            }
+            QueueUpdate(projectId, current => current with { Engine = value, EngineVersion = hasVersion ? current.EngineVersion : "" });
         });
 
         var details = new StackPanel
@@ -120,7 +127,7 @@ public partial class ProjectSettingsModal : UserControl
                     Row("Name", null, name),
                     Row("Engine", null, engine),
                     versionRow,
-                    Row("Game type", null, Choice(ProjectChoices.GameTypes, project.GameType, value => Update(projectId, current => current with { GameType = value }))),
+                    Row("Game type", null, Choice(ProjectChoices.GameTypes, project.GameType, value => QueueUpdate(projectId, current => current with { GameType = value }))),
                     Row("Repo URL", null, repo),
                     Row("Folder on this PC", "Doesn't sync, because it's different on each PC.", folder, browse)),
                 Section("Images"),
@@ -158,14 +165,19 @@ public partial class ProjectSettingsModal : UserControl
         var delete = new Button { Style = (Style)FindResource("DangerButton"), Content = "Delete project", IsEnabled = false };
         AutomationProperties.SetName(delete, "Delete project");
         confirmation.TextChanged += (_, _) => delete.IsEnabled = confirmation.Text.Trim() == Find(projectId)?.Name;
-        delete.Click += async (_, _) =>
+        delete.Click += (_, _) =>
         {
             delete.IsEnabled = false;
-            await _saves; // So a slow save can't bring the project back afterward.
-            _database.DeleteProject(projectId);
-            _closing = true;
-            Visibility = Visibility.Collapsed;
-            Deleted?.Invoke();
+
+            // Queued, so a slow save can't bring the project back afterward.
+            QueueWork(() =>
+            {
+                _database.DeleteProject(projectId);
+                _closing = true;
+                Visibility = Visibility.Collapsed;
+                Deleted?.Invoke();
+                return Task.CompletedTask;
+            });
         };
 
         var card = Card(Row(
@@ -211,7 +223,7 @@ public partial class ProjectSettingsModal : UserControl
                 var bytes = await Task.Run(() => ProjectImages.Prepare(file, kind));
                 if (bytes is null)
                 {
-                    if (session == _session) ShowProblem(_problem, "That file couldn't be used as an image.");
+                    if (session == _session) ReportProblem("That file couldn't be used as an image.");
                     return;
                 }
 
@@ -261,7 +273,7 @@ public partial class ProjectSettingsModal : UserControl
         {
             folderField.Text = "";
             folderField.ToolTip = null;
-            ShowProblem(_problem, "This project's folder used a different repo, so it's no longer linked. Its files weren't changed. Choose or clone the right folder.");
+            ReportProblem("This project's folder used a different repo, so it's no longer linked. Its files weren't changed. Choose or clone the right folder.");
         }
         return null;
     }
@@ -269,12 +281,11 @@ public partial class ProjectSettingsModal : UserControl
     private async Task ChooseFolderAsync(string projectId, TextBox field)
     {
         var dialog = new OpenFolderDialog { Title = "Choose this project's folder" };
-        var session0 = _session;
+        var session = _session;
         var previous = field.Text;
         if (await GitTools.FolderExistsAsync(previous)) dialog.InitialDirectory = previous;
-        if (session0 != _session || dialog.ShowDialog() != true) return;
+        if (session != _session || dialog.ShowDialog() != true) return;
 
-        var session = _session;
         var chosen = dialog.FolderName;
         QueueWork(async () =>
         {
@@ -283,7 +294,7 @@ public partial class ProjectSettingsModal : UserControl
             var problem = await GitTools.FolderProblemAsync(chosen, current.RepoUrl);
             if (problem is not null)
             {
-                if (session == _session) ShowProblem(_problem, problem);
+                if (session == _session) ReportProblem(problem);
                 return;
             }
 
@@ -303,7 +314,7 @@ public partial class ProjectSettingsModal : UserControl
         _saves = RunAfter(earlier, work);
     }
 
-    // One failed save can't be allowed to stop the ones after it, or Done.
+    // One failed save can't be allowed to stop the ones after it, or Done, or the whole app.
     private async Task RunAfter(Task earlier, Func<Task> work)
     {
         await earlier;
@@ -311,12 +322,25 @@ public partial class ProjectSettingsModal : UserControl
         {
             await work();
         }
-        catch (Exception error) when (error is IOException or InvalidOperationException or UnauthorizedAccessException or SqliteException)
+        catch (Exception error)
         {
             AppLog.Write($"Couldn't save a project setting: {error.Message}");
-            ShowProblem(_problem, "That change couldn't be saved. Try it again.");
+            ReportProblem("That change couldn't be saved. Try it again.");
         }
     }
+
+    // Done waits for work to finish, so this keeps the modal open long enough for a late problem to be read.
+    private void ReportProblem(string problem)
+    {
+        ShowProblem(_problem, problem);
+        _problemWhileClosing |= _closing;
+    }
+
+    private void QueueUpdate(string projectId, Func<Project, Project> change) => QueueWork(() =>
+    {
+        Update(projectId, change);
+        return Task.CompletedTask;
+    });
 
     private void Update(string projectId, Func<Project, Project> change)
     {
@@ -335,7 +359,7 @@ public partial class ProjectSettingsModal : UserControl
 
     private void SaveOnLeave(TextBox field, string initial, Func<string, Task<string?>> save)
     {
-        var saved = initial;
+        _saved[field] = initial;
         var session = _session;
 
         void Queue()
@@ -346,7 +370,7 @@ public partial class ProjectSettingsModal : UserControl
             {
                 if (session != _session || Current() is null) return;
 
-                if (value == saved)
+                if (value == _saved[field])
                 {
                     if (_invalidFields.Remove(field)) ClearGeneralProblem();
                     return;
@@ -354,7 +378,17 @@ public partial class ProjectSettingsModal : UserControl
 
                 // Removed first, so a notice from the save itself isn't cleared afterward.
                 _invalidFields.Remove(field);
-                var problem = await save(value);
+                string? problem;
+                try
+                {
+                    problem = await save(value);
+                }
+                catch (Exception error)
+                {
+                    // Held as a field problem, so Done won't close and lose it. Leaving the field again retries.
+                    AppLog.Write($"Couldn't save a project setting: {error.Message}");
+                    problem = "That change couldn't be saved. Try it again.";
+                }
                 if (session != _session) return;
 
                 if (problem is not null)
@@ -364,7 +398,7 @@ public partial class ProjectSettingsModal : UserControl
                     return;
                 }
 
-                saved = value;
+                _saved[field] = value;
                 if (field.Text.Trim() == value) field.Text = value;
             });
         }
@@ -386,12 +420,19 @@ public partial class ProjectSettingsModal : UserControl
         await _saves; // So whatever opens next sees the saved values.
         if (session != _session || Visibility != Visibility.Visible) return;
 
-        // Closing would quietly lose what they typed, so the problem has to be fixed first.
+        if (_problemWhileClosing)
+        {
+            _problemWhileClosing = false;
+            _closing = false;
+            return;
+        }
+
+        // Closing would quietly lose what they typed, so it's fixed or explicitly undone first.
         if (_invalidFields.Count > 0 && Current() is not null)
         {
             _closing = false;
             var (field, problem) = _invalidFields.First();
-            ShowProblem(_problem, problem);
+            ShowProblem(_problem, $"{problem} Press Esc to go back to what was saved.");
             field.Focus();
             return;
         }
@@ -402,7 +443,11 @@ public partial class ProjectSettingsModal : UserControl
 
     private void Modal_KeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Escape) Close();
+        if (e.Key != Key.Escape) return;
+
+        foreach (var field in _invalidFields.Keys) field.Text = _saved[field];
+        _invalidFields.Clear();
+        Close();
     }
 
     private void Backdrop_MouseLeftButtonDown(object sender, MouseButtonEventArgs e) => Close();

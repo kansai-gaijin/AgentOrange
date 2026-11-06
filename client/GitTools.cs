@@ -36,7 +36,7 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
         RepoAccess.SignedOut => ("Sign in to GitHub", "This PC isn't signed in, so your access to this repo can't be checked."),
         RepoAccess.OtherAccount => ("Wrong GitHub account", $"Your active GitHub account can't work on this repo, but {Account} can."),
         RepoAccess.ReadOnly => ("You don't have access to this repo", $"{Account ?? "Your GitHub account"} can only read it, so you can't work on it. Get write access, or use a different repo."),
-        RepoAccess.NotFound => ("This repo doesn't exist", "It may have been deleted or renamed."),
+        RepoAccess.NotFound => ("This repo doesn't exist", "It may have been deleted or renamed, or your GitHub login may not be allowed to see it."),
         RepoAccess.NotFoundOrNoAccess => ("Can't find this repo", "It was deleted, or your GitHub account doesn't have access. GitHub doesn't say which. If you should have access, ask the owner."),
         RepoAccess.GitCantReach => ("Git on this PC can't reach this repo", "Check this PC's Git setup, such as its SSH keys, or run gh auth setup-git."),
         RepoAccess.BadUrl => ("This repo URL can't be used", "Change it in project settings."),
@@ -56,7 +56,9 @@ public sealed record FolderRepo(bool InsideRepo, bool IsRepoRoot, string? Origin
 /// <summary>What projects need from Git and the GitHub CLI.</summary>
 public static partial class GitTools
 {
+    private const string TimedOut = "timeout";
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan CreateTimeout = TimeSpan.FromMinutes(2);
 
     private sealed record CommandResult(int ExitCode, string Output, string Errors);
 
@@ -79,11 +81,10 @@ public static partial class GitTools
     }
 
     /// <summary>Compares repos by host and path, so HTTPS and SSH forms of one repo match.</summary>
-    public static bool SameRepo(string a, string b) =>
-        string.Equals(RepoIdentity(a), RepoIdentity(b), StringComparison.OrdinalIgnoreCase);
+    public static bool SameRepo(string a, string b) => RepoIdentity(a) == RepoIdentity(b);
 
     /// <summary>The same for every form of a repo's URL.</summary>
-    public static string RepoKey(string url) => RepoIdentity(url).ToLowerInvariant();
+    public static string RepoKey(string url) => RepoIdentity(url);
 
     /// <summary>
     /// Whether this PC can work on a repo. GitHub answers "not found" both for a repo
@@ -152,6 +153,7 @@ public static partial class GitTools
             WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         };
         info.Environment["NoDefaultCurrentDirectoryInExePath"] = "1";
+        info.Environment["PATH"] = CurrentPath();
         try
         {
             Process.Start(info)?.Dispose();
@@ -209,6 +211,32 @@ public static partial class GitTools
         return state?.Origin is { } origin && !SameRepo(origin, repoUrl);
     }
 
+    /// <summary>Whether a folder can move to a new repo: readable, a repo's top or no repo at all, and not using an unrelated one.</summary>
+    public static async Task<bool> FolderCanReplaceRepoAsync(string folder, string oldRepo)
+    {
+        if (!await FolderExistsAsync(folder)) return false;
+        var state = await InspectFolderAsync(folder);
+        return state is { Problem: null, IsInsideAnotherRepo: false }
+            && (state.Origin is null || SameRepo(state.Origin, oldRepo));
+    }
+
+    /// <summary>Points a folder at a repo after the project moved, whatever remote it had. Its files don't change.</summary>
+    public static async Task<GitResult> PointFolderAtRepoAsync(string folder, string repoUrl)
+    {
+        if (RepoUrlProblem(repoUrl) is { } problem) return new GitResult(false, problem);
+
+        var state = await InspectFolderAsync(folder);
+        if (state is null) return new GitResult(false, "Git wasn't found on this PC.");
+        if (state.Problem is not null) return new GitResult(false, state.Problem);
+        if (state.IsInsideAnotherRepo) return new GitResult(false, "That folder is inside another Git repo.");
+        if (state.Origin is null) return await ConnectFolderAsync(folder, repoUrl);
+
+        var changed = await RunAsync("git", folder, "remote", "set-url", "origin", repoUrl);
+        return changed is { ExitCode: 0 }
+            ? new GitResult(true, repoUrl)
+            : new GitResult(false, "Couldn't connect that folder to the repo.");
+    }
+
     /// <summary>Connects a folder with no remote to a repo, setting up Git in it if needed.</summary>
     public static async Task<GitResult> ConnectFolderAsync(string folder, string repoUrl)
     {
@@ -238,9 +266,15 @@ public static partial class GitTools
         var repoName = RepoName(projectName);
         if (repoName.Length == 0) return new GitResult(false, "That project name can't be used as a repo name. Rename the project, or enter a repo URL.");
 
-        var signedIn = await RunAsync("gh", folder, "auth", "status", "--hostname", "github.com");
+        // Only the active account matters, because another one having expired fails this too.
+        var signedIn = await RunAsync("gh", Path.GetTempPath(), "auth", "status", "--active", "--hostname", "github.com");
         if (signedIn is null) return new GitResult(false, "Creating a repo needs the GitHub CLI (gh), which wasn't found.");
-        if (signedIn.ExitCode != 0) return new GitResult(false, "Sign in to the GitHub CLI first, with gh auth login.");
+        if (signedIn.ExitCode != 0)
+        {
+            return new GitResult(false, LooksLikeNetworkFailure(signedIn.Output + signedIn.Errors)
+                ? "Couldn't reach GitHub. Try again when this PC is online."
+                : "Sign in to the GitHub CLI first, with gh auth login.");
+        }
 
         var state = await InspectFolderAsync(folder);
         if (state is null) return new GitResult(false, "Git wasn't found on this PC.");
@@ -262,15 +296,19 @@ public static partial class GitTools
             : await RunAsync("gh", folder, "repo", "create", repoName, "--private");
         if (created is not { ExitCode: 0 })
         {
+            if (created?.Errors == TimedOut) return new GitResult(false, $"GitHub took too long to answer, so {repoName} may have been created anyway. Check GitHub before trying again.");
             return new GitResult(false, created?.Errors.Contains("already exists", StringComparison.OrdinalIgnoreCase) == true
                 ? $"You already have a repo called {repoName}. Enter its URL, or rename this project."
                 : "Couldn't create the repo on GitHub.");
         }
 
-        if (state.Origin is not null)
+        // A PC that reached the old repo over SSH may have no other way in, so it stays on SSH.
+        var keepSsh = replacingRepo is not null && UsesSsh(replacingRepo);
+        var webUrl = CreatedRepoUrl().Match(created.Output).Value;
+        if (state.Origin is not null || (keepSsh && webUrl.Length > 0))
         {
-            var newUrl = CreatedRepoUrl().Match(created.Output).Value;
-            if (newUrl.Length == 0 || await RunAsync("git", folder, "remote", "set-url", "origin", $"{newUrl}.git") is not { ExitCode: 0 })
+            var newOrigin = keepSsh ? $"git@github.com:{webUrl["https://github.com/".Length..]}.git" : $"{webUrl}.git";
+            if (webUrl.Length == 0 || await RunAsync("git", folder, "remote", "set-url", "origin", newOrigin) is not { ExitCode: 0 })
             {
                 return new GitResult(false, "The repo was created, but couldn't be linked to that folder.");
             }
@@ -366,22 +404,30 @@ public static partial class GitTools
         }
     }
 
+    // A port can mean a different server, and only GitHub is known to ignore case in its
+    // paths, so anything else has to match exactly to count as the same repo.
     private static string RepoIdentity(string url)
     {
         var text = url.Trim();
+        var host = "";
         if (ScpStyleRepo().IsMatch(text))
         {
             var at = text.IndexOf('@');
             var colon = text.IndexOf(':');
-            text = $"{text[(at + 1)..colon]}/{text[(colon + 1)..]}";
+            host = text[(at + 1)..colon];
+            text = text[(colon + 1)..];
         }
         else if (Uri.TryCreate(text, UriKind.Absolute, out var uri) && uri.Host.Length > 0)
         {
-            text = uri.Host + uri.AbsolutePath;
+            host = uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}";
+            text = uri.AbsolutePath.TrimStart('/');
         }
 
+        host = host.ToLowerInvariant();
         text = text.TrimEnd('/');
-        return text.EndsWith(".git", StringComparison.OrdinalIgnoreCase) ? text[..^4] : text;
+        if (text.EndsWith(".git", StringComparison.OrdinalIgnoreCase)) text = text[..^4];
+        if (host == "github.com") text = text.ToLowerInvariant();
+        return host.Length > 0 ? $"{host}/{text}" : text;
     }
 
     // Git can report a remote with a token in it, which must never be shown or saved.
@@ -455,12 +501,23 @@ public static partial class GitTools
             ? shell
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
 
+    // Includes Windows' saved settings, so something installed while the app is open is found
+    // when the person clicks Try again, without a restart.
+    private static string CurrentPath()
+    {
+        EnvironmentVariableTarget[] targets = [EnvironmentVariableTarget.Process, EnvironmentVariableTarget.Machine, EnvironmentVariableTarget.User];
+        var folders = targets
+            .SelectMany(target => (Environment.GetEnvironmentVariable("PATH", target) ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        return string.Join(Path.PathSeparator, folders);
+    }
+
     // Starting a program by bare name can pick up a file in the current folder, which may
     // be one the person just browsed to. Looking in PATH ourselves rules that out.
     private static string? FindOnPath(string program)
     {
         var fileName = $"{program}.exe";
-        foreach (var folder in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        foreach (var folder in CurrentPath().Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
         {
             var trimmed = folder.Trim().Trim('"');
             if (!Path.IsPathFullyQualified(trimmed)) continue;
@@ -469,6 +526,9 @@ public static partial class GitTools
         }
         return null;
     }
+
+    private static bool UsesSsh(string url) =>
+        ScpStyleRepo().IsMatch(url) || url.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase);
 
     private static string RepoName(string projectName) =>
         NotRepoSafe().Replace(projectName.Trim().ToLowerInvariant(), "-").Trim('-');
@@ -500,6 +560,7 @@ public static partial class GitTools
             RedirectStandardError = true,
         };
         foreach (var argument in arguments) info.ArgumentList.Add(argument);
+        info.Environment["PATH"] = CurrentPath(); // gh runs git itself.
         info.Environment["GIT_TERMINAL_PROMPT"] = "0";
         info.Environment["GIT_ALLOW_PROTOCOL"] = "https:http:ssh:git";
         if (gitHubToken is not null) info.Environment["GH_TOKEN"] = gitHubToken;
@@ -511,7 +572,8 @@ public static partial class GitTools
         var isClone = arguments.Length > 0 && arguments[0] == "clone";
         if (!isClone) info.Environment["GCM_INTERACTIVE"] = "never";
 
-        using var timeout = new CancellationTokenSource(isClone ? Timeout.InfiniteTimeSpan : CommandTimeout);
+        var isCreate = arguments is ["repo", "create", ..];
+        using var timeout = new CancellationTokenSource(isClone ? Timeout.InfiniteTimeSpan : isCreate ? CreateTimeout : CommandTimeout);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancel);
 
         Process? process = null;
@@ -527,7 +589,7 @@ public static partial class GitTools
         catch (OperationCanceledException)
         {
             await StopProcessAsync(process);
-            return new CommandResult(-1, "", "timeout");
+            return new CommandResult(-1, "", TimedOut);
         }
         catch (Exception error) when (error is Win32Exception or IOException or InvalidOperationException)
         {
