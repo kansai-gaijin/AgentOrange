@@ -469,7 +469,11 @@ public partial class MainWindow
             Margin = new Thickness(40, 0, 40, 12),
         });
 
-        var back = OverlayButton("← Projects", BackToProjects);
+        var back = OverlayButton("← Projects", () =>
+        {
+            BackToProjects();
+            RefreshProjects(); // Cards say how long operations are going, and that may have changed.
+        });
         back.HorizontalAlignment = HorizontalAlignment.Left;
         back.VerticalAlignment = VerticalAlignment.Top;
         back.Margin = new Thickness(26, 18, 0, 0);
@@ -858,7 +862,14 @@ public partial class MainWindow
             var result = await GitTools.CloneAsync(project.RepoUrl, parentFolder, cancel.Token, working =>
             {
                 workingFolder = working;
-                if (working is null) return;
+                if (working is null)
+                {
+                    // Finished, so the cleanup at the next start has to leave it alone from now on.
+                    var finished = cloneRecord;
+                    SaveCloneRecords(CloneRecords().Where(record => record != finished));
+                    cloneRecord = null;
+                    return;
+                }
                 cloneRecord = CloneRecord(working);
                 SaveCloneRecords(CloneRecords().Append(cloneRecord));
             });

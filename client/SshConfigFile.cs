@@ -20,8 +20,9 @@ internal static partial class SshConfigFile
         {
             if (!IsOnThisPc(path)) return null;
 
+            // A link could lead onto a share, and opening it would then do just what's refused above.
             var file = new FileInfo(path);
-            if (!file.Exists || file.Length > MaxBytes) return null;
+            if (!file.Exists || file.LinkTarget is not null || file.Length > MaxBytes) return null;
 
             string? hostName = null;
             string? user = null;

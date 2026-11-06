@@ -17,7 +17,8 @@ namespace AgentOrange;
 /// Dev builds only. Runs the real app off-screen and steps through a script, so a change
 /// can be tried without touching the computer it's running on: the window can't take focus,
 /// nothing uses the mouse or keyboard, data stays in its own folder, screenshots are drawn
-/// to files, and real GitHub repos are never created.
+/// to files, and real GitHub repos are never created. Git still runs for real in any folder a
+/// script names, so scripts should only ever name throwaway ones.
 ///
 ///   AgentOrange.exe --headless data-folder script-file output-folder
 ///

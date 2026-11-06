@@ -48,7 +48,9 @@ public static partial class EngineVersions
         {
             try
             {
-                var file = Directory.EnumerateFiles(place, pattern).FirstOrDefault();
+                // Links aren't read, because opening one could reach a network share and send
+                // the person's Windows login to whoever runs it.
+                var file = Directory.EnumerateFiles(place, pattern, new EnumerationOptions { AttributesToSkip = FileAttributes.ReparsePoint }).FirstOrDefault();
                 if (file is null) continue;
                 return new FileInfo(file).Length > MaxProjectFileBytes ? null : parse(File.ReadAllText(file));
             }
