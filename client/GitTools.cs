@@ -87,6 +87,7 @@ public static partial class GitTools
 {
     private const string TimedOut = "timeout";
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan AfterExitLimit = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan CreateTimeout = TimeSpan.FromMinutes(2);
 
     private sealed record CommandResult(int ExitCode, string Output, string Errors);
@@ -577,8 +578,9 @@ public static partial class GitTools
             : new GitResult(true, repoUrl);
     }
 
-    // A separate push address would otherwise keep sending work to the old repo. Returns a
-    // problem to show, or null once it has moved. Nothing is left half done either way.
+    // A push address on the old repo would otherwise keep sending work there, so that moves too.
+    // One that goes anywhere else is a fork, which someone set up on purpose, and it stays. Returns
+    // a problem to show, or null once it has moved. Nothing is left half done either way.
     private static async Task<string?> MoveOriginAsync(string folder, string remote)
     {
         if (await RemoteSetElsewhereAsync(folder) is { } elsewhere) return elsewhere;
@@ -587,11 +589,33 @@ public static partial class GitTools
         var before = await RunAsync("git", folder, "config", "--get", "remote.origin.url");
         if (await RunAsync("git", folder, "config", "--replace-all", "remote.origin.url", remote) is not { ExitCode: 0 }) return couldNotChange;
 
-        var pushUrl = await RunAsync("git", folder, "config", "--get-all", "remote.origin.pushurl");
-        if (pushUrl is not { ExitCode: 0 } || await RunAsync("git", folder, "config", "--replace-all", "remote.origin.pushurl", remote) is { ExitCode: 0 }) return null;
+        var pushUrls = await RunAsync("git", folder, "config", "--get-all", "remote.origin.pushurl");
+        if (pushUrls is not { ExitCode: 0 }) return null;
 
+        var current = pushUrls.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var moved = new List<string>();
+        foreach (var address in current)
+        {
+            var (gitHubForm, _) = await GitHubFormAsync(address, folder);
+            var wasOnOldRepo = before is { ExitCode: 0 } && SameRepo(gitHubForm ?? address, before.Output.Trim());
+            moved.Add(wasOnOldRepo ? remote : address);
+        }
+        if (moved.SequenceEqual(current)) return null;
+        if (await SetPushAddressesAsync(folder, moved.Distinct().ToArray())) return null;
+
+        await SetPushAddressesAsync(folder, current);
         if (before is { ExitCode: 0 }) await RunAsync("git", folder, "config", "--replace-all", "remote.origin.url", before.Output.Trim());
         return couldNotChange;
+    }
+
+    private static async Task<bool> SetPushAddressesAsync(string folder, string[] addresses)
+    {
+        if (await RunAsync("git", folder, "config", "--replace-all", "remote.origin.pushurl", addresses[0]) is not { ExitCode: 0 }) return false;
+        foreach (var address in addresses.Skip(1))
+        {
+            if (await RunAsync("git", folder, "config", "--add", "remote.origin.pushurl", address) is not { ExitCode: 0 }) return false;
+        }
+        return true;
     }
 
     // Only a folder's own settings file is changed here, because one it includes may be shared.
@@ -1032,16 +1056,25 @@ public static partial class GitTools
     /// </summary>
     public static async Task<string?> FinishDownloadAsync(string folder, CancellationToken cancel = default, Action<string>? progress = null)
     {
+        // Getting no answer isn't the same as there being nothing to do, so it stays unfinished.
+        const string noAnswer = "Git didn't answer when asked what this folder still needs, so it can't be called finished yet. Try again.";
+
         // An empty repo has nothing to fetch.
-        var hasCommits = await RunAsync("git", folder, "rev-parse", "--verify", "-q", "HEAD") is not { ExitCode: not 0 };
+        var head = await RunAsync("git", folder, "rev-parse", "--verify", "-q", "HEAD");
+        if (head is not { ExitCode: 0 or 1 }) return noAnswer;
+        var hasCommits = head.ExitCode == 0;
 
         // Git can't fetch what's listed in files that never arrived, and would say all is well. A
         // checkout that failed outright hasn't even listed them yet, so Git's own list is asked too.
-        if (hasCommits
-            && (await RunAsync("git", folder, "diff-index", "--cached", "--quiet", "--diff-filter=D", "HEAD", "--") is { ExitCode: 1 }
-                || await RunAsync("git", folder, "ls-files", "--deleted") is { ExitCode: 0, Output.Length: > 0 }))
+        if (hasCommits)
         {
-            return "Some of this repo's files still aren't in the folder, so the rest can't be finished yet. Fix what stopped them, then run git restore --source=HEAD --staged --worktree :/ in the folder and try again.";
+            var unlisted = await RunAsync("git", folder, "diff-index", "--cached", "--quiet", "--diff-filter=D", "HEAD", "--");
+            var absent = await RunAsync("git", folder, "ls-files", "--deleted");
+            if (unlisted is not { ExitCode: 0 or 1 } || absent is not { ExitCode: 0 }) return noAnswer;
+            if (unlisted.ExitCode == 1 || absent.Output.Length > 0)
+            {
+                return "Some of this repo's files still aren't in the folder, so the rest can't be finished yet. Fix what stopped them, then run git restore --source=HEAD --staged --worktree :/ in the folder and try again.";
+            }
         }
 
         var notes = !hasCommits ? [] : new[] { await FetchSubmodulesAsync(folder, cancel, progress), await FetchLargeFilesAsync(folder, cancel, progress) }.OfType<string>().ToList();
@@ -1091,7 +1124,9 @@ public static partial class GitTools
     // private one, shouldn't cost everything else. Git's allowed protocols apply to these too.
     private static async Task<string?> FetchSubmodulesAsync(string folder, CancellationToken cancel, Action<string>? progress)
     {
-        if (await RunAsync("git", folder, "cat-file", "-e", "HEAD:.gitmodules") is not { ExitCode: 0 }) return null;
+        var declared = await RunAsync("git", folder, "cat-file", "-e", "HEAD:.gitmodules");
+        if (declared is null or { ExitCode: < 0 }) return "Git didn't answer when asked whether this repo has submodules, so that can't be called finished yet. Try again.";
+        if (declared.ExitCode != 0) return null;
 
         progress?.Invoke("Fetching submodules");
         var result = await RunAsync("git", folder, null, ["-c", "core.longpaths=true", "submodule", "update", "--init", "--recursive"], cancel, await SshSettingsAsync(folder));
@@ -1555,7 +1590,10 @@ public static partial class GitTools
             var output = process.StandardOutput.ReadToEndAsync(stop.Token);
             var errors = statusLine is null ? process.StandardError.ReadToEndAsync(stop.Token) : ReadErrorsWithStatusAsync(process.StandardError, statusLine, stop.Token);
             await process.WaitForExitAsync(stop.Token);
-            return new CommandResult(process.ExitCode, await output, await errors);
+
+            // Something it left running can hold these open forever, and a clone has no other limit.
+            await Task.WhenAny(Task.WhenAll(output, errors), Task.Delay(AfterExitLimit, stop.Token));
+            return new CommandResult(process.ExitCode, output.IsCompletedSuccessfully ? output.Result : "", errors.IsCompletedSuccessfully ? errors.Result : "");
         }
         catch (OperationCanceledException)
         {

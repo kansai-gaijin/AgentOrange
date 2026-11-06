@@ -26,7 +26,7 @@ while IFS= read -r file; do
     elif git show ":$file" | grep -aqE 'BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|TunnelSecret|postgres(ql)?://[^:$[:space:]]+:[^@$[:space:]]+@|AGENT_ORANGE_PAIRING_KEY=[^$[:space:]]'; then
         echo "Blocked: $file seems to hold a private key or token." >&2
         status=1
-    elif git show ":$file" | grep -IqE '[A-Za-z]:[\\/]+Users[\\/]+[A-Za-z0-9]|/(Users|home)/[A-Za-z0-9]|[[:alnum:]-]+\.ts\.net'; then
+    elif git show ":$file" | grep -IqE '[A-Za-z]:[\\/]+Users[\\/]+[A-Za-z0-9]|/(Users|home)/[A-Za-z0-9]|[[:alnum:]-]+\.ts\.net|\b100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]+\.[0-9]+\b|\b192\.168\.[0-9]+\.[0-9]+\b'; then
         echo "Blocked: $file seems to hold a personal path or a private address." >&2
         status=1
     elif git show ":$file" | grep -IoE '[[:alnum:]._%+-]+@([[:alnum:]-]+\.)+[[:alpha:]]{2,}' | grep -vqE '^git@github\.com$|@example\.(com|org)$|noreply'; then

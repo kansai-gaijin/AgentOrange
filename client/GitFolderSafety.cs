@@ -19,6 +19,8 @@ internal static partial class GitFolderSafety
     private const int MaxBytes = 1_000_000;
     private static readonly TimeSpan RememberFor = TimeSpan.FromSeconds(3);
     private const int MaxRemembered = 200;
+    private const int MaxHeadBytes = 4096;
+    private const string OptionalPath = ":(optional)";
     private const int MaxFoundLength = 300;
 
     // Git runs many times in a row for one check, and each would otherwise look at all this again.
@@ -67,6 +69,9 @@ internal static partial class GitFolderSafety
                 if (!Exists(entry)) continue;
                 foundOne = true;
                 if (await WhatPointsAtNetworkAsync(entry, readSettingsFile) is { } found) return Refusal(found);
+
+                // Git stops at the first real repo it finds, so what's further up has no say here.
+                if (StopsGitLooking(entry)) break;
             }
             return null;
         }
@@ -87,6 +92,17 @@ internal static partial class GitFolderSafety
         if (!Exists(git)) return true;
         if (SshConfigFile.IsLink(git) || !File.GetAttributes(git).HasFlag(FileAttributes.Directory)) return false; // Looked at next, without following it.
         return !HasRepoLayout(git);
+    }
+
+    // Only when Git would really accept it, because it passes over one that it wouldn't and carries
+    // on upward. Being wrong here has to mean looking at too much, never at too little.
+    private static bool StopsGitLooking(string entry)
+    {
+        if (!File.GetAttributes(entry).HasFlag(FileAttributes.Directory)) return true; // A .git file either works or is an error.
+        if (File.Exists(Path.Combine(entry, "commondir")) || !Directory.Exists(Path.Combine(entry, "objects")) || !Directory.Exists(Path.Combine(entry, "refs"))) return false;
+
+        var head = new FileInfo(Path.Combine(entry, "HEAD"));
+        return head.Exists && head.Length <= MaxHeadBytes && ValidHead().IsMatch(File.ReadAllText(head.FullName));
     }
 
     private static bool HasRepoLayout(string folder) =>
@@ -192,6 +208,7 @@ internal static partial class GitFolderSafety
             // A quoted line can spell a path in escapes, and ordinary ones have no need to be quoted.
             if (line.StartsWith('"') || StartsLikeShare(line)) return $"{alternates} points at {line}";
             if (IsUnsafeGitPath(chosen, line, objects, false, out var next)) return $"{alternates} points at {line}";
+            if (Directory.Exists(next) && LinkInside(next) is { } link) return $"{link} is a link";
             if (AlternateProblem(chosen, next, depth + 1) is { } further) return further;
         }
         return null;
@@ -217,7 +234,7 @@ internal static partial class GitFolderSafety
 
             // No setting has a reason to name a network location in a folder that isn't on one.
             // %(prefix) is Git's own shorthand, which leaves a path this can't see the end of.
-            var value = parts[1];
+            var value = parts[1].StartsWith(OptionalPath, StringComparison.Ordinal) ? parts[1][OptionalPath.Length..] : parts[1];
             var named = $"the setting {parts[0]} in {file}";
             if (StartsLikeShare(value) || value.StartsWith("%(prefix)", StringComparison.Ordinal) || NamesNetworkDrive(value)) return named;
 
@@ -268,6 +285,9 @@ internal static partial class GitFolderSafety
         var root = Path.GetPathRoot(path);
         return !string.IsNullOrEmpty(root) && new DriveInfo(root).DriveType == DriveType.Network;
     }
+
+    [GeneratedRegex(@"^(ref:\s*refs/|[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")]
+    private static partial Regex ValidHead();
 
     [GeneratedRegex(@"^include(if\..*)?\.path$", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
     private static partial Regex IncludeSetting();

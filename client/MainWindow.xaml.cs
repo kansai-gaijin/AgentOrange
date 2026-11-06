@@ -97,23 +97,25 @@ public partial class MainWindow : Window
         var otherWindowTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         otherWindowTimer.Tick += (_, _) =>
         {
+            var wasLost = _databaseWasLost;
+            _databaseWasLost = false;
             try
             {
                 var latest = _database.RecordsSignature();
-                if (latest != knownRecords || _databaseWasLost)
+                if (latest != knownRecords || wasLost)
                 {
                     knownRecords = latest;
                     RefreshProjects();
                 }
 
-                // Folders don't sync, so they're not records, and a clone there can finish at any time.
-                if (_openProject is { } open && _projectCheck is not null && _busyProjectId is null && ProjectSettings.Visibility != Visibility.Visible)
+                // Folders don't sync, and a clone there can finish at any time. A page that lost
+                // the database partway through its check has nothing else that will finish it.
+                if (_openProject is { } open && _busyProjectId is null && ProjectSettings.Visibility != Visibility.Visible)
                 {
                     var folder = _database.GetProjectFolder(open.Id);
-                    if (folder != _checkedFolder || _databaseWasLost) _ = RecheckIfStillOpenAsync(open.Id);
-                    else if (DownloadStateOf(folder) != _shownDownloadState) RenderProject(open);
+                    if (wasLost || (_projectCheck is not null && folder != _checkedFolder)) _ = RecheckIfStillOpenAsync(open.Id);
+                    else if (_projectCheck is not null && DownloadStateOf(folder) != _shownDownloadState) RenderProject(open);
                 }
-                _databaseWasLost = false;
             }
             catch (SqliteException error)
             {

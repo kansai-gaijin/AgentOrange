@@ -376,12 +376,12 @@ public sealed class LocalDatabase
         }
     }
 
-    /// <summary>Changes whenever a synced record does, including from another window of the app.</summary>
+    /// <summary>Changes whenever a synced record or this PC's folder for a project does, including from another window of the app.</summary>
     public string RecordsSignature()
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) || ':' || COALESCE(SUM(changed_at), 0) FROM records";
+        command.CommandText = "SELECT COUNT(*) || ':' || COALESCE(SUM(changed_at), 0) || ':' || COALESCE((SELECT group_concat(value, '|') FROM settings WHERE key LIKE 'project_folder:%'), '') FROM records";
         return command.ExecuteScalar() as string ?? "";
     }
 

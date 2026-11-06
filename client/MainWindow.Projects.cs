@@ -359,6 +359,21 @@ public partial class MainWindow
 
     private async Task OpenProjectAsync(Project project)
     {
+        try
+        {
+            await CheckAndShowProjectAsync(project);
+        }
+        catch (SqliteException)
+        {
+            _databaseWasLost = true; // So the check runs again, as nothing else will finish it.
+            ProjectPage.Children.Clear();
+            ProjectPage.Children.Add(CenteredNote("The app's database can't be reached right now. This page comes back once it can be."));
+            throw;
+        }
+    }
+
+    private async Task CheckAndShowProjectAsync(Project project)
+    {
         var navigation = ++_navigation;
         _lastAccessCheck = DateTimeOffset.UtcNow;
         _openProject = project;
