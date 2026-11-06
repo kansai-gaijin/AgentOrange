@@ -683,6 +683,10 @@ public partial class MainWindow
         ShowProblem(problem, _pageProblem);
         problem.TextWrapping = TextWrapping.Wrap;
         body.Children.Add(problem);
+
+        // It goes below everything else, which on a small window is below the fold, and whoever
+        // just clicked something needs to see why nothing seemed to happen.
+        Dispatcher.InvokeAsync(problem.BringIntoView, System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
     private void StartBusy(Project project, string text)
