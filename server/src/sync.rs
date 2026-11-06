@@ -162,7 +162,9 @@ pub async fn sync(
                     seq = excluded.seq,
                     updated_by = excluded.updated_by,
                     changed_at = excluded.changed_at
-                 WHERE excluded.changed_at >= sync_records.changed_at",
+                 WHERE excluded.changed_at > sync_records.changed_at
+                    OR (excluded.changed_at = sync_records.changed_at
+                        AND (excluded.data <> sync_records.data OR excluded.deleted <> sync_records.deleted))",
                 &[
                     &change.collection,
                     &change.id,

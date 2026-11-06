@@ -105,7 +105,7 @@ internal static partial class GitFolderSafety
 
         foreach (var directory in directories.Where(Directory.Exists))
         {
-            if (HasLinkInside(directory)) return true;
+            if (directory != gitDirectory && HasLinkInside(directory)) return true;
             if (HasNetworkAlternate(chosen, directory)) return true;
             if (await SettingsPointAtNetworkAsync(chosen, Path.Combine(directory, "config"), 0, readSettingsFile)) return true;
             if (await SettingsPointAtNetworkAsync(chosen, Path.Combine(directory, "config.worktree"), 0, readSettingsFile)) return true;

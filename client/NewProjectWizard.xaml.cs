@@ -445,7 +445,7 @@ public partial class NewProjectWizard : UserControl
             {
                 if (await GitTools.FolderIsEmptyAsync(project.Folder))
                 {
-                    if (Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(project.Folder)) is null) return ("", false, "That repo already has files, and they can't be cloned onto a whole drive. Choose a folder on it.");
+                    if (Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(project.Folder)) is null) return ("", false, "That's a whole drive, and a repo's files can't be cloned onto it. Choose a folder on it.");
                     if (await GitTools.FolderIsLinkAsync(project.Folder)) return ("", false, "That folder is a link, and a clone would replace it. Choose the real folder it points to.");
 
                     _cloneIntoFolder = true;

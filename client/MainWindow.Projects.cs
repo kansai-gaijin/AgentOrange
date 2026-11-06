@@ -70,7 +70,8 @@ public partial class MainWindow
 
     private void RefreshProjects()
     {
-        if (_draggedCard is not null)
+        // A rebuild while a card is pressed would remove it, and the click would be lost.
+        if (_draggedCard is not null || _pressedCard is not null)
         {
             _refreshAfterDrag = true;
             return;
@@ -80,7 +81,7 @@ public partial class MainWindow
         foreach (var gone in _covers.Keys.Except(projects.Select(project => project.Id)).ToList()) _covers.Remove(gone);
 
         // Rebuilding the cards would otherwise send someone using the keyboard back to the top.
-        var focusedCard = Keyboard.FocusedElement is Button { Tag: string focusedId } focused && ProjectGrid.Children.Contains(focused) ? focusedId : null;
+        var focusedCard = ProjectGrid.Children.OfType<Button>().FirstOrDefault(card => card.IsKeyboardFocusWithin)?.Tag as string;
 
         ProjectGrid.Children.Clear();
         foreach (var project in projects) ProjectGrid.Children.Add(ProjectCard(project));
@@ -1269,8 +1270,14 @@ public partial class MainWindow
         StartBusy(project, "Connecting the folder…");
 
         // The URL may be a typo, and the next push would send this folder's history there.
-        if (await GitTools.CompareFolderHistoryAsync(folder, project.RepoUrl) == FolderHistory.SharesNothing
-            && !Dialogs.Confirm($"{project.RepoUrl} has commits this folder doesn't, so they may not be the same project.\n\nConnecting them changes no files and pushes nothing, but the next push could send this folder's history there. Connect them anyway?"))
+        var history = await GitTools.CompareFolderHistoryAsync(folder, project.RepoUrl);
+        var why = history switch
+        {
+            FolderHistory.SharesNothing => $"{project.RepoUrl} has commits this folder doesn't, so they may not be the same project.",
+            FolderHistory.CantTell when await GitTools.FolderHasNoCommitsAsync(folder) != true => $"Couldn't compare this folder's commits with {project.RepoUrl}, so they may not be the same project.",
+            _ => null,
+        };
+        if (why is not null && !Dialogs.Confirm($"{why}\n\nConnecting them changes no files and pushes nothing, but the next push could send this folder's history there. Connect them anyway?"))
         {
             EndBusy();
             return;

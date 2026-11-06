@@ -11,7 +11,7 @@ namespace AgentOrange;
 public sealed record GitResult(bool Worked, string Value, string? Note = null);
 
 /// <summary>How a folder's commits compare with its repo's. A repo with none can't say.</summary>
-public enum FolderHistory { CantTell, SharesCommits, SharesNothing }
+public enum FolderHistory { CantTell, RepoIsEmpty, SharesCommits, SharesNothing }
 
 public enum RepoAccess
 {
@@ -147,11 +147,13 @@ public static partial class GitTools
 
         var readOnly = view.ExitCode == 0;
         var notFound = SaysRepoMissing(view.Errors);
+        RepoCheck? activeAccountsAnswer = null;
         if (!readOnly && !notFound)
         {
             if (LooksLikeNetworkFailure(view.Errors)) return new RepoCheck(RepoAccess.Offline);
-            if (AccessBlocked().IsMatch(view.Errors)) return new RepoCheck(RepoAccess.Restricted, await ActiveAccountAsync());
-            return new RepoCheck(SignedOutMessage().IsMatch(view.Errors) ? RepoAccess.SignedOut : RepoAccess.CheckFailed);
+            if (AccessBlocked().IsMatch(view.Errors)) activeAccountsAnswer = new RepoCheck(RepoAccess.Restricted, await ActiveAccountAsync());
+            else if (SignedOutMessage().IsMatch(view.Errors)) activeAccountsAnswer = new RepoCheck(RepoAccess.SignedOut);
+            else return new RepoCheck(RepoAccess.CheckFailed);
         }
 
         // Another signed-in account may be the one that can work on this repo.
@@ -190,6 +192,9 @@ public static partial class GitTools
             var answered = viewed is { ExitCode: 0 } || SaysRepoMissing(errors) || SignedOutMessage().IsMatch(errors) || AccessBlocked().IsMatch(errors);
             if (!answered) inconclusive = errors;
         }
+
+        // No other account can work on it, so this is what there is to say about the active one.
+        if (activeAccountsAnswer is not null) return activeAccountsAnswer;
 
         // GitHub clearly said read-only, and no other account has shown it can do better.
         if (readOnly) return new RepoCheck(RepoAccess.ReadOnly, await ActiveAccountAsync());
@@ -644,6 +649,18 @@ public static partial class GitTools
             : new GitResult(true, form);
     }
 
+    // Git there would make every folder underneath count as inside this repo, and refuse them.
+    private static string? TooBroadForAProject(string folder)
+    {
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder));
+        if (Path.GetDirectoryName(full) is null) return "That's a whole drive, and setting up Git there would take in everything on it. Choose a folder on it.";
+
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return home.Length > 0 && FolderIdentity.Same(full, home)
+            ? "That's your whole user folder, and setting up Git there would take in everything in it. Choose a folder inside it."
+            : null;
+    }
+
     /// <summary>Connects a folder with no remote to a repo, setting up Git in it if needed.</summary>
     public static async Task<GitResult> ConnectFolderAsync(string folder, string repoUrl)
     {
@@ -654,6 +671,7 @@ public static partial class GitTools
 
         if (!state.InsideRepo)
         {
+            if (TooBroadForAProject(folder) is { } tooBroad) return new GitResult(false, tooBroad);
             var init = await RunAsync("git", folder, "init");
             if (init is not { ExitCode: 0 }) return new GitResult(false, "Couldn't set up Git in that folder.");
         }
@@ -715,6 +733,7 @@ public static partial class GitTools
 
         // Before creating anything, because the new repo couldn't then be linked to this folder.
         if (state.Origin is not null && await RemoteSetElsewhereAsync(folder) is { } elsewhere) return new GitResult(false, elsewhere);
+        if (!state.InsideRepo && TooBroadForAProject(folder) is { } tooBroad) return new GitResult(false, tooBroad);
 
         if (!state.InsideRepo)
         {
@@ -776,7 +795,8 @@ public static partial class GitTools
 
         // Looking for a commit can fetch it in a folder set up as a partial clone, which could use
         // that folder's own settings, and those only run once they've been allowed.
-        if (await FolderRunnableSettingsAsync(folder) is not { } settings || !AreAllowed(folder, settings)) return FolderHistory.CantTell;
+        var partialClone = await RunAsync("git", folder, "config", "--get-regexp", @"^(extensions\.partialclone|remote\..*\.promisor)$");
+        if (partialClone is not { ExitCode: 1 } && (await FolderRunnableSettingsAsync(folder) is not { } settings || !AreAllowed(folder, settings))) return FolderHistory.CantTell;
 
         var form = await ReachableFormAsync(url) ?? url;
         var heads = await RunAsync("git", Path.GetTempPath(), null, ["ls-remote", "--", form, "HEAD", "refs/heads/*"], default, await SshSettingsAsync(Path.GetTempPath()));
@@ -784,7 +804,7 @@ public static partial class GitTools
 
         // The main branch comes first, ahead of any number of branches made by tools.
         var commits = heads.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Split('\t')[0].Trim()).Take(50).ToList();
-        if (commits.Count == 0) return FolderHistory.CantTell;
+        if (commits.Count == 0) return FolderHistory.RepoIsEmpty;
 
         Dictionary<string, string> noFetching = new() { ["GIT_NO_LAZY_FETCH"] = "1" };
         foreach (var commit in commits)
@@ -819,7 +839,7 @@ public static partial class GitTools
             _ => null,
         };
 
-    public static Task<bool> FolderIsEmptyAsync(string folder) => Task.Run(() => Directory.Exists(folder) && !IsTaken(folder));
+    public static Task<bool> FolderIsEmptyAsync(string folder) => Task.Run(() => Directory.Exists(folder) && !HasAnything(folder));
 
     /// <summary>Set up for Git, with no files or commits, as git init leaves a folder.</summary>
     public static async Task<bool> FolderHoldsOnlyGitAsync(string folder) =>
@@ -870,7 +890,7 @@ public static partial class GitTools
         if (remote.Length == 0 || remote is "origin" or ".") return null;
 
         var addresses = await RunAsync("git", folder, "remote", "get-url", "--push", "--all", remote);
-        if (addresses is not { ExitCode: 0 }) return remote;
+        if (addresses is not { ExitCode: 0 }) return WithoutCredentials(remote); // It can be an address itself.
         foreach (var line in addresses.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var address = WithoutCredentials(line);
@@ -1050,7 +1070,7 @@ public static partial class GitTools
 
     private static Task<bool> DestinationTakenAsync(string destination) => Task.Run(() => IsTaken(destination));
 
-    private static bool IsTaken(string destination)
+    private static bool HasAnything(string destination)
     {
         try
         {
@@ -1061,6 +1081,10 @@ public static partial class GitTools
             return true; // Can't be looked into, so it can't be counted on as free.
         }
     }
+
+    // A link there isn't an empty folder to take over. Removing it would put the clone somewhere else.
+    private static bool IsTaken(string destination) =>
+        HasAnything(destination) || (Directory.Exists(destination) && new DirectoryInfo(destination).LinkTarget is not null);
 
     // Files can stay locked for a moment after a stopped clone exits, so this tries a few times.
     private static async Task TryDeleteOwnedFolderAsync(string folder)

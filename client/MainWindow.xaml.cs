@@ -125,6 +125,17 @@ public partial class MainWindow : Window
             updateTimer.Start();
         }
 
+        // Wherever the mouse is let go, as a card that's being pressed holds off rebuilding the cards.
+        PreviewMouseLeftButtonUp += (_, _) =>
+        {
+            _pressedCard = null;
+            if (_refreshAfterDrag && _draggedCard is null)
+            {
+                _refreshAfterDrag = false;
+                Dispatcher.InvokeAsync(RefreshProjects, DispatcherPriority.Background);
+            }
+        };
+
         // Coming back to a page that's been open a while is when access may have changed.
         Activated += async (_, _) => await RecheckAccessOnReturnAsync();
 
