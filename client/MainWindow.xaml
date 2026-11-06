@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:AgentOrange"
         Title="Agent Orange" Height="720" Width="1100"
-        MinHeight="480" MinWidth="640"
+        MinHeight="480" MinWidth="700"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource ContentBackground}">
     <Grid>

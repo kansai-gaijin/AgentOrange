@@ -783,6 +783,16 @@ public partial class MainWindow
         {
             folder = Dialogs.PickFolder($"Choose the folder for {project.Name}");
             if (folder is null) return;
+
+            // The dialog can stay open a long time, and what they agreed to named an account.
+            StartBusy(project, "Checking the repo again…");
+            if (await GitTools.CheckRepoAccessAsync(project.RepoUrl, _database.GetProjectFolder(project.Id)) != shownCheck)
+            {
+                EndBusy();
+                _confirmingNewRepo = false;
+                await RecheckIfStillOpenAsync(project.Id);
+                return;
+            }
         }
 
         StartBusy(project, "Creating a private repo on GitHub…");
@@ -886,6 +896,7 @@ public partial class MainWindow
     // choosing that folder meanwhile would only find out when it finished.
     private async Task CloneProjectAsync(Project project, string parentFolder, string? exactFolder = null)
     {
+        if (_busyProjectId is not null) return;
         StartBusy(project, "Checking that folder…");
         var destination = exactFolder ?? GitTools.CloneDestination(project.RepoUrl, parentFolder);
         var owner = destination is null ? null : await _database.ClaimFolderAsync(destination, project);
@@ -953,6 +964,10 @@ public partial class MainWindow
         {
             ShowPageProblem(project.Id, result.Value);
         }
+        else if (FindProject(project.Id) is null)
+        {
+            Dialogs.Notify($"{project.Name} was deleted while it was cloning, so the clone wasn't linked to anything. It's still at {result.Value}.");
+        }
         else if (FindProject(project.Id) is { } latest
             && (_database.GetProjectFolder(project.Id) != folderBefore || !GitTools.SameRepo(latest.RepoUrl, project.RepoUrl)))
         {
@@ -984,9 +999,13 @@ public partial class MainWindow
             }
 
             // An empty folder is where the project goes, not a place to put another folder in.
+            // Busy while that's looked at, because a slow drive leaves time for a second click.
+            if (_busyProjectId is not null) return;
+            StartBusy(latest, "Checking that folder…");
             var chosen = Path.TrimEndingDirectorySeparator(parentFolder);
             var aboveIt = Path.GetDirectoryName(chosen);
             var intoIt = aboveIt is not null && await GitTools.FolderIsEmptyAsync(chosen) && !await GitTools.FolderIsLinkAsync(chosen);
+            EndBusy();
             await (intoIt ? CloneProjectAsync(latest, aboveIt!, chosen) : CloneProjectAsync(latest, parentFolder));
         };
 

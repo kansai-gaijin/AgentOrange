@@ -13,6 +13,7 @@ public enum RepoAccess
 {
     Allowed,
     NoGitHubCli,
+    GitHubCliTooOld,
     NoGit,
     SignedOut,
     OtherAccount,
@@ -37,6 +38,7 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
     public (string Heading, string Description) Describe() => Access switch
     {
         RepoAccess.NoGitHubCli => ("The GitHub CLI is needed", "Agent Orange uses it to check your access. Install it from cli.github.com, then try again."),
+        RepoAccess.GitHubCliTooOld => ("This PC's GitHub CLI is too old", "It can't say which accounts can see this repo. Update it from cli.github.com, then try again."),
         RepoAccess.NoGit => ("Git is needed", "Git wasn't found on this PC. Install it from git-scm.com, then try again."),
         RepoAccess.SignedOut => ("Sign in to GitHub", "This PC isn't signed in, so your access to this repo can't be checked."),
         RepoAccess.OtherAccount => ("Wrong GitHub account", $"Your active GitHub account can't work on this repo, but {Account} can."),
@@ -153,8 +155,14 @@ public static partial class GitTools
         string? otherCanRead = null;
         var accounts = await SignedInAccountsAsync();
 
-        // An account just answered, so finding none means the list couldn't be read.
-        if (accounts.Count == 0) inconclusive = "";
+        // An account just answered, so finding none means the list couldn't be read. Without that,
+        // a repo that's gone can never be told apart from GitHub not giving a clear answer.
+        if (accounts.Count == 0)
+        {
+            var active = await RunAsync("gh", Path.GetTempPath(), "auth", "status", "--active", "--hostname", "github.com");
+            if (active?.Errors.Contains("unknown flag", StringComparison.OrdinalIgnoreCase) == true) return new RepoCheck(RepoAccess.GitHubCliTooOld);
+            inconclusive = "";
+        }
         foreach (var account in accounts)
         {
             var token = await RunAsync("gh", Path.GetTempPath(), "auth", "token", "--hostname", "github.com", "--user", account);
@@ -162,6 +170,7 @@ public static partial class GitTools
             {
                 // Couldn't ask this account, so it can't be ruled out. One with no login left can.
                 var why = token?.Errors ?? "";
+                if (why.Contains("unknown flag", StringComparison.OrdinalIgnoreCase)) return new RepoCheck(RepoAccess.GitHubCliTooOld);
                 if (!SignedOutMessage().IsMatch(why) && !why.Contains("no oauth token", StringComparison.OrdinalIgnoreCase)) inconclusive = why;
                 continue;
             }
@@ -665,7 +674,9 @@ public static partial class GitTools
         {
             if (signedIn.Errors.Contains("unknown flag", StringComparison.OrdinalIgnoreCase)) return new GitResult(false, "This PC's GitHub CLI is too old. Update it from cli.github.com, then try again.");
 
-            return new GitResult(false, LooksLikeNetworkFailure(signedIn.Output + signedIn.Errors)
+            // With no connection, gh calls a login it couldn't check invalid, so this really asks.
+            var asked = await RunAsync("gh", Path.GetTempPath(), "api", "user");
+            return new GitResult(false, LooksLikeNetworkFailure(asked?.Errors ?? "")
                 ? "Couldn't reach GitHub. Try again when this PC is online."
                 : "Sign in to the GitHub CLI first, with gh auth login.");
         }
@@ -1114,6 +1125,7 @@ public static partial class GitTools
         EnvironmentVariableTarget[] targets = [EnvironmentVariableTarget.Process, EnvironmentVariableTarget.Machine, EnvironmentVariableTarget.User];
         var folders = targets
             .SelectMany(target => (Environment.GetEnvironmentVariable("PATH", target) ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            .Where(Path.IsPathFullyQualified) // Others mean whatever folder something runs in.
             .Distinct(StringComparer.OrdinalIgnoreCase);
         return string.Join(Path.PathSeparator, folders);
     }
@@ -1289,7 +1301,7 @@ public static partial class GitTools
     [GeneratedRegex(@"^(Receiving objects|Resolving deltas|Updating files|Filtering content):\s+(\d+%)")]
     private static partial Regex CloneStage();
 
-    [GeneratedRegex(@"marked as read.only|Permission to \S+ denied|error: 403|authentication failed|could not read username|invalid username", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"marked as read.only|Permission to \S+ denied|Permission denied \(|error: 403|authentication failed|could not read username|invalid username|host key verification failed", RegexOptions.IgnoreCase)]
     private static partial Regex PushRefusal();
 
     [GeneratedRegex(@"://[^/@\s]+@")]

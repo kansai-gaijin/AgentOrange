@@ -74,7 +74,9 @@ public sealed class SyncEngine
 
             while (_server.Address == address && !IsPaused())
             {
-                var batch = _database.ReadOutbox(BatchSize, MaxBatchBytes);
+                // The last answer was that this PC and the server are on different releases, so
+                // this just asks again. Sending queued images would be thrown away every time.
+                var batch = _devices.VersionsDiffer ? [] : _database.ReadOutbox(BatchSize, MaxBatchBytes);
                 var response = await _devices.SyncAsync(cursor, batch, epoch);
                 if (response is null) return;
 

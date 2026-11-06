@@ -170,7 +170,7 @@ public partial class ProjectSettingsModal : UserControl
         var engine = Choice(ProjectChoices.Engines, project.Engine, value =>
         {
             chosenEngine = value;
-            version.Text = EngineVersions.CanRead(value) ? CheckedOnClosing : DoesNotApply;
+            version.Text = !EngineVersions.CanRead(value) ? DoesNotApply : folder.Text.Length > 0 ? CheckedOnClosing : "Needs a folder";
             QueueUpdate(projectId, current => current with { Engine = value });
         });
 
