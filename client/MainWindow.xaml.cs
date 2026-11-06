@@ -84,9 +84,11 @@ public partial class MainWindow : Window
         Loaded += async (_, _) =>
         {
             await RemoveLeftoverCloneAsync();
-            await ReadEngineVersionsAsync();
             await _server.CheckAsync();
             if (_updates.IsInstalled) await CheckForUpdateAsync();
+
+            // Last, so a dead network drive can't hold up the server or update checks.
+            await ReadEngineVersionsAsync();
         };
     }
 

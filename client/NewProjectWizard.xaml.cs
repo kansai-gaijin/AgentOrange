@@ -164,7 +164,7 @@ public partial class NewProjectWizard : UserControl
             var before = repo.Text;
             var state = await GitTools.InspectFolderAsync(dialog.FolderName);
             if (folder.Text != dialog.FolderName || repo.Text != before) return;
-            _autoFilledRepo = state?.Origin ?? "";
+            _autoFilledRepo = state?.OriginToCompare ?? "";
             repo.Text = _autoFilledRepo;
         };
 
@@ -244,7 +244,7 @@ public partial class NewProjectWizard : UserControl
             Children =
             {
                 Row("Project folder", "Where this game's files are on this PC.", folder, browse),
-                Row("Repo URL", "Leave blank to create a new private repo on GitHub.", repo),
+                Row("Repo URL", "Leave blank to create a new, empty private repo on GitHub. Nothing is pushed, so push your work for your other PCs to get it.", repo),
                 progress,
                 problem,
             },
@@ -276,7 +276,8 @@ public partial class NewProjectWizard : UserControl
         if (url.Length == 0)
         {
             // Blank promises a new repo, which this folder can't have without losing its remote.
-            if (state.Origin is not null) return ("", false, $"That folder already uses {state.Origin}. Enter that URL to use it, or choose a folder with no repo to create a new one.");
+            if (state.GitHubOrigin is not null) return ("", false, $"That folder already uses {state.GitHubOrigin}. Enter that URL to use it, or choose a folder with no repo to create a new one.");
+            if (state.Origin is not null) return ("", false, $"That folder uses {state.Origin}, which isn't on GitHub. Choose a folder with no repo, or one that's on GitHub.");
 
             status("Creating a private repo on GitHub…");
             var created = await GitTools.CreatePrivateRepoAsync(project.Name, project.Folder);
@@ -284,12 +285,12 @@ public partial class NewProjectWizard : UserControl
         }
 
         if (GitTools.RepoUrlProblem(url) is { } urlProblem) return ("", false, urlProblem);
-        if (state.Origin is not null && !GitTools.SameRepo(state.Origin, url))
+        if (state.Origin is not null && !GitTools.SameRepo(state.OriginToCompare!, url))
         {
             return ("", false, "That folder is connected to a different repo than that URL.");
         }
 
-        var check = await GitTools.CheckRepoAccessAsync(url);
+        var check = await GitTools.CheckRepoAccessAsync(url, state.AliasRemote);
         switch (check.Access)
         {
             case RepoAccess.Allowed or RepoAccess.Offline:

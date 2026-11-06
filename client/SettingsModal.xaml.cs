@@ -19,6 +19,8 @@ public partial class SettingsModal : UserControl
 
     private readonly Dictionary<string, Page> _pages = [];
     private readonly Dictionary<string, RadioButton> _navItems = [];
+    private const int MaxDeviceNameLength = 64; // The server refuses longer ones.
+
     private ServerConnection _server = null!;
     private DeviceSession _devices = null!;
     private SyncEngine _sync = null!;
@@ -417,6 +419,7 @@ public partial class SettingsModal : UserControl
         var key = new PasswordBox { Style = (Style)FindResource("SecretField") };
         var name = Field(Environment.MachineName);
         name.Width = 300;
+        name.MaxLength = MaxDeviceNameLength;
         var connect = ActionButton("Connect");
         var problem = ProblemText();
         var connecting = false;
@@ -495,6 +498,7 @@ public partial class SettingsModal : UserControl
     private Grid RenameRow(DeviceInfo device, TextBlock problem)
     {
         var name = Field(device.Name);
+        name.MaxLength = MaxDeviceNameLength;
         var save = ActionButton("Save");
         save.Visibility = Visibility.Collapsed;
         var savedName = device.Name;

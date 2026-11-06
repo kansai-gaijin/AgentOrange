@@ -4,9 +4,12 @@
 
 status=0
 while IFS= read -r file; do
+    # A commit that only deletes or rewords has no files to check.
+    [ -n "$file" ] || continue
+
     case "$file" in
         .githooks/*) continue ;;
-        *.db | *.db-* | *.sqlite | *.sqlite3 | *.sqlite-*)
+        *.db | *.db-* | *.sqlite | *.sqlite-* | *.sqlite3 | *.sqlite3-*)
             echo "Blocked: $file looks like a database." >&2
             status=1
             continue
@@ -20,7 +23,7 @@ while IFS= read -r file; do
     elif [ "$(git show ":$file" | head -c 15)" = "SQLite format 3" ]; then
         echo "Blocked: $file is a database, whatever its name says." >&2
         status=1
-    elif git show ":$file" | grep -aqE 'BEGIN [A-Z ]*PRIVATE KEY|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}'; then
+    elif git show ":$file" | grep -aqE 'BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}'; then
         echo "Blocked: $file seems to hold a private key or token." >&2
         status=1
     fi

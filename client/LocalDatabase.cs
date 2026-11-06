@@ -25,10 +25,16 @@ public sealed class LocalDatabase
     private const string ProjectsCollection = "projects";
     private const string SettingsCollection = "settings";
     private const string ImagesCollection = "project_images";
+    private const string EnginesCollection = "project_engines";
     private const string ProjectOrderRecord = "project_order";
     private const string UnknownChoice = "Other";
 
     private sealed record ProjectData(string Name, DateTimeOffset CreatedAt, string? Engine = null, string? RepoUrl = null, string? EngineVersion = null, string? GameType = null);
+
+    // Its own record, because PCs read this by themselves, with no one editing anything. If it
+    // were part of the project, a PC with an old copy would republish all of it. It names its
+    // engine, so a version never shows beside a different engine.
+    private sealed record EngineRecord(string Engine, string Version);
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -70,6 +76,7 @@ public sealed class LocalDatabase
         command.CommandText = "SELECT id, data FROM records WHERE collection = $collection AND deleted = 0";
         command.Parameters.AddWithValue("$collection", ProjectsCollection);
 
+        var engines = ReadEngineRecords(connection);
         var projects = new List<Project>();
         using var reader = command.ExecuteReader();
         while (reader.Read())
@@ -87,11 +94,15 @@ public sealed class LocalDatabase
             }
             if (data?.Name is null) continue;
 
+            var id = reader.GetString(0);
+            var engine = data.Engine ?? UnknownChoice;
+            var version = engines.TryGetValue(id, out var found) ? (found.Engine == engine ? found.Version : "") : data.EngineVersion ?? "";
+
             projects.Add(new Project(
-                reader.GetString(0),
+                id,
                 data.Name,
-                data.Engine ?? UnknownChoice,
-                data.EngineVersion ?? "",
+                engine,
+                version,
                 data.GameType ?? UnknownChoice,
                 data.RepoUrl ?? "",
                 data.CreatedAt));
@@ -114,8 +125,40 @@ public sealed class LocalDatabase
 
     public void SaveProject(Project project)
     {
-        var data = new ProjectData(project.Name, project.CreatedAt, project.Engine, project.RepoUrl, project.EngineVersion, project.GameType);
+        var data = new ProjectData(project.Name, project.CreatedAt, project.Engine, project.RepoUrl, null, project.GameType);
         SaveRecord(ProjectsCollection, project.Id, JsonSerializer.Serialize(data, JsonOptions));
+    }
+
+    /// <summary>What the project's own files say. Only ever written when it has changed.</summary>
+    public void SetEngineVersion(string projectId, string engine, string version)
+    {
+        var data = JsonSerializer.Serialize(new EngineRecord(engine, version), JsonOptions);
+        if (GetRecord(EnginesCollection, projectId) != data) SaveRecord(EnginesCollection, projectId, data);
+    }
+
+    private static Dictionary<string, EngineRecord> ReadEngineRecords(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id, data FROM records WHERE collection = $collection AND deleted = 0";
+        command.Parameters.AddWithValue("$collection", EnginesCollection);
+
+        var engines = new Dictionary<string, EngineRecord>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            try
+            {
+                if (JsonSerializer.Deserialize<EngineRecord>(reader.GetString(1), JsonOptions) is { Engine: not null, Version: not null } record)
+                {
+                    engines[reader.GetString(0)] = record;
+                }
+            }
+            catch (JsonException error)
+            {
+                AppLog.Write($"Skipped an unreadable engine version: {error.Message}");
+            }
+        }
+        return engines;
     }
 
     /// <summary>Removes a project from every PC. Its folder and repo are left alone.</summary>
@@ -123,6 +166,7 @@ public sealed class LocalDatabase
     {
         SaveRecord(ProjectsCollection, projectId, "{}", deleted: true);
         foreach (var kind in Enum.GetValues<ProjectImageKind>()) SetProjectImage(projectId, kind, null);
+        SaveRecord(EnginesCollection, projectId, "", deleted: true);
 
         var order = ProjectOrder();
         if (order.Remove(projectId)) SaveProjectOrder(order);
@@ -153,6 +197,7 @@ public sealed class LocalDatabase
             {
                 if (GetRecord(ImagesCollection, ImageId(projectId, kind)) is not null) SetProjectImage(projectId, kind, null);
             }
+            if (GetRecord(EnginesCollection, projectId) is not null) SaveRecord(EnginesCollection, projectId, "", deleted: true);
             foreach (var setting in new[] { $"project_folder:{projectId}", $"project_verified:{projectId}" })
             {
                 if (!string.IsNullOrEmpty(GetSetting(setting))) SetSetting(setting, "");
@@ -315,6 +360,20 @@ public sealed class LocalDatabase
         Execute(connection, "INSERT OR REPLACE INTO outbox SELECT collection, id, data, deleted FROM records");
     }
 
+    /// <summary>
+    /// A server that lost its data gets everything sent again. All in one step, because
+    /// if only the new epoch were saved, this would never be noticed again after a crash.
+    /// </summary>
+    public void StartOverWithServer(string epochSetting, string epoch, string cursorSetting)
+    {
+        using var connection = Open();
+        using var transaction = connection.BeginTransaction();
+        Execute(connection, "INSERT OR REPLACE INTO outbox SELECT collection, id, data, deleted FROM records");
+        WriteSetting(connection, epochSetting, epoch);
+        WriteSetting(connection, cursorSetting, "0");
+        transaction.Commit();
+    }
+
     public string? GetSetting(string key)
     {
         using var connection = Open();
@@ -327,6 +386,11 @@ public sealed class LocalDatabase
     public void SetSetting(string key, string value)
     {
         using var connection = Open();
+        WriteSetting(connection, key, value);
+    }
+
+    private static void WriteSetting(SqliteConnection connection, string key, string value)
+    {
         using var command = connection.CreateCommand();
         command.CommandText = """
             INSERT INTO settings (key, value) VALUES ($key, $value)

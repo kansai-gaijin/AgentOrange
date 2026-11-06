@@ -14,6 +14,7 @@ internal static class FolderIdentity
     private const uint ShareAll = 0x1 | 0x2 | 0x4;
     private const uint OpenExisting = 3;
     private const uint BackupSemantics = 0x02000000; // Needed to open a folder at all.
+    private const int FileIdInfoClass = 18;
 
     public static bool Same(string a, string b)
     {
@@ -34,11 +35,23 @@ internal static class FolderIdentity
     }
 
     // A folder that can't be opened right now has no identity, so it just doesn't match.
-    private static (uint Volume, uint High, uint Low)? Of(string path)
+    // The long ID comes first, because Dev Drives use ReFS and the short one may not be unique
+    // there. Some network drives only have the short one.
+    private static (ulong Volume, ulong High, ulong Low)? Of(string path)
     {
         using var handle = CreateFileW(path, 0, ShareAll, IntPtr.Zero, OpenExisting, BackupSemantics, IntPtr.Zero);
-        if (handle.IsInvalid || !GetFileInformationByHandle(handle, out var info)) return null;
-        return (info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow);
+        if (handle.IsInvalid) return null;
+        if (GetFileInformationByHandleEx(handle, FileIdInfoClass, out var id, (uint)Marshal.SizeOf<FileId>())) return (id.VolumeSerialNumber, id.High, id.Low);
+        if (GetFileInformationByHandle(handle, out var info)) return (info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow);
+        return null;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileId
+    {
+        public ulong VolumeSerialNumber;
+        public ulong Low;
+        public ulong High;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -58,6 +71,9 @@ internal static class FolderIdentity
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int infoClass, out FileId info, uint size);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out FileInformation info);

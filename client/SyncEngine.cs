@@ -64,15 +64,14 @@ public sealed class SyncEngine
                 var knownEpoch = _database.GetSetting(epochSetting);
                 if (response.Epoch is { Length: > 0 } epoch && epoch != knownEpoch)
                 {
-                    _database.SetSetting(epochSetting, epoch);
                     if (knownEpoch is not null)
                     {
                         AppLog.Write("The server's data started over, so this PC is sending it everything again.");
-                        _database.QueueAllRecords();
+                        _database.StartOverWithServer(epochSetting, epoch, cursorSetting);
                         cursor = 0;
-                        _database.SetSetting(cursorSetting, "0");
                         continue;
                     }
+                    _database.SetSetting(epochSetting, epoch);
                 }
 
                 if (_database.ApplyFromServer(response.Changes) > 0) RecordsChanged?.Invoke();

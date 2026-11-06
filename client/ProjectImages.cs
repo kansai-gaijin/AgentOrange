@@ -72,12 +72,15 @@ public static class ProjectImages
             AppLog.Write("That image was too detailed to fit, even at low quality.");
             return null;
         }
-        catch (Exception error) when (error is NotSupportedException or FileFormatException or IOException or ArgumentException or UriFormatException or InvalidOperationException or UnauthorizedAccessException or OutOfMemoryException or System.Runtime.InteropServices.ExternalException)
+        catch (Exception error) when (IsImageFailure(error))
         {
             AppLog.Write($"Couldn't use that image: {error.Message}");
             return null;
         }
     }
+
+    private static bool IsImageFailure(Exception error) =>
+        error is NotSupportedException or FileFormatException or IOException or ArgumentException or UriFormatException or InvalidOperationException or UnauthorizedAccessException or OutOfMemoryException or System.Runtime.InteropServices.ExternalException;
 
     private static int ReadOrientation(BitmapFrame frame)
     {
@@ -156,8 +159,10 @@ public static class ProjectImages
             image.Freeze();
             return image;
         }
-        catch (Exception error) when (error is NotSupportedException or FileFormatException or IOException or ArgumentException)
+        catch (Exception error) when (IsImageFailure(error))
         {
+            // These arrive from other PCs, and one bad picture can't be allowed to stop the app opening.
+            AppLog.Write($"Skipped an unreadable image: {error.Message}");
             return null;
         }
     }

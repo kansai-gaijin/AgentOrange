@@ -32,6 +32,9 @@ public partial class MainWindow
     private string? _pageProblem;
     private bool _confirmingNewRepo;
     private int _navigation;
+
+    // A long operation can finish after they've left its project, and what happened still has to reach them.
+    private readonly Dictionary<string, string> _heldProblems = [];
     private string? _settingsProjectId;
 
     // Only one long operation runs at a time. It keeps going if the person leaves the page.
@@ -293,15 +296,15 @@ public partial class MainWindow
         _projectCheck = null;
         _folderProblem = null;
         _folderExists = false;
-        _pageProblem = null;
+        _pageProblem = _heldProblems.Remove(project.Id, out var held) ? held : null;
         _confirmingNewRepo = false;
         ProjectSelectView.Visibility = Visibility.Collapsed;
         ProjectView.Visibility = Visibility.Visible;
         RenderProject(project);
 
-        var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl);
-
         var folder = _database.GetProjectFolder(project.Id);
+        var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl, await GitTools.RemoteToReachAsync(folder, project.RepoUrl));
+
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
         var folderProblem = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline
             ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl)
@@ -331,23 +334,26 @@ public partial class MainWindow
         await ReadEngineVersionAsync(latest.Id);
     }
 
-    // A project on this PC may have moved to a newer engine since it was last opened.
+    // A project on this PC may have moved to a newer engine since it was last opened. This never
+    // saves the project itself, because this PC's copy of it may be out of date.
     private async Task ReadEngineVersionsAsync()
     {
         foreach (var project in _database.ListProjects()) await ReadEngineVersionAsync(project.Id);
     }
 
     // The version comes from the project's own files, and syncs so that PCs without a copy
-    // can show it too. A project whose files don't say keeps what was last found.
+    // can show it too. A project whose files don't say keeps what was last found, and a
+    // folder that's really some other repo has nothing to say about this project.
     private async Task ReadEngineVersionAsync(string projectId)
     {
         if (FindProject(projectId) is not { } project || _database.GetProjectFolder(projectId) is not { } folder) return;
+        if (await GitTools.FolderProblemAsync(folder, project.RepoUrl) is not null) return;
 
         var version = await EngineVersions.FindAsync(project.Engine, folder);
         if (version is null || FindProject(projectId) is not { } latest) return;
         if (latest.Engine != project.Engine || latest.EngineVersion == version) return;
 
-        _database.SaveProject(latest with { EngineVersion = version });
+        _database.SetEngineVersion(projectId, project.Engine, version);
         _ = _sync.SyncNowAsync();
         RefreshProjects();
     }
@@ -596,7 +602,11 @@ public partial class MainWindow
     // Shows the result if the person is still looking at this project.
     private void ShowPageProblem(string projectId, string problem)
     {
-        if (_openProject?.Id != projectId) return;
+        if (_openProject?.Id != projectId)
+        {
+            _heldProblems[projectId] = problem;
+            return;
+        }
         _pageProblem = problem;
         RenderProject(_openProject);
     }
@@ -631,6 +641,15 @@ public partial class MainWindow
         }
 
         StartBusy(project, "Creating a private repo on GitHub…");
+
+        // The folder dialog can stay open a long time, and sync keeps running behind it.
+        if (FindProject(project.Id) is not { } stillThere || !GitTools.SameRepo(stillThere.RepoUrl, project.RepoUrl))
+        {
+            EndBusy();
+            _confirmingNewRepo = false;
+            await RecheckIfStillOpenAsync(project.Id);
+            return;
+        }
 
         // Two projects can have copies of one repo, and this would take over the other's.
         if (await _database.ProjectUsingFolderAsync(folder!, project.Id) is { } owner)
@@ -711,6 +730,19 @@ public partial class MainWindow
             var dialog = new OpenFolderDialog { Title = "Choose where to put the project" };
             if (dialog.ShowDialog() != true) return;
 
+            StartBusy(project, "Checking that folder…");
+            var owner = GitTools.CloneDestination(project.RepoUrl, dialog.FolderName) is { } destination
+                ? await _database.ProjectUsingFolderAsync(destination, project.Id)
+                : null;
+            EndBusy();
+            if (owner is not null)
+            {
+                ShowPageProblem(project.Id, $"{owner.Name} already uses the folder this would clone into. A folder can only be one project.");
+                return;
+            }
+
+            var folderBefore = _database.GetProjectFolder(project.Id);
+
             using var cancel = new CancellationTokenSource();
             _cloneCancel = cancel;
             StartBusy(project, "Cloning…");
@@ -719,8 +751,20 @@ public partial class MainWindow
             _cloneCancel = null;
             EndBusy();
 
-            if (result.Worked) await UseFolderAsync(project.Id, result.Value);
-            else ShowPageProblem(project.Id, result.Value);
+            if (!result.Worked)
+            {
+                ShowPageProblem(project.Id, result.Value);
+            }
+            else if (FindProject(project.Id) is { } latest
+                && (_database.GetProjectFolder(project.Id) != folderBefore || !GitTools.SameRepo(latest.RepoUrl, project.RepoUrl)))
+            {
+                // Settings stay open during a clone, and what was chosen there is more recent.
+                ShowPageProblem(project.Id, $"Cloned to {result.Value}, but this project changed while that ran, so it wasn't linked. The clone is still there.");
+            }
+            else
+            {
+                await UseFolderAsync(project.Id, result.Value);
+            }
         };
 
         var (heading, description) = (linkedFolder, _folderProblem, _folderExists) switch
@@ -747,6 +791,17 @@ public partial class MainWindow
         else
         {
             body.Children.Add(Card(cloneRow, selectRow));
+        }
+
+        // A missing folder may just be on a drive that isn't plugged in.
+        if (linkedFolder is not null)
+        {
+            var retry = ActionButton("Try again");
+            retry.IsEnabled = !busy;
+            retry.HorizontalAlignment = HorizontalAlignment.Left;
+            retry.Margin = new Thickness(16, 10, 0, 0);
+            retry.Click += async (_, _) => await RecheckIfStillOpenAsync(project.Id);
+            body.Children.Add(retry);
         }
         AddBusyAndProblem(body, project);
     }
@@ -800,6 +855,12 @@ public partial class MainWindow
     private async Task UseFolderAsync(string projectId, string folder)
     {
         if (FindProject(projectId) is null) return;
+        if (await _database.ProjectUsingFolderAsync(folder, projectId) is { } other)
+        {
+            ShowPageProblem(projectId, $"{other.Name} already uses {folder}. A folder can only be one project.");
+            return;
+        }
+
         _database.SetProjectFolder(projectId, folder);
         await ReadEngineVersionAsync(projectId);
         await RefreshThenRecheckAsync(projectId);

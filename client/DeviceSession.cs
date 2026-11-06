@@ -132,8 +132,9 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     public async Task<bool> RemoveAsync(DeviceInfo device)
     {
         var setting = TokenSettingFor(server.Address);
+        var token = ReadToken(setting);
         var removed = await SucceedsAsync(HttpMethod.Delete, $"/v1/devices/{device.Id}", null);
-        if (removed && device.Current) ForgetLogin(setting);
+        if (removed && device.Current && token is not null) ForgetLogin(setting, token);
         return removed;
     }
 
@@ -162,12 +163,14 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
 
         var response = await _http.SendAsync(request);
         // This device was removed from the server, so its login is no use any more.
-        if (response.StatusCode == HttpStatusCode.Unauthorized) ForgetLogin(setting);
+        if (response.StatusCode == HttpStatusCode.Unauthorized) ForgetLogin(setting, token);
         return response;
     }
 
-    private void ForgetLogin(string setting)
+    // A late answer about an old login mustn't erase a new one made in the meantime.
+    private void ForgetLogin(string setting, string token)
     {
+        if (ReadToken(setting) != token) return;
         database.SetSetting(setting, "");
         PairingChanged?.Invoke();
     }

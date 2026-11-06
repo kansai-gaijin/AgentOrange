@@ -95,9 +95,9 @@ public partial class ProjectSettingsModal : UserControl
         var browse = ActionButton("Browse");
         browse.Click += async (_, _) => await ChooseFolderAsync(projectId, folder);
 
-        // A version belongs to one engine. The right one is read from the project again on closing.
+        // The version for the new engine is read from the project on closing.
         var engine = Choice(ProjectChoices.Engines, project.Engine, value =>
-            QueueUpdate(projectId, current => current with { Engine = value, EngineVersion = "" }));
+            QueueUpdate(projectId, current => current with { Engine = value }));
 
         var details = new StackPanel
         {
