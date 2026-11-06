@@ -126,7 +126,8 @@ public partial class MainWindow : Window
         }
 
         // Wherever the mouse is let go, as a card that's being pressed holds off rebuilding the cards.
-        PreviewMouseLeftButtonUp += (_, _) =>
+        // That includes outside the window, which it only hears about by no longer being active.
+        void EndCardPress()
         {
             _pressedCard = null;
             if (_refreshAfterDrag && _draggedCard is null)
@@ -134,7 +135,9 @@ public partial class MainWindow : Window
                 _refreshAfterDrag = false;
                 Dispatcher.InvokeAsync(RefreshProjects, DispatcherPriority.Background);
             }
-        };
+        }
+        PreviewMouseLeftButtonUp += (_, _) => EndCardPress();
+        Deactivated += (_, _) => EndCardPress();
 
         // Coming back to a page that's been open a while is when access may have changed.
         Activated += async (_, _) => await RecheckAccessOnReturnAsync();

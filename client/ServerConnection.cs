@@ -52,6 +52,7 @@ public sealed class ServerConnection
         if (!Uri.TryCreate(text, UriKind.Absolute, out var uri)
             || uri.Scheme is not ("http" or "https")
             || uri.Host.Length == 0
+            || uri.UserInfo.Length > 0 // A login in an address would end up saved and logged.
             || (uri.Scheme == "http" && !uri.IsLoopback)) // Logins must not cross a network unencrypted.
         {
             return false;

@@ -290,7 +290,12 @@ public static partial class GitTools
         if (state.Problem is not null) return state.Problem;
         if (state.IsInsideAnotherRepo) return "That folder is inside a repo. Choose the repo's top folder.";
         if (state.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
-        if (!SameRepo(state.OriginToCompare!, repoUrl)) return $"That folder uses a different repo: {state.Origin}";
+        if (!SameRepo(state.OriginToCompare!, repoUrl))
+        {
+            if (!await MoveIfRepoRenamedAsync(folder, state, repoUrl)) return $"That folder uses a different repo: {state.Origin}";
+            state = await InspectFolderAsync(folder);
+            if (state?.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
+        }
 
         // The same owner and name somewhere that isn't really GitHub, or in a way Git won't use.
         if (RepoUrlProblem(state.OriginToCompare!) is not null) return $"That folder uses a different repo address, which isn't one GitHub uses: {state.Origin}";
@@ -310,6 +315,17 @@ public static partial class GitTools
             if (!SameRepo(gitHubForm ?? pushRemote, repoUrl) || RepoUrlProblem(gitHubForm ?? pushRemote) is not null) return $"That folder pushes to a different repo: {pushRemote}";
         }
         return null;
+    }
+
+    /// <summary>
+    /// An older copy of a repo that's since been renamed is still that repo. GitHub says so without
+    /// running anything from the folder, so its remote just moves to the new name, the way it
+    /// connects now. False if it isn't the same repo, or it couldn't be moved.
+    /// </summary>
+    public static async Task<bool> MoveIfRepoRenamedAsync(string folder, FolderRepo state, string repoUrl)
+    {
+        if (state.Origin is null || await RenamedRepoUrlAsync(state.OriginToCompare!) is not { } current || !SameRepo(current, repoUrl)) return false;
+        return await MoveOriginAsync(folder, SameWayTo(state.Origin, repoUrl)) is null;
     }
 
     /// <summary>
@@ -751,6 +767,13 @@ public static partial class GitTools
             {
                 return new GitResult(false, $"You already have a repo called {repoName}. Enter its URL, or rename this project.");
             }
+
+            // gh can create the repo and only then fail, such as on a locked settings file.
+            if (await RunAsync("gh", Path.GetTempPath(), "repo", "view", repoName) is { ExitCode: 0 })
+            {
+                return new GitResult(false, $"The repo {repoName} was created on GitHub, but couldn't be linked to that folder. Enter its URL to use it.");
+            }
+
             var reason = created?.Errors.Split('\n', StringSplitOptions.RemoveEmptyEntries).LastOrDefault()?.Trim();
             return new GitResult(false, string.IsNullOrEmpty(reason) ? "Couldn't create the repo on GitHub." : $"Couldn't create the repo on GitHub: {reason}");
         }
@@ -967,7 +990,8 @@ public static partial class GitTools
         try
         {
             await MoveIntoPlaceAsync(working, destination);
-            return new GitResult(true, destination, await FetchSubmodulesAsync(destination, cancel, progress));
+            var notes = new[] { await FetchSubmodulesAsync(destination, cancel, progress), await GitLfsNoteAsync(destination) }.OfType<string>().ToList();
+            return new GitResult(true, destination, notes.Count > 0 ? string.Join(' ', notes) : null);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -988,6 +1012,15 @@ public static partial class GitTools
 
         var reason = cancel.IsCancellationRequested ? "That was cancelled." : GitFailureReason(result?.Errors ?? "");
         return $"The clone finished, but its submodules didn't. {reason} Run git submodule update --init --recursive in it to try again.";
+    }
+
+    // Without it, a repo that uses it clones fine, with small placeholders instead of its big files.
+    private static async Task<string?> GitLfsNoteAsync(string folder)
+    {
+        var attributes = Path.Combine(folder, ".gitattributes");
+        var usesLfs = await Task.Run(() => File.Exists(attributes) && new FileInfo(attributes).Length < 1_000_000 && File.ReadAllText(attributes).Contains("filter=lfs", StringComparison.Ordinal));
+        if (!usesLfs || await RunAsync("git", Path.GetTempPath(), "lfs", "version") is { ExitCode: 0 }) return null;
+        return "This repo uses Git LFS, which isn't set up on this PC, so its big files are only small placeholders. Install it from git-lfs.com, then run git lfs pull in the folder.";
     }
 
     /// <summary>

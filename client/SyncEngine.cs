@@ -18,6 +18,7 @@ public sealed class SyncEngine
     private readonly Mutex _syncTurn;
     private bool _hasSyncTurn;
     private bool _running;
+    private int _batchLimit = BatchSize;
 
     public SyncEngine(LocalDatabase database, ServerConnection server, DeviceSession devices, string databasePath)
     {
@@ -40,6 +41,9 @@ public sealed class SyncEngine
 
     public DateTimeOffset? LastSynced { get; private set; }
 
+    /// <summary>Changes the server wouldn't take, set aside so everything else can still sync. They stay on this PC.</summary>
+    public int RefusedChanges { get; private set; }
+
     /// <summary>Another window of the app has the database's turn to sync.</summary>
     public bool OtherWindowSyncs { get; private set; }
 
@@ -52,6 +56,22 @@ public sealed class SyncEngine
     public event Action? RecordsChanged;
 
     private static string CursorSetting(string epoch) => $"sync_cursor_for:{epoch}";
+
+    // One bad change would otherwise be first in line forever, and nothing behind it would ever
+    // sync. So smaller and smaller batches are sent until it's alone, and it's then set aside.
+    private void NarrowDownRefused(List<SyncChange> batch)
+    {
+        if (batch.Count > 1)
+        {
+            _batchLimit = Math.Max(1, batch.Count / 2);
+            return;
+        }
+
+        AppLog.Write($"The server refused a change, so it was set aside and stays on this PC: {batch[0].Collection}/{batch[0].Id}");
+        _database.RemoveFromOutbox(batch);
+        RefusedChanges++;
+        _batchLimit = BatchSize;
+    }
 
     private bool HasSyncTurn()
     {
@@ -111,9 +131,14 @@ public sealed class SyncEngine
             {
                 // The last answer was that this PC and the server are on different releases, so
                 // this just asks again. Sending queued images would be thrown away every time.
-                var batch = _devices.VersionsDiffer ? [] : _database.ReadOutbox(BatchSize, MaxBatchBytes);
+                var batch = _devices.VersionsDiffer ? [] : _database.ReadOutbox(_batchLimit, MaxBatchBytes);
                 var response = await _devices.SyncAsync(cursor, batch, epoch);
-                if (response is null) return;
+                if (response is null)
+                {
+                    if (_devices.LastSyncRefused && batch.Count > 0) NarrowDownRefused(batch);
+                    return;
+                }
+                _batchLimit = Math.Min(BatchSize, _batchLimit * 2);
 
                 _database.RemoveFromOutbox(batch);
 

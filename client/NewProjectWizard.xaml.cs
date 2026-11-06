@@ -385,7 +385,11 @@ public partial class NewProjectWizard : UserControl
         }
         if (state.Origin is not null && !GitTools.SameRepo(state.OriginToCompare!, url))
         {
-            return ("", false, "That folder is connected to a different repo than that URL.");
+            if (!await GitTools.MoveIfRepoRenamedAsync(project.Folder, state, url)) return ("", false, "That folder is connected to a different repo than that URL.");
+
+            state = await GitTools.InspectFolderAsync(project.Folder);
+            if (state is null) return ("", false, "Git wasn't found on this PC.");
+            if (state.Problem is not null) return ("", false, state.Problem);
         }
 
         // The same check as selecting a folder for an existing project, such as where it pushes to.

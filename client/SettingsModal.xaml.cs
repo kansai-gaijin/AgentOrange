@@ -413,6 +413,7 @@ public partial class SettingsModal : UserControl
 
     private string LastSyncedLabel()
     {
+        if (Sync.RefusedChanges > 0) return $"The server refused {Sync.RefusedChanges} change(s), which stay on this PC. See the log.";
         if (Sync.OtherWindowSyncs) return "Another window of the app is syncing";
 
         // Whichever is behind updates itself soon, and changes wait on this PC until then.

@@ -37,6 +37,9 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     /// <summary>Told to the server, which only syncs with its own release. Dev builds don't have one.</summary>
     public string? ClientVersion { get; set; }
 
+    /// <summary>The server's last answer was that it won't take what it was sent, so sending it again won't help.</summary>
+    public bool LastSyncRefused { get; private set; }
+
     /// <summary>The server's last answer was that it's on a different release than this PC.</summary>
     public bool VersionsDiffer { get; private set; }
 
@@ -114,6 +117,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
         try
         {
             var response = await SendAsync(HttpMethod.Post, "/v1/sync", new { cursor, changes, epoch });
+            LastSyncRefused = response?.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.RequestEntityTooLarge or HttpStatusCode.UnprocessableEntity;
             var versionsDiffer = response?.StatusCode == HttpStatusCode.UpgradeRequired;
             if (versionsDiffer != VersionsDiffer)
             {

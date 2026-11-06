@@ -42,8 +42,13 @@ internal static partial class GitFolderSafety
             var full = Path.GetFullPath(folder);
             if (IsNetworkPath(full)) return null;
 
-            foreach (var entry in FindGitEntries(full))
+            for (var at = full; at is not null; at = Path.GetDirectoryName(at))
             {
+                // Laid out as a bare repo, which older versions of Git would count as one.
+                if (LooksLikeBareRepo(at)) return Problem;
+
+                var entry = Path.Combine(at, ".git");
+                if (!Exists(entry)) continue;
                 foundOne = true;
                 if (await PointsAtNetworkAsync(entry, readSettingsFile)) return Problem;
             }
@@ -56,16 +61,30 @@ internal static partial class GitFolderSafety
         }
     }
 
-    // Git looks upward from where it runs, and skips one that isn't valid, so every one on the way
-    // up counts. This doesn't follow a link to see what's there, as File.Exists would. A folder
-    // that's a repo with no .git at all, a bare one, is ruled out by how Git is run.
-    private static IEnumerable<string> FindGitEntries(string folder)
+    private static bool LooksLikeBareRepo(string folder) =>
+        Path.GetFileName(folder) != ".git"
+        && Exists(Path.Combine(folder, "HEAD")) && Exists(Path.Combine(folder, "objects")) && Exists(Path.Combine(folder, "refs"));
+
+    // How Git itself reads a path in these files, which is literally, apart from ~/ in settings.
+    // A shell would expand %TEMP%, and looking there instead of where Git will look would be
+    // checking the wrong file. Null for anything it may read differently from this, which isn't safe.
+    private static string? GitPath(string value, string relativeTo, bool homeAllowed = false)
     {
-        for (var at = folder; at is not null; at = Path.GetDirectoryName(at))
+        var text = value;
+        if (text.Length == 0 || text.IndexOfAny(['%', '$']) >= 0 || text[0] is '/' or '\\') return null;
+        if (text[0] == '~')
         {
-            var entry = Path.Combine(at, ".git");
-            if (Exists(entry)) yield return entry;
+            if (!homeAllowed || !(text.StartsWith("~/", StringComparison.Ordinal) || text.StartsWith("~\\", StringComparison.Ordinal))) return null;
+            text = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + text[1..];
         }
+        return Path.GetFullPath(text, relativeTo);
+    }
+
+    private static bool IsUnsafeGitPath(string chosen, string value, string relativeTo, bool homeAllowed, out string path)
+    {
+        var resolved = GitPath(value, relativeTo, homeAllowed);
+        path = resolved ?? "";
+        return resolved is null || IsUnsafeToOpen(chosen, resolved);
     }
 
     private static async Task<bool> PointsAtNetworkAsync(string entry, Func<string, Task<string?>> readSettingsFile)
@@ -84,8 +103,7 @@ internal static partial class GitFolderSafety
             var line = File.ReadLines(entry).FirstOrDefault(text => text.StartsWith("gitdir:", StringComparison.OrdinalIgnoreCase));
             if (line is null) return false;
 
-            gitDirectory = SshConfigFile.Resolve(line["gitdir:".Length..].Trim(), chosen);
-            if (IsUnsafeToOpen(chosen, gitDirectory)) return true;
+            if (IsUnsafeGitPath(chosen, line["gitdir:".Length..].Trim(), chosen, false, out gitDirectory)) return true;
         }
 
         var directories = new List<string> { gitDirectory };
@@ -98,15 +116,14 @@ internal static partial class GitFolderSafety
         if (File.Exists(shared))
         {
             if (new FileInfo(shared).Length > MaxBytes) return true;
-            var common = SshConfigFile.Resolve(File.ReadAllText(shared).Trim(), gitDirectory);
-            if (IsUnsafeToOpen(chosen, common)) return true;
+            if (IsUnsafeGitPath(chosen, File.ReadAllText(shared).Trim(), gitDirectory, false, out var common)) return true;
             directories.Add(common);
         }
 
         foreach (var directory in directories.Where(Directory.Exists))
         {
             if (directory != gitDirectory && HasLinkInside(directory)) return true;
-            if (HasNetworkAlternate(chosen, directory)) return true;
+            if (HasNetworkAlternate(chosen, Path.Combine(directory, "objects"), 0)) return true;
             if (await SettingsPointAtNetworkAsync(chosen, Path.Combine(directory, "config"), 0, readSettingsFile)) return true;
             if (await SettingsPointAtNetworkAsync(chosen, Path.Combine(directory, "config.worktree"), 0, readSettingsFile)) return true;
         }
@@ -131,19 +148,25 @@ internal static partial class GitFolderSafety
         return false;
     }
 
-    // Other places a repo borrows its history from. Git opens them to look for any commit.
-    private static bool HasNetworkAlternate(string chosen, string gitDirectory)
+    // Other places a repo borrows its history from, and those can borrow from others in turn. Git
+    // opens them all to look for any commit.
+    private static bool HasNetworkAlternate(string chosen, string objects, int depth)
     {
-        var objects = Path.Combine(gitDirectory, "objects");
-        var alternates = Path.Combine(objects, "info", "alternates");
-        if (!Exists(alternates)) return false;
-        if (SshConfigFile.IsLink(alternates) || new FileInfo(alternates).Length > MaxBytes) return true;
+        if (depth > MaxIncludeDepth) return true;
 
-        // A quoted line can spell a path in escapes, and ordinary ones have no need to be quoted.
-        return File.ReadLines(alternates)
-            .Select(line => line.Trim())
-            .Where(line => line.Length > 0 && !line.StartsWith('#'))
-            .Any(line => line.StartsWith('"') || StartsLikeShare(line) || IsUnsafeToOpen(chosen, SshConfigFile.Resolve(line, objects)));
+        var alternates = Path.Combine(objects, "info", "alternates");
+        if (IsUnsafeToOpen(chosen, alternates)) return true;
+        if (!Exists(alternates)) return false;
+        if (new FileInfo(alternates).Length > MaxBytes) return true;
+
+        foreach (var line in File.ReadLines(alternates).Select(line => line.Trim()).Where(line => line.Length > 0 && !line.StartsWith('#')))
+        {
+            // A quoted line can spell a path in escapes, and ordinary ones have no need to be quoted.
+            if (line.StartsWith('"') || StartsLikeShare(line)) return true;
+            if (IsUnsafeGitPath(chosen, line, objects, false, out var next)) return true;
+            if (HasNetworkAlternate(chosen, next, depth + 1)) return true;
+        }
+        return false;
     }
 
     private static async Task<bool> SettingsPointAtNetworkAsync(string chosen, string file, int depth, Func<string, Task<string?>> readSettingsFile)
@@ -169,10 +192,11 @@ internal static partial class GitFolderSafety
             var value = parts[1];
             if (StartsLikeShare(value) || value.StartsWith("%(prefix)", StringComparison.Ordinal) || NamesNetworkDrive(value)) return true;
 
-            if (PathSetting().IsMatch(parts[0]) && IsUnsafeToOpen(chosen, SshConfigFile.Resolve(value, directory))) return true;
+            if (PathSetting().IsMatch(parts[0]) && IsUnsafeGitPath(chosen, value, directory, true, out _)) return true;
 
             if (!IncludeSetting().IsMatch(parts[0])) continue;
-            if (await SettingsPointAtNetworkAsync(chosen, SshConfigFile.Resolve(value, directory), depth + 1, readSettingsFile)) return true;
+            if (IsUnsafeGitPath(chosen, value, directory, true, out var included)) return true;
+            if (await SettingsPointAtNetworkAsync(chosen, included, depth + 1, readSettingsFile)) return true;
         }
         return false;
     }
