@@ -182,6 +182,7 @@ public partial class ProjectSettingsModal : UserControl
         {
             if (_refreshing) return;
             chosenEngine = value;
+            shownVersion = ""; // The old engine's, so it isn't taken for a change arriving from elsewhere.
             version.Text = !EngineVersions.CanRead(value) ? DoesNotApply : folder.Text.Length > 0 ? CheckedOnClosing : "Needs a folder";
             QueueUpdate(projectId, current => current with { Engine = value });
         });

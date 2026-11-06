@@ -47,7 +47,7 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
         RepoAccess.OtherAccount => ("Wrong GitHub account", $"Your active GitHub account can't work on this repo, but {Account} can."),
         RepoAccess.ReadOnly => ("You don't have access to this repo", $"{Account ?? "Your GitHub account"} can only read it, so you can't work on it. Get write access, or use a different repo."),
         RepoAccess.Archived => ("This repo is archived", "GitHub won't accept changes to it. Unarchive it on GitHub, or change the URL in project settings."),
-        RepoAccess.Restricted => ("GitHub is blocking this login from the repo", "An organization or token setting doesn't let this login see it, so trying again won't help. Authorize the login for the organization on GitHub, or sign in again with gh auth refresh."),
+        RepoAccess.Restricted => ("GitHub is blocking this login from the repo", $"An organization or token setting doesn't let {Account ?? "this login"} see it, so trying again won't help. Authorize that login for the organization on GitHub, or sign in again with gh auth refresh."),
         RepoAccess.NotFound => ("This repo doesn't exist", "It may have been deleted or renamed, or your GitHub login may not be allowed to see it."),
         RepoAccess.NotFoundOrNoAccess => ("Can't find this repo", "It was deleted, or your GitHub account doesn't have access. GitHub doesn't say which. If you should have access, ask the owner."),
         RepoAccess.GitCantReach => ("Git on this PC can't reach this repo", "Your GitHub account has access, but Git doesn't get through from here. Check this PC's Git setup, such as its SSH keys or a firewall, or run gh auth setup-git."),
@@ -156,6 +156,7 @@ public static partial class GitTools
         // Another signed-in account may be the one that can work on this repo.
         string? inconclusive = null;
         string? otherCanRead = null;
+        string? otherIsBlocked = null;
         var accounts = await SignedInAccountsAsync();
 
         // An account just answered, so finding none means the list couldn't be read. Without that,
@@ -184,6 +185,7 @@ public static partial class GitTools
             // who can write to it. An account with an expired login just can't work on it.
             if (viewed is { ExitCode: 0 }) otherCanRead ??= account;
             var errors = viewed?.Errors ?? "";
+            if (AccessBlocked().IsMatch(errors)) otherIsBlocked ??= account;
             var answered = viewed is { ExitCode: 0 } || SaysRepoMissing(errors) || SignedOutMessage().IsMatch(errors) || AccessBlocked().IsMatch(errors);
             if (!answered) inconclusive = errors;
         }
@@ -194,6 +196,9 @@ public static partial class GitTools
         // The active account was told it doesn't exist, but another one can see it. So it does
         // exist, and offering to replace it would move the project off a real repo.
         if (otherCanRead is not null) return new RepoCheck(RepoAccess.ReadOnly, otherCanRead);
+
+        // GitHub only blocks a login from something that's there, so this one exists too.
+        if (otherIsBlocked is not null) return new RepoCheck(RepoAccess.Restricted, otherIsBlocked);
         if (inconclusive is not null) return new RepoCheck(LooksLikeNetworkFailure(inconclusive) ? RepoAccess.Offline : RepoAccess.CheckFailed);
 
         var ownerIsYours = accounts.Contains(parts[1], StringComparer.OrdinalIgnoreCase);
@@ -808,6 +813,11 @@ public static partial class GitTools
 
     public static Task<bool> FolderIsEmptyAsync(string folder) => Task.Run(() => Directory.Exists(folder) && !IsTaken(folder));
 
+    /// <summary>Set up for Git, with no files or commits, as git init leaves a folder.</summary>
+    public static async Task<bool> FolderHoldsOnlyGitAsync(string folder) =>
+        await Task.Run(() => Directory.EnumerateFileSystemEntries(folder).All(entry => Path.GetFileName(entry) == ".git"))
+        && await FolderHasNoCommitsAsync(folder) == true;
+
     public static Task<bool> FolderIsLinkAsync(string folder) => Task.Run(() => new DirectoryInfo(folder).LinkTarget is not null);
 
     /// <summary>
@@ -1379,7 +1389,7 @@ public static partial class GitTools
     [GeneratedRegex(@"HTTP 401|gh auth login|not logged in", RegexOptions.IgnoreCase)]
     private static partial Regex SignedOutMessage();
 
-    [GeneratedRegex(@"timeout|timed out|could not resolve host|no such host|dial tcp|could not connect|failed to connect|error connecting to|check your internet connection|connection (was )?(refused|reset|closed)|returned error: 5\d\d|remote end hung up|empty reply from server|network is unreachable|tls handshake|proxyconnect|temporary failure", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"timeout|timed out|schannel: failed to receive handshake|ssl_connect|unexpected disconnect|could not resolve host|no such host|dial tcp|could not connect|failed to connect|error connecting to|check your internet connection|connection (was )?(refused|reset|closed)|returned error: 5\d\d|remote end hung up|empty reply from server|network is unreachable|tls handshake|proxyconnect|temporary failure", RegexOptions.IgnoreCase)]
     private static partial Regex NetworkFailure();
 
     [GeneratedRegex(@"returned error: 4\d\d|\bnot found\b|permission denied|authentication failed|access denied", RegexOptions.IgnoreCase)]

@@ -343,11 +343,11 @@ public partial class MainWindow
         // A folder with its own commits may not be this project at all, however it was connected.
         // This keeps saying so until the two share a commit, which is then remembered for that
         // folder and repo, as this asks GitHub each time until it does.
-        var sharesSetting = $"folder_shares_repo:{GitTools.RepoKey(project.RepoUrl)}:{folder}";
-        var history = check.Access == RepoAccess.Allowed && folderExists && folderProblem is null && !lacksFiles && _database.GetSetting(sharesSetting) is null
+        var repoKey = GitTools.RepoKey(project.RepoUrl);
+        var history = check.Access == RepoAccess.Allowed && folderExists && folderProblem is null && !lacksFiles && !_database.FolderSharesRepo(folder!, repoKey)
             ? await GitTools.CompareFolderHistoryAsync(folder!, project.RepoUrl)
             : FolderHistory.CantTell;
-        if (history == FolderHistory.SharesCommits) _database.SetSetting(sharesSetting, "yes");
+        if (history == FolderHistory.SharesCommits) _database.RememberFolderSharesRepo(folder!, repoKey);
         var mayNotMatch = history == FolderHistory.SharesNothing;
 
         if (navigation != _navigation) return; // They moved on, or something newer started.

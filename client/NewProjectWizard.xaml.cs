@@ -429,7 +429,10 @@ public partial class NewProjectWizard : UserControl
                     return (url, true, null);
                 }
 
-                if (!Dialogs.Confirm("That repo already has files, and this folder has its own and isn't connected to it, so they may not be the same project.\n\nConnecting them changes no files and pushes nothing, but Git may then treat their histories as unrelated. Connect them anyway?"))
+                var question = await GitTools.FolderHoldsOnlyGitAsync(project.Folder)
+                    ? "That repo already has files, and this folder has Git set up but nothing in it yet.\n\nConnecting them doesn't bring the files over, so you'd need to pull them yourself. Connect them anyway?"
+                    : "That repo already has files, and this folder has its own and isn't connected to it, so they may not be the same project.\n\nConnecting them changes no files and pushes nothing, but Git may then treat their histories as unrelated. Connect them anyway?";
+                if (!Dialogs.Confirm(question))
                 {
                     return ("", false, "Nothing was changed. To get a copy of that repo, choose an empty folder. Or choose a folder that's already connected to it.");
                 }

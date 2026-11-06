@@ -273,9 +273,20 @@ public sealed class LocalDatabase
     public void SetProjectFolder(string projectId, string folder)
     {
         // A folder connected again later gets looked at again, including its own Git settings.
-        if (GetProjectFolder(projectId) is { } old && old != folder) SetSetting(AllowedSettingsKey(old), "");
+        if (GetProjectFolder(projectId) is { } old && old != folder)
+        {
+            SetSetting(AllowedSettingsKey(old), "");
+            SetSetting(SharesRepoKey(old), "");
+        }
         SetSetting($"project_folder:{projectId}", folder);
     }
+
+    /// <summary>Whether this folder has been seen to share a commit with this repo, which stands until it's disconnected.</summary>
+    public bool FolderSharesRepo(string folder, string repoKey) => GetSetting(SharesRepoKey(folder)) == repoKey;
+
+    public void RememberFolderSharesRepo(string folder, string repoKey) => SetSetting(SharesRepoKey(folder), repoKey);
+
+    private static string SharesRepoKey(string folder) => $"folder_shares_repo:{folder}";
 
     /// <summary>The fingerprint of a folder's own Git settings that the person has allowed on this PC.</summary>
     public string? AllowedFolderSettings(string folder) => GetSetting(AllowedSettingsKey(folder));

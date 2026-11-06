@@ -57,7 +57,7 @@ public partial class MainWindow : Window
 
         _database = new LocalDatabase(folders.DatabasePath);
         ProjectWizard.ClaimFolder = async (folder, name) =>
-            (await _database.ClaimFolderAsync(folder, new Project("new-project", name, "", "", "", "", DateTimeOffset.UtcNow)))?.Name;
+            (await _database.ClaimFolderAsync(folder, new Project($"new-project-{Guid.NewGuid():N}", name, "", "", "", "", DateTimeOffset.UtcNow)))?.Name;
         ProjectWizard.ReleaseFolder = _database.ReleaseFolder;
         GitTools.ProjectUsingRepo = url => _database.ListProjects().FirstOrDefault(project => GitTools.SameRepo(project.RepoUrl, url))?.Name;
         GitTools.AllowedFolderSettings = _database.AllowedFolderSettings;
