@@ -179,7 +179,7 @@ public partial class NewProjectWizard : UserControl
         browse.Click += async (_, _) =>
         {
             var dialog = new OpenFolderDialog { Title = "Choose the project folder" };
-            if (Directory.Exists(_folder)) dialog.InitialDirectory = _folder;
+            if (await GitTools.FolderExistsAsync(_folder)) dialog.InitialDirectory = _folder;
             if (dialog.ShowDialog() != true) return;
 
             folder.Text = dialog.FolderName;
@@ -187,8 +187,9 @@ public partial class NewProjectWizard : UserControl
             // A URL filled in from the previous folder doesn't belong to this one.
             var typedItself = repo.Text.Trim().Length > 0 && repo.Text != _autoFilledRepo;
             if (typedItself) return;
+            var before = repo.Text;
             var state = await GitTools.InspectFolderAsync(dialog.FolderName);
-            if (folder.Text != dialog.FolderName) return;
+            if (folder.Text != dialog.FolderName || repo.Text != before) return;
             _autoFilledRepo = state?.Origin ?? "";
             repo.Text = _autoFilledRepo;
         };
@@ -219,11 +220,6 @@ public partial class NewProjectWizard : UserControl
                 ShowProblem(problem, "Choose the project folder.");
                 return;
             }
-            if (!Directory.Exists(path))
-            {
-                ShowProblem(problem, "That folder doesn't exist.");
-                return;
-            }
 
             // What was entered is fixed here, and the wizard can't close until this finishes.
             var typedUrl = repo.Text.Trim();
@@ -234,7 +230,9 @@ public partial class NewProjectWizard : UserControl
             string url;
             try
             {
-                (url, failure) = await ResolveRepoAsync(submission, status => progress.Text = status);
+                (url, failure) = await GitTools.FolderExistsAsync(path)
+                    ? await ResolveRepoAsync(submission, status => progress.Text = status)
+                    : ("", "That folder doesn't exist.");
             }
             finally
             {
@@ -282,6 +280,7 @@ public partial class NewProjectWizard : UserControl
     {
         var state = await GitTools.InspectFolderAsync(project.Folder);
         if (state is null) return ("", "Git wasn't found on this PC.");
+        if (state.Problem is not null) return ("", state.Problem);
         if (state.IsInsideAnotherRepo) return ("", "That folder is inside a repo. Choose the repo's top folder.");
 
         var url = project.RepoUrl;

@@ -55,6 +55,9 @@ public partial class MainWindow
         foreach (var project in projects) ProjectGrid.Children.Add(ProjectCard(project));
         NoProjects.Visibility = projects.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
+        // No one can reach a clone's Cancel button once its project is gone.
+        if (_busyProjectId is not null && projects.All(project => project.Id != _busyProjectId)) _cloneCancel?.Cancel();
+
         ProjectSettings.ProjectsChanged();
         if (_openProject is null) return;
 
@@ -68,9 +71,9 @@ public partial class MainWindow
         {
             _ = OpenProjectAsync(current);
         }
-        else if (current != _openProject)
+        else
         {
-            RenderProject(current);
+            RenderProject(current); // Its header image syncs as a separate record.
         }
     }
 
@@ -78,7 +81,7 @@ public partial class MainWindow
 
     private Button ProjectCard(Project project)
     {
-        var thumbnail = ProjectImages.ToImage(_database.GetProjectImage(project.Id, ProjectImageKind.Thumbnail));
+        var thumbnail = ProjectImages.ToImage(_database.GetProjectImage(project.Id, ProjectImageKind.Thumbnail), CoverWidth * 2);
         var cover = new Border
         {
             Width = CoverWidth,
@@ -179,7 +182,7 @@ public partial class MainWindow
     private async Task ShowIfNotOnThisPcAsync(string projectId, TextBlock label)
     {
         var folder = _database.GetProjectFolder(projectId);
-        var here = folder is not null && await Task.Run(() => Directory.Exists(folder));
+        var here = folder is not null && await GitTools.FolderExistsAsync(folder);
         label.Visibility = here ? Visibility.Collapsed : Visibility.Visible;
     }
 
@@ -277,7 +280,7 @@ public partial class MainWindow
         var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl);
 
         var folder = _database.GetProjectFolder(project.Id);
-        var folderExists = folder is not null && await Task.Run(() => Directory.Exists(folder));
+        var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
         var folderProblem = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline
             ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl)
             : null;
@@ -456,12 +459,16 @@ public partial class MainWindow
             var confirm = new Button { Style = (Style)FindResource("PrimaryButton"), Content = "Yes, create it", IsEnabled = !busy };
             confirm.Click += async (_, _) => await CreateReplacementRepoAsync(project);
             var cancel = ActionButton("Cancel");
+            cancel.IsEnabled = !busy;
             cancel.Click += (_, _) =>
             {
                 _confirmingNewRepo = false;
                 RenderProject(project);
             };
             actions = [confirm, cancel];
+
+            var destination = check.Account is null ? "your active GitHub account" : $"the GitHub account {check.Account}";
+            var mayStillExist = check.Access == RepoAccess.NotFoundOrNoAccess ? " The old repo may still exist, even though you can't see it." : "";
 
             body.Children.Add(new Border
             {
@@ -472,7 +479,7 @@ public partial class MainWindow
                 Margin = new Thickness(16, 0, 16, 12),
                 Child = new TextBlock
                 {
-                    Text = $"This creates a new, empty private repo on GitHub and moves this project to it on all your PCs, replacing {project.RepoUrl}. Nothing is pushed, so push your work afterward for your other PCs to get it.",
+                    Text = $"This creates a new, empty private repo under {destination} and moves this project to it on all your PCs, replacing {project.RepoUrl}.{mayStillExist} Nothing is pushed, so push your work afterward for your other PCs to get it.",
                     Foreground = (Brush)FindResource("TextNormal"),
                     FontSize = 13,
                     TextWrapping = TextWrapping.Wrap,
@@ -499,6 +506,12 @@ public partial class MainWindow
 
     private void AddBusyAndProblem(StackPanel body, Project project)
     {
+        if (_busyProjectId is not null && _busyProjectId != project.Id)
+        {
+            var other = FindProject(_busyProjectId)?.Name ?? "Another project";
+            body.Children.Add(new TextBlock { Text = $"{other} is busy. These will be available when it finishes.", FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 10, 0, 0), TextWrapping = TextWrapping.Wrap });
+        }
+
         if (_busyProjectId == project.Id && _busyText is not null)
         {
             body.Children.Add(new TextBlock { Text = _busyText, FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 10, 0, 0) });
@@ -533,6 +546,7 @@ public partial class MainWindow
     {
         _busyProjectId = null;
         _busyText = null;
+        if (_openProject is not null) RenderProject(_openProject);
     }
 
     // Shows the result if the person is still looking at this project.
@@ -545,8 +559,18 @@ public partial class MainWindow
 
     private async Task CreateReplacementRepoAsync(Project project)
     {
+        // Busy from the first click, so a second one can't create a second repo.
+        if (_busyProjectId is not null) return;
+        StartBusy(project, "Checking the project's folder…");
+
+        // The linked folder only qualifies if it's still connected to the repo being replaced.
         var folder = _database.GetProjectFolder(project.Id);
-        if (folder is null || !Directory.Exists(folder))
+        var folderIsUsable = folder is not null
+            && await GitTools.FolderExistsAsync(folder)
+            && !await GitTools.FolderUsesOtherRepoAsync(folder, project.RepoUrl);
+        EndBusy();
+
+        if (!folderIsUsable)
         {
             var dialog = new OpenFolderDialog { Title = $"Choose the folder for {project.Name}" };
             if (dialog.ShowDialog() != true) return;
@@ -554,7 +578,7 @@ public partial class MainWindow
         }
 
         StartBusy(project, "Creating a private repo on GitHub…");
-        var result = await GitTools.CreatePrivateRepoAsync(project.Name, folder, project.RepoUrl);
+        var result = await GitTools.CreatePrivateRepoAsync(project.Name, folder!, project.RepoUrl);
         EndBusy();
 
         if (!result.Worked)
@@ -563,16 +587,22 @@ public partial class MainWindow
             return;
         }
 
-        // Saved even if they've left the page, because the repo now exists.
+        // Saved even if they've left the page, because the repo now exists. A URL changed
+        // in the meantime was chosen more recently, so it stays.
         if (FindProject(project.Id) is not { } latest || GitTools.RepoUrlProblem(result.Value) is not null)
         {
             ShowPageProblem(project.Id, "The repo was created, but the project couldn't be updated.");
             return;
         }
+        if (!GitTools.SameRepo(latest.RepoUrl, project.RepoUrl))
+        {
+            ShowPageProblem(project.Id, $"The repo was created at {result.Value}, but this project moved to a different repo in the meantime, so it wasn't changed.");
+            return;
+        }
 
         var updated = latest with { RepoUrl = result.Value };
         _database.SaveProject(updated);
-        _database.SetProjectFolder(project.Id, folder);
+        _database.SetProjectFolder(project.Id, folder!);
         _ = _sync.SyncNowAsync();
         _confirmingNewRepo = false;
         await RefreshThenRecheckAsync(updated.Id);
@@ -672,7 +702,7 @@ public partial class MainWindow
         }
 
         // The repo or folder may have changed. Work already running gets to finish first.
-        if (_busyProjectId is not null)
+        if (_busyProjectId == openId)
         {
             RefreshProjects();
             return;

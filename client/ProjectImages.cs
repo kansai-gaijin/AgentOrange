@@ -12,7 +12,9 @@ public enum ProjectImageKind { Thumbnail, Header }
 /// </summary>
 public static class ProjectImages
 {
-    private const int JpegQuality = 85;
+    // Stays well under what one sync request can carry, once encoded as text.
+    private const int MaxImageBytes = 900_000;
+    private static readonly int[] JpegQualities = [85, 70, 55, 40];
 
     /// <summary>Crops and resizes a picture to fit. Returns null if the file isn't a usable image.</summary>
     public static byte[]? Prepare(string path, ProjectImageKind kind)
@@ -35,11 +37,17 @@ public static class ProjectImages
             var y = Math.Max(0, (scaled.PixelHeight - height) / 2);
             var cropped = new CroppedBitmap(scaled, new System.Windows.Int32Rect(x, y, Math.Min(width, scaled.PixelWidth), Math.Min(height, scaled.PixelHeight)));
 
-            var encoder = new JpegBitmapEncoder { QualityLevel = JpegQuality };
-            encoder.Frames.Add(BitmapFrame.Create(cropped));
-            using var stream = new MemoryStream();
-            encoder.Save(stream);
-            return stream.ToArray();
+            foreach (var quality in JpegQualities)
+            {
+                var encoder = new JpegBitmapEncoder { QualityLevel = quality };
+                encoder.Frames.Add(BitmapFrame.Create(cropped));
+                using var stream = new MemoryStream();
+                encoder.Save(stream);
+                if (stream.Length <= MaxImageBytes) return stream.ToArray();
+            }
+
+            AppLog.Write("That image was too detailed to fit, even at low quality.");
+            return null;
         }
         catch (Exception error) when (error is NotSupportedException or FileFormatException or IOException or ArgumentException or UriFormatException or InvalidOperationException or UnauthorizedAccessException)
         {
@@ -48,7 +56,8 @@ public static class ProjectImages
         }
     }
 
-    public static ImageSource? ToImage(byte[]? bytes)
+    /// <summary>Decoding at the size it's shown keeps a library of covers light on memory.</summary>
+    public static ImageSource? ToImage(byte[]? bytes, int decodeWidth = 0)
     {
         if (bytes is null) return null;
         try
@@ -58,6 +67,7 @@ public static class ProjectImages
             image.BeginInit();
             image.CacheOption = BitmapCacheOption.OnLoad;
             image.StreamSource = stream;
+            image.DecodePixelWidth = decodeWidth;
             image.EndInit();
             image.Freeze();
             return image;

@@ -188,14 +188,20 @@ public sealed partial class AgentProviders(LocalDatabase database, string agentF
     {
         Directory.CreateDirectory(provider.LoginFolder);
 
-        var info = new ProcessStartInfo("cmd.exe", $"/d /s /c \"\"{provider.Program}\" {arguments}\"")
+        var shell = Environment.GetEnvironmentVariable("ComSpec") is { Length: > 0 } comSpec
+            ? comSpec
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
+
+        var info = new ProcessStartInfo(shell, $"/d /s /c \"\"{provider.Program}\" {arguments}\"")
         {
+            WorkingDirectory = provider.LoginFolder,
             UseShellExecute = false,
             CreateNoWindow = hidden,
             RedirectStandardOutput = hidden,
             RedirectStandardError = hidden,
         };
         info.Environment[provider.Kind == ProviderKind.Claude ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME"] = provider.LoginFolder;
+        info.Environment["NoDefaultCurrentDirectoryInExePath"] = "1"; // Only ever run what's on PATH.
         foreach (var key in KeysToHide) info.Environment.Remove(key);
         return info;
     }

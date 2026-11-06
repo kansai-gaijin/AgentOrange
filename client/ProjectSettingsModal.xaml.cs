@@ -4,6 +4,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using Microsoft.Data.Sqlite;
 using Microsoft.Win32;
 using static AgentOrange.Ui;
 
@@ -12,16 +13,19 @@ namespace AgentOrange;
 /// <summary>
 /// A project's settings. Everything syncs except its folder, which is different on each
 /// PC. Saves run one at a time and always start from the latest stored project, so a
-/// slow repo check can't overwrite newer edits or bring back a deleted project.
+/// slow repo check can't overwrite newer edits or bring back a deleted project. Each
+/// operation remembers which project it's for, because the modal can be showing a
+/// different one by the time a slow step finishes.
 /// </summary>
 public partial class ProjectSettingsModal : UserControl
 {
-    private readonly HashSet<TextBox> _invalidFields = [];
+    private readonly Dictionary<TextBox, string> _invalidFields = [];
     private LocalDatabase _database = null!;
     private string _projectId = "";
     private TextBlock _problem = ProblemText();
     private Task _saves = Task.CompletedTask;
     private bool _closing;
+    private int _session;
 
     public ProjectSettingsModal()
     {
@@ -39,6 +43,7 @@ public partial class ProjectSettingsModal : UserControl
     {
         _database = database;
         _projectId = project.Id;
+        _session++;
         _invalidFields.Clear();
         _saves = Task.CompletedTask;
         _closing = false;
@@ -57,7 +62,9 @@ public partial class ProjectSettingsModal : UserControl
         }
     }
 
-    private Project? Current() => _database.ListProjects().FirstOrDefault(project => project.Id == _projectId);
+    private Project? Find(string projectId) => _database.ListProjects().FirstOrDefault(project => project.Id == projectId);
+
+    private Project? Current() => Find(_projectId);
 
     private void Build(Project project)
     {
@@ -66,10 +73,11 @@ public partial class ProjectSettingsModal : UserControl
 
         var name = Field(project.Name);
         name.Width = 300;
+        var projectId = project.Id;
         SaveOnLeave(name, project.Name, value =>
         {
             if (value.Length == 0) return Task.FromResult<string?>("A project needs a name.");
-            Update(current => current with { Name = value });
+            Update(projectId, current => current with { Name = value });
             return Task.FromResult<string?>(null);
         });
 
@@ -77,7 +85,7 @@ public partial class ProjectSettingsModal : UserControl
         version.Width = 300;
         SaveOnLeave(version, project.EngineVersion, value =>
         {
-            Update(current => current with { EngineVersion = value });
+            Update(projectId, current => current with { EngineVersion = value });
             return Task.FromResult<string?>(null);
         });
 
@@ -90,17 +98,17 @@ public partial class ProjectSettingsModal : UserControl
         folder.Width = 230;
         folder.IsReadOnly = true;
         folder.ToolTip = folder.Text.Length > 0 ? folder.Text : null;
-        SaveOnLeave(repo, project.RepoUrl, value => SaveRepoAsync(value, folder));
+        SaveOnLeave(repo, project.RepoUrl, value => SaveRepoAsync(projectId, value, folder));
 
         var browse = ActionButton("Browse");
-        browse.Click += async (_, _) => await ChooseFolderAsync(folder);
+        browse.Click += async (_, _) => await ChooseFolderAsync(projectId, folder);
 
         var engine = Choice(ProjectChoices.Engines, project.Engine, value =>
         {
             var hasVersion = ProjectChoices.HasEngineVersion(value);
             versionRow.Visibility = hasVersion ? Visibility.Visible : Visibility.Collapsed;
             if (!hasVersion) version.Text = "";
-            Update(current => current with { Engine = value, EngineVersion = hasVersion ? current.EngineVersion : "" });
+            Update(projectId, current => current with { Engine = value, EngineVersion = hasVersion ? current.EngineVersion : "" });
         });
 
         var details = new StackPanel
@@ -112,15 +120,15 @@ public partial class ProjectSettingsModal : UserControl
                     Row("Name", null, name),
                     Row("Engine", null, engine),
                     versionRow,
-                    Row("Game type", null, Choice(ProjectChoices.GameTypes, project.GameType, value => Update(current => current with { GameType = value }))),
+                    Row("Game type", null, Choice(ProjectChoices.GameTypes, project.GameType, value => Update(projectId, current => current with { GameType = value }))),
                     Row("Repo URL", null, repo),
                     Row("Folder on this PC", "Doesn't sync, because it's different on each PC.", folder, browse)),
                 Section("Images"),
                 Card(
-                    ImageRow("Thumbnail", "Shown on the project list.", ProjectImageKind.Thumbnail, 44, 66),
-                    ImageRow("Header", "Shown at the top of the project's page.", ProjectImageKind.Header, 124, 40)),
+                    ImageRow(projectId, "Thumbnail", "Shown on the project list.", ProjectImageKind.Thumbnail, 44, 66),
+                    ImageRow(projectId, "Header", "Shown at the top of the project's page.", ProjectImageKind.Header, 124, 40)),
                 Section("Danger zone"),
-                DangerZone(),
+                DangerZone(projectId),
             },
             Margin = new Thickness(16, 0, 16, 16),
         };
@@ -141,7 +149,7 @@ public partial class ProjectSettingsModal : UserControl
             PrimaryButton("Done", Close));
     }
 
-    private Border DangerZone()
+    private Border DangerZone(string projectId)
     {
         var confirmation = Field("");
         confirmation.Width = 220;
@@ -149,12 +157,12 @@ public partial class ProjectSettingsModal : UserControl
 
         var delete = new Button { Style = (Style)FindResource("DangerButton"), Content = "Delete project", IsEnabled = false };
         AutomationProperties.SetName(delete, "Delete project");
-        confirmation.TextChanged += (_, _) => delete.IsEnabled = confirmation.Text.Trim() == Current()?.Name;
+        confirmation.TextChanged += (_, _) => delete.IsEnabled = confirmation.Text.Trim() == Find(projectId)?.Name;
         delete.Click += async (_, _) =>
         {
             delete.IsEnabled = false;
             await _saves; // So a slow save can't bring the project back afterward.
-            _database.DeleteProject(_projectId);
+            _database.DeleteProject(projectId);
             _closing = true;
             Visibility = Visibility.Collapsed;
             Deleted?.Invoke();
@@ -169,7 +177,7 @@ public partial class ProjectSettingsModal : UserControl
         return card;
     }
 
-    private Grid ImageRow(string title, string description, ProjectImageKind kind, int previewWidth, int previewHeight)
+    private Grid ImageRow(string projectId, string title, string description, ProjectImageKind kind, int previewWidth, int previewHeight)
     {
         var preview = new Border
         {
@@ -184,45 +192,55 @@ public partial class ProjectSettingsModal : UserControl
 
         void ShowCurrent()
         {
-            var image = ProjectImages.ToImage(_database.GetProjectImage(_projectId, kind));
+            var image = ProjectImages.ToImage(_database.GetProjectImage(projectId, kind), previewWidth * 2);
             preview.Background = image is null ? (Brush)FindResource("ControlBackground") : new ImageBrush(image) { Stretch = Stretch.UniformToFill };
             remove.Visibility = image is null ? Visibility.Collapsed : Visibility.Visible;
         }
         ShowCurrent();
 
         var choose = ActionButton("Choose");
-        choose.Click += async (_, _) =>
+        choose.Click += (_, _) =>
         {
-            var dialog = new OpenFileDialog { Title = $"Choose a {title.ToLowerInvariant()}", Filter = "Images (*.png;*.jpg;*.jpeg;*.bmp;*.webp)|*.png;*.jpg;*.jpeg;*.bmp;*.webp" };
+            var dialog = new OpenFileDialog { Title = $"Choose a {title.ToLowerInvariant()}", RestoreDirectory = true, Filter = "Images (*.png;*.jpg;*.jpeg;*.bmp;*.webp)|*.png;*.jpg;*.jpeg;*.bmp;*.webp" };
             if (dialog.ShowDialog() != true) return;
 
-            if (ProjectImages.Prepare(dialog.FileName, kind) is not { } bytes)
+            var session = _session;
+            var file = dialog.FileName;
+            QueueWork(async () =>
             {
-                ShowProblem(_problem, "That file couldn't be used as an image.");
-                return;
-            }
+                var bytes = await Task.Run(() => ProjectImages.Prepare(file, kind));
+                if (bytes is null)
+                {
+                    if (session == _session) ShowProblem(_problem, "That file couldn't be used as an image.");
+                    return;
+                }
 
-            _problem.Visibility = Visibility.Collapsed;
-            await _saves;
-            if (Current() is null) return;
-            _database.SetProjectImage(_projectId, kind, bytes);
-            ShowCurrent();
-            Changed?.Invoke();
+                if (Find(projectId) is null) return;
+                _database.SetProjectImage(projectId, kind, bytes);
+                if (session == _session)
+                {
+                    ClearGeneralProblem();
+                    ShowCurrent();
+                }
+                Changed?.Invoke();
+            });
         };
 
-        remove.Click += async (_, _) =>
+        remove.Click += (_, _) => QueueWork(() =>
         {
-            await _saves;
-            if (Current() is null) return;
-            _database.SetProjectImage(_projectId, kind, null);
-            ShowCurrent();
-            Changed?.Invoke();
-        };
+            if (Find(projectId) is not null)
+            {
+                _database.SetProjectImage(projectId, kind, null);
+                ShowCurrent();
+                Changed?.Invoke();
+            }
+            return Task.CompletedTask;
+        });
 
         return Row(title, description, preview, choose, remove);
     }
 
-    private async Task<string?> SaveRepoAsync(string url, TextBox folderField)
+    private async Task<string?> SaveRepoAsync(string projectId, string url, TextBox folderField)
     {
         if (url.Length == 0) return "A project needs a repo.";
         if (GitTools.RepoUrlProblem(url) is { } problem) return problem;
@@ -230,82 +248,126 @@ public partial class ProjectSettingsModal : UserControl
         // A folder that's really from another repo can't stay linked. Forgetting it, without
         // touching the files, lets a project move repos instead of getting stuck between the
         // two. A folder that's just missing right now, such as on an unplugged drive, stays.
-        var linked = _database.GetProjectFolder(_projectId);
-        var unlink = linked is not null
-            && await Task.Run(() => Directory.Exists(linked))
-            && await GitTools.FolderProblemAsync(linked, url) is not null;
+        var session = _session;
+        var linked = _database.GetProjectFolder(projectId);
+        var unlink = linked is not null && await GitTools.FolderUsesOtherRepoAsync(linked, url);
 
-        Update(current => current with { RepoUrl = url });
+        Update(projectId, current => current with { RepoUrl = url });
         if (!unlink) return null;
 
-        _database.SetProjectFolder(_projectId, "");
-        folderField.Text = "";
-        folderField.ToolTip = null;
+        _database.SetProjectFolder(projectId, "");
         Changed?.Invoke();
-        ShowProblem(_problem, "This project's folder used a different repo, so it's no longer linked. Its files weren't changed. Choose or clone the right folder.");
+        if (session == _session)
+        {
+            folderField.Text = "";
+            folderField.ToolTip = null;
+            ShowProblem(_problem, "This project's folder used a different repo, so it's no longer linked. Its files weren't changed. Choose or clone the right folder.");
+        }
         return null;
     }
 
-    private async Task ChooseFolderAsync(TextBox field)
+    private async Task ChooseFolderAsync(string projectId, TextBox field)
     {
         var dialog = new OpenFolderDialog { Title = "Choose this project's folder" };
-        if (Directory.Exists(field.Text)) dialog.InitialDirectory = field.Text;
-        if (dialog.ShowDialog() != true) return;
+        var session0 = _session;
+        var previous = field.Text;
+        if (await GitTools.FolderExistsAsync(previous)) dialog.InitialDirectory = previous;
+        if (session0 != _session || dialog.ShowDialog() != true) return;
 
-        await _saves;
-        if (Current() is not { } current) return;
-
-        if (await GitTools.FolderProblemAsync(dialog.FolderName, current.RepoUrl) is { } problem)
+        var session = _session;
+        var chosen = dialog.FolderName;
+        QueueWork(async () =>
         {
-            ShowProblem(_problem, problem);
-            return;
-        }
+            if (Find(projectId) is not { } current) return;
 
-        _problem.Visibility = Visibility.Collapsed;
-        _database.SetProjectFolder(_projectId, dialog.FolderName);
-        field.Text = dialog.FolderName;
-        field.ToolTip = dialog.FolderName;
+            var problem = await GitTools.FolderProblemAsync(chosen, current.RepoUrl);
+            if (problem is not null)
+            {
+                if (session == _session) ShowProblem(_problem, problem);
+                return;
+            }
+
+            if (Find(projectId) is null) return;
+            _database.SetProjectFolder(projectId, chosen);
+            Changed?.Invoke();
+            if (session != _session) return;
+            ClearGeneralProblem();
+            field.Text = chosen;
+            field.ToolTip = chosen;
+        });
+    }
+
+    private void QueueWork(Func<Task> work)
+    {
+        var earlier = _saves;
+        _saves = RunAfter(earlier, work);
+    }
+
+    // One failed save can't be allowed to stop the ones after it, or Done.
+    private async Task RunAfter(Task earlier, Func<Task> work)
+    {
+        await earlier;
+        try
+        {
+            await work();
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or UnauthorizedAccessException or SqliteException)
+        {
+            AppLog.Write($"Couldn't save a project setting: {error.Message}");
+            ShowProblem(_problem, "That change couldn't be saved. Try it again.");
+        }
+    }
+
+    private void Update(string projectId, Func<Project, Project> change)
+    {
+        if (Find(projectId) is not { } current) return;
+        _database.SaveProject(change(current));
+        ClearGeneralProblem();
         Changed?.Invoke();
     }
 
-    private void Update(Func<Project, Project> change)
+    // A field's own problem stays on screen until that field is fixed.
+    private void ClearGeneralProblem()
     {
-        if (Current() is not { } current) return;
-        _problem.Visibility = Visibility.Collapsed;
-        _database.SaveProject(change(current));
-        Changed?.Invoke();
+        if (_invalidFields.Count > 0) ShowProblem(_problem, _invalidFields.Values.First());
+        else _problem.Visibility = Visibility.Collapsed;
     }
 
     private void SaveOnLeave(TextBox field, string initial, Func<string, Task<string?>> save)
     {
         var saved = initial;
-        var openedFor = _projectId;
+        var session = _session;
 
-        async Task Apply(Task earlier)
+        void Queue()
         {
-            await earlier;
-            if (_projectId != openedFor || Current() is null) return;
-
+            // The value is fixed now. It may have been edited again by the time this runs.
             var value = field.Text.Trim();
-            if (value == saved)
+            QueueWork(async () =>
             {
+                if (session != _session || Current() is null) return;
+
+                if (value == saved)
+                {
+                    if (_invalidFields.Remove(field)) ClearGeneralProblem();
+                    return;
+                }
+
+                // Removed first, so a notice from the save itself isn't cleared afterward.
                 _invalidFields.Remove(field);
-                return;
-            }
+                var problem = await save(value);
+                if (session != _session) return;
 
-            if (await save(value) is { } problem)
-            {
-                _invalidFields.Add(field);
-                ShowProblem(_problem, problem);
-                return;
-            }
+                if (problem is not null)
+                {
+                    _invalidFields[field] = problem;
+                    ShowProblem(_problem, problem);
+                    return;
+                }
 
-            _invalidFields.Remove(field);
-            saved = value;
-            field.Text = value;
+                saved = value;
+                if (field.Text.Trim() == value) field.Text = value;
+            });
         }
-
-        void Queue() => _saves = Apply(_saves);
 
         field.LostKeyboardFocus += (_, _) => Queue();
         field.KeyDown += (_, e) =>
@@ -319,13 +381,18 @@ public partial class ProjectSettingsModal : UserControl
         if (_closing) return;
         _closing = true;
 
+        var session = _session;
         Keyboard.ClearFocus(); // Saves a field that's still being edited.
         await _saves; // So whatever opens next sees the saved values.
+        if (session != _session || Visibility != Visibility.Visible) return;
 
         // Closing would quietly lose what they typed, so the problem has to be fixed first.
-        if (_invalidFields.Count > 0)
+        if (_invalidFields.Count > 0 && Current() is not null)
         {
             _closing = false;
+            var (field, problem) = _invalidFields.First();
+            ShowProblem(_problem, problem);
+            field.Focus();
             return;
         }
 

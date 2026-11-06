@@ -556,7 +556,7 @@ public partial class SettingsModal : UserControl
         };
 
         var openAgentFolder = ActionButton("Open");
-        openAgentFolder.Click += (_, _) => Process.Start("explorer.exe", Folders.AgentFolder)?.Dispose();
+        openAgentFolder.Click += (_, _) => OpenInExplorer(Folders.AgentFolder);
 
         var downloadsFolder = Folders.DownloadsFolder(Database);
         var downloadsPath = FolderField(downloadsFolder);
@@ -578,6 +578,12 @@ public partial class SettingsModal : UserControl
                 Row("Agent files", "Tools and skills that load in agent sessions, and chat caches.", FolderField(Folders.AgentFolder), openAgentFolder)),
             problem,
         ];
+    }
+
+    private static void OpenInExplorer(string folder)
+    {
+        var explorer = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
+        Process.Start(explorer, $"\"{folder}\"")?.Dispose();
     }
 
     private static string DownloadsDescription(string folder) =>
@@ -611,7 +617,7 @@ public partial class SettingsModal : UserControl
         openLogs.Click += (_, _) =>
         {
             Directory.CreateDirectory(Folders.LogsFolder);
-            Process.Start("explorer.exe", Folders.LogsFolder)?.Dispose();
+            OpenInExplorer(Folders.LogsFolder);
         };
 
         return
