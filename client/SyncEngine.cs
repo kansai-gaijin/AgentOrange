@@ -36,6 +36,8 @@ public sealed class SyncEngine
     /// <summary>Records arrived from the server.</summary>
     public event Action? RecordsChanged;
 
+    private static string CursorSetting(string epoch) => $"sync_cursor_for:{epoch}";
+
     public async Task SyncNowAsync()
     {
         if (_running || _server.State != ServerState.Connected || !_devices.IsPaired) return;
@@ -43,11 +45,25 @@ public sealed class SyncEngine
 
         try
         {
-            // Everything here belongs to one server, and the address can change between requests.
+            // The address can change between requests, so this settles on one to begin with.
             var address = _server.Address;
-            var cursorSetting = $"sync_cursor:{address}";
             var epochSetting = $"sync_epoch:{address}";
-            var stored = _database.GetSetting(cursorSetting);
+
+            // One server can have several addresses, such as Tailscale and public HTTPS, so it's
+            // the epoch that says which server this is. Asking for nothing past the end just
+            // reads the epoch. Treating a second address as a new server would send this PC's
+            // whole copy, over whatever newer changes other PCs have made.
+            var epoch = _database.GetSetting(epochSetting);
+            if (epoch is null)
+            {
+                var first = await _devices.SyncAsync(long.MaxValue, []);
+                if (first?.Epoch is not { Length: > 0 } found) return;
+                epoch = found;
+                _database.SetSetting(epochSetting, epoch);
+            }
+
+            var cursorSetting = CursorSetting(epoch);
+            var stored = _database.GetSetting(cursorSetting) ?? _database.GetSetting($"sync_cursor:{address}");
             if (stored is null) _database.QueueAllRecords();
             var cursor = stored is null ? 0 : long.Parse(stored);
 
@@ -59,19 +75,25 @@ public sealed class SyncEngine
 
                 _database.RemoveFromOutbox(batch);
 
-                // A server that lost its data would never send anything past this PC's old
-                // cursor, and doesn't have what this PC has. So everything starts over.
-                var knownEpoch = _database.GetSetting(epochSetting);
-                if (response.Epoch is { Length: > 0 } epoch && epoch != knownEpoch)
+                if (response.Epoch is { Length: > 0 } current && current != epoch)
                 {
-                    if (knownEpoch is not null)
+                    epoch = current;
+                    cursorSetting = CursorSetting(epoch);
+
+                    // Already caught up with this server's new data through another address.
+                    if (_database.GetSetting(cursorSetting) is { } known)
                     {
-                        AppLog.Write("The server's data started over, so this PC is sending it everything again.");
-                        _database.StartOverWithServer(epochSetting, epoch, cursorSetting);
-                        cursor = 0;
+                        _database.SetSetting(epochSetting, epoch);
+                        cursor = long.Parse(known);
                         continue;
                     }
-                    _database.SetSetting(epochSetting, epoch);
+
+                    // A server that lost its data would never send anything past this PC's old
+                    // cursor, and doesn't have what this PC has. So everything starts over.
+                    AppLog.Write("The server's data started over, so this PC is sending it everything again.");
+                    _database.StartOverWithServer(epochSetting, epoch, cursorSetting);
+                    cursor = 0;
+                    continue;
                 }
 
                 if (_database.ApplyFromServer(response.Changes) > 0) RecordsChanged?.Invoke();

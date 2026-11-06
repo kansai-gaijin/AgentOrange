@@ -31,6 +31,7 @@ public partial class NewProjectWizard : UserControl
     private string _repoUrl = "";
     private string _autoFilledRepo = "";
     private bool _working;
+    private string? _replacingUrl;
 
     public NewProjectWizard()
     {
@@ -138,6 +139,7 @@ public partial class NewProjectWizard : UserControl
 
     private void ShowLocationStep()
     {
+        _replacingUrl = null;
         var folder = Field(_folder);
         folder.Width = 300;
         var repo = Field(_repoUrl);
@@ -170,6 +172,15 @@ public partial class NewProjectWizard : UserControl
 
         var back = ControlButton("Back", ShowProjectStep);
         var create = PrimaryButton("Create project", () => { });
+
+        // Offered once a folder's repo turns out to be gone, and only for what's on screen.
+        void ForgetOffer()
+        {
+            _replacingUrl = null;
+            create.Content = "Create project";
+        }
+        folder.TextChanged += (_, _) => ForgetOffer();
+        repo.TextChanged += (_, _) => ForgetOffer();
 
         void SetWorking(bool working, string? status = null)
         {
@@ -218,6 +229,12 @@ public partial class NewProjectWizard : UserControl
                 {
                     (url, confirmed, failure) = ("", false, $"{otherProject} already uses that folder. A folder can only be one project.");
                 }
+                else if (_replacingUrl is { } replacing)
+                {
+                    progress.Text = "Creating a private repo on GitHub…";
+                    var created = await GitTools.CreatePrivateRepoAsync(_name, path, replacing);
+                    (url, confirmed, failure) = created.Worked ? (created.Value, true, (string?)null) : ("", false, created.Value);
+                }
                 else
                 {
                     (url, confirmed, failure) = await ResolveRepoAsync(submission, status => progress.Text = status);
@@ -231,6 +248,7 @@ public partial class NewProjectWizard : UserControl
             if (failure is not null)
             {
                 ShowProblem(problem, failure);
+                if (_replacingUrl is not null) create.Content = "Create a new repo";
                 return;
             }
 
@@ -265,7 +283,7 @@ public partial class NewProjectWizard : UserControl
     /// Returns the URL, or a problem to show. Being offline doesn't block this, because
     /// nothing says the repo is unusable, and opening the project checks again.
     /// </summary>
-    private static async Task<(string Url, bool Confirmed, string? Failure)> ResolveRepoAsync(NewProject project, Action<string> status)
+    private async Task<(string Url, bool Confirmed, string? Failure)> ResolveRepoAsync(NewProject project, Action<string> status)
     {
         var state = await GitTools.InspectFolderAsync(project.Folder);
         if (state is null) return ("", false, "Git wasn't found on this PC.");
@@ -299,6 +317,10 @@ public partial class NewProjectWizard : UserControl
                 return ("", false, "This PC isn't signed in to GitHub. Run gh auth login in a terminal, then try again.");
             case RepoAccess.OtherAccount:
                 return ("", false, $"Your active GitHub account can't work on this repo, but {check.Account} can. Run gh auth switch --user {check.Account} in a terminal, then try again.");
+            case RepoAccess.NotFound or RepoAccess.NotFoundOrNoAccess when state.Origin is not null:
+                var (gone, why) = check.Describe();
+                _replacingUrl = url;
+                return ("", false, $"{gone}. {why} This folder is connected to it, so you can create a new, empty private repo for the folder instead. Nothing is pushed.");
             default:
                 var (heading, description) = check.Describe();
                 return ("", false, $"{heading}. {description}");

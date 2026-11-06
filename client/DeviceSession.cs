@@ -108,7 +108,11 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
         {
             var response = await SendAsync(HttpMethod.Post, "/v1/sync", new { cursor, changes });
             if (response is null || !response.IsSuccessStatusCode) return null;
-            return await response.Content.ReadFromJsonAsync<SyncResponse>();
+
+            // Something like a proxy can answer 200 with anything, and queued changes must only
+            // be cleared by a real answer.
+            var answer = await response.Content.ReadFromJsonAsync<SyncResponse>();
+            return answer is { Changes: not null } ? answer : null;
         }
         catch (Exception error) when (IsNetworkFailure(error))
         {

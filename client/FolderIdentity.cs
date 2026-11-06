@@ -41,8 +41,16 @@ internal static class FolderIdentity
     {
         using var handle = CreateFileW(path, 0, ShareAll, IntPtr.Zero, OpenExisting, BackupSemantics, IntPtr.Zero);
         if (handle.IsInvalid) return null;
-        if (GetFileInformationByHandleEx(handle, FileIdInfoClass, out var id, (uint)Marshal.SizeOf<FileId>())) return (id.VolumeSerialNumber, id.High, id.Low);
-        if (GetFileInformationByHandle(handle, out var info)) return (info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow);
+
+        // Some network and virtual drives report no ID at all, which can't be told apart.
+        if (GetFileInformationByHandleEx(handle, FileIdInfoClass, out var id, (uint)Marshal.SizeOf<FileId>()) && (id.High | id.Low) != 0)
+        {
+            return (id.VolumeSerialNumber, id.High, id.Low);
+        }
+        if (GetFileInformationByHandle(handle, out var info) && (info.FileIndexHigh | info.FileIndexLow) != 0)
+        {
+            return (info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow);
+        }
         return null;
     }
 

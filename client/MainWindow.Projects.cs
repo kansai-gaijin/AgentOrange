@@ -308,7 +308,7 @@ public partial class MainWindow
         var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl, folder);
 
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
-        var folderProblem = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline
+        var folderProblem = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed
             ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl)
             : null;
 
@@ -377,18 +377,19 @@ public partial class MainWindow
 
         var body = new StackPanel { Margin = new Thickness(40, 20, 40, 0), MaxWidth = 840, HorizontalAlignment = HorizontalAlignment.Left };
         body.Children.Add(new TextBlock { Text = project.Summary, Foreground = (Brush)FindResource("TextNormal"), FontSize = 14 });
-        body.Children.Add(new TextBlock { Text = project.RepoUrl.Length > 0 ? project.RepoUrl : "No repo", Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 4, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = project.RepoUrl });
+        body.Children.Add(new TextBlock { Text = project.RepoUrl, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 4, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = project.RepoUrl });
         ProjectPage.Children.Add(body);
 
         if (_projectCheck is not { } check)
         {
             body.Children.Add(CenteredNote("Checking the repo…"));
+            AddOwnBusy(body, project);
             AddPageProblem(body);
             return;
         }
 
-        // Being offline doesn't mean access was lost, so a PC that's reached this exact repo before can keep working.
-        var workingOffline = check.Access == RepoAccess.Offline
+        // Getting no answer doesn't mean access was lost, so a PC that's reached this exact repo before can keep working.
+        var workingOffline = check.Access is RepoAccess.Offline or RepoAccess.CheckFailed
             && _database.GetSetting(VerifiedSetting(project.Id)) == GitTools.RepoKey(project.RepoUrl);
         if (check.Access != RepoAccess.Allowed && !workingOffline)
         {
@@ -398,7 +399,8 @@ public partial class MainWindow
 
         if (workingOffline)
         {
-            body.Children.Add(new TextBlock { Text = "Couldn't reach GitHub, so the repo wasn't checked. This PC has had access before.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+            var reason = check.Access == RepoAccess.Offline ? "Couldn't reach GitHub" : "GitHub didn't give a clear answer";
+            body.Children.Add(new TextBlock { Text = $"{reason}, so the repo wasn't checked. This PC has had access before.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
         }
 
         var folder = _database.GetProjectFolder(project.Id);
@@ -406,6 +408,7 @@ public partial class MainWindow
         {
             body.Children.Add(new TextBlock { Text = folder, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = folder });
             body.Children.Add(CenteredNote("Nothing here yet."));
+            AddOwnBusy(body, project);
             AddPageProblem(body);
             return;
         }
@@ -557,9 +560,20 @@ public partial class MainWindow
         // A copy on this PC may reach the repo in a way the URL alone doesn't, such as its own SSH setup.
         if (check.Access == RepoAccess.GitCantReach)
         {
-            var useFolder = Card(Row("Select its folder", "If a copy on this PC can already reach this repo, that's enough.", SelectFolderButton(project)));
-            useFolder.Margin = new Thickness(0, 12, 0, 0);
-            body.Children.Add(useFolder);
+            var selectRow = Row("Select its folder", "If a copy on this PC can already reach this repo, that's enough.", SelectFolderButton(project));
+            Border options;
+            if (_database.GetProjectFolder(project.Id) is { } linked)
+            {
+                var repair = TwoClickAction("Repair it", () => RepairRemoteAsync(project, linked));
+                repair.IsEnabled = !busy;
+                options = Card(Row("Repair this folder's connection", "Switches it between HTTPS and SSH, whichever works from this PC.", repair), selectRow);
+            }
+            else
+            {
+                options = Card(selectRow);
+            }
+            options.Margin = new Thickness(0, 12, 0, 0);
+            body.Children.Add(options);
         }
         AddBusyAndProblem(body, project);
     }
@@ -579,20 +593,23 @@ public partial class MainWindow
             body.Children.Add(new TextBlock { Text = $"{other} is busy. These will be available when it finishes.", FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 10, 0, 0), TextWrapping = TextWrapping.Wrap });
         }
 
-        if (_busyProjectId == project.Id && _busyText is not null)
-        {
-            body.Children.Add(new TextBlock { Text = _busyText, FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 10, 0, 0) });
-            if (_cloneCancel is { } clone)
-            {
-                var stop = ActionButton("Cancel");
-                stop.HorizontalAlignment = HorizontalAlignment.Left;
-                stop.Margin = new Thickness(16, 8, 0, 0);
-                stop.Click += (_, _) => clone.Cancel();
-                body.Children.Add(stop);
-            }
-        }
-
+        AddOwnBusy(body, project);
         AddPageProblem(body);
+    }
+
+    // On every page state, because Cancel for a clone has to stay within reach.
+    private void AddOwnBusy(StackPanel body, Project project)
+    {
+        if (_busyProjectId != project.Id || _busyText is null) return;
+
+        body.Children.Add(new TextBlock { Text = _busyText, FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 10, 0, 0) });
+        if (_cloneCancel is not { } clone) return;
+
+        var stop = ActionButton("Cancel");
+        stop.HorizontalAlignment = HorizontalAlignment.Left;
+        stop.Margin = new Thickness(16, 8, 0, 0);
+        stop.Click += (_, _) => clone.Cancel();
+        body.Children.Add(stop);
     }
 
     private void AddPageProblem(StackPanel body)
@@ -756,12 +773,19 @@ public partial class MainWindow
         var busy = _busyProjectId is not null;
         var select = SelectFolderButton(project);
         var clone = ActionButton("Clone");
-        clone.IsEnabled = !busy && project.RepoUrl.Length > 0;
+        clone.IsEnabled = !busy;
 
         clone.Click += async (_, _) =>
         {
             var dialog = new OpenFolderDialog { Title = "Choose where to put the project" };
             if (dialog.ShowDialog() != true) return;
+
+            // The dialog can stay open a long time, and sync keeps running behind it.
+            if (FindProject(project.Id) is null)
+            {
+                await RecheckIfStillOpenAsync(project.Id);
+                return;
+            }
 
             StartBusy(project, "Checking that folder…");
             var owner = GitTools.CloneDestination(project.RepoUrl, dialog.FolderName) is { } destination
@@ -779,8 +803,20 @@ public partial class MainWindow
             using var cancel = new CancellationTokenSource();
             _cloneCancel = cancel;
             StartBusy(project, "Cloning…");
-            var result = await GitTools.CloneAsync(project.RepoUrl, dialog.FolderName, cancel.Token, working => _database.SetSetting(CloneInProgressSetting, CloneRecord(working)));
-            _database.SetSetting(CloneInProgressSetting, "");
+            string? cloneRecord = null;
+            string? workingFolder = null;
+            var result = await GitTools.CloneAsync(project.RepoUrl, dialog.FolderName, cancel.Token, working =>
+            {
+                workingFolder = working;
+                cloneRecord = CloneRecord(working);
+                SaveCloneRecords(CloneRecords().Append(cloneRecord));
+            });
+
+            // One that couldn't be fully removed stays on the list, to be tried again next start.
+            if (cloneRecord is not null && (workingFolder is null || !await GitTools.FolderExistsAsync(workingFolder)))
+            {
+                SaveCloneRecords(CloneRecords().Where(record => record != cloneRecord));
+            }
             _cloneCancel = null;
             EndBusy();
 
@@ -809,7 +845,7 @@ public partial class MainWindow
         body.Children.Add(Section(heading));
         body.Children.Add(new TextBlock { Text = description, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(16, -4, 0, 10), TextWrapping = TextWrapping.Wrap });
 
-        var cloneRow = Row("Clone from repo", project.RepoUrl.Length > 0 ? project.RepoUrl : "This project has no repo.", clone);
+        var cloneRow = Row("Clone from repo", project.RepoUrl, clone);
         var selectRow = Row("Select its folder", "It has to be connected to the same repo.", select);
         if (linkedFolder is not null && _folderExists && _folderProblem is not null)
         {
@@ -862,6 +898,17 @@ public partial class MainWindow
         return select;
     }
 
+    private async Task RepairRemoteAsync(Project project, string folder)
+    {
+        if (_busyProjectId is not null) return;
+        StartBusy(project, "Trying HTTPS and SSH…");
+        var result = await GitTools.RepairRemoteAsync(folder, project.RepoUrl);
+        EndBusy();
+
+        if (result.Worked) await RefreshThenRecheckAsync(project.Id);
+        else ShowPageProblem(project.Id, result.Value);
+    }
+
     private async Task PointFolderAtRepoAsync(Project project, string folder)
     {
         if (_busyProjectId is not null) return;
@@ -880,17 +927,27 @@ public partial class MainWindow
         return $"{self.Id}|{self.StartTime.Ticks}|{folder}";
     }
 
-    // The app closed in the middle of a clone last time.
+    // The app closed in the middle of a clone last time. There can be more than one, because
+    // a folder on an unplugged drive stays on the list until it can be reached.
     private async Task RemoveLeftoverCloneAsync()
     {
-        if (_database.GetSetting(CloneInProgressSetting) is not { Length: > 0 } record) return;
+        var remaining = new List<string>();
+        foreach (var record in CloneRecords())
+        {
+            var parts = record.Split('|', 3);
+            if (parts.Length != 3) continue;
 
-        var parts = record.Split('|', 3);
-        if (parts.Length != 3) return;
-        if (int.TryParse(parts[0], out var id) && long.TryParse(parts[1], out var started) && IsStillRunning(id, started)) return;
-
-        if (await GitTools.RemoveLeftoverCloneAsync(parts[2])) _database.SetSetting(CloneInProgressSetting, "");
+            var stillRunning = int.TryParse(parts[0], out var id) && long.TryParse(parts[1], out var started) && IsStillRunning(id, started);
+            if (stillRunning || !await GitTools.RemoveLeftoverCloneAsync(parts[2])) remaining.Add(record);
+        }
+        SaveCloneRecords(remaining);
     }
+
+    private List<string> CloneRecords() =>
+        (_database.GetSetting(CloneInProgressSetting) ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList();
+
+    private void SaveCloneRecords(IEnumerable<string> records) =>
+        _database.SetSetting(CloneInProgressSetting, string.Join('\n', records));
 
     // The start time rules out another program that has since been given the same ID.
     private static bool IsStillRunning(int id, long startedTicks)
