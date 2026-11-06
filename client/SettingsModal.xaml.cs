@@ -539,12 +539,16 @@ public partial class SettingsModal : UserControl
         async Task SaveName()
         {
             if (string.IsNullOrWhiteSpace(name.Text) || name.Text == savedName) return;
-            if (await Devices.RenameAsync(device.Id, name.Text))
+
+            // It may be edited again by the time this comes back, and only this was saved.
+            var submitted = name.Text.Trim();
+            if (await Devices.RenameAsync(device.Id, submitted))
             {
-                savedName = name.Text.Trim();
-                name.Text = savedName;
-                save.Visibility = Visibility.Collapsed;
+                savedName = submitted;
                 problem.Visibility = Visibility.Collapsed;
+                if (name.Text.Trim() != submitted) return;
+                name.Text = submitted;
+                save.Visibility = Visibility.Collapsed;
             }
             else
             {

@@ -96,13 +96,14 @@ pub async fn sync(
     headers: HeaderMap,
     request: Result<Json<SyncRequest>, JsonRejection>,
 ) -> Result<Json<SyncResponse>, StatusCode> {
-    // First, because another release's requests may not even parse.
+    let device = authenticate(&state, &headers).await?;
+
+    // Before reading the request, because another release's may not even parse. After the login,
+    // because only paired devices are told anything about this server's version.
     if client_is_out_of_date(&headers) {
         return Err(StatusCode::UPGRADE_REQUIRED);
     }
     let Json(request) = request.map_err(|rejection| rejection.status())?;
-
-    let device = authenticate(&state, &headers).await?;
 
     if request.changes.len() > MAX_CHANGES_PER_REQUEST {
         return Err(StatusCode::PAYLOAD_TOO_LARGE);

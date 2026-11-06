@@ -54,6 +54,9 @@ public partial class NewProjectWizard : UserControl
 
     public event Action? Closed;
 
+    /// <summary>Stopping now could leave a repo on GitHub with no project pointing at it.</summary>
+    public bool IsCreatingRepo { get; private set; }
+
     public void Open()
     {
         _name = "";
@@ -204,6 +207,7 @@ public partial class NewProjectWizard : UserControl
         void SetWorking(bool working, string? status = null)
         {
             _working = working;
+            if (!working) IsCreatingRepo = false;
             create.IsEnabled = !working;
             back.IsEnabled = !working;
             browse.IsEnabled = !working;
@@ -265,6 +269,7 @@ public partial class NewProjectWizard : UserControl
                     }
                     else
                     {
+                        IsCreatingRepo = true;
                         progress.Text = "Creating a private repo on GitHub…";
                         var created = await GitTools.CreatePrivateRepoAsync(_name, path, replacing);
                         (url, confirmed, failure) = created.Worked ? (created.Value, true, (string?)null) : ("", false, created.Value);
@@ -295,13 +300,15 @@ public partial class NewProjectWizard : UserControl
             {
                 if (claimed) ReleaseFolder(path);
                 ShowProblem(problem, failure);
+                create.Focus(); // Being disabled took it away, and Esc needs it to be inside the wizard.
                 _ = Dispatcher.InvokeAsync(problem.BringIntoView, System.Windows.Threading.DispatcherPriority.Loaded);
                 create.Content = _replacingUrl is not null ? "Create a new repo" : _offeringFolderSettings ? "Use its Git settings" : "Create project";
                 return;
             }
 
+            // Where a clone is going stays held, by whoever runs it.
             Created?.Invoke(submission with { RepoUrl = url, RepoConfirmed = confirmed, CloneIntoFolder = _cloneIntoFolder });
-            ReleaseFolder(path);
+            if (!_cloneIntoFolder) ReleaseFolder(path);
             Close();
         };
 
@@ -349,6 +356,7 @@ public partial class NewProjectWizard : UserControl
             if (state.GitHubOrigin is not null) return ("", false, $"That folder already uses {state.GitHubOrigin}. Enter that URL to use it, or choose a folder with no repo to create a new one.");
             if (state.Origin is not null) return ("", false, $"That folder uses {state.Origin}, which isn't on GitHub. Choose a folder with no repo, or one that's on GitHub.");
 
+            IsCreatingRepo = true;
             status("Creating a private repo on GitHub…");
             var created = await GitTools.CreatePrivateRepoAsync(project.Name, project.Folder);
             return created.Worked ? (created.Value, true, null) : ("", false, created.Value);

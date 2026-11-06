@@ -45,6 +45,7 @@ public partial class MainWindow
 
     // Only one long operation runs at a time. It keeps going if the person leaves the page.
     private string? _busyProjectId;
+    private const string CreatingRepoText = "Creating a private repo on GitHub…";
     private string? _busyText;
     private string? _busyCardText; // Cards are narrow, so they get just the number.
     private TextBlock? _busyLabel;
@@ -337,12 +338,17 @@ public partial class MainWindow
 
         // It may have been connected while offline, when nothing could say the repo had files.
         var lacksFiles = check.Access == RepoAccess.Allowed && folderExists && folderProblem is null
-            && await GitTools.FolderHasNoCommitsAsync(folder!) && await GitTools.RepoHasContentAsync(project.RepoUrl) == true;
+            && await GitTools.FolderHasNoCommitsAsync(folder!) == true && await GitTools.RepoHasContentAsync(project.RepoUrl) == true;
 
-        // Likewise for its first real check, as a folder with its own commits got no warning then.
-        var mayNotMatch = check.Access == RepoAccess.Allowed && folderExists && folderProblem is null && !lacksFiles
-            && _database.GetSetting(VerifiedSetting(project.Id)) != GitTools.RepoKey(project.RepoUrl)
-            && await GitTools.FolderLooksUnrelatedAsync(folder!, project.RepoUrl);
+        // A folder with its own commits may not be this project at all, however it was connected.
+        // This keeps saying so until the two share a commit, which is then remembered for that
+        // folder and repo, as this asks GitHub each time until it does.
+        var sharesSetting = $"folder_shares_repo:{GitTools.RepoKey(project.RepoUrl)}:{folder}";
+        var history = check.Access == RepoAccess.Allowed && folderExists && folderProblem is null && !lacksFiles && _database.GetSetting(sharesSetting) is null
+            ? await GitTools.CompareFolderHistoryAsync(folder!, project.RepoUrl)
+            : FolderHistory.CantTell;
+        if (history == FolderHistory.SharesCommits) _database.SetSetting(sharesSetting, "yes");
+        var mayNotMatch = history == FolderHistory.SharesNothing;
 
         if (navigation != _navigation) return; // They moved on, or something newer started.
 
@@ -624,21 +630,9 @@ public partial class MainWindow
         {
             var rows = new List<FrameworkElement>();
             var linked = _database.GetProjectFolder(project.Id);
-            if (linked is not null && _settingsToAllow is { } settings)
-            {
-                if (settings.CanBeApproved)
-                {
-                    var allow = TwoClickAction("Allow", () => AllowFolderSettingsAsync(project, linked, settings.Fingerprint));
-                    allow.IsEnabled = !busy;
-                    rows.Add(Row("Use this folder's own Git settings", $"They can run programs or send your login somewhere else, so only allow them if you trust where this folder came from: {settings.Shown}", allow));
-                }
-                else
-                {
-                    rows.Add(Row("This folder's own Git settings can't be used", "There are too many of them to show here, and they can only be allowed once you've been able to read them all. Cut them down, or use another copy."));
-                }
-            }
+            if (linked is not null) AddFolderSettingsRow(rows, project, linked);
 
-            if (linked is not null && _folderExists && _folderProblem is not null)
+            if (linked is not null && _folderExists && _folderProblem is not null && GitTools.ConnectingCanFix(_folderProblem))
             {
                 // The project moved repos elsewhere, and this PC may only get in the way this folder does.
                 var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linked));
@@ -807,7 +801,7 @@ public partial class MainWindow
             }
         }
 
-        StartBusy(project, "Creating a private repo on GitHub…");
+        StartBusy(project, CreatingRepoText);
 
         // The folder dialog can stay open a long time, and sync keeps running behind it.
         if (FindProject(project.Id) is not { } stillThere || !GitTools.SameRepo(stillThere.RepoUrl, project.RepoUrl))
@@ -892,16 +886,28 @@ public partial class MainWindow
     // ordinary clone, on its page, means it shows progress and can be cancelled.
     private async Task CloneIntoChosenFolderAsync(string projectId, string folder)
     {
-        if (FindProject(projectId) is not { } project) return;
-        await OpenProjectAsync(project);
-        if (_busyProjectId is not null)
+        // The wizard's hold stays until here, so nothing else can take the folder during the check.
+        var held = true;
+        try
         {
-            ShowPageProblem(projectId, $"Something else is running. When that finishes, choose Clone and pick {folder} again.");
-            return;
-        }
+            if (FindProject(projectId) is not { } project) return;
+            await OpenProjectAsync(project);
+            if (_busyProjectId is not null)
+            {
+                ShowPageProblem(projectId, $"Something else is running. When that finishes, choose Clone and pick {folder} again.");
+                return;
+            }
+            if (FindProject(projectId) is not { } latest) return;
 
-        var exact = Path.TrimEndingDirectorySeparator(folder);
-        if (FindProject(projectId) is { } latest) await CloneProjectAsync(latest, Path.GetDirectoryName(exact)!, exact);
+            _database.ReleaseFolder(folder);
+            held = false;
+            var exact = Path.TrimEndingDirectorySeparator(folder);
+            await CloneProjectAsync(latest, Path.GetDirectoryName(exact)!, exact);
+        }
+        finally
+        {
+            if (held) _database.ReleaseFolder(folder);
+        }
     }
 
     // Holds where it's going until the end, because a clone can take hours and another project
@@ -926,6 +932,13 @@ public partial class MainWindow
         finally
         {
             if (destination is not null) _database.ReleaseFolder(destination);
+
+            // If something unexpected went wrong, the page can't be left waiting forever.
+            if (_busyProjectId == project.Id)
+            {
+                _cloneCancel = null;
+                EndBusy();
+            }
         }
     }
 
@@ -992,6 +1005,20 @@ public partial class MainWindow
         }
     }
 
+    private void AddFolderSettingsRow(List<FrameworkElement> rows, Project project, string folder)
+    {
+        if (_settingsToAllow is not { } settings) return;
+        if (!settings.CanBeApproved)
+        {
+            rows.Add(Row("This folder's own Git settings can't be used", "There are too many of them to show here, and they can only be allowed once you've been able to read them all. Cut them down, or use another copy."));
+            return;
+        }
+
+        var allow = TwoClickAction("Allow", () => AllowFolderSettingsAsync(project, folder, settings.Fingerprint));
+        allow.IsEnabled = _busyProjectId is null;
+        rows.Add(Row("Use this folder's own Git settings", $"They can run programs or send your login somewhere else, so only allow them if you trust where this folder came from: {settings.Shown}", allow));
+    }
+
     private void AddGetProjectOptions(StackPanel body, Project project, string? linkedFolder)
     {
         var busy = _busyProjectId is not null;
@@ -1031,22 +1058,24 @@ public partial class MainWindow
         body.Children.Add(Section(heading));
         body.Children.Add(new TextBlock { Text = description, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(16, -4, 0, 10), TextWrapping = TextWrapping.Wrap });
 
-        var cloneRow = Row("Clone from repo", project.RepoUrl, clone);
-        var selectRow = Row("Select its folder", "It has to be connected to the same repo.", select);
-        if (linkedFolder is not null && _folderExists && _folderProblem is not null)
+        var rows = new List<FrameworkElement>();
+
+        // Its SSH settings have to run before it can be told whether this is even the right repo.
+        if (linkedFolder is not null && _folderProblem?.StartsWith(GitTools.CantTellSshSettings, StringComparison.Ordinal) == true)
+        {
+            AddFolderSettingsRow(rows, project, linkedFolder);
+        }
+
+        if (linkedFolder is not null && _folderExists && _folderProblem is not null && GitTools.ConnectingCanFix(_folderProblem))
         {
             // The project may have moved to a new repo on another PC, with this copy's work unpushed.
             var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linkedFolder));
             connect.IsEnabled = !busy;
-            body.Children.Add(Card(
-                Row("Keep using this folder", "If the project moved repos, this points the folder's remote at the new one. Its files don't change.", connect),
-                cloneRow,
-                selectRow));
+            rows.Add(Row("Keep using this folder", "If the project moved repos, this points the folder's remote at the new one. Its files don't change.", connect));
         }
-        else
-        {
-            body.Children.Add(Card(cloneRow, selectRow));
-        }
+        rows.Add(Row("Clone from repo", project.RepoUrl, clone));
+        rows.Add(Row("Select its folder", "It has to be connected to the same repo.", select));
+        body.Children.Add(Card(rows.ToArray()));
 
         // A missing folder may just be on a drive that isn't plugged in.
         if (linkedFolder is not null)
@@ -1109,7 +1138,7 @@ public partial class MainWindow
         StartBusy(project, "Connecting the folder…");
 
         // The URL may be a typo, and the next push would send this folder's history there.
-        if (await GitTools.FolderLooksUnrelatedAsync(folder, project.RepoUrl)
+        if (await GitTools.CompareFolderHistoryAsync(folder, project.RepoUrl) == FolderHistory.SharesNothing
             && !Dialogs.Confirm($"{project.RepoUrl} has commits this folder doesn't, so they may not be the same project.\n\nConnecting them changes no files and pushes nothing, but the next push could send this folder's history there. Connect them anyway?"))
         {
             EndBusy();

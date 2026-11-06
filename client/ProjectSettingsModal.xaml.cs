@@ -552,6 +552,7 @@ public partial class ProjectSettingsModal : UserControl
         {
             _problemWhileClosing = false;
             _closing = false;
+            Focus(); // Being disabled took it away, and Esc needs it to be inside here.
             return;
         }
 

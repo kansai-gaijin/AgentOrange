@@ -9,6 +9,9 @@ namespace AgentOrange;
 
 public sealed record GitResult(bool Worked, string Value);
 
+/// <summary>How a folder's commits compare with its repo's. A repo with none can't say.</summary>
+public enum FolderHistory { CantTell, SharesCommits, SharesNothing }
+
 public enum RepoAccess
 {
     Allowed,
@@ -756,26 +759,35 @@ public static partial class GitTools
     /// <summary>
     /// A repo with commits, none of whose branches this folder has, may not be the same project.
     /// It can also just be a copy that's behind, so this is only ever a reason to ask. Nothing
-    /// is fetched: not being able to find out counts as no.
+    /// is fetched.
     /// </summary>
-    public static async Task<bool> FolderLooksUnrelatedAsync(string folder, string url)
+    public static async Task<FolderHistory> CompareFolderHistoryAsync(string folder, string url)
     {
-        if (await FolderHasNoCommitsAsync(folder)) return false;
+        if (await FolderHasNoCommitsAsync(folder) is not false) return FolderHistory.CantTell;
 
         var form = await ReachableFormAsync(url) ?? url;
-        var heads = await RunAsync("git", Path.GetTempPath(), null, ["ls-remote", "--heads", "--", form], default, await SshSettingsAsync(Path.GetTempPath()));
-        if (heads is not { ExitCode: 0 }) return false;
+        var heads = await RunAsync("git", Path.GetTempPath(), null, ["ls-remote", "--", form, "HEAD", "refs/heads/*"], default, await SshSettingsAsync(Path.GetTempPath()));
+        if (heads is not { ExitCode: 0 }) return FolderHistory.CantTell;
 
+        // The main branch comes first, ahead of any number of branches made by tools.
         var commits = heads.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Split('\t')[0].Trim()).Take(50).ToList();
-        if (commits.Count == 0) return false;
+        if (commits.Count == 0) return FolderHistory.CantTell;
 
         Dictionary<string, string> noFetching = new() { ["GIT_NO_LAZY_FETCH"] = "1" };
         foreach (var commit in commits)
         {
-            if (await RunAsync("git", folder, null, ["cat-file", "-e", commit], default, noFetching) is { ExitCode: 0 }) return false;
+            var found = await RunAsync("git", folder, null, ["cat-file", "-e", commit], default, noFetching);
+            if (found is { ExitCode: 0 }) return FolderHistory.SharesCommits;
+            if (found is not { ExitCode: 1 }) return FolderHistory.CantTell;
         }
-        return true;
+        return FolderHistory.SharesNothing;
     }
+
+    /// <summary>Whether a problem with a folder is that it's on another repo, which is what moving it to this one fixes.</summary>
+    public static bool ConnectingCanFix(string folderProblem) =>
+        folderProblem.StartsWith("That folder uses a different repo", StringComparison.Ordinal)
+        || folderProblem.StartsWith("That folder pushes to a different repo", StringComparison.Ordinal)
+        || folderProblem.StartsWith("That folder isn't connected to a repo", StringComparison.Ordinal);
 
     /// <summary>Whether a repo has anything in it, or null if that couldn't be found out.</summary>
     public static async Task<bool?> RepoHasContentAsync(string url)
@@ -785,8 +797,14 @@ public static partial class GitTools
         return heads is { ExitCode: 0 } ? heads.Output.Trim().Length > 0 : null;
     }
 
-    public static async Task<bool> FolderHasNoCommitsAsync(string folder) =>
-        await RunAsync("git", folder, "rev-parse", "--verify", "-q", "HEAD") is { ExitCode: not 0 };
+    /// <summary>Null if that couldn't be found out, such as a slow drive not answering in time.</summary>
+    public static async Task<bool?> FolderHasNoCommitsAsync(string folder) =>
+        await RunAsync("git", folder, "rev-parse", "--verify", "-q", "HEAD") switch
+        {
+            { ExitCode: 0 } => false,
+            { ExitCode: 1 or 128 } => true, // What Git says for no commits, and for not being a repo.
+            _ => null,
+        };
 
     public static Task<bool> FolderIsEmptyAsync(string folder) => Task.Run(() => Directory.Exists(folder) && !IsTaken(folder));
 

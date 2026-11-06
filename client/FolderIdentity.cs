@@ -52,7 +52,8 @@ internal static class FolderIdentity
         try
         {
             var missing = new Stack<string>();
-            for (var at = Path.GetFullPath(path).TrimEnd('\\', '/'); at.Length > 0;)
+            // Only ever trimmed this way, because C: on its own means the current folder on that drive.
+            for (var at = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)); at.Length > 0;)
             {
                 using var handle = CreateFileW(at, 0, ShareAll, IntPtr.Zero, OpenExisting, BackupSemantics, IntPtr.Zero);
                 if (!handle.IsInvalid)
@@ -71,7 +72,7 @@ internal static class FolderIdentity
                 var above = Path.GetDirectoryName(at);
                 if (above is null) return null;
                 missing.Push(Path.GetFileName(at));
-                at = above.TrimEnd('\\', '/');
+                at = above;
             }
             return null;
         }

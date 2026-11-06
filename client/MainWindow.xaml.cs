@@ -276,8 +276,15 @@ public partial class MainWindow : Window
 #if DEBUG
         if (Headless.Active) return true;
 #endif
-        return CloningProjectName() is not { } name
-            || Dialogs.Confirm($"{name} is still cloning. {action} stops that, and what's been downloaded so far is thrown away. Do it anyway?");
+        if (CloningProjectName() is { } name)
+        {
+            return Dialogs.Confirm($"{name} is still cloning. {action} stops that, and what's been downloaded so far is thrown away. Do it anyway?");
+        }
+        if (ProjectWizard.IsCreatingRepo || _busyText == CreatingRepoText)
+        {
+            return Dialogs.Confirm($"A repo is being created on GitHub. {action} could leave it there with no project pointing at it. Do it anyway?");
+        }
+        return true;
     }
 
     private async void DownloadUpdate_Click(object sender, RoutedEventArgs e)
