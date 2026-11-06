@@ -39,7 +39,7 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
         RepoAccess.NotFound => ("This repo doesn't exist", "It may have been deleted or renamed, or your GitHub login may not be allowed to see it."),
         RepoAccess.NotFoundOrNoAccess => ("Can't find this repo", "It was deleted, or your GitHub account doesn't have access. GitHub doesn't say which. If you should have access, ask the owner."),
         RepoAccess.GitCantReach => ("Git on this PC can't reach this repo", "Check this PC's Git setup, such as its SSH keys, or run gh auth setup-git."),
-        RepoAccess.BadUrl => ("This repo URL can't be used", "Change it in project settings."),
+        RepoAccess.BadUrl => ("This repo URL can't be used", "It has to be a GitHub repo, with no password or token in the URL. Change it in project settings."),
         RepoAccess.Offline => ("Couldn't reach GitHub", "This PC seems to be offline, and it hasn't had access to this repo before."),
         RepoAccess.Allowed => ("You have access", ""),
         _ => ("Couldn't check this repo", "GitHub gave an unexpected answer. Try again in a moment."),
@@ -62,25 +62,36 @@ public static partial class GitTools
 
     private sealed record CommandResult(int ExitCode, string Output, string Errors);
 
-    /// <summary>A repo URL syncs to the server and other PCs, so it must not carry a password or token.</summary>
+    /// <summary>
+    /// Projects only live on GitHub, because the guard needs GitHub to say who has access.
+    /// A repo URL also syncs to the server and other PCs, so it must not carry a password or token.
+    /// </summary>
     public static string? RepoUrlProblem(string url)
     {
-        if (ScpStyleRepo().IsMatch(url)) return null;
+        if (GitHubScpRepo().IsMatch(url)) return null;
 
+        const string notGitHub = "Enter a GitHub repo URL, like https://github.com/you/game.git.";
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
-            || uri.Scheme is not ("https" or "http" or "ssh" or "git")
-            || uri.Host.Length == 0)
+            || uri.Scheme is not ("https" or "ssh")
+            || !uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+            || !uri.IsDefaultPort
+            || !GitHubRepoPath().IsMatch(uri.AbsolutePath))
         {
-            return "Enter a repo URL, like https://github.com/you/game.git.";
+            return notGitHub;
         }
 
         var hasCredentials = uri.Query.Length > 0
             || uri.Fragment.Length > 0
             || (uri.Scheme == "ssh" ? uri.UserInfo.Contains(':') : uri.UserInfo.Length > 0);
-        return hasCredentials ? "Take the password or token out of that URL." : null;
+        if (hasCredentials) return "Take the password or token out of that URL.";
+        return uri.Scheme == "ssh" && uri.UserInfo != "git" ? notGitHub : null;
     }
 
-    /// <summary>Compares repos by host and path, so HTTPS and SSH forms of one repo match.</summary>
+    /// <summary>
+    /// Compares repos by host and path, so HTTPS and SSH forms of one repo match. A folder's
+    /// remote can be anywhere, but a project's can't, so case only ever matters to a remote
+    /// that wasn't going to match anyway.
+    /// </summary>
     public static bool SameRepo(string a, string b) => RepoIdentity(a) == RepoIdentity(b);
 
     /// <summary>The same for every form of a repo's URL.</summary>
@@ -97,11 +108,6 @@ public static partial class GitTools
         if (RepoUrlProblem(url) is not null) return new RepoCheck(RepoAccess.BadUrl);
 
         var parts = RepoIdentity(url).Split('/');
-        if (parts.Length != 3 || !parts[0].Equals("github.com", StringComparison.OrdinalIgnoreCase))
-        {
-            return await CheckGitCanReachAsync(url);
-        }
-
         var slug = $"{parts[1]}/{parts[2]}";
         var view = await ViewRepoAsync(slug, null);
         if (view is null) return new RepoCheck(RepoAccess.NoGitHubCli);
@@ -404,8 +410,7 @@ public static partial class GitTools
         }
     }
 
-    // A port can mean a different server, and only GitHub is known to ignore case in its
-    // paths, so anything else has to match exactly to count as the same repo.
+    // A port can mean a different server, so it stays. GitHub ignores case in its paths.
     private static string RepoIdentity(string url)
     {
         var text = url.Trim();
@@ -423,11 +428,9 @@ public static partial class GitTools
             text = uri.AbsolutePath.TrimStart('/');
         }
 
-        host = host.ToLowerInvariant();
         text = text.TrimEnd('/');
         if (text.EndsWith(".git", StringComparison.OrdinalIgnoreCase)) text = text[..^4];
-        if (host == "github.com") text = text.ToLowerInvariant();
-        return host.Length > 0 ? $"{host}/{text}" : text;
+        return (host.Length > 0 ? $"{host}/{text}" : text).ToLowerInvariant();
     }
 
     // Git can report a remote with a token in it, which must never be shown or saved.
@@ -562,7 +565,7 @@ public static partial class GitTools
         foreach (var argument in arguments) info.ArgumentList.Add(argument);
         info.Environment["PATH"] = CurrentPath(); // gh runs git itself.
         info.Environment["GIT_TERMINAL_PROMPT"] = "0";
-        info.Environment["GIT_ALLOW_PROTOCOL"] = "https:http:ssh:git";
+        info.Environment["GIT_ALLOW_PROTOCOL"] = "https:ssh";
         if (gitHubToken is not null) info.Environment["GH_TOKEN"] = gitHubToken;
         if (extraSettings is not null)
         {
@@ -621,6 +624,12 @@ public static partial class GitTools
     // The short form Git uses for SSH, like git@github.com:you/game.git.
     [GeneratedRegex(@"^[\w.-]+@[\w.-]+:[\w./-]+$")]
     private static partial Regex ScpStyleRepo();
+
+    [GeneratedRegex(@"^git@github\.com:[\w.-]+/[\w.-]+/?$", RegexOptions.IgnoreCase)]
+    private static partial Regex GitHubScpRepo();
+
+    [GeneratedRegex(@"^/[\w.-]+/[\w.-]+/?$")]
+    private static partial Regex GitHubRepoPath();
 
     [GeneratedRegex(@"""viewerPermission""\s*:\s*""(ADMIN|MAINTAIN|WRITE)""")]
     private static partial Regex WritePermission();
