@@ -13,6 +13,8 @@ public static partial class EngineVersions
     private const string CustomBuild = "custom build";
     private const int MaxProjectFileBytes = 1_000_000;
 
+    private static readonly EnumerationOptions Everything = new() { AttributesToSkip = 0 };
+
     private static readonly JsonDocumentOptions LenientJson = new()
     {
         CommentHandling = JsonCommentHandling.Skip,
@@ -43,8 +45,7 @@ public static partial class EngineVersions
         try
         {
             // Links aren't followed, because one could lead onto a network share.
-            var notLinks = new EnumerationOptions { AttributesToSkip = FileAttributes.ReparsePoint };
-            places.AddRange(Directory.EnumerateDirectories(folder, "*", notLinks).Where(path => !Path.GetFileName(path).StartsWith('.')));
+            places.AddRange(Directory.EnumerateDirectories(folder, "*", Everything).Where(path => !Path.GetFileName(path).StartsWith('.') && !SshConfigFile.IsLink(path)));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -57,7 +58,7 @@ public static partial class EngineVersions
             {
                 // Links aren't read, because opening one could reach a network share and send
                 // the person's Windows login to whoever runs it.
-                var file = Directory.EnumerateFiles(place, pattern, new EnumerationOptions { AttributesToSkip = FileAttributes.ReparsePoint }).FirstOrDefault();
+                var file = Directory.EnumerateFiles(place, pattern, Everything).FirstOrDefault(path => !SshConfigFile.IsLink(path));
                 if (file is null) continue;
                 return new FileInfo(file).Length > MaxProjectFileBytes ? null : parse(File.ReadAllText(file));
             }

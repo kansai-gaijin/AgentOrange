@@ -409,17 +409,17 @@ public static partial class GitTools
     /// The form of a repo's URL that works from this PC, HTTPS or SSH. The synced URL may have
     /// come from a PC set up differently. Null if neither works.
     /// </summary>
-    public static async Task<string?> ReachableFormAsync(string url) => (await BestFormAsync(url)).Form;
+    public static async Task<string?> ReachableFormAsync(string url, CancellationToken cancel = default) => (await BestFormAsync(url, cancel)).Form;
 
     // One that can push, or else one that can at least read, so what's chosen here passes the
     // guard's check of the same thing.
-    private static async Task<(string? Form, bool CanPush)> BestFormAsync(string url)
+    private static async Task<(string? Form, bool CanPush)> BestFormAsync(string url, CancellationToken cancel = default)
     {
         string? readable = null;
         foreach (var form in await FormsToTryAsync(url))
         {
-            if (await LsRemoteAsync(form, Path.GetTempPath()) is not { ExitCode: 0 }) continue;
-            if (!await GitRefusesPushAsync(form, null)) return (form, true);
+            if (await LsRemoteAsync(form, Path.GetTempPath(), cancel) is not { ExitCode: 0 }) continue;
+            if (!await GitRefusesPushAsync(form, null, cancel)) return (form, true);
             readable ??= form;
         }
         return (readable, false);
@@ -883,7 +883,8 @@ public static partial class GitTools
         if (await InspectFolderAsync(parentFolder) is { InsideRepo: true }) return new GitResult(false, $"{parentFolder} is inside a Git repo, and a project can't be cloned into another repo. Choose somewhere else.");
         if ((exactFolder ?? CloneDestination(url, parentFolder)) is not { } destination) return new GitResult(false, "That repo URL doesn't name a folder to clone into.");
 
-        var form = await ReachableFormAsync(url) ?? url;
+        var form = await ReachableFormAsync(url, cancel) ?? url;
+        if (cancel.IsCancellationRequested) return new GitResult(false, "The clone was cancelled.");
 
         // Cloning into a folder that only this clone owns means a failure can never remove
         // anything else, and the real name only appears once the clone is complete.
@@ -1180,7 +1181,7 @@ public static partial class GitTools
     // Reading works with a read-only deploy key too, so this asks whether Git could push. It's a
     // dry run of deleting a branch that doesn't exist, which GitHub has to authorize the same way
     // and which can't change anything. Only a clear refusal counts, so a blip can't lock anyone out.
-    private static async Task<bool> GitRefusesPushAsync(string remote, string? folder)
+    private static async Task<bool> GitRefusesPushAsync(string remote, string? folder, CancellationToken cancel = default)
     {
         // Git only pushes from inside a repo, and folder is the one whose settings are allowed.
         var scratch = folder is null ? Path.Combine(Path.GetTempPath(), $".ao-{Guid.NewGuid():N}"[..12]) : null;
@@ -1193,7 +1194,7 @@ public static partial class GitTools
             }
 
             var where = folder ?? scratch!;
-            var result = await RunAsync("git", where, null, ["push", "--dry-run", "--no-verify", "--", remote, $":refs/heads/agent-orange-check-{Guid.NewGuid():N}"], default, await SshSettingsAsync(where));
+            var result = await RunAsync("git", where, null, ["push", "--dry-run", "--no-verify", "--", remote, $":refs/heads/agent-orange-check-{Guid.NewGuid():N}"], cancel, await SshSettingsAsync(where));
 
             // Addresses come out first, because a repo can be called something like read-only-demo.
             return result is { ExitCode: not 0 } && PushRefusal().IsMatch(QuotedText().Replace(result.Errors, ""));
@@ -1212,8 +1213,8 @@ public static partial class GitTools
     private static RepoAccess GitFailure(CommandResult? result) =>
         result is not null && LooksLikeNetworkFailure(result.Errors) ? RepoAccess.Offline : RepoAccess.GitCantReach;
 
-    private static async Task<CommandResult?> LsRemoteAsync(string remote, string folder) =>
-        await RunAsync("git", folder, null, ["ls-remote", "--", remote, "HEAD"], default, await SshSettingsAsync(folder));
+    private static async Task<CommandResult?> LsRemoteAsync(string remote, string folder, CancellationToken cancel = default) =>
+        await RunAsync("git", folder, null, ["ls-remote", "--", remote, "HEAD"], cancel, await SshSettingsAsync(folder));
 
     // There's no terminal to answer SSH's questions in, so it should fail rather than wait.
     // A custom SSH command from the person's Git settings is left alone.
@@ -1306,7 +1307,7 @@ public static partial class GitTools
         if (!await FolderExistsAsync(folder)) return new CommandResult(-1, "", "That folder can't be reached.");
 
         // Before Git runs at all, because Git follows these just by starting up in the folder.
-        if (program == "git" && await Task.Run(() => GitFolderSafety.NetworkPathProblem(folder)) is { } networkProblem)
+        if (program == "git" && folder != Path.GetTempPath() && await GitFolderSafety.NetworkPathProblemAsync(folder, ReadSettingsFileAsync) is { } networkProblem)
         {
             return new CommandResult(128, "", networkProblem);
         }
@@ -1321,6 +1322,14 @@ public static partial class GitTools
             StandardOutputEncoding = new UTF8Encoding(false), // Both tools write UTF-8, whatever Windows is set to.
             StandardErrorEncoding = new UTF8Encoding(false),
         };
+        // A folder with no .git that's laid out as a bare repo would otherwise count as one, with
+        // settings Git reads as soon as it starts. Older versions of Git ignore this.
+        if (program == "git")
+        {
+            info.ArgumentList.Add("-c");
+            info.ArgumentList.Add("safe.bareRepository=explicit");
+        }
+
         // Projects need the GitHub CLI anyway, so its login backs up whatever Git has of its own.
         // Helpers given here come after the person's own, so theirs still goes first.
         if (program == "git" && await Task.Run(() => FindOnPath("gh")) is { } gitHubCli)
@@ -1375,6 +1384,10 @@ public static partial class GitTools
             process?.Dispose();
         }
     }
+
+    // From outside the folder, and without following anything it includes.
+    private static async Task<string?> ReadSettingsFileAsync(string file) =>
+        await RunAsync("git", Path.GetTempPath(), "config", "--no-includes", "--file", file, "-z", "--list") is { ExitCode: 0 } read ? read.Output : null;
 
     // Git rewrites a status line by ending it with a return, so only finished lines are kept.
     private static async Task<string> ReadErrorsWithStatusAsync(StreamReader reader, Action<string> statusLine, CancellationToken cancel)

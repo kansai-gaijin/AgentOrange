@@ -216,13 +216,14 @@ public sealed class LocalDatabase
         }
     }
 
-    // A version with no numbers, like a custom build, can't be said to be newer than anything.
+    // A version with no numbers, like a custom build, can't be said to be newer than a real one.
     private static bool IsNewerVersion(string version, string than)
     {
         if (than.Length == 0) return version.Length > 0;
-        return Version.TryParse(version.Contains('.') ? version : $"{version}.0", out var a)
-            && Version.TryParse(than.Contains('.') ? than : $"{than}.0", out var b)
-            && a > b;
+        if (!Version.TryParse(version.Contains('.') ? version : $"{version}.0", out var a)) return false;
+
+        // A project that's moved off a custom build to a real version shouldn't stay stuck on it.
+        return !Version.TryParse(than.Contains('.') ? than : $"{than}.0", out var b) || a > b;
     }
 
     private static Dictionary<string, EngineRecord> ReadEnginesHere(SqliteConnection connection)

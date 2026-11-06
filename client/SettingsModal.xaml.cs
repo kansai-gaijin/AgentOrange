@@ -306,11 +306,12 @@ public partial class SettingsModal : UserControl
             return;
         }
 
-        var address = Field(Server.Address);
+        var address = Field(Server.ChosenAddress);
         address.Width = 300;
         var save = ActionButton("Save");
         save.Visibility = Visibility.Collapsed;
         var problem = ProblemText();
+        if (Server.Address != Server.ChosenAddress) ShowProblem(problem, $"That address isn't answering, so this PC is using {Server.Address} for now.");
 
         async Task SaveAddress()
         {
@@ -320,7 +321,7 @@ public partial class SettingsModal : UserControl
                 return;
             }
 
-            if (cleaned == Server.Address) return;
+            if (cleaned == Server.ChosenAddress) return;
 
             // Only moves once there's a login at the new address, so a typo can't cut this PC off.
             if (Devices.HasLogin(cleaned))
@@ -336,7 +337,7 @@ public partial class SettingsModal : UserControl
         }
 
         address.TextChanged += (_, _) =>
-            save.Visibility = address.Text == Server.Address ? Visibility.Collapsed : Visibility.Visible;
+            save.Visibility = address.Text == Server.ChosenAddress ? Visibility.Collapsed : Visibility.Visible;
         address.KeyDown += async (_, e) =>
         {
             if (e.Key == Key.Enter) await SaveAddress();
@@ -412,6 +413,8 @@ public partial class SettingsModal : UserControl
 
     private string LastSyncedLabel()
     {
+        if (Sync.OtherWindowSyncs) return "Another window of the app is syncing";
+
         // Whichever is behind updates itself soon, and changes wait on this PC until then.
         if (Devices.VersionsDiffer) return "Paused until this PC and the server are on the same version";
         if (Sync.LastSynced is not { } synced) return "Not yet";
@@ -604,6 +607,26 @@ public partial class SettingsModal : UserControl
 
     public Action AppIsRestarting { get; set; } = () => { };
 
+    private static bool AnotherWindowIsOpen()
+    {
+        using var current = Process.GetCurrentProcess();
+        var path = Environment.ProcessPath;
+        return Process.GetProcessesByName(current.ProcessName).Any(process =>
+        {
+            using (process)
+            {
+                try
+                {
+                    return process.Id != current.Id && process.MainModule?.FileName == path;
+                }
+                catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
+                {
+                    return false; // Someone else's, or just gone.
+                }
+            }
+        });
+    }
+
     private UIElement[] LocalDataPage()
     {
         var problem = ProblemText();
@@ -614,6 +637,13 @@ public partial class SettingsModal : UserControl
             if (PickFolder(Folders.DatabaseFolder) is not { } folder
                 || string.Equals(folder.TrimEnd('\\'), Folders.DatabaseFolder.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
             {
+                return;
+            }
+
+            // That window would keep using the old file, and whatever it saves would be lost.
+            if (AnotherWindowIsOpen())
+            {
+                ShowProblem(problem, "Close Agent Orange's other windows first, as they're using this database.");
                 return;
             }
 

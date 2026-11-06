@@ -75,10 +75,30 @@ internal static partial class SshConfigFile
         foreach (var part in path[root.Length..].Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
         {
             current = Path.Combine(current, part);
-            if (File.GetAttributes(current).HasFlag(FileAttributes.ReparsePoint)) return true;
+            if (IsLink(current)) return true;
         }
         return false;
     }
+
+    /// <summary>The same, for a path that may not all exist. Nothing past a missing part can be a link.</summary>
+    internal static bool HasLinkBeforeAnythingMissing(string path)
+    {
+        try
+        {
+            return HasLinkOnTheWay(Path.GetFullPath(path));
+        }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return false;
+        }
+    }
+
+    // A real link, as opposed to something else with a reparse point, like a OneDrive folder.
+    // Answers about the link itself, without following it. Throws if the path isn't there.
+    internal static bool IsLink(string path) =>
+        File.GetAttributes(path).HasFlag(FileAttributes.Directory)
+            ? new DirectoryInfo(path).LinkTarget is not null
+            : new FileInfo(path).LinkTarget is not null;
 
     /// <summary>Works out a path the way Git's shell would, from inside the folder.</summary>
     public static string Resolve(string path, string folder)

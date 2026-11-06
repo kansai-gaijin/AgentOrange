@@ -114,7 +114,12 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
         try
         {
             var response = await SendAsync(HttpMethod.Post, "/v1/sync", new { cursor, changes, epoch });
-            VersionsDiffer = response?.StatusCode == HttpStatusCode.UpgradeRequired;
+            var versionsDiffer = response?.StatusCode == HttpStatusCode.UpgradeRequired;
+            if (versionsDiffer != VersionsDiffer)
+            {
+                VersionsDiffer = versionsDiffer;
+                PairingChanged?.Invoke();
+            }
             if (response is null || !response.IsSuccessStatusCode) return null;
 
             // Something like a proxy can answer 200 with anything, and queued changes must only

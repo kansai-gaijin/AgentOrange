@@ -38,6 +38,7 @@ public partial class MainWindow
     private string? _scrolledToProblem;
     private string? _pageProblem;
     private bool _confirmingNewRepo;
+    private string? _replacementRepoName;
     private int _navigation;
 
     // A long operation can finish after they've left its project, and what happened still has to reach them.
@@ -77,8 +78,12 @@ public partial class MainWindow
         var projects = _database.ListProjects();
         foreach (var gone in _covers.Keys.Except(projects.Select(project => project.Id)).ToList()) _covers.Remove(gone);
 
+        // Rebuilding the cards would otherwise send someone using the keyboard back to the top.
+        var focusedCard = Keyboard.FocusedElement is Button { Tag: string focusedId } focused && ProjectGrid.Children.Contains(focused) ? focusedId : null;
+
         ProjectGrid.Children.Clear();
         foreach (var project in projects) ProjectGrid.Children.Add(ProjectCard(project));
+        if (focusedCard is not null) ProjectGrid.Children.OfType<Button>().FirstOrDefault(card => (string)card.Tag == focusedCard)?.Focus();
         NoProjects.Visibility = projects.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
         // No one can reach a clone's Cancel button once its project is gone.
@@ -657,6 +662,7 @@ public partial class MainWindow
             create.Click += (_, _) =>
             {
                 _confirmingNewRepo = true;
+                _replacementRepoName = GitTools.RepoName(project.Name);
                 RenderProject(project);
             };
             actions.Add(create);
@@ -693,12 +699,19 @@ public partial class MainWindow
                 CornerRadius = new CornerRadius(8),
                 Padding = new Thickness(14, 12, 14, 12),
                 Margin = new Thickness(16, 0, 16, 12),
-                Child = new TextBlock
+                Child = new StackPanel
                 {
-                    Text = $"This creates a new, empty private repo{(GitTools.RepoName(project.Name) is { Length: > 0 } repoName ? $" called {repoName}" : "")} under {destination} and moves this project to it on all your PCs, replacing {project.RepoUrl}.{mayStillExist} Nothing is pushed, so push your work afterward for your other PCs to get it.",
-                    Foreground = (Brush)FindResource("TextNormal"),
-                    FontSize = 13,
-                    TextWrapping = TextWrapping.Wrap,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = $"This creates a new, empty private repo under {destination} and moves this project to it on all your PCs, replacing {project.RepoUrl}.{mayStillExist} Nothing is pushed, so push your work afterward for your other PCs to get it.",
+                            Foreground = (Brush)FindResource("TextNormal"),
+                            FontSize = 13,
+                            TextWrapping = TextWrapping.Wrap,
+                        },
+                        ReplacementRepoNameRow(),
+                    },
                 },
             });
         }
@@ -911,7 +924,7 @@ public partial class MainWindow
         GitResult result;
         try
         {
-            result = await GitTools.CreatePrivateRepoAsync(project.Name, folder!, project.RepoUrl);
+            result = await GitTools.CreatePrivateRepoAsync(project.Name, folder!, project.RepoUrl, _replacementRepoName ?? "");
         }
         finally
         {
@@ -1093,6 +1106,15 @@ public partial class MainWindow
             await UseFolderAsync(project, result.Value, folderBefore);
             if (result.Note is not null) ShowPageProblem(project.Id, result.Note);
         }
+    }
+
+    // A project's name may have nothing a repo's name can use, such as one in Japanese.
+    private Grid ReplacementRepoNameRow()
+    {
+        var name = Field(_replacementRepoName ?? "");
+        name.Width = 260;
+        name.TextChanged += (_, _) => _replacementRepoName = name.Text;
+        return Row("Repo name", "GitHub needs Latin letters and numbers.", name);
     }
 
     private void AddFolderSettingsRow(List<FrameworkElement> rows, Project project, string folder)

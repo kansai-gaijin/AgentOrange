@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO;
 using System.Text.RegularExpressions;
 
@@ -6,94 +7,161 @@ namespace AgentOrange;
 /// <summary>
 /// Git follows some things in a folder's own files as soon as it runs there, even just to read
 /// the remote. Opening a file on a network share can send the person's Windows login to whoever
-/// runs it, and a folder can come from anyone. So this reads those files itself first, without
-/// following anything onto a network. A folder that's already on a network drive has nothing to
-/// add to that risk, so it's left alone.
+/// runs it, and a folder can come from anyone. So this looks at those files first, without
+/// following anything onto a network. Settings files are read by Git itself, from outside the
+/// folder and without includes, so they mean exactly what they'd mean to Git. If any of this
+/// can't be worked out, the folder is refused. A folder that's already on a network drive has
+/// nothing to add to that risk, so it's left alone.
 /// </summary>
 internal static partial class GitFolderSafety
 {
     private const int MaxIncludeDepth = 5;
     private const int MaxBytes = 1_000_000;
-    private const string Problem = "fatal: That folder's Git settings point at a network location, and opening it could send your Windows login there. Nothing was run in it. Remove that from its Git settings if you trust where it came from.";
+    private static readonly TimeSpan RememberFor = TimeSpan.FromSeconds(3);
+    private const string Problem = "fatal: That folder's Git settings point at a network location, or couldn't be checked, and opening one could send your Windows login there. Nothing was run in it. Fix that in its Git settings if you trust where it came from.";
 
-    /// <summary>Why Git shouldn't run in this folder, or null if nothing's wrong that can be seen.</summary>
-    public static string? NetworkPathProblem(string folder)
+    // Git runs many times in a row for one check, and each would otherwise look at all this again.
+    private static readonly ConcurrentDictionary<string, (DateTimeOffset At, string? Answer)> Recent = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Why Git shouldn't run in this folder, or null if nothing's wrong.</summary>
+    public static async Task<string?> NetworkPathProblemAsync(string folder, Func<string, Task<string?>> readSettingsFile)
     {
+        if (Recent.TryGetValue(folder, out var known) && DateTimeOffset.UtcNow - known.At < RememberFor) return known.Answer;
+
+        // Off the UI thread, because a dying drive can make any of this slow.
+        var answer = await Task.Run(() => InspectAsync(folder, readSettingsFile));
+        Recent[folder] = (DateTimeOffset.UtcNow, answer);
+        return answer;
+    }
+
+    private static async Task<string?> InspectAsync(string folder, Func<string, Task<string?>> readSettingsFile)
+    {
+        string? entry = null;
         try
         {
             var full = Path.GetFullPath(folder);
-            if (IsNetworkPath(full) || FindGitEntry(full) is not { } entry) return null;
+            if (IsNetworkPath(full)) return null;
 
-            var repoFolder = Path.GetDirectoryName(entry)!;
-            var gitDirectory = entry;
-
-            // A .git file says where the real Git data is, as worktrees and submodules have.
-            if (File.Exists(entry))
-            {
-                if (new FileInfo(entry).Length > MaxBytes) return Problem;
-                var line = File.ReadLines(entry).FirstOrDefault(text => text.StartsWith("gitdir:", StringComparison.OrdinalIgnoreCase));
-                if (line is null) return null;
-
-                gitDirectory = SshConfigFile.Resolve(line["gitdir:".Length..].Trim(), repoFolder);
-                if (IsNetworkPath(gitDirectory)) return Problem;
-            }
-            else if (File.GetAttributes(entry).HasFlag(FileAttributes.ReparsePoint))
-            {
-                return Problem; // A link could lead anywhere, and following it to find out is the risk.
-            }
-
-            var shared = Path.Combine(gitDirectory, "commondir");
-            if (File.Exists(shared) && new FileInfo(shared).Length < MaxBytes && IsNetworkPath(SshConfigFile.Resolve(File.ReadAllText(shared).Trim(), gitDirectory))) return Problem;
-
-            return HasNetworkPath(Path.Combine(gitDirectory, "config"), 0) || HasNetworkPath(Path.Combine(gitDirectory, "config.worktree"), 0) ? Problem : null;
+            entry = FindGitEntry(full);
+            if (entry is null) return null;
+            return await PointsAtNetworkAsync(entry, readSettingsFile) ? Problem : null;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
-            return null; // Git's own answer about a folder it can't read is a better one.
+            AppLog.Write($"Couldn't check a folder's Git settings: {error.Message}");
+            return entry is null ? null : Problem;
         }
     }
 
-    // Git looks upward from where it runs, and the nearest one counts.
+    // Git looks upward from where it runs, and the nearest one counts. This doesn't follow a link
+    // to see what's there, as File.Exists would. A folder that's a repo with no .git at all, a bare
+    // one, is ruled out by how Git is run.
     private static string? FindGitEntry(string folder)
     {
         for (var at = folder; at is not null; at = Path.GetDirectoryName(at))
         {
             var entry = Path.Combine(at, ".git");
-            if (File.Exists(entry) || Directory.Exists(entry)) return entry;
+            if (Exists(entry)) return entry;
         }
         return null;
     }
 
-    private static bool HasNetworkPath(string configFile, int depth)
+    private static async Task<bool> PointsAtNetworkAsync(string entry, Func<string, Task<string?>> readSettingsFile)
     {
-        if (depth > MaxIncludeDepth) return true; // Git gives up on this too, and it can't be vouched for.
-        var file = new FileInfo(configFile);
-        if (!file.Exists) return false;
-        if (file.LinkTarget is not null || file.Length > MaxBytes) return true;
+        if (SshConfigFile.IsLink(entry)) return true; // It could lead anywhere, and following it to find out is the risk.
 
-        var directory = file.DirectoryName!;
-        var inInclude = false;
-        foreach (var line in File.ReadLines(configFile))
+        var gitDirectory = entry;
+
+        // A .git file says where the real Git data is, as worktrees and submodules have.
+        if (!File.GetAttributes(entry).HasFlag(FileAttributes.Directory))
         {
-            if (Section().Match(line) is { Success: true } section)
-            {
-                inInclude = section.Groups[1].Value.StartsWith("include", StringComparison.OrdinalIgnoreCase);
-                continue;
-            }
+            if (new FileInfo(entry).Length > MaxBytes) return true;
+            var line = File.ReadLines(entry).FirstOrDefault(text => text.StartsWith("gitdir:", StringComparison.OrdinalIgnoreCase));
+            if (line is null) return false;
 
-            if (Setting().Match(line) is not { Success: true } setting) continue;
-            var raw = setting.Groups[2].Value.Trim().Trim('"');
-            var value = raw.Replace(@"\\", @"\", StringComparison.Ordinal);
+            gitDirectory = SshConfigFile.Resolve(line["gitdir:".Length..].Trim(), Path.GetDirectoryName(entry)!);
+            if (IsUnsafeToOpen(gitDirectory)) return true;
+        }
 
-            // No setting has a reason to name a network location in a folder that isn't on one.
-            if (StartsLikeShare(raw) || StartsLikeShare(value)) return true;
-            if (!inInclude || !setting.Groups[1].Value.Equals("path", StringComparison.OrdinalIgnoreCase)) continue;
+        var directories = new List<string> { gitDirectory };
 
-            var included = SshConfigFile.Resolve(value, directory);
-            if (IsNetworkPath(included) || SshConfigFile.HasLinkOnTheWay(included)) return true;
-            if (HasNetworkPath(included, depth + 1)) return true;
+        // A worktree shares most of its settings and data with the repo it came from.
+        var shared = Path.Combine(gitDirectory, "commondir");
+        if (File.Exists(shared))
+        {
+            if (new FileInfo(shared).Length > MaxBytes) return true;
+            var common = SshConfigFile.Resolve(File.ReadAllText(shared).Trim(), gitDirectory);
+            if (IsUnsafeToOpen(common)) return true;
+            directories.Add(common);
+        }
+
+        foreach (var directory in directories.Where(Directory.Exists))
+        {
+            if (HasLinkInside(directory) || HasLinkInside(Path.Combine(directory, "objects"))) return true;
+            if (HasNetworkAlternate(directory)) return true;
+            if (await SettingsPointAtNetworkAsync(Path.Combine(directory, "config"), 0, readSettingsFile)) return true;
+            if (await SettingsPointAtNetworkAsync(Path.Combine(directory, "config.worktree"), 0, readSettingsFile)) return true;
         }
         return false;
+    }
+
+    private static bool HasLinkInside(string directory) =>
+        Directory.Exists(directory) && Directory.EnumerateFileSystemEntries(directory).Any(SshConfigFile.IsLink);
+
+    // Other places a repo borrows its history from. Git opens them to look for any commit.
+    private static bool HasNetworkAlternate(string gitDirectory)
+    {
+        var objects = Path.Combine(gitDirectory, "objects");
+        var alternates = Path.Combine(objects, "info", "alternates");
+        if (!File.Exists(alternates)) return false;
+        if (new FileInfo(alternates).Length > MaxBytes) return true;
+
+        return File.ReadLines(alternates)
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0 && !line.StartsWith('#'))
+            .Any(line => StartsLikeShare(line) || IsUnsafeToOpen(SshConfigFile.Resolve(line.Trim('"'), objects)));
+    }
+
+    private static async Task<bool> SettingsPointAtNetworkAsync(string file, int depth, Func<string, Task<string?>> readSettingsFile)
+    {
+        if (depth > MaxIncludeDepth) return true; // Git gives up on this too, and it can't be vouched for.
+        if (IsUnsafeToOpen(file)) return true;
+
+        var info = new FileInfo(file);
+        if (!info.Exists) return false; // Git skips a missing one, and carries on to the next.
+        if (info.Length > MaxBytes) return true;
+
+        // As Git itself reads it, which settles continued lines, quoting and settings on a header's line.
+        if (await readSettingsFile(file) is not { } settings) return true;
+
+        var directory = info.DirectoryName!;
+        foreach (var setting in settings.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = setting.Split('\n', 2);
+            if (parts.Length < 2) continue;
+
+            // No setting has a reason to name a network location in a folder that isn't on one.
+            if (StartsLikeShare(parts[1])) return true;
+
+            if (!IncludeSetting().IsMatch(parts[0])) continue;
+            if (await SettingsPointAtNetworkAsync(SshConfigFile.Resolve(parts[1], directory), depth + 1, readSettingsFile)) return true;
+        }
+        return false;
+    }
+
+    private static bool IsUnsafeToOpen(string path) => IsNetworkPath(path) || SshConfigFile.HasLinkBeforeAnythingMissing(path);
+
+    private static bool Exists(string path)
+    {
+        try
+        {
+            File.GetAttributes(path); // Answers about a link itself, without following it.
+            return true;
+        }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return false;
+        }
     }
 
     private static bool StartsLikeShare(string path) =>
@@ -106,9 +174,6 @@ internal static partial class GitFolderSafety
         return !string.IsNullOrEmpty(root) && new DriveInfo(root).DriveType == DriveType.Network;
     }
 
-    [GeneratedRegex(@"^\s*\[\s*([A-Za-z.-]+)")]
-    private static partial Regex Section();
-
-    [GeneratedRegex(@"^\s*([A-Za-z][A-Za-z0-9-]*)\s*=\s*(.*)$")]
-    private static partial Regex Setting();
+    [GeneratedRegex(@"^include(if\..*)?\.path$", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex IncludeSetting();
 }

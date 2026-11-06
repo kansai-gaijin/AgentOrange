@@ -188,6 +188,11 @@ public partial class MainWindow : Window
             (ServerStatus.Text, ServerStatus.Foreground) = ("Sync is paused until this PC can update", MutedBrush);
             return;
         }
+        if (_devices.VersionsDiffer)
+        {
+            (ServerStatus.Text, ServerStatus.Foreground) = ("Sync is paused until this PC and the server are on the same version", MutedBrush);
+            return;
+        }
 
         if (_server.State == ServerState.NoAddress || !_devices.IsPaired)
         {
@@ -227,7 +232,14 @@ public partial class MainWindow : Window
         }
         catch (Exception)
         {
-            return null; // Offline, say. The next check tries again, and a known update stays required.
+            // Offline, say, so it can't be downloaded. This PC keeps working from its own data with
+            // sync paused, and the next check that gets through brings this back.
+            if (!_downloading && UpdateOverlay.Visibility == Visibility.Visible)
+            {
+                HideUpdateOverlay();
+                ShowServerState();
+            }
+            return null;
         }
 
         if (update is null)
@@ -259,8 +271,13 @@ public partial class MainWindow : Window
         _requiredVersion = null;
         _requiredUpdate = null;
         _database.SetSetting(RequiredUpdateSetting, "");
-        UpdateOverlay.Visibility = Visibility.Collapsed;
+        HideUpdateOverlay();
         ShowServerState();
+    }
+
+    private void HideUpdateOverlay()
+    {
+        UpdateOverlay.Visibility = Visibility.Collapsed;
         ProjectWizard.IsEnabled = true;
         ProjectSettings.IsEnabled = true;
         Settings.IsEnabled = true;

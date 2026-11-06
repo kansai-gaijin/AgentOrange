@@ -34,6 +34,9 @@ public sealed class ServerConnection
 
     public string Address { get; private set; }
 
+    /// <summary>The address that's saved. Address differs while falling back from it.</summary>
+    public string ChosenAddress => _chosenAddress;
+
     public ServerState State { get; private set; }
 
     public event Action? StateChanged;
@@ -118,7 +121,12 @@ public sealed class ServerConnection
 
     private async Task<bool> TryOtherAddressesAsync(string failing)
     {
-        foreach (var other in _database.AddressesWithLogin().Where(other => other != failing))
+        // Only to another way into this same server. A login can also be left over from one this
+        // PC used to use, and anything synced there would never reach the real one.
+        var thisServer = _database.GetSetting($"sync_epoch:{failing}");
+        if (string.IsNullOrEmpty(thisServer)) return false;
+
+        foreach (var other in _database.AddressesWithLogin().Where(other => other != failing && _database.GetSetting($"sync_epoch:{other}") == thisServer))
         {
             if (!await IsHealthyAsync(other) || Address != failing) continue;
             MoveTo(other);

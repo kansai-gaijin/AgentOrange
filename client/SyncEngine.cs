@@ -40,6 +40,9 @@ public sealed class SyncEngine
 
     public DateTimeOffset? LastSynced { get; private set; }
 
+    /// <summary>Another window of the app has the database's turn to sync.</summary>
+    public bool OtherWindowSyncs { get; private set; }
+
     public int WaitingToSync => _database.CountOutbox();
 
     /// <summary>The sync status may have changed.</summary>
@@ -66,7 +69,16 @@ public sealed class SyncEngine
 
     public async Task SyncNowAsync()
     {
-        if (_running || IsPaused() || _server.State != ServerState.Connected || !_devices.IsPaired || !HasSyncTurn()) return;
+        if (_running || IsPaused() || _server.State != ServerState.Connected || !_devices.IsPaired) return;
+
+        var hasTurn = HasSyncTurn();
+        if (OtherWindowSyncs == hasTurn)
+        {
+            OtherWindowSyncs = !hasTurn;
+            StatusChanged?.Invoke();
+        }
+        if (!hasTurn) return;
+
         _running = true;
 
         try
