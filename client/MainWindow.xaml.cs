@@ -56,8 +56,8 @@ public partial class MainWindow : Window
         ProjectWizard.ClaimFolder = async (folder, name) =>
             (await _database.ClaimFolderAsync(folder, new Project("new-project", name, "", "", "", "", DateTimeOffset.UtcNow)))?.Name;
         ProjectWizard.ReleaseFolder = _database.ReleaseFolder;
-        ProjectWizard.FolderSettingsAllowed = (folder, settings) => _database.GetSetting(FolderSettingsAllowedSetting(folder)) == settings;
-        ProjectWizard.AllowFolderSettings = (folder, settings) => _database.SetSetting(FolderSettingsAllowedSetting(folder), settings);
+        GitTools.AllowedFolderSettings = _database.AllowedFolderSettings;
+        GitTools.RememberAllowedFolderSettings = _database.AllowFolderSettings;
         ProjectSettings.ProjectIsBusy = projectId => _busyProjectId == projectId;
 
         // A delete interrupted last time can leave parts of a project behind.
@@ -97,11 +97,11 @@ public partial class MainWindow : Window
 
         Loaded += async (_, _) =>
         {
-            await RemoveLeftoverCloneAsync();
             await _server.CheckAsync();
             if (_updates.IsInstalled) await CheckForUpdateAsync();
 
             // Last, so a dead network drive can't hold up the server or update checks.
+            await RemoveLeftoverCloneAsync();
             await ReadEngineVersionsAsync();
         };
     }

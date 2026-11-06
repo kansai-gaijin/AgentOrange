@@ -34,6 +34,7 @@ public partial class NewProjectWizard : UserControl
     private string? _replacingUrl;
     private bool _offeringFolderSettings;
     private string _shownFolderSettings = "";
+    private RepoCheck? _replacementOfferedFor;
 
     public NewProjectWizard()
     {
@@ -46,11 +47,6 @@ public partial class NewProjectWizard : UserControl
     public Func<string, string, Task<string?>> ClaimFolder { get; set; } = (_, _) => Task.FromResult<string?>(null);
 
     public Action<string> ReleaseFolder { get; set; } = _ => { };
-
-    /// <summary>Whether the person has already allowed this folder's own Git settings, as they are now.</summary>
-    public Func<string, string, bool> FolderSettingsAllowed { get; set; } = (_, _) => false;
-
-    public Action<string, string> AllowFolderSettings { get; set; } = (_, _) => { };
 
     public event Action? Closed;
 
@@ -243,13 +239,27 @@ public partial class NewProjectWizard : UserControl
                 else if (_replacingUrl is { } replacing)
                 {
                     claimed = true;
-                    progress.Text = "Creating a private repo on GitHub…";
-                    var created = await GitTools.CreatePrivateRepoAsync(_name, path, replacing);
-                    (url, confirmed, failure) = created.Worked ? (created.Value, true, (string?)null) : ("", false, created.Value);
+
+                    // Time has passed since they were offered this, and a different account may be active now.
+                    progress.Text = "Checking the repo again…";
+                    var latest = await GitTools.CheckRepoAccessAsync(replacing, path);
+                    if (latest != _replacementOfferedFor)
+                    {
+                        var (heading, description) = latest.Describe();
+                        _replacingUrl = null;
+                        (url, confirmed, failure) = ("", false, $"GitHub's answer has changed. {heading}. {description}");
+                    }
+                    else
+                    {
+                        progress.Text = "Creating a private repo on GitHub…";
+                        var created = await GitTools.CreatePrivateRepoAsync(_name, path, replacing);
+                        (url, confirmed, failure) = created.Worked ? (created.Value, true, (string?)null) : ("", false, created.Value);
+                    }
                 }
                 else
                 {
                     claimed = true;
+                    await GitTools.AskAboutUnreadableSshSettingsAsync(path);
                     (url, confirmed, failure) = await ResolveRepoAsync(submission, status => progress.Text = status);
                 }
             }
@@ -330,25 +340,25 @@ public partial class NewProjectWizard : UserControl
         }
 
         // A folder's own Git settings can run programs, so they're only used once they've been seen.
-        var runnable = state.Origin is not null ? await GitTools.FolderRunnableSettingsAsync(project.Folder) : "";
+        var runnable = state.Origin is not null ? await GitTools.FolderRunnableSettingsAsync(project.Folder) : FolderGitSettings.None;
 
         // Only what was actually shown gets approved. If it has changed since, it's shown again.
         if (_offeringFolderSettings)
         {
-            if (runnable == _shownFolderSettings) AllowFolderSettings(project.Folder, _shownFolderSettings);
+            if (runnable?.Fingerprint == _shownFolderSettings) GitTools.RememberAllowedFolderSettings(project.Folder, _shownFolderSettings);
             _offeringFolderSettings = false;
         }
-        var useFolderSettings = state.Origin is not null && runnable is not null && (runnable.Length == 0 || FolderSettingsAllowed(project.Folder, runnable));
+        var useFolderSettings = state.Origin is not null && runnable is not null && GitTools.AreAllowed(project.Folder, runnable);
 
         var check = await GitTools.CheckRepoAccessAsync(url, state.Origin is not null ? project.Folder : null, useFolderSettings);
         switch (check.Access)
         {
             case RepoAccess.Allowed or RepoAccess.Offline:
                 break;
-            case RepoAccess.GitCantReach when !useFolderSettings && runnable is { Length: > 0 }:
+            case RepoAccess.GitCantReach when !useFolderSettings && runnable is { IsEmpty: false }:
                 _offeringFolderSettings = true;
-                _shownFolderSettings = runnable;
-                return ("", false, $"Git can't reach this repo without this folder's own Git settings, which can run programs or send your login somewhere else:\n{runnable}\nOnly use them if you trust where this folder came from.");
+                _shownFolderSettings = runnable.Fingerprint;
+                return ("", false, $"Git can't reach this repo without this folder's own Git settings, which can run programs or send your login somewhere else:\n{runnable.Shown}\nOnly use them if you trust where this folder came from.");
             case RepoAccess.SignedOut:
                 return ("", false, "This PC isn't signed in to GitHub. Run gh auth login in a terminal, then try again.");
             case RepoAccess.OtherAccount:
@@ -356,7 +366,9 @@ public partial class NewProjectWizard : UserControl
             case RepoAccess.NotFound or RepoAccess.NotFoundOrNoAccess when state.Origin is not null:
                 var (gone, why) = check.Describe();
                 _replacingUrl = url;
-                return ("", false, $"{gone}. {why} This folder is connected to it, so you can create a new, empty private repo for the folder instead. Nothing is pushed.");
+                _replacementOfferedFor = check;
+                var where = check.Account is null ? "your active GitHub account" : $"the GitHub account {check.Account}";
+                return ("", false, $"{gone}. {why} This folder is connected to it, so you can create a new, empty private repo for the folder under {where} instead. Nothing is pushed.");
             default:
                 var (heading, description) = check.Describe();
                 return ("", false, $"{heading}. {description}");

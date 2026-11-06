@@ -173,7 +173,7 @@ public sealed class LocalDatabase
         var order = ProjectOrder();
         if (order.Remove(projectId)) SaveProjectOrder(order);
 
-        SetSetting($"project_folder:{projectId}", "");
+        SetProjectFolder(projectId, "");
         SetSetting($"project_verified:{projectId}", "");
     }
 
@@ -200,10 +200,8 @@ public sealed class LocalDatabase
                 if (GetRecord(ImagesCollection, ImageId(projectId, kind)) is not null) SetProjectImage(projectId, kind, null);
             }
             if (GetRecord(EnginesCollection, projectId) is not null) SaveRecord(EnginesCollection, projectId, "", deleted: true);
-            foreach (var setting in new[] { $"project_folder:{projectId}", $"project_verified:{projectId}" })
-            {
-                if (!string.IsNullOrEmpty(GetSetting(setting))) SetSetting(setting, "");
-            }
+            if (GetProjectFolder(projectId) is not null) SetProjectFolder(projectId, "");
+            if (!string.IsNullOrEmpty(GetSetting($"project_verified:{projectId}"))) SetSetting($"project_verified:{projectId}", "");
         }
     }
 
@@ -269,7 +267,19 @@ public sealed class LocalDatabase
         return string.IsNullOrEmpty(folder) ? null : folder;
     }
 
-    public void SetProjectFolder(string projectId, string folder) => SetSetting($"project_folder:{projectId}", folder);
+    public void SetProjectFolder(string projectId, string folder)
+    {
+        // A folder connected again later gets looked at again, including its own Git settings.
+        if (GetProjectFolder(projectId) is { } old && old != folder) SetSetting(AllowedSettingsKey(old), "");
+        SetSetting($"project_folder:{projectId}", folder);
+    }
+
+    /// <summary>The fingerprint of a folder's own Git settings that the person has allowed on this PC.</summary>
+    public string? AllowedFolderSettings(string folder) => GetSetting(AllowedSettingsKey(folder));
+
+    public void AllowFolderSettings(string folder, string fingerprint) => SetSetting(AllowedSettingsKey(folder), fingerprint);
+
+    private static string AllowedSettingsKey(string folder) => $"folder_settings_allowed:{folder}";
 
     public byte[]? GetProjectImage(string projectId, ProjectImageKind kind)
     {

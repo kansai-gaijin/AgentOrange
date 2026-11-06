@@ -8,6 +8,8 @@
 *.env
 *.pem
 *.key
+.cloudflared/
+*tunnel*.json
 
 # User-specific files
 *.rsuser

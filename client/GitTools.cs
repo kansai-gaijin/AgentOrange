@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace AgentOrange;
@@ -50,6 +52,14 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
     };
 }
 
+/// <summary>A folder's own Git settings that matter. The fingerprint says whether they've changed, without keeping them.</summary>
+public sealed record FolderGitSettings(string Shown, string Fingerprint)
+{
+    public static readonly FolderGitSettings None = new("", "");
+
+    public bool IsEmpty => Fingerprint.Length == 0;
+}
+
 /// <summary>What a chosen folder is, as far as Git is concerned.</summary>
 public sealed record FolderRepo(bool InsideRepo, bool IsRepoRoot, string? Origin, string? Problem = null, string? GitHubOrigin = null)
 {
@@ -58,6 +68,9 @@ public sealed record FolderRepo(bool InsideRepo, bool IsRepoRoot, string? Origin
 
     /// <summary>The remote, in its plain GitHub form if it has one, such as when it's an SSH alias for GitHub.</summary>
     public string? OriginToCompare => GitHubOrigin ?? Origin;
+
+    /// <summary>The remote's SSH settings can't be understood until the person allows them to run.</summary>
+    public bool NeedsSettingsApproval => Problem?.StartsWith(GitTools.CantTellSshSettings, StringComparison.Ordinal) == true;
 }
 
 /// <summary>What projects need from Git and the GitHub CLI.</summary>
@@ -193,9 +206,17 @@ public static partial class GitTools
         if (prefix is null) return null;
         if (prefix.ExitCode != 0)
         {
-            return prefix.Errors.Contains("not a git repository", StringComparison.OrdinalIgnoreCase)
-                ? new FolderRepo(false, false, null)
-                : new FolderRepo(false, false, null, GitProblem("Git couldn't read that folder", prefix.Errors));
+            if (!prefix.Errors.Contains("not a git repository", StringComparison.OrdinalIgnoreCase))
+            {
+                return new FolderRepo(false, false, null, GitProblem("Git couldn't read that folder", prefix.Errors));
+            }
+
+            // Git says the same about a repo it can't make sense of, whose history may still be
+            // there. Setting up Git over the top of that could lose it.
+            var gitData = Path.Combine(folder, ".git");
+            return await Task.Run(() => Directory.Exists(gitData) || File.Exists(gitData))
+                ? new FolderRepo(false, false, null, "This folder's Git data is damaged, so nothing was changed. Repair it or use another copy.")
+                : new FolderRepo(false, false, null);
         }
 
         // Git's own data, or a repo with no files checked out, also answers with an empty prefix.
@@ -249,28 +270,69 @@ public static partial class GitTools
     /// <summary>
     /// Settings in a folder that make Git run a program or send a login somewhere else when it
     /// reaches a remote. A folder can come from anyone, as a zip or on a shared drive, so these
-    /// are only used once the person has seen them. Empty if there are none, and null if that
-    /// couldn't be found out, which has to be treated as not being safe to use them.
+    /// are only used once the person has seen them. Null means that couldn't be found out,
+    /// which has to be treated as not being safe to use them.
     /// </summary>
-    public static async Task<string?> FolderRunnableSettingsAsync(string folder)
+    public static async Task<FolderGitSettings?> FolderRunnableSettingsAsync(string folder)
     {
-        if (!await FolderExistsAsync(folder)) return "";
+        if (!await FolderExistsAsync(folder)) return FolderGitSettings.None;
 
         // Asked for by scope, because a folder's settings can also be in a file only used per
         // worktree, or in one it includes. NUL-separated, so a value can't hide on a second line.
         var found = await RunAsync("git", folder, "config", "--show-scope", "--includes", "-z", "--get-regexp", FolderSettingsThatMatter);
         if (found is null) return null;
-        if (found.ExitCode == 1) return "";
+        if (found.ExitCode == 1) return FolderGitSettings.None;
         if (found.ExitCode != 0) return null;
 
         var parts = found.Output.Split('\0');
         var settings = new List<string>();
         for (var i = 0; i + 1 < parts.Length; i += 2)
         {
-            if (parts[i] is "local" or "worktree") settings.Add(parts[i + 1].Replace('\n', ' ').Trim());
+            if (parts[i] is "local" or "worktree") settings.Add(parts[i + 1]);
         }
-        return string.Join('\n', settings);
+        if (settings.Count == 0) return FolderGitSettings.None;
+
+        // Only a fingerprint is kept, because these can hold live logins.
+        var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\0', settings))));
+        return new FolderGitSettings(string.Join('\n', settings.Select(ForShowing)), fingerprint);
     }
+
+    // Enough to judge what a setting does, without putting a login on the screen.
+    private static string ForShowing(string setting)
+    {
+        var parts = setting.Split('\n', 2);
+        var key = HideLogins(parts[0]);
+        if (parts.Length == 1) return key;
+        return $"{key} {(SensitiveSetting().IsMatch(parts[0]) ? "(hidden)" : HideLogins(parts[1]))}";
+    }
+
+    private static string HideLogins(string text) =>
+        TokenLike().Replace(LoginInUrl().Replace(text, "://(hidden)@"), "(hidden)");
+
+    /// <summary>Set up when the app starts, because the answers are kept in its database.</summary>
+    public static Func<string, string?> AllowedFolderSettings { get; set; } = _ => null;
+
+    public static Action<string, string> RememberAllowedFolderSettings { get; set; } = (_, _) => { };
+
+    public static bool AreAllowed(string folder, FolderGitSettings settings) =>
+        settings.IsEmpty || AllowedFolderSettings(folder) == settings.Fingerprint;
+
+    /// <summary>
+    /// A folder whose SSH settings file needs ssh's own handling can't be understood until it's
+    /// allowed to run, and until then it would just be refused. So this asks, when choosing one.
+    /// </summary>
+    public static async Task AskAboutUnreadableSshSettingsAsync(string folder)
+    {
+        if (await InspectFolderAsync(folder) is not { NeedsSettingsApproval: true }) return;
+        if (await FolderRunnableSettingsAsync(folder) is not { IsEmpty: false } settings) return;
+
+        if (Dialogs.Confirm($"To tell whether this folder's remote is on GitHub, its SSH settings have to run, and they can run programs or send your login somewhere else:\n\n{settings.Shown}\n\nOnly use them if you trust where this folder came from. Use them?"))
+        {
+            RememberAllowedFolderSettings(folder, settings.Fingerprint);
+        }
+    }
+
+    internal const string CantTellSshSettings = "Couldn't tell whether";
 
     private const string FolderSettingsThatMatter =
         @"^(core\.(sshcommand|askpass|gitproxy)|credential\..*|http\..*|url\..*|remote\..*\.(uploadpack|receivepack|vcs|proxy))$";
@@ -365,7 +427,7 @@ public static partial class GitTools
         if (user == "git" && IsGitHubSshHost(host)) return ($"git@github.com:{path}", null);
 
         var settings = await ReadSshSettingsAsync(host, folder);
-        if (settings is not var (realHost, realUser)) return (null, $"Couldn't tell whether {host} is GitHub from this folder's SSH settings. Check that they work, or use a remote that says github.com.");
+        if (settings is not var (realHost, realUser)) return (null, $"{CantTellSshSettings} {host} is GitHub from this folder's SSH settings. Check that they work, or use a remote that says github.com.");
 
         var effectiveUser = user.Length > 0 ? user : realUser;
         return (effectiveUser == "git" && realHost is not null && IsGitHubSshHost(realHost) ? $"git@github.com:{path}" : null, null);
@@ -391,11 +453,19 @@ public static partial class GitTools
         if (file.Success)
         {
             var path = SshConfigFile.Resolve(file.Groups[1].Value.Trim('"', '\''), folder);
-            return await Task.Run(() => SshConfigFile.Read(path, host));
+            if (await Task.Run(() => SshConfigFile.Read(path, host)) is { } read) return read;
+
+            // Needs ssh's own handling, which can run commands, so only once it's been allowed.
+            if (await FolderRunnableSettingsAsync(folder) is not { IsEmpty: false } allowed || !AreAllowed(folder, allowed)) return null;
+            return ParseSshSettings(await RunAsync("ssh", folder, "-G", "-F", path, host));
         }
 
         // This PC's own SSH settings, which belong to the person and not to the folder.
-        var settings = await RunAsync("ssh", Path.GetTempPath(), "-G", host);
+        return ParseSshSettings(await RunAsync("ssh", Path.GetTempPath(), "-G", host));
+    }
+
+    private static (string? Host, string? User)? ParseSshSettings(CommandResult? settings)
+    {
         if (settings is not { ExitCode: 0 }) return null;
 
         var name = SshHostName().Match(settings.Output);
@@ -423,7 +493,7 @@ public static partial class GitTools
     // A separate push address would otherwise keep sending work to the old repo.
     private static async Task<bool> MoveOriginAsync(string folder, string remote)
     {
-        if (await RunAsync("git", folder, "remote", "set-url", "origin", remote) is not { ExitCode: 0 }) return false;
+        if (await RunAsync("git", folder, "config", "--replace-all", "remote.origin.url", remote) is not { ExitCode: 0 }) return false;
 
         var pushUrl = await RunAsync("git", folder, "config", "--get-all", "remote.origin.pushurl");
         if (pushUrl is not { ExitCode: 0 }) return true;
@@ -540,9 +610,6 @@ public static partial class GitTools
             : await RunAsync("gh", folder, "repo", "create", repoName, "--private");
         if (created is not { ExitCode: 0 })
         {
-            // A folder that wasn't a repo before this shouldn't become one for a repo that doesn't exist.
-            if (!state.InsideRepo && created?.Errors != TimedOut) await TryDeleteOwnedFolderAsync(Path.Combine(folder, ".git"));
-
             if (created?.Errors == TimedOut) return new GitResult(false, $"GitHub took too long to answer, so {repoName} may have been created anyway. Check GitHub before trying again.");
             if (created?.Errors.Contains("already exists", StringComparison.OrdinalIgnoreCase) == true)
             {
@@ -583,9 +650,10 @@ public static partial class GitTools
 
     /// <summary>
     /// Clones into a new folder inside the chosen one, and returns the new folder's path.
-    /// workingFolder says where it's working, so that can be cleaned up if the app closes first.
+    /// workingFolder says where it's working, so that can be cleaned up if the app closes first,
+    /// and is told null once that folder holds a finished clone that must not be cleaned up.
     /// </summary>
-    public static async Task<GitResult> CloneAsync(string url, string parentFolder, CancellationToken cancel, Action<string> workingFolder)
+    public static async Task<GitResult> CloneAsync(string url, string parentFolder, CancellationToken cancel, Action<string?> workingFolder)
     {
         if (RepoUrlProblem(url) is { } problem) return new GitResult(false, problem);
         if (FolderNameFor(url) is not { } name) return new GitResult(false, "That repo URL doesn't name a folder to clone into.");
@@ -611,15 +679,40 @@ public static partial class GitTools
                 var reason = result.Errors.Split('\n', StringSplitOptions.RemoveEmptyEntries).LastOrDefault()?.Trim();
                 return new GitResult(false, string.IsNullOrEmpty(reason) ? "Couldn't clone that repo." : $"Couldn't clone that repo: {reason}");
             }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write($"Couldn't start a clone: {error.Message}");
+            await TryDeleteOwnedFolderAsync(working);
+            return new GitResult(false, $"Couldn't put the project in {parentFolder}.");
+        }
 
+        // From here it's a finished clone, which could have taken hours, so it's never deleted.
+        try
+        {
             await MoveIntoPlaceAsync(working, destination);
             return new GitResult(true, destination);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
-            AppLog.Write($"Couldn't finish a clone: {error.Message}");
-            await TryDeleteOwnedFolderAsync(working);
-            return new GitResult(false, $"Couldn't put the project in {parentFolder}.");
+            AppLog.Write($"Couldn't name a finished clone: {error.Message}");
+            workingFolder(null);
+            return new GitResult(false, $"The clone finished, but it couldn't be named {destination}. It's kept at {await KeepVisibleAsync(working, destination)}. You can rename it and select it.");
+        }
+    }
+
+    private static async Task<string> KeepVisibleAsync(string working, string destination)
+    {
+        var kept = $"{destination}-cloned-{DateTime.Now:yyyyMMdd-HHmmss}";
+        try
+        {
+            await Task.Run(() => Directory.Move(working, kept));
+            return kept;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write($"Couldn't rename a finished clone: {error.Message}");
+            return working;
         }
     }
 
@@ -653,15 +746,26 @@ public static partial class GitTools
                 });
                 return;
             }
-            catch (Exception error) when (attempt < 10 && error is IOException or UnauthorizedAccessException && !Directory.Exists(destination))
+            catch (Exception error) when (attempt < 10 && error is IOException or UnauthorizedAccessException && !IsTaken(destination))
             {
                 await Task.Delay(1000);
             }
         }
     }
 
-    private static Task<bool> DestinationTakenAsync(string destination) =>
-        Task.Run(() => Directory.Exists(destination) && Directory.EnumerateFileSystemEntries(destination).Any());
+    private static Task<bool> DestinationTakenAsync(string destination) => Task.Run(() => IsTaken(destination));
+
+    private static bool IsTaken(string destination)
+    {
+        try
+        {
+            return Directory.Exists(destination) && Directory.EnumerateFileSystemEntries(destination).Any();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            return true; // Can't be looked into, so it can't be counted on as free.
+        }
+    }
 
     // Files can stay locked for a moment after a stopped clone exits, so this tries a few times.
     private static async Task TryDeleteOwnedFolderAsync(string folder)
@@ -673,7 +777,10 @@ public static partial class GitTools
                 await Task.Run(() =>
                 {
                     if (!Directory.Exists(folder)) return;
-                    foreach (var file in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories)) File.SetAttributes(file, FileAttributes.Normal);
+
+                    // Links aren't followed, because what they point at isn't this clone's to change.
+                    var inside = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint };
+                    foreach (var file in Directory.EnumerateFiles(folder, "*", inside)) File.SetAttributes(file, FileAttributes.Normal);
                     Directory.Delete(folder, recursive: true);
                 });
                 return;
@@ -871,6 +978,8 @@ public static partial class GitTools
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardOutputEncoding = new UTF8Encoding(false), // Both tools write UTF-8, whatever Windows is set to.
+            StandardErrorEncoding = new UTF8Encoding(false),
         };
         // Projects need the GitHub CLI anyway, so its login backs up whatever Git has of its own.
         // Helpers given here come after the person's own, so theirs still goes first.
@@ -956,6 +1065,15 @@ public static partial class GitTools
     [GeneratedRegex(@"^[A-Za-z0-9][\w.-]+:[\w.-]+/[\w./-]+\z")]
     private static partial Regex BareScpRepo();
 
+    [GeneratedRegex(@"extraheader|credential\.|token|password", RegexOptions.IgnoreCase)]
+    private static partial Regex SensitiveSetting();
+
+    [GeneratedRegex(@"://[^/@\s]+@")]
+    private static partial Regex LoginInUrl();
+
+    [GeneratedRegex(@"\b(gh[pousr]_|github_pat_)\w+")]
+    private static partial Regex TokenLike();
+
     [GeneratedRegex(@"""isArchived""\s*:\s*true")]
     private static partial Regex ArchivedRepo();
 
@@ -974,7 +1092,7 @@ public static partial class GitTools
     [GeneratedRegex(@"""viewerPermission""\s*:\s*""(ADMIN|MAINTAIN|WRITE)""")]
     private static partial Regex WritePermission();
 
-    [GeneratedRegex(@"SAML|not accessible by", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"SAML|not accessible by|IP allow|allow list|is not permitted", RegexOptions.IgnoreCase)]
     private static partial Regex AccessBlocked();
 
     [GeneratedRegex(@"^\..+\.cloning-[0-9a-f]{32}$")]

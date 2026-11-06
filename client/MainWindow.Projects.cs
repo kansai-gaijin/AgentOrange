@@ -36,7 +36,7 @@ public partial class MainWindow
     // A long operation can finish after they've left its project, and what happened still has to reach them.
     private readonly Dictionary<string, string> _heldProblems = [];
     private string? _settingsProjectId;
-    private string? _settingsToAllow;
+    private FolderGitSettings? _settingsToAllow;
     private bool _recheckAfterBusy;
     private readonly Dictionary<string, int> _engineReads = [];
 
@@ -149,6 +149,13 @@ public partial class MainWindow
         content.Children.Add(new TextBlock { Text = project.Name, Foreground = (Brush)FindResource("TextStrong"), FontSize = 14, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(2, 10, 2, 0), ToolTip = project.Name });
         content.Children.Add(new TextBlock { Text = project.Summary, Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(2, 2, 2, 0), ToolTip = project.Summary });
         content.Children.Add(notHere);
+
+        // Long operations carry on after leaving the page, so the card says how it's going.
+        var cardStatus = _busyProjectId == project.Id ? _busyText : _heldProblems.ContainsKey(project.Id) ? "Open it to see what happened" : null;
+        if (cardStatus is not null)
+        {
+            content.Children.Add(new TextBlock { Text = cardStatus, Foreground = (Brush)FindResource("Accent"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = cardStatus });
+        }
 
         var card = new Button { Style = (Style)FindResource("ProjectCard"), Content = content, Tag = project.Id, AllowDrop = true };
         AutomationProperties.SetName(card, project.Name);
@@ -309,8 +316,8 @@ public partial class MainWindow
         RenderProject(project);
 
         var folder = _database.GetProjectFolder(project.Id);
-        var runnable = folder is null ? "" : await GitTools.FolderRunnableSettingsAsync(folder);
-        var useFolderSettings = runnable is not null && (runnable.Length == 0 || (folder is not null && _database.GetSetting(FolderSettingsAllowedSetting(folder)) == runnable));
+        var runnable = folder is null ? FolderGitSettings.None : await GitTools.FolderRunnableSettingsAsync(folder);
+        var useFolderSettings = runnable is not null && (folder is null || GitTools.AreAllowed(folder, runnable));
         var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl, folder, useFolderSettings);
 
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
@@ -336,7 +343,7 @@ public partial class MainWindow
         else if (check.IsDenied) _database.SetSetting(VerifiedSetting(project.Id), "");
 
         _projectCheck = check;
-        _settingsToAllow = useFolderSettings || string.IsNullOrEmpty(runnable) ? null : runnable;
+        _settingsToAllow = useFolderSettings || runnable is null or { IsEmpty: true } ? null : runnable;
         _folderExists = folderExists;
         _folderProblem = folderProblem;
         RenderProject(latest);
@@ -375,9 +382,6 @@ public partial class MainWindow
     private Project? FindProject(string id) => _database.ListProjects().FirstOrDefault(project => project.Id == id);
 
     private static string VerifiedSetting(string projectId) => $"project_verified:{projectId}";
-
-    // Only on this PC, and for the settings as they were when they were seen.
-    internal static string FolderSettingsAllowedSetting(string folder) => $"folder_settings_allowed:{folder}";
 
     private void RenderProject(Project project)
     {
@@ -587,9 +591,9 @@ public partial class MainWindow
             var linked = _database.GetProjectFolder(project.Id);
             if (linked is not null && _settingsToAllow is { } settings)
             {
-                var allow = TwoClickAction("Allow", () => AllowFolderSettingsAsync(project, linked, settings));
+                var allow = TwoClickAction("Allow", () => AllowFolderSettingsAsync(project, linked, settings.Fingerprint));
                 allow.IsEnabled = !busy;
-                rows.Add(Row("Use this folder's own Git settings", $"They can run programs or send your login somewhere else, so only allow them if you trust where this folder came from: {settings}", allow));
+                rows.Add(Row("Use this folder's own Git settings", $"They can run programs or send your login somewhere else, so only allow them if you trust where this folder came from: {settings.Shown}", allow));
             }
 
             if (linked is not null && _folderExists && _folderProblem is not null)
@@ -664,13 +668,18 @@ public partial class MainWindow
         _busyText = text;
         _pageProblem = null;
         if (_openProject?.Id == project.Id) RenderProject(_openProject);
+        else RefreshProjects();
     }
 
     private void EndBusy()
     {
         _busyProjectId = null;
         _busyText = null;
-        if (_openProject is null) return;
+        if (_openProject is null)
+        {
+            RefreshProjects();
+            return;
+        }
 
         RenderProject(_openProject);
 
@@ -695,6 +704,7 @@ public partial class MainWindow
         if (_openProject?.Id != projectId)
         {
             _heldProblems[projectId] = problem;
+            RefreshProjects();
             return;
         }
         _pageProblem = problem;
@@ -848,6 +858,7 @@ public partial class MainWindow
             var result = await GitTools.CloneAsync(project.RepoUrl, parentFolder, cancel.Token, working =>
             {
                 workingFolder = working;
+                if (working is null) return;
                 cloneRecord = CloneRecord(working);
                 SaveCloneRecords(CloneRecords().Append(cloneRecord));
             });
@@ -925,6 +936,7 @@ public partial class MainWindow
 
             var folderBefore = _database.GetProjectFolder(project.Id);
             StartBusy(project, "Checking that folder…");
+            await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
             var folderProblem = await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
             if (folderProblem is null && await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other)
             {
@@ -938,9 +950,10 @@ public partial class MainWindow
         return select;
     }
 
-    private async Task AllowFolderSettingsAsync(Project project, string folder, string settings)
+    // Only on this PC, and for the settings as they were when they were seen.
+    private async Task AllowFolderSettingsAsync(Project project, string folder, string fingerprint)
     {
-        _database.SetSetting(FolderSettingsAllowedSetting(folder), settings);
+        _database.AllowFolderSettings(folder, fingerprint);
         await RecheckIfStillOpenAsync(project.Id);
     }
 

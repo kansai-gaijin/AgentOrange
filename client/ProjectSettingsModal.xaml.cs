@@ -104,8 +104,6 @@ public partial class ProjectSettingsModal : UserControl
         folder.TextChanged += (_, _) => disconnect.Visibility = folder.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         disconnect.Click += (_, _) => QueueWork(() =>
         {
-            // A folder connected again later is looked at again, including its own Git settings.
-            if (folder.Text.Length > 0) _database.SetSetting(MainWindow.FolderSettingsAllowedSetting(folder.Text), "");
             _database.SetProjectFolder(projectId, "");
             folder.Text = "";
             folder.ToolTip = null;
@@ -277,6 +275,7 @@ public partial class ProjectSettingsModal : UserControl
         {
             if (Find(projectId) is not { } current) return;
 
+            await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
             var problem = await GitTools.FolderProblemAsync(chosen, current.RepoUrl);
             if (problem is null && await _database.ClaimFolderAsync(chosen, current) is { } other)
             {

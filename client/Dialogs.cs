@@ -28,6 +28,18 @@ internal static class Dialogs
         System.Windows.MessageBox.Show(message, "Agent Orange", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
     }
 
+    public static bool Confirm(string message)
+    {
+#if DEBUG
+        if (Headless.Active)
+        {
+            Headless.Say(message);
+            return Headless.NextAnswer() == "yes";
+        }
+#endif
+        return System.Windows.MessageBox.Show(message, "Agent Orange", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning) == System.Windows.MessageBoxResult.Yes;
+    }
+
     public static string? PickFile(string title, string filter)
     {
 #if DEBUG

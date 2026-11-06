@@ -74,6 +74,9 @@ internal static partial class SshConfigFile
             .Replace("${HOME}", home, StringComparison.OrdinalIgnoreCase)
             .Replace("$HOME", home, StringComparison.OrdinalIgnoreCase);
         text = Environment.ExpandEnvironmentVariables(text);
+
+        // Git's shell writes C:\Users as /c/Users.
+        if (text.Length > 2 && text[0] == '/' && char.IsLetter(text[1]) && text[2] == '/') text = $"{text[1]}:{text[2..]}";
         return Path.GetFullPath(text, folder);
     }
 

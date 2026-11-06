@@ -35,7 +35,9 @@ public static partial class EngineVersions
         var places = new List<string> { folder };
         try
         {
-            places.AddRange(Directory.EnumerateDirectories(folder).Where(path => !Path.GetFileName(path).StartsWith('.')));
+            // Links aren't followed, because one could lead onto a network share.
+            var notLinks = new EnumerationOptions { AttributesToSkip = FileAttributes.ReparsePoint };
+            places.AddRange(Directory.EnumerateDirectories(folder, "*", notLinks).Where(path => !Path.GetFileName(path).StartsWith('.')));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
         {
