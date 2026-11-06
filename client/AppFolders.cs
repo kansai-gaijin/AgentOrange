@@ -18,6 +18,9 @@ public sealed class AppFolders
         _appFolder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             installed ? "AgentOrange" : "AgentOrange-Dev");
+#if DEBUG
+        if (Headless.Active) _appFolder = Headless.DataFolder;
+#endif
         Directory.CreateDirectory(_appFolder);
 
         // The database can move, so its location has to be kept outside it.
@@ -26,6 +29,9 @@ public sealed class AppFolders
         AgentFolder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             installed ? ".agent-orange" : ".agent-orange-dev");
+#if DEBUG
+        if (Headless.Active) AgentFolder = Path.Combine(Headless.DataFolder, "agent");
+#endif
         Directory.CreateDirectory(AgentFolder);
     }
 

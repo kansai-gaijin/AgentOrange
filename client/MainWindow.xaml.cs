@@ -28,6 +28,9 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+#if DEBUG
+        if (Headless.Active) Headless.Attach(this);
+#endif
         VersionLabel.Text = _updates.IsInstalled ? $"v{_updates.CurrentVersion}" : "dev build";
 
         // Kept outside the install folder, which updates replace.

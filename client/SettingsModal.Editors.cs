@@ -84,9 +84,8 @@ public partial class SettingsModal
         var browse = ActionButton("Browse");
         browse.Click += (_, _) =>
         {
-            var dialog = new OpenFileDialog { Title = $"Find {editor.Name}", Filter = "Programs (*.exe)|*.exe" };
-            if (dialog.ShowDialog() != true) return;
-            program.Text = dialog.FileName;
+            if (Dialogs.PickFile($"Find {editor.Name}", "Programs (*.exe)|*.exe") is not { } chosen) return;
+            program.Text = chosen;
             Apply();
         };
 

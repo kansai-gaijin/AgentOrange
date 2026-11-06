@@ -193,11 +193,9 @@ public partial class ProjectSettingsModal : UserControl
         var choose = ActionButton("Choose");
         choose.Click += (_, _) =>
         {
-            var dialog = new OpenFileDialog { Title = $"Choose a {title.ToLowerInvariant()}", RestoreDirectory = true, Filter = "Images (*.png;*.jpg;*.jpeg;*.bmp;*.webp)|*.png;*.jpg;*.jpeg;*.bmp;*.webp" };
-            if (dialog.ShowDialog() != true) return;
+            if (Dialogs.PickFile($"Choose a {title.ToLowerInvariant()}", "Images (*.png;*.jpg;*.jpeg;*.bmp;*.webp)|*.png;*.jpg;*.jpeg;*.bmp;*.webp") is not { } file) return;
 
             var session = _session;
-            var file = dialog.FileName;
             QueueWork(async () =>
             {
                 var bytes = await Task.Run(() => ProjectImages.Prepare(file, kind));
@@ -245,13 +243,11 @@ public partial class ProjectSettingsModal : UserControl
 
     private async Task ChooseFolderAsync(string projectId, TextBox field)
     {
-        var dialog = new OpenFolderDialog { Title = "Choose this project's folder" };
         var session = _session;
         var previous = field.Text;
-        if (await GitTools.FolderExistsAsync(previous)) dialog.InitialDirectory = previous;
-        if (session != _session || dialog.ShowDialog() != true) return;
+        var startIn = await GitTools.FolderExistsAsync(previous) ? previous : null;
+        if (session != _session || Dialogs.PickFolder("Choose this project's folder", startIn) is not { } chosen) return;
 
-        var chosen = dialog.FolderName;
         QueueWork(async () =>
         {
             if (Find(projectId) is not { } current) return;

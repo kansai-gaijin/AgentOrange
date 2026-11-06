@@ -154,18 +154,17 @@ public partial class NewProjectWizard : UserControl
         var browse = ActionButton("Browse");
         browse.Click += async (_, _) =>
         {
-            var dialog = new OpenFolderDialog { Title = "Choose the project folder" };
-            if (await GitTools.FolderExistsAsync(_folder)) dialog.InitialDirectory = _folder;
-            if (dialog.ShowDialog() != true) return;
+            var startIn = await GitTools.FolderExistsAsync(_folder) ? _folder : null;
+            if (Dialogs.PickFolder("Choose the project folder", startIn) is not { } chosen) return;
 
-            folder.Text = dialog.FolderName;
+            folder.Text = chosen;
 
             // A URL filled in from the previous folder doesn't belong to this one.
             var typedItself = repo.Text.Trim().Length > 0 && repo.Text != _autoFilledRepo;
             if (typedItself) return;
             var before = repo.Text;
-            var state = await GitTools.InspectFolderAsync(dialog.FolderName);
-            if (folder.Text != dialog.FolderName || repo.Text != before) return;
+            var state = await GitTools.InspectFolderAsync(chosen);
+            if (folder.Text != chosen || repo.Text != before) return;
             _autoFilledRepo = state?.OriginToCompare ?? "";
             repo.Text = _autoFilledRepo;
         };

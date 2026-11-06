@@ -629,15 +629,8 @@ public partial class SettingsModal : UserControl
         return field;
     }
 
-    private static string? PickFolder(string startIn)
-    {
-        var dialog = new OpenFolderDialog
-        {
-            Title = "Choose a folder",
-            InitialDirectory = Directory.Exists(startIn) ? startIn : "",
-        };
-        return dialog.ShowDialog() == true ? dialog.FolderName : null;
-    }
+    private static string? PickFolder(string startIn) =>
+        Dialogs.PickFolder("Choose a folder", Directory.Exists(startIn) ? startIn : null);
 
     private UIElement[] AboutPage()
     {

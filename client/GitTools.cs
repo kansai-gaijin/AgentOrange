@@ -724,6 +724,10 @@ public static partial class GitTools
     // needs, and stops only when cancelled.
     private static async Task<CommandResult?> RunAsync(string program, string folder, string? gitHubToken, string[] arguments, CancellationToken cancel = default, Dictionary<string, string>? extraSettings = null)
     {
+#if DEBUG
+        // Trying something out must never leave a real repo on someone's account.
+        if (Headless.Active && arguments is ["repo", "create", ..]) return new CommandResult(1, "", "Headless mode doesn't create real repos.");
+#endif
         if (FindOnPath(program) is not { } programPath) return null;
         if (!await FolderExistsAsync(folder)) return new CommandResult(-1, "", "That folder can't be reached.");
 

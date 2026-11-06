@@ -11,6 +11,10 @@ public static class Program
         // special arguments and exits here without opening a window.
         VelopackApp.Build().Run();
 
+#if DEBUG
+        Headless.Configure(Environment.GetCommandLineArgs());
+#endif
+
         var app = new App();
         app.DispatcherUnhandledException += (_, e) =>
         {

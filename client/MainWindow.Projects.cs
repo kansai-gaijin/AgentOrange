@@ -682,9 +682,8 @@ public partial class MainWindow
 
         if (!folderIsUsable)
         {
-            var dialog = new OpenFolderDialog { Title = $"Choose the folder for {project.Name}" };
-            if (dialog.ShowDialog() != true) return;
-            folder = dialog.FolderName;
+            folder = Dialogs.PickFolder($"Choose the folder for {project.Name}");
+            if (folder is null) return;
         }
 
         StartBusy(project, "Creating a private repo on GitHub…");
@@ -777,8 +776,7 @@ public partial class MainWindow
 
         clone.Click += async (_, _) =>
         {
-            var dialog = new OpenFolderDialog { Title = "Choose where to put the project" };
-            if (dialog.ShowDialog() != true) return;
+            if (Dialogs.PickFolder("Choose where to put the project") is not { } parentFolder) return;
 
             // The dialog can stay open a long time, and sync keeps running behind it.
             if (FindProject(project.Id) is null)
@@ -788,7 +786,7 @@ public partial class MainWindow
             }
 
             StartBusy(project, "Checking that folder…");
-            var owner = GitTools.CloneDestination(project.RepoUrl, dialog.FolderName) is { } destination
+            var owner = GitTools.CloneDestination(project.RepoUrl, parentFolder) is { } destination
                 ? await _database.ProjectUsingFolderAsync(destination, project.Id)
                 : null;
             EndBusy();
@@ -805,7 +803,7 @@ public partial class MainWindow
             StartBusy(project, "Cloning…");
             string? cloneRecord = null;
             string? workingFolder = null;
-            var result = await GitTools.CloneAsync(project.RepoUrl, dialog.FolderName, cancel.Token, working =>
+            var result = await GitTools.CloneAsync(project.RepoUrl, parentFolder, cancel.Token, working =>
             {
                 workingFolder = working;
                 cloneRecord = CloneRecord(working);
@@ -881,18 +879,17 @@ public partial class MainWindow
         select.IsEnabled = _busyProjectId is null;
         select.Click += async (_, _) =>
         {
-            var dialog = new OpenFolderDialog { Title = $"Find the folder for {project.Name}" };
-            if (dialog.ShowDialog() != true) return;
+            if (Dialogs.PickFolder($"Find the folder for {project.Name}") is not { } chosen) return;
 
             StartBusy(project, "Checking that folder…");
-            var folderProblem = await GitTools.FolderProblemAsync(dialog.FolderName, project.RepoUrl);
-            if (folderProblem is null && await _database.ProjectUsingFolderAsync(dialog.FolderName, project.Id) is { } other)
+            var folderProblem = await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
+            if (folderProblem is null && await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other)
             {
                 folderProblem = $"{other.Name} already uses that folder. A folder can only be one project.";
             }
             EndBusy();
 
-            if (folderProblem is null) await UseFolderAsync(project.Id, dialog.FolderName);
+            if (folderProblem is null) await UseFolderAsync(project.Id, chosen);
             else ShowPageProblem(project.Id, folderProblem);
         };
         return select;
