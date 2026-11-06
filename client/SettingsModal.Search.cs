@@ -4,6 +4,8 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 
+using static AgentOrange.Ui;
+
 namespace AgentOrange;
 
 /// <summary>Finding a setting by name. Results replace the sidebar while there's a search.</summary>

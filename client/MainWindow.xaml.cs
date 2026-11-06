@@ -92,41 +92,37 @@ public partial class MainWindow : Window
 
     private void NewProject_Click(object sender, RoutedEventArgs e)
     {
-        NewProjectName.Clear();
-        NewProjectForm.Visibility = Visibility.Visible;
-        NewProjectName.Focus();
+        MainContent.IsEnabled = false;
+        MainContent.Effect = new BlurEffect { Radius = 8 };
+        ProjectWizard.Open();
     }
 
-    private void CancelNewProject_Click(object sender, RoutedEventArgs e) => HideNewProjectForm();
-
-    private void CreateProject_Click(object sender, RoutedEventArgs e) => CreateProjectFromForm();
-
-    private void NewProjectName_TextChanged(object sender, TextChangedEventArgs e) =>
-        CreateProject.IsEnabled = !string.IsNullOrWhiteSpace(NewProjectName.Text);
-
-    private void NewProjectName_KeyDown(object sender, KeyEventArgs e)
+    private void ProjectWizard_Closed()
     {
-        if (e.Key == Key.Enter) CreateProjectFromForm();
-        else if (e.Key == Key.Escape) HideNewProjectForm();
+        MainContent.Effect = null;
+        MainContent.IsEnabled = _requiredUpdate is null;
     }
 
-    private void CreateProjectFromForm()
+    private void ProjectWizard_Created(NewProject project)
     {
-        var name = NewProjectName.Text.Trim();
-        if (name.Length == 0) return;
+        var id = _database.CreateProject(project.Name, project.Engine);
 
-        _database.CreateProject(name);
-        HideNewProjectForm();
+        // Folders differ between PCs, so this stays here and only the rest syncs.
+        if (project.Folder.Length > 0) _database.SetSetting(ProjectFolderSetting(id), project.Folder);
+
         RefreshProjects();
         _ = _sync.SyncNowAsync();
     }
 
-    private void HideNewProjectForm() => NewProjectForm.Visibility = Visibility.Collapsed;
+    private static string ProjectFolderSetting(string projectId) => $"project_folder:{projectId}";
 
     private void OpenProject_Click(object sender, RoutedEventArgs e)
     {
         var project = (Project)((Button)sender).DataContext;
+        var folder = _database.GetSetting(ProjectFolderSetting(project.Id));
         OpenProjectName.Text = project.Name;
+        OpenProjectDetails.Text = $"{project.Engine} · {(string.IsNullOrEmpty(folder) ? "No folder on this PC" : folder)}";
+        OpenProjectDetails.ToolTip = folder;
         ShowView(ProjectView);
     }
 

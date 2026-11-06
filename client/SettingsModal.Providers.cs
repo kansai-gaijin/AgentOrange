@@ -4,6 +4,8 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 
+using static AgentOrange.Ui;
+
 namespace AgentOrange;
 
 /// <summary>The Providers page: agent programs and their logins.</summary>
@@ -181,7 +183,7 @@ public partial class SettingsModal
             }));
         }
 
-        var signIn = Action("Sign in");
+        var signIn = ActionButton("Sign in");
         signIn.Click += (_, _) =>
         {
             if (provider.Kind == ProviderKind.Codex)
@@ -198,7 +200,7 @@ public partial class SettingsModal
 
     private Button CheckAgainButton()
     {
-        var button = Action("Check again");
+        var button = ActionButton("Check again");
         button.Click += (_, _) => ShowPage(_currentPage);
         return button;
     }

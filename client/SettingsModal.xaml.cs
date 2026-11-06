@@ -8,6 +8,8 @@ using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Win32;
 
+using static AgentOrange.Ui;
+
 namespace AgentOrange;
 
 /// <summary>The settings screen. Third Party is still a placeholder, until there are keys to test with.</summary>
@@ -166,7 +168,7 @@ public partial class SettingsModal : UserControl
     private UIElement[] GeneralPage()
     {
         var checkResult = Value("");
-        var check = Action("Check now");
+        var check = ActionButton("Check now");
         check.Click += async (_, _) =>
         {
             check.IsEnabled = false;
@@ -251,13 +253,13 @@ public partial class SettingsModal : UserControl
     [
         Section("Image"),
         Card(
-            Row("OpenAI", "Image generation. Keys stay on the server and never reach agents.", Status("Key saved", true), Action("Change key"))),
+            Row("OpenAI", "Image generation. Keys stay on the server and never reach agents.", Status("Key saved", true), ActionButton("Change key"))),
         Section("3D"),
         Card(
-            Row("Tencent Hunyuan 3D", "Image to 3D model generation.", Status("No key", false), Action("Add key"))),
+            Row("Tencent Hunyuan 3D", "Image to 3D model generation.", Status("No key", false), ActionButton("Add key"))),
         Section("More"),
         Card(
-            Row("Add a provider", "Connect another generation service.", Action("Add"))),
+            Row("Add a provider", "Connect another generation service.", ActionButton("Add"))),
     ];
 
     private UIElement[] ServerPage()
@@ -280,7 +282,7 @@ public partial class SettingsModal : UserControl
 
         var address = Field(Server.Address);
         address.Width = 300;
-        var save = Action("Save");
+        var save = ActionButton("Save");
         save.Visibility = Visibility.Collapsed;
         var problem = ProblemText();
 
@@ -308,7 +310,7 @@ public partial class SettingsModal : UserControl
         _refreshServerPage = () => statusHost.Content = ServerStatusView();
         _refreshServerPage();
 
-        var reconnect = Action("Reconnect");
+        var reconnect = ActionButton("Reconnect");
         reconnect.Click += async (_, _) => await Server.ReconnectAsync();
 
         var devicesHost = new StackPanel();
@@ -330,7 +332,7 @@ public partial class SettingsModal : UserControl
         };
         _refreshServerPage();
 
-        var syncNow = Action("Sync");
+        var syncNow = ActionButton("Sync");
         syncNow.Click += async (_, _) => await Sync.SyncNowAsync();
 
         host.Children.Add(Section("Sync"));
@@ -350,7 +352,7 @@ public partial class SettingsModal : UserControl
 
         if (devices is null)
         {
-            var retry = Action("Try again");
+            var retry = ActionButton("Try again");
             retry.Click += async (_, _) => await FillServerPageAsync(host);
             devicesHost.Children.Add(Section("Devices"));
             devicesHost.Children.Add(Card(Row("Can't reach the server", "Devices can't be shown right now.", retry)));
@@ -392,7 +394,7 @@ public partial class SettingsModal : UserControl
         var key = new PasswordBox { Style = (Style)FindResource("SecretField") };
         var name = Field(Environment.MachineName);
         name.Width = 300;
-        var connect = Action("Connect");
+        var connect = ActionButton("Connect");
         var problem = ProblemText();
 
         async Task ConnectNow()
@@ -457,7 +459,7 @@ public partial class SettingsModal : UserControl
     private Grid RenameRow(DeviceInfo device, TextBlock problem)
     {
         var name = Field(device.Name);
-        var save = Action("Save");
+        var save = ActionButton("Save");
         save.Visibility = Visibility.Collapsed;
         var savedName = device.Name;
 
@@ -495,7 +497,7 @@ public partial class SettingsModal : UserControl
     // Takes two clicks, because the device then needs the pairing key again.
     private Button ConfirmButton(string label, DeviceInfo device, StackPanel host, TextBlock problem)
     {
-        var button = Action(label);
+        var button = ActionButton(label);
         var confirming = false;
         button.Click += async (_, _) =>
         {
@@ -520,25 +522,11 @@ public partial class SettingsModal : UserControl
         return button;
     }
 
-    private static TextBlock ProblemText() => new()
-    {
-        FontSize = 12.5,
-        Foreground = new SolidColorBrush(Color.FromRgb(0xE8, 0x6B, 0x6B)),
-        Margin = new Thickness(16, 8, 0, 0),
-        Visibility = Visibility.Collapsed,
-    };
-
-    private static void ShowProblem(TextBlock problem, string message)
-    {
-        problem.Text = message;
-        problem.Visibility = Visibility.Visible;
-    }
-
     private UIElement[] LocalDataPage()
     {
         var problem = ProblemText();
 
-        var changeDatabase = Action("Change");
+        var changeDatabase = ActionButton("Change");
         changeDatabase.Click += (_, _) =>
         {
             if (PickFolder(Folders.DatabaseFolder) is not { } folder
@@ -558,12 +546,12 @@ public partial class SettingsModal : UserControl
             Application.Current.Shutdown();
         };
 
-        var openAgentFolder = Action("Open");
+        var openAgentFolder = ActionButton("Open");
         openAgentFolder.Click += (_, _) => Process.Start("explorer.exe", Folders.AgentFolder)?.Dispose();
 
         var downloadsFolder = Folders.DownloadsFolder(Database);
         var downloadsPath = FolderField(downloadsFolder);
-        var changeDownloads = Action("Change");
+        var changeDownloads = ActionButton("Change");
         var downloadsRow = Row("Downloads", DownloadsDescription(downloadsFolder), downloadsPath, changeDownloads);
         changeDownloads.Click += (_, _) =>
         {
@@ -610,7 +598,7 @@ public partial class SettingsModal : UserControl
         var serverVersion = Value("Checking…");
         _ = ShowServerVersionAsync(serverVersion);
 
-        var openLogs = Action("Open folder");
+        var openLogs = ActionButton("Open folder");
         openLogs.Click += (_, _) =>
         {
             Directory.CreateDirectory(Folders.LogsFolder);
@@ -634,166 +622,6 @@ public partial class SettingsModal : UserControl
         var version = Devices.IsPaired ? await Devices.ServerVersionAsync() : null;
         label.Text = version ?? "Not connected";
     }
-
-    // Building blocks
-
-    private TextBlock GroupLabel(string title) => new()
-    {
-        Text = title,
-        FontSize = 12,
-        FontWeight = FontWeights.Medium,
-        Foreground = (Brush)FindResource("TextMuted"),
-        Margin = new Thickness(10, 14, 0, 4),
-    };
-
-    private TextBlock Section(string title) => new()
-    {
-        Text = title,
-        FontSize = 16,
-        FontWeight = FontWeights.SemiBold,
-        Foreground = (Brush)FindResource("TextStrong"),
-        Margin = new Thickness(16, 24, 0, 10),
-    };
-
-    private Border Card(params FrameworkElement[] rows)
-    {
-        var stack = new StackPanel();
-        for (var i = 0; i < rows.Length; i++)
-        {
-            if (i > 0) stack.Children.Add(new Border { Height = 1, Background = (Brush)FindResource("Line") });
-            stack.Children.Add(rows[i]);
-        }
-
-        return new Border
-        {
-            BorderBrush = (Brush)FindResource("Line"),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Child = stack,
-        };
-    }
-
-    private Grid Row(string title, string? description, params FrameworkElement[] controls)
-    {
-        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        text.Children.Add(new TextBlock
-        {
-            Text = title,
-            FontSize = 14,
-            FontWeight = FontWeights.Medium,
-            Foreground = (Brush)FindResource("TextStrong"),
-        });
-        if (description is not null)
-        {
-            text.Children.Add(new TextBlock
-            {
-                Text = description,
-                FontSize = 12.5,
-                Foreground = (Brush)FindResource("TextMuted"),
-                Margin = new Thickness(0, 3, 0, 0),
-                TextWrapping = TextWrapping.Wrap,
-            });
-        }
-
-        var right = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(24, 0, 0, 0) };
-        for (var i = 0; i < controls.Length; i++)
-        {
-            controls[i].VerticalAlignment = VerticalAlignment.Center;
-            if (i > 0) controls[i].Margin = new Thickness(12, 0, 0, 0);
-            right.Children.Add(controls[i]);
-        }
-
-        var row = new Grid { Margin = new Thickness(16, 12, 16, 12), MinHeight = 28 };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        Grid.SetColumn(right, 1);
-        row.Children.Add(text);
-        row.Children.Add(right);
-        return row;
-    }
-
-    private Border Divider() => new() { Height = 1, Background = (Brush)FindResource("Line") };
-
-    private TextBox Field(string value) => new()
-    {
-        Style = (Style)FindResource("Field"),
-        Text = value,
-    };
-
-    private CheckBox Toggle(bool on, bool enabled = true) => new()
-    {
-        Style = (Style)FindResource("Toggle"),
-        IsChecked = on,
-        IsEnabled = enabled,
-    };
-
-    private ComboBox Choice(string[] options, string selected, Action<string> changed)
-    {
-        var choice = new ComboBox
-        {
-            Style = (Style)FindResource("Choice"),
-            ItemsSource = options,
-            SelectedItem = selected,
-        };
-        choice.SelectionChanged += (_, _) =>
-        {
-            if (choice.SelectedItem is string value) changed(value);
-        };
-        return choice;
-    }
-
-    // Takes two clicks, for things that are a nuisance to undo.
-    private Button TwoClickAction(string label, Func<Task> action)
-    {
-        var button = Action(label);
-        var confirming = false;
-        button.Click += async (_, _) =>
-        {
-            if (!confirming)
-            {
-                confirming = true;
-                button.Content = "Are you sure?";
-                return;
-            }
-
-            confirming = false;
-            button.Content = label;
-            await action();
-        };
-        return button;
-    }
-
-    private Button Action(string label) => new()
-    {
-        Style = (Style)FindResource("ControlButton"),
-        Content = label,
-    };
-
-    private TextBlock Value(string value) => new()
-    {
-        Text = value,
-        FontSize = 13,
-        FontWeight = FontWeights.Medium,
-        Foreground = (Brush)FindResource("TextNormal"),
-    };
-
-    private StackPanel Status(string label, bool good) => new()
-    {
-        Orientation = Orientation.Horizontal,
-        Children =
-        {
-            new Border
-            {
-                Width = 7,
-                Height = 7,
-                CornerRadius = new CornerRadius(3.5),
-                Background = good ? (Brush)FindResource("Accent") : (Brush)FindResource("TextMuted"),
-                Margin = new Thickness(0, 0, 7, 0),
-                VerticalAlignment = VerticalAlignment.Center,
-            },
-            new TextBlock { Text = label, FontSize = 13, Foreground = (Brush)FindResource("TextNormal") },
-        },
-    };
 
     // Closing
 

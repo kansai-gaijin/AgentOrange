@@ -108,41 +108,6 @@
                     </StackPanel>
                 </Grid>
 
-                <Border x:Name="NewProjectForm"
-                        DockPanel.Dock="Top"
-                        Background="#22262E"
-                        CornerRadius="8"
-                        Padding="16"
-                        Margin="0,0,0,24"
-                        Visibility="Collapsed">
-                    <DockPanel>
-                        <Button x:Name="CancelNewProject"
-                                Content="Cancel"
-                                DockPanel.Dock="Right"
-                                Style="{StaticResource QuietButton}"
-                                Margin="8,0,0,0"
-                                Click="CancelNewProject_Click" />
-                        <Button x:Name="CreateProject"
-                                Content="Create"
-                                DockPanel.Dock="Right"
-                                Style="{StaticResource OrangeButton}"
-                                Margin="12,0,0,0"
-                                IsEnabled="False"
-                                Click="CreateProject_Click" />
-                        <TextBox x:Name="NewProjectName"
-                                 AutomationProperties.Name="Project name"
-                                 FontSize="15"
-                                 Padding="10,8"
-                                 Foreground="#E6E8EC"
-                                 CaretBrush="#E6E8EC"
-                                 Background="#16181D"
-                                 BorderBrush="#3A404A"
-                                 VerticalContentAlignment="Center"
-                                 TextChanged="NewProjectName_TextChanged"
-                                 KeyDown="NewProjectName_KeyDown" />
-                    </DockPanel>
-                </Border>
-
                 <Grid>
                     <StackPanel x:Name="NoProjects" HorizontalAlignment="Center" VerticalAlignment="Center">
                         <TextBlock Text="No projects yet"
@@ -174,7 +139,7 @@
                                                        FontSize="18"
                                                        FontWeight="SemiBold"
                                                        TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Text="{Binding CreatedLabel}"
+                                            <TextBlock Text="{Binding Summary}"
                                                        Foreground="#9AA0AA"
                                                        FontSize="13"
                                                        Margin="0,6,0,0" />
@@ -202,6 +167,12 @@
                            FontSize="28"
                            FontWeight="Bold"
                            TextTrimming="CharacterEllipsis" />
+                <TextBlock x:Name="OpenProjectDetails"
+                           DockPanel.Dock="Top"
+                           Foreground="#9AA0AA"
+                           FontSize="14"
+                           Margin="0,6,0,0"
+                           TextTrimming="CharacterEllipsis" />
                 <TextBlock Text="Nothing here yet."
                            Foreground="#9AA0AA"
                            FontSize="14"
@@ -220,6 +191,11 @@
                            HorizontalAlignment="Right" />
             </Grid>
         </Grid>
+
+        <local:NewProjectWizard x:Name="ProjectWizard"
+                                Visibility="Collapsed"
+                                Created="ProjectWizard_Created"
+                                Closed="ProjectWizard_Closed" />
 
         <local:SettingsModal x:Name="Settings" Visibility="Collapsed" Closed="Settings_Closed" />
 

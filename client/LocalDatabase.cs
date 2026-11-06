@@ -5,10 +5,10 @@ using Microsoft.Data.Sqlite;
 
 namespace AgentOrange;
 
-public sealed record Project(string Id, string Name, DateTimeOffset CreatedAt)
+public sealed record Project(string Id, string Name, string Engine, DateTimeOffset CreatedAt)
 {
-    public string CreatedLabel =>
-        "Created " + CreatedAt.ToLocalTime().ToString("MMM d, yyyy", CultureInfo.InvariantCulture);
+    public string Summary =>
+        $"{Engine} · Created {CreatedAt.ToLocalTime().ToString("MMM d, yyyy", CultureInfo.InvariantCulture)}";
 }
 
 public sealed record SyncChange(string Collection, string Id, string Data, bool Deleted);
@@ -22,7 +22,8 @@ public sealed record SyncChange(string Collection, string Id, string Data, bool 
 public sealed class LocalDatabase
 {
     private const string ProjectsCollection = "projects";
-    private sealed record ProjectData(string Name, DateTimeOffset CreatedAt);
+    private const string UnknownEngine = "Other";
+    private sealed record ProjectData(string Name, DateTimeOffset CreatedAt, string? Engine = null);
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -69,15 +70,17 @@ public sealed class LocalDatabase
         while (reader.Read())
         {
             var data = JsonSerializer.Deserialize<ProjectData>(reader.GetString(1), JsonOptions)!;
-            projects.Add(new Project(reader.GetString(0), data.Name, data.CreatedAt));
+            projects.Add(new Project(reader.GetString(0), data.Name, data.Engine ?? UnknownEngine, data.CreatedAt));
         }
         return projects.OrderByDescending(project => project.CreatedAt).ToList();
     }
 
-    public void CreateProject(string name)
+    public string CreateProject(string name, string engine)
     {
-        var data = new ProjectData(name, DateTimeOffset.UtcNow);
-        SaveRecord(ProjectsCollection, Guid.NewGuid().ToString(), JsonSerializer.Serialize(data, JsonOptions));
+        var id = Guid.NewGuid().ToString();
+        var data = new ProjectData(name, DateTimeOffset.UtcNow, engine);
+        SaveRecord(ProjectsCollection, id, JsonSerializer.Serialize(data, JsonOptions));
+        return id;
     }
 
     public void SaveRecord(string collection, string id, string data, bool deleted = false)

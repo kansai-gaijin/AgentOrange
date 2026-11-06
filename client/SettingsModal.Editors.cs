@@ -4,6 +4,8 @@ using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Win32;
 
+using static AgentOrange.Ui;
+
 namespace AgentOrange;
 
 /// <summary>The Engines and Tools pages.</summary>
@@ -79,7 +81,7 @@ public partial class SettingsModal
         }
         kind.SelectionChanged += (_, _) => Apply();
 
-        var browse = Action("Browse");
+        var browse = ActionButton("Browse");
         browse.Click += (_, _) =>
         {
             var dialog = new OpenFileDialog { Title = $"Find {editor.Name}", Filter = "Programs (*.exe)|*.exe" };
