@@ -18,7 +18,8 @@ internal static partial class GitFolderSafety
     private const int MaxIncludeDepth = 5;
     private const int MaxBytes = 1_000_000;
     private static readonly TimeSpan RememberFor = TimeSpan.FromSeconds(3);
-    private const string Problem = "fatal: That folder's Git settings or data point at a network location, or through a link that could lead to one, or couldn't be checked. Opening one could send your Windows login there, so nothing was run in it. Fix that in the folder if you trust where it came from.";
+    private const int MaxRemembered = 200;
+    private const int MaxFoundLength = 300;
 
     // Git runs many times in a row for one check, and each would otherwise look at all this again.
     private static readonly ConcurrentDictionary<string, (DateTimeOffset At, string? Answer)> Recent = new(StringComparer.OrdinalIgnoreCase);
@@ -30,8 +31,23 @@ internal static partial class GitFolderSafety
 
         // Off the UI thread, because a dying drive can make any of this slow.
         var answer = await Task.Run(() => InspectAsync(folder, readSettingsFile));
-        Recent[folder] = (DateTimeOffset.UtcNow, answer);
+        var now = DateTimeOffset.UtcNow;
+        Recent[folder] = (now, answer);
+
+        // Every clone works in its own new folder, so these would otherwise only pile up.
+        if (Recent.Count > MaxRemembered)
+        {
+            foreach (var old in Recent.Where(entry => now - entry.Value.At >= RememberFor)) Recent.TryRemove(old.Key, out _);
+        }
         return answer;
+    }
+
+    // Names only what stopped it, as a setting's value can be a login, and so can part of a name.
+    private static string Refusal(string found)
+    {
+        var shown = GitTools.HideLogins(GitTools.OneLine(found)).TrimEnd('.');
+        if (shown.Length > MaxFoundLength) shown = $"{shown[..MaxFoundLength]}…";
+        return $"That folder's Git settings or data point at a network location, or through a link that could lead to one, or couldn't be checked. Opening one could send your Windows login there, so nothing was run in it. What stopped it: {shown}. Fix that in the folder if you trust where it came from.";
     }
 
     private static async Task<string?> InspectAsync(string folder, Func<string, Task<string?>> readSettingsFile)
@@ -45,19 +61,19 @@ internal static partial class GitFolderSafety
             for (var at = full; at is not null; at = Path.GetDirectoryName(at))
             {
                 // Laid out as a bare repo, which older versions of Git would count as one.
-                if (LooksLikeBareRepo(at)) return Problem;
+                if (LooksLikeBareRepo(at)) return Refusal($"{at} is laid out like a bare repo");
 
                 var entry = Path.Combine(at, ".git");
                 if (!Exists(entry)) continue;
                 foundOne = true;
-                if (await PointsAtNetworkAsync(entry, readSettingsFile)) return Problem;
+                if (await WhatPointsAtNetworkAsync(entry, readSettingsFile) is { } found) return Refusal(found);
             }
             return null;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             AppLog.Write($"Couldn't check a folder's Git settings: {error.Message}");
-            return foundOne ? Problem : null;
+            return foundOne ? Refusal($"part of it couldn't be read ({error.Message})") : null;
         }
     }
 
@@ -87,9 +103,9 @@ internal static partial class GitFolderSafety
         return resolved is null || IsUnsafeToOpen(chosen, resolved);
     }
 
-    private static async Task<bool> PointsAtNetworkAsync(string entry, Func<string, Task<string?>> readSettingsFile)
+    private static async Task<string?> WhatPointsAtNetworkAsync(string entry, Func<string, Task<string?>> readSettingsFile)
     {
-        if (SshConfigFile.IsLink(entry)) return true; // It could lead anywhere, and following it to find out is the risk.
+        if (SshConfigFile.IsLink(entry)) return $"{entry} is a link"; // It could lead anywhere, and following it to find out is the risk.
 
         // Where this repo is, however the person chooses to get there.
         var chosen = Path.GetDirectoryName(entry)!;
@@ -99,40 +115,42 @@ internal static partial class GitFolderSafety
         // A .git file says where the real Git data is, as worktrees and submodules have.
         if (!File.GetAttributes(entry).HasFlag(FileAttributes.Directory))
         {
-            if (new FileInfo(entry).Length > MaxBytes) return true;
+            if (new FileInfo(entry).Length > MaxBytes) return $"{entry} is too big to check";
             var line = File.ReadLines(entry).FirstOrDefault(text => text.StartsWith("gitdir:", StringComparison.OrdinalIgnoreCase));
-            if (line is null) return false;
+            if (line is null) return null;
 
-            if (IsUnsafeGitPath(chosen, line["gitdir:".Length..].Trim(), chosen, false, out gitDirectory)) return true;
+            var target = line["gitdir:".Length..].Trim();
+            if (IsUnsafeGitPath(chosen, target, chosen, false, out gitDirectory)) return $"{entry} points at {target}";
         }
 
         var directories = new List<string> { gitDirectory };
 
         // Before anything in there is opened, as opening one is the risk.
-        if (Directory.Exists(gitDirectory) && HasLinkInside(gitDirectory)) return true;
+        if (Directory.Exists(gitDirectory) && LinkInside(gitDirectory) is { } link) return $"{link} is a link";
 
         // A worktree shares most of its settings and data with the repo it came from.
         var shared = Path.Combine(gitDirectory, "commondir");
         if (File.Exists(shared))
         {
-            if (new FileInfo(shared).Length > MaxBytes) return true;
-            if (IsUnsafeGitPath(chosen, File.ReadAllText(shared).Trim(), gitDirectory, false, out var common)) return true;
+            if (new FileInfo(shared).Length > MaxBytes) return $"{shared} is too big to check";
+            var target = File.ReadAllText(shared).Trim();
+            if (IsUnsafeGitPath(chosen, target, gitDirectory, false, out var common)) return $"{shared} points at {target}";
             directories.Add(common);
         }
 
         foreach (var directory in directories.Where(Directory.Exists))
         {
-            if (directory != gitDirectory && HasLinkInside(directory)) return true;
-            if (HasNetworkAlternate(chosen, Path.Combine(directory, "objects"), 0)) return true;
-            if (await SettingsPointAtNetworkAsync(chosen, Path.Combine(directory, "config"), 0, readSettingsFile)) return true;
-            if (await SettingsPointAtNetworkAsync(chosen, Path.Combine(directory, "config.worktree"), 0, readSettingsFile)) return true;
+            if (directory != gitDirectory && LinkInside(directory) is { } otherLink) return $"{otherLink} is a link";
+            if (AlternateProblem(chosen, Path.Combine(directory, "objects"), 0) is { } alternate) return alternate;
+            if (await SettingsProblemAsync(chosen, Path.Combine(directory, "config"), 0, readSettingsFile) is { } settings) return settings;
+            if (await SettingsProblemAsync(chosen, Path.Combine(directory, "config.worktree"), 0, readSettingsFile) is { } worktreeSettings) return worktreeSettings;
         }
-        return false;
+        return null;
     }
 
     // Git opens what it finds among a repo's own files, such as following a branch that's a link.
     // Git LFS keeps its big files in lfs, and moving them onto another drive with a link is normal.
-    private static bool HasLinkInside(string gitDirectory)
+    private static string? LinkInside(string gitDirectory)
     {
         var waiting = new Stack<string>();
         waiting.Push(gitDirectory);
@@ -141,45 +159,44 @@ internal static partial class GitFolderSafety
             foreach (var entry in new DirectoryInfo(directory).EnumerateFileSystemInfos())
             {
                 if (directory == gitDirectory && entry.Name == "lfs") continue;
-                if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint) && entry.LinkTarget is not null) return true;
+                if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint) && entry.LinkTarget is not null) return entry.FullName;
                 if (entry.Attributes.HasFlag(FileAttributes.Directory)) waiting.Push(entry.FullName);
             }
         }
-        return false;
+        return null;
     }
 
     // Other places a repo borrows its history from, and those can borrow from others in turn. Git
     // opens them all to look for any commit.
-    private static bool HasNetworkAlternate(string chosen, string objects, int depth)
+    private static string? AlternateProblem(string chosen, string objects, int depth)
     {
-        if (depth > MaxIncludeDepth) return true;
-
         var alternates = Path.Combine(objects, "info", "alternates");
-        if (IsUnsafeToOpen(chosen, alternates)) return true;
-        if (!Exists(alternates)) return false;
-        if (new FileInfo(alternates).Length > MaxBytes) return true;
+        if (depth > MaxIncludeDepth) return $"{alternates} borrows through too many others";
+        if (IsUnsafeToOpen(chosen, alternates)) return $"{alternates} is on a network or reached through a link";
+        if (!Exists(alternates)) return null;
+        if (new FileInfo(alternates).Length > MaxBytes) return $"{alternates} is too big to check";
 
         foreach (var line in File.ReadLines(alternates).Select(line => line.Trim()).Where(line => line.Length > 0 && !line.StartsWith('#')))
         {
             // A quoted line can spell a path in escapes, and ordinary ones have no need to be quoted.
-            if (line.StartsWith('"') || StartsLikeShare(line)) return true;
-            if (IsUnsafeGitPath(chosen, line, objects, false, out var next)) return true;
-            if (HasNetworkAlternate(chosen, next, depth + 1)) return true;
+            if (line.StartsWith('"') || StartsLikeShare(line)) return $"{alternates} points at {line}";
+            if (IsUnsafeGitPath(chosen, line, objects, false, out var next)) return $"{alternates} points at {line}";
+            if (AlternateProblem(chosen, next, depth + 1) is { } further) return further;
         }
-        return false;
+        return null;
     }
 
-    private static async Task<bool> SettingsPointAtNetworkAsync(string chosen, string file, int depth, Func<string, Task<string?>> readSettingsFile)
+    private static async Task<string?> SettingsProblemAsync(string chosen, string file, int depth, Func<string, Task<string?>> readSettingsFile)
     {
-        if (depth > MaxIncludeDepth) return true; // Git gives up on this too, and it can't be vouched for.
-        if (IsUnsafeToOpen(chosen, file)) return true;
+        if (depth > MaxIncludeDepth) return $"{file} includes too many other settings files"; // Git gives up on this too, and it can't be vouched for.
+        if (IsUnsafeToOpen(chosen, file)) return $"{file} is on a network or reached through a link";
 
         var info = new FileInfo(file);
-        if (!info.Exists) return false; // Git skips a missing one, and carries on to the next.
-        if (info.Length > MaxBytes) return true;
+        if (!info.Exists) return null; // Git skips a missing one, and carries on to the next.
+        if (info.Length > MaxBytes) return $"{file} is too big to check";
 
         // As Git itself reads it, which settles continued lines, quoting and settings on a header's line.
-        if (await readSettingsFile(file) is not { } settings) return true;
+        if (await readSettingsFile(file) is not { } settings) return $"Git couldn't read {file}";
 
         var directory = info.DirectoryName!;
         foreach (var setting in settings.Split('\0', StringSplitOptions.RemoveEmptyEntries))
@@ -190,15 +207,17 @@ internal static partial class GitFolderSafety
             // No setting has a reason to name a network location in a folder that isn't on one.
             // %(prefix) is Git's own shorthand, which leaves a path this can't see the end of.
             var value = parts[1];
-            if (StartsLikeShare(value) || value.StartsWith("%(prefix)", StringComparison.Ordinal) || NamesNetworkDrive(value)) return true;
+            var named = $"the setting {parts[0]} in {file}";
+            if (StartsLikeShare(value) || value.StartsWith("%(prefix)", StringComparison.Ordinal) || NamesNetworkDrive(value)) return named;
 
-            if (PathSetting().IsMatch(parts[0]) && IsUnsafeGitPath(chosen, value, directory, true, out _)) return true;
+            // Pointing a setting at nothing is the usual way to turn off a repo's hooks.
+            if (PathSetting().IsMatch(parts[0]) && value != "/dev/null" && IsUnsafeGitPath(chosen, value, directory, true, out _)) return named;
 
             if (!IncludeSetting().IsMatch(parts[0])) continue;
-            if (IsUnsafeGitPath(chosen, value, directory, true, out var included)) return true;
-            if (await SettingsPointAtNetworkAsync(chosen, included, depth + 1, readSettingsFile)) return true;
+            if (IsUnsafeGitPath(chosen, value, directory, true, out var included)) return named;
+            if (await SettingsProblemAsync(chosen, included, depth + 1, readSettingsFile) is { } further) return further;
         }
-        return false;
+        return null;
     }
 
     private static bool IsUnsafeToOpen(string chosen, string path) => IsNetworkPath(path) || SshConfigFile.HasLinkBelowChosenPath(chosen, path);

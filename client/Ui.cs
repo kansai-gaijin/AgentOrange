@@ -14,7 +14,7 @@ public static class Ui
     {
         FontSize = 12.5,
         Foreground = new SolidColorBrush(Color.FromRgb(0xE8, 0x6B, 0x6B)),
-        Margin = new Thickness(16, 8, 0, 0),
+        Margin = new Thickness(16, 8, 16, 0),
         Visibility = Visibility.Collapsed,
     };
 

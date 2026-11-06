@@ -1123,7 +1123,8 @@ public partial class MainWindow
             Dialogs.Notify($"{project.Name} was deleted while it was cloning, so the clone wasn't linked to anything. It's still at {result.Value}.");
         }
         else if (FindProject(project.Id) is { } latest
-            && (_database.GetProjectFolder(project.Id) != folderBefore || !GitTools.SameRepo(latest.RepoUrl, project.RepoUrl)))
+            && (_database.GetProjectFolder(project.Id) != folderBefore
+                || (!GitTools.SameRepo(latest.RepoUrl, project.RepoUrl) && !GitTools.SameRepo(await GitTools.RenamedRepoUrlAsync(project.RepoUrl) ?? "", latest.RepoUrl))))
         {
             // Settings stay open during a clone, and what was chosen there is more recent.
             await RecheckThenShowAsync(project.Id, $"Cloned to {result.Value}, but this project changed while that ran, so it wasn't linked. The clone is still there.");

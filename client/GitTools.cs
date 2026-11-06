@@ -292,9 +292,19 @@ public static partial class GitTools
         if (state.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
         if (!SameRepo(state.OriginToCompare!, repoUrl))
         {
-            if (!await MoveIfRepoRenamedAsync(folder, state, repoUrl)) return $"That folder uses a different repo: {state.Origin}";
-            state = await InspectFolderAsync(folder);
-            if (state?.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
+            if (await MoveIfRepoRenamedAsync(folder, state, repoUrl))
+            {
+                state = await InspectFolderAsync(folder);
+                if (state?.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
+            }
+            else if (await RenamedRepoUrlAsync(repoUrl) is { } current && SameRepo(current, state.OriginToCompare!))
+            {
+                repoUrl = current; // The project has the old name here, and moves on when it's next opened.
+            }
+            else
+            {
+                return $"That folder uses a different repo: {state.Origin}";
+            }
         }
 
         // The same owner and name somewhere that isn't really GitHub, or in a way Git won't use.
@@ -374,9 +384,9 @@ public static partial class GitTools
         return $"{key} {OneLine(HideLogins(parts[1]))}";
     }
 
-    private static string OneLine(string text) => WhiteSpaceRun().Replace(text, " ").Trim();
+    public static string OneLine(string text) => WhiteSpaceRun().Replace(text, " ").Trim();
 
-    private static string HideLogins(string text) =>
+    public static string HideLogins(string text) =>
         TokenLike().Replace(LoginInUrl().Replace(text, "://(hidden)@"), "(hidden)");
 
     /// <summary>Set up when the app starts, because the answers are kept in its database.</summary>
@@ -666,16 +676,16 @@ public static partial class GitTools
     }
 
     // Git there would make every folder underneath count as inside this repo, and refuse them.
-    private static string? TooBroadForAProject(string folder)
+    private static Task<string?> TooBroadForAProjectAsync(string folder) => Task.Run(() =>
     {
         var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder));
-        if (Path.GetDirectoryName(full) is null) return "That's a whole drive, and setting up Git there would take in everything on it. Choose a folder on it.";
+        if (Path.GetDirectoryName(full) is null) return (string?)"That's a whole drive, and setting up Git there would take in everything on it. Choose a folder on it.";
 
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         return home.Length > 0 && FolderIdentity.Same(full, home)
             ? "That's your whole user folder, and setting up Git there would take in everything in it. Choose a folder inside it."
             : null;
-    }
+    });
 
     /// <summary>Connects a folder with no remote to a repo, setting up Git in it if needed.</summary>
     public static async Task<GitResult> ConnectFolderAsync(string folder, string repoUrl)
@@ -687,7 +697,7 @@ public static partial class GitTools
 
         if (!state.InsideRepo)
         {
-            if (TooBroadForAProject(folder) is { } tooBroad) return new GitResult(false, tooBroad);
+            if (await TooBroadForAProjectAsync(folder) is { } tooBroad) return new GitResult(false, tooBroad);
             var init = await RunAsync("git", folder, "init");
             if (init is not { ExitCode: 0 }) return new GitResult(false, "Couldn't set up Git in that folder.");
         }
@@ -749,7 +759,7 @@ public static partial class GitTools
 
         // Before creating anything, because the new repo couldn't then be linked to this folder.
         if (state.Origin is not null && await RemoteSetElsewhereAsync(folder) is { } elsewhere) return new GitResult(false, elsewhere);
-        if (!state.InsideRepo && TooBroadForAProject(folder) is { } tooBroad) return new GitResult(false, tooBroad);
+        if (!state.InsideRepo && await TooBroadForAProjectAsync(folder) is { } tooBroad) return new GitResult(false, tooBroad);
 
         if (!state.InsideRepo)
         {
@@ -1087,7 +1097,7 @@ public static partial class GitTools
     private static string GitFailureReason(string errors)
     {
         var lines = errors.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var failures = lines.Where(line => line.StartsWith("fatal:", StringComparison.OrdinalIgnoreCase) || line.StartsWith("error:", StringComparison.OrdinalIgnoreCase)).Take(3).ToList();
+        var failures = lines.Where(line => line.StartsWith("fatal:", StringComparison.OrdinalIgnoreCase) || line.StartsWith("error:", StringComparison.OrdinalIgnoreCase) || SshComplaint().IsMatch(line)).Take(3).ToList();
         return failures.Count > 0 ? string.Join(' ', failures) : lines.LastOrDefault() ?? "";
     }
 
@@ -1136,8 +1146,9 @@ public static partial class GitTools
                 });
                 return;
             }
-            catch (Exception error) when (attempt < 10 && error is IOException or UnauthorizedAccessException && !IsTaken(destination))
+            catch (Exception error) when (attempt < 10 && error is IOException or UnauthorizedAccessException)
             {
+                if (await DestinationTakenAsync(destination)) throw;
                 await Task.Delay(1000);
             }
         }
@@ -1511,29 +1522,39 @@ public static partial class GitTools
     private static async Task<string?> ReadSettingsFileAsync(string file) =>
         await RunAsync("git", Path.GetTempPath(), "config", "--no-includes", "--file", file, "-z", "--list") is { ExitCode: 0 } read ? read.Output : null;
 
-    // Git rewrites a status line by ending it with a return, so only finished lines are kept.
+    // Git rewrites a status line by ending it with a return, so only finished lines are kept. ssh
+    // ends each of its lines with a return and a new line, and those are finished lines.
     private static async Task<string> ReadErrorsWithStatusAsync(StreamReader reader, Action<string> statusLine, CancellationToken cancel)
     {
         var kept = new StringBuilder();
         var line = new StringBuilder();
         var buffer = new char[1024];
+        var afterReturn = false; // Which of the two it was depends on what comes next, which may not have arrived yet.
         int count;
         while ((count = await reader.ReadAsync(buffer.AsMemory(), cancel)) > 0)
         {
-            foreach (var character in buffer.AsSpan(0, count))
+            for (var i = 0; i < count; i++)
             {
-                if (character is not ('\r' or '\n'))
+                var character = buffer[i];
+                if (character == '\n')
                 {
-                    line.Append(character);
-                    continue;
+                    kept.Append(line).Append('\n');
+                    line.Clear();
                 }
-
-                if (character == '\r') statusLine(line.ToString());
-                else kept.Append(line).Append('\n');
-                line.Clear();
+                else if (character == '\r')
+                {
+                    statusLine(line.ToString());
+                }
+                else
+                {
+                    if (afterReturn) line.Clear();
+                    line.Append(character);
+                }
+                afterReturn = character == '\r';
             }
         }
-        return kept.Append(line).ToString();
+        if (!afterReturn) kept.Append(line);
+        return kept.ToString();
     }
 
     // Waits for it to really be gone, because its files can't be cleaned up until then.
@@ -1628,6 +1649,10 @@ public static partial class GitTools
 
     [GeneratedRegex(@"https://github\.com/[\w.-]+/[\w.-]+")]
     private static partial Regex CreatedRepoUrl();
+
+    // What ssh itself says went wrong, which Git only follows with "Could not read from remote repository".
+    [GeneratedRegex(@"(Permission denied|Host key verification failed|Connection (timed out|refused|closed|reset)|Could not resolve hostname|^ssh: |^kex_exchange)", RegexOptions.IgnoreCase)]
+    private static partial Regex SshComplaint();
 
     [GeneratedRegex(@"[^A-Za-z0-9._-]+")]
     private static partial Regex NotRepoSafe();

@@ -309,6 +309,7 @@ public sealed class LocalDatabase
             }
             if (GetProjectFolder(projectId) is not null) SetProjectFolder(projectId, "");
             if (!string.IsNullOrEmpty(GetSetting($"project_verified:{projectId}"))) SetSetting($"project_verified:{projectId}", "");
+            if (!string.IsNullOrEmpty(GetSetting($"project_created_here:{projectId}"))) SetSetting($"project_created_here:{projectId}", "");
         }
     }
 

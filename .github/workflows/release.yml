@@ -21,6 +21,7 @@ env:
 
 jobs:
   server:
+    if: github.ref == 'refs/heads/main' # Started by hand, this could otherwise publish any branch.
     runs-on: ubuntu-24.04 # Same Ubuntu as the server, so the binary's system libraries match.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,6 +47,7 @@ jobs:
           path: dist/
 
   client:
+    if: github.ref == 'refs/heads/main'
     runs-on: windows-2025
     defaults:
       run:
