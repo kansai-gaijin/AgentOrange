@@ -80,6 +80,7 @@ public partial class NewProjectWizard : UserControl
             if (_name.Length == 0)
             {
                 ShowProblem(problem, "Give the project a name.");
+                Dispatcher.InvokeAsync(problem.BringIntoView, System.Windows.Threading.DispatcherPriority.Loaded);
                 return;
             }
             ShowLocationStep();
@@ -113,7 +114,7 @@ public partial class NewProjectWizard : UserControl
             "New project",
             "Set up a new game.",
             Stepper(Steps, 1),
-            body,
+            new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = body },
             TextButton("Cancel", Close),
             PrimaryButton("Next", Next));
 
@@ -159,7 +160,14 @@ public partial class NewProjectWizard : UserControl
         problem.TextWrapping = TextWrapping.Wrap;
         var progress = new TextBlock { FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 8, 0, 0), Visibility = Visibility.Collapsed };
 
-        folder.TextChanged += (_, _) => _folder = folder.Text;
+        folder.TextChanged += (_, _) =>
+        {
+            _folder = folder.Text;
+
+            // A URL filled in from the previous folder doesn't belong to this one.
+            if (_autoFilledRepo.Length > 0 && repo.Text == _autoFilledRepo) repo.Text = "";
+            _autoFilledRepo = "";
+        };
         repo.TextChanged += (_, _) => _repoUrl = repo.Text;
 
         var browse = ActionButton("Browse");

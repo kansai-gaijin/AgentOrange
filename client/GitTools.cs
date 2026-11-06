@@ -367,7 +367,7 @@ public static partial class GitTools
         if (await FolderRunnableSettingsAsync(folder) is not { IsEmpty: false, CanBeApproved: true } settings) return;
 
         // A message box can't scroll, and what's approved has to have been read. Not being asked
-        // leaves this saying it can't tell, and the page can still show them all.
+        // leaves this saying it can't tell, so the folder's remote has to say github.com instead.
         if (settings.Shown.Length > MaxSettingsInDialog) return;
 
         if (Dialogs.Confirm($"To tell whether this folder's remote is on GitHub, its SSH settings have to run, and they can run programs or send your login somewhere else:\n\n{settings.Shown}\n\nOnly use them if you trust where this folder came from. Use them?"))
@@ -752,6 +752,30 @@ public static partial class GitTools
     /// <summary>Where a clone of this repo would end up inside a folder, if the URL names one.</summary>
     public static string? CloneDestination(string url, string parentFolder) =>
         FolderNameFor(url) is { } name ? Path.Combine(parentFolder, name) : null;
+
+    /// <summary>
+    /// A repo with commits, none of whose branches this folder has, may not be the same project.
+    /// It can also just be a copy that's behind, so this is only ever a reason to ask. Nothing
+    /// is fetched: not being able to find out counts as no.
+    /// </summary>
+    public static async Task<bool> FolderLooksUnrelatedAsync(string folder, string url)
+    {
+        if (await FolderHasNoCommitsAsync(folder)) return false;
+
+        var form = await ReachableFormAsync(url) ?? url;
+        var heads = await RunAsync("git", Path.GetTempPath(), null, ["ls-remote", "--heads", "--", form], default, await SshSettingsAsync(Path.GetTempPath()));
+        if (heads is not { ExitCode: 0 }) return false;
+
+        var commits = heads.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Split('\t')[0].Trim()).Take(50).ToList();
+        if (commits.Count == 0) return false;
+
+        Dictionary<string, string> noFetching = new() { ["GIT_NO_LAZY_FETCH"] = "1" };
+        foreach (var commit in commits)
+        {
+            if (await RunAsync("git", folder, null, ["cat-file", "-e", commit], default, noFetching) is { ExitCode: 0 }) return false;
+        }
+        return true;
+    }
 
     /// <summary>Whether a repo has anything in it, or null if that couldn't be found out.</summary>
     public static async Task<bool?> RepoHasContentAsync(string url)
@@ -1282,10 +1306,10 @@ public static partial class GitTools
     [GeneratedRegex(@"^[\w.-]+@[\w.-]+:[\w./-]+\z")]
     private static partial Regex ScpStyleRepo();
 
-    [GeneratedRegex(@"^git@github\.com:[\w.-]+/[\w.-]+/?\z", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^git@github\.com:[A-Za-z0-9][A-Za-z0-9_-]*/(?!(\.{1,2}|\.git)/?\z)[A-Za-z0-9._-]+/?\z", RegexOptions.IgnoreCase)]
     private static partial Regex GitHubScpRepo();
 
-    [GeneratedRegex(@"^/[\w.-]+/[\w.-]+/?\z")]
+    [GeneratedRegex(@"^/[A-Za-z0-9][A-Za-z0-9_-]*/(?!(\.{1,2}|\.git)/?\z)[A-Za-z0-9._-]+/?\z")]
     private static partial Regex GitHubRepoPath();
 
     // Git's short form with no username, like work:you/game.git. One letter would be a drive.

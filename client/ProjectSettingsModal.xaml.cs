@@ -81,6 +81,12 @@ public partial class ProjectSettingsModal : UserControl
         if (Current() is not { } current) return;
         RefreshIfUntouched(_nameField, current.Name);
         RefreshIfUntouched(_repoField, current.RepoUrl);
+
+        // Waits for anything of this PC's that's still saving, which would otherwise look undone.
+        if (_saves.IsCompleted)
+        {
+            foreach (var refresh in _refreshes) refresh(current);
+        }
     }
 
     private void RefreshIfUntouched(TextBox? field, string latest)
@@ -92,6 +98,8 @@ public partial class ProjectSettingsModal : UserControl
     }
 
     private TextBox? _folderField;
+    private readonly List<Action<Project>> _refreshes = [];
+    private bool _refreshing; // So showing another PC's change doesn't save it again as this one's.
     private TextBox? _nameField;
     private TextBox? _repoField;
     private Button? _doneButton;
@@ -102,6 +110,7 @@ public partial class ProjectSettingsModal : UserControl
 
     private void Build(Project project)
     {
+        _refreshes.Clear();
         _problem = ProblemText();
         _problem.TextWrapping = TextWrapping.Wrap;
 
@@ -155,9 +164,11 @@ public partial class ProjectSettingsModal : UserControl
         const string CheckedOnClosing = "Checked when this closes";
         const string DoesNotApply = "Doesn't apply";
         var chosenEngine = project.Engine;
+        var shownVersion = project.EngineVersion;
+        static string VersionText(Project of) => !EngineVersions.CanRead(of.Engine) ? DoesNotApply : of.EngineVersion.Length > 0 ? of.EngineVersion : "Not found";
         var version = new TextBlock
         {
-            Text = !EngineVersions.CanRead(project.Engine) ? DoesNotApply : project.EngineVersion.Length > 0 ? project.EngineVersion : "Not found",
+            Text = VersionText(project),
             FontSize = 13.5,
             Foreground = (Brush)FindResource("TextNormal"),
             VerticalAlignment = VerticalAlignment.Center,
@@ -169,9 +180,27 @@ public partial class ProjectSettingsModal : UserControl
         };
         var engine = Choice(ProjectChoices.Engines, project.Engine, value =>
         {
+            if (_refreshing) return;
             chosenEngine = value;
             version.Text = !EngineVersions.CanRead(value) ? DoesNotApply : folder.Text.Length > 0 ? CheckedOnClosing : "Needs a folder";
             QueueUpdate(projectId, current => current with { Engine = value });
+        });
+        var gameType = Choice(ProjectChoices.GameTypes, project.GameType, value =>
+        {
+            if (!_refreshing) QueueUpdate(projectId, current => current with { GameType = value });
+        });
+
+        _refreshes.Add(latest =>
+        {
+            _refreshing = true;
+            if (!engine.IsDropDownOpen) engine.SelectedItem = latest.Engine;
+            if (!gameType.IsDropDownOpen) gameType.SelectedItem = latest.GameType;
+            _refreshing = false;
+
+            if (latest.Engine == chosenEngine && latest.EngineVersion == shownVersion) return;
+            chosenEngine = latest.Engine;
+            shownVersion = latest.EngineVersion;
+            version.Text = VersionText(latest);
         });
 
         var details = new StackPanel
@@ -183,7 +212,7 @@ public partial class ProjectSettingsModal : UserControl
                     Row("Name", null, name),
                     Row("Engine", null, engine),
                     Row("Engine version", "Read from the project's files.", version),
-                    Row("Game type", null, Choice(ProjectChoices.GameTypes, project.GameType, value => QueueUpdate(projectId, current => current with { GameType = value }))),
+                    Row("Game type", null, gameType),
                     Row("Repo URL", null, repo),
                     Row("Folder on this PC", "Doesn't sync, because it's different on each PC.", folder, browse, disconnect)),
                 Section("Images"),
@@ -216,7 +245,7 @@ public partial class ProjectSettingsModal : UserControl
     private Border DangerZone(string projectId)
     {
         var confirmation = Field("");
-        confirmation.Width = 220;
+        confirmation.Width = 200;
         AutomationProperties.SetName(confirmation, "Type the project name to confirm");
 
         var delete = new Button { Style = (Style)FindResource("DangerButton"), Content = "Delete project", IsEnabled = false };
@@ -251,10 +280,20 @@ public partial class ProjectSettingsModal : UserControl
             });
         };
 
+        // Right here, because the Name field has scrolled away by now, and may change as things sync.
+        var nameToType = new TextBlock { FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(0, 0, 0, 4), MaxWidth = 200, TextTrimming = TextTrimming.CharacterEllipsis };
+        void ShowNameToType(Project of)
+        {
+            nameToType.Text = $"Type {of.Name} to confirm";
+            nameToType.ToolTip = of.Name;
+        }
+        if (Find(projectId) is { } named) ShowNameToType(named);
+        _refreshes.Add(ShowNameToType);
+
         var card = Card(Row(
             "Delete this project",
-            "Removes it from Agent Orange on every PC. Its folder and repo aren't touched. Type the project's name, as it is at the top of this window, to confirm.",
-            confirmation,
+            "Removes it from Agent Orange on every PC. Its folder and repo aren't touched.",
+            new StackPanel { Children = { nameToType, confirmation } },
             delete));
         card.BorderBrush = (Brush)FindResource("Danger");
         return card;
@@ -273,13 +312,24 @@ public partial class ProjectSettingsModal : UserControl
 
         var remove = ActionButton("Remove");
 
+        byte[]? shown = null;
         void ShowCurrent()
         {
-            var image = ProjectImages.ToImage(_database.GetProjectImage(projectId, kind), previewWidth * 2);
+            var bytes = _database.GetProjectImage(projectId, kind);
+            shown = bytes;
+            var image = ProjectImages.ToImage(bytes, previewWidth * 2);
             preview.Background = image is null ? (Brush)FindResource("ControlBackground") : new ImageBrush(image) { Stretch = Stretch.UniformToFill };
             remove.Visibility = image is null ? Visibility.Collapsed : Visibility.Visible;
         }
         ShowCurrent();
+
+        // Decoding is slow and this runs for every batch of a sync, so only for a real change.
+        _refreshes.Add(_ =>
+        {
+            var latest = _database.GetProjectImage(projectId, kind);
+            if ((latest ?? []).AsSpan().SequenceEqual(shown ?? [])) return;
+            ShowCurrent();
+        });
 
         var choose = ActionButton("Choose");
         choose.Click += (_, _) =>

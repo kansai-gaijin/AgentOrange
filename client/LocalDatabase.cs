@@ -242,16 +242,7 @@ public sealed class LocalDatabase
                 .Select(reserved => (Project: reserved.Value, Folder: (string?)reserved.Key)))
             .ToList();
 
-        return await Task.Run(() => linked.FirstOrDefault(link => IsOrHolds(folder, link.Folder!) || IsOrHolds(link.Folder!, folder)).Project);
-    }
-
-    private static bool IsOrHolds(string folder, string other)
-    {
-        for (var at = other; at is not null; at = Path.GetDirectoryName(at))
-        {
-            if (FolderIdentity.Same(at, folder)) return true;
-        }
-        return false;
+        return await Task.Run(() => linked.FirstOrDefault(link => FolderIdentity.Overlap(folder, link.Folder!)).Project);
     }
 
     public void SaveProjectOrder(IEnumerable<string> projectIds) =>

@@ -30,6 +30,7 @@ public partial class MainWindow
     private string? _folderProblem;
     private bool _folderExists;
     private bool _folderLacksFiles;
+    private bool _folderMayNotMatch;
     private string? _scrolledToProblem;
     private string? _pageProblem;
     private bool _confirmingNewRepo;
@@ -253,7 +254,7 @@ public partial class MainWindow
         card.ReleaseMouseCapture();
 
         var before = CurrentOrder();
-        var result = DragDrop.DoDragDrop(card, new DataObject(typeof(string), card.Tag), DragDropEffects.Move);
+        var result = DragDrop.DoDragDrop(card, new DataObject("AgentOrange.ProjectCard", card.Tag), DragDropEffects.Move);
 
         card.Opacity = 1;
         _draggedCard = null;
@@ -317,6 +318,7 @@ public partial class MainWindow
         _folderProblem = null;
         _folderExists = false;
         _folderLacksFiles = false;
+        _folderMayNotMatch = false;
         _pageProblem = _heldProblems.Remove(project.Id, out var held) ? held : null;
         _confirmingNewRepo = false;
         ProjectSelectView.Visibility = Visibility.Collapsed;
@@ -336,6 +338,11 @@ public partial class MainWindow
         // It may have been connected while offline, when nothing could say the repo had files.
         var lacksFiles = check.Access == RepoAccess.Allowed && folderExists && folderProblem is null
             && await GitTools.FolderHasNoCommitsAsync(folder!) && await GitTools.RepoHasContentAsync(project.RepoUrl) == true;
+
+        // Likewise for its first real check, as a folder with its own commits got no warning then.
+        var mayNotMatch = check.Access == RepoAccess.Allowed && folderExists && folderProblem is null && !lacksFiles
+            && _database.GetSetting(VerifiedSetting(project.Id)) != GitTools.RepoKey(project.RepoUrl)
+            && await GitTools.FolderLooksUnrelatedAsync(folder!, project.RepoUrl);
 
         if (navigation != _navigation) return; // They moved on, or something newer started.
 
@@ -359,6 +366,7 @@ public partial class MainWindow
         _folderExists = folderExists;
         _folderProblem = folderProblem;
         _folderLacksFiles = lacksFiles;
+        _folderMayNotMatch = mayNotMatch;
         RenderProject(latest);
         await ReadEngineVersionAsync(latest.Id);
     }
@@ -440,6 +448,10 @@ public partial class MainWindow
         if (_folderExists && _folderProblem is null && !_folderLacksFiles)
         {
             body.Children.Add(new TextBlock { Text = folder, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = folder });
+            if (_folderMayNotMatch)
+            {
+                body.Children.Add(new TextBlock { Text = "This folder doesn't have the repo's latest commits. It may just be behind, but it may not be the same project, so check before pushing.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+            }
             body.Children.Add(CenteredNote("Nothing here yet."));
             AddOwnBusy(body, project);
             AddPageProblem(body);
@@ -1095,6 +1107,15 @@ public partial class MainWindow
     {
         if (_busyProjectId is not null) return;
         StartBusy(project, "Connecting the folder…");
+
+        // The URL may be a typo, and the next push would send this folder's history there.
+        if (await GitTools.FolderLooksUnrelatedAsync(folder, project.RepoUrl)
+            && !Dialogs.Confirm($"{project.RepoUrl} has commits this folder doesn't, so they may not be the same project.\n\nConnecting them changes no files and pushes nothing, but the next push could send this folder's history there. Connect them anyway?"))
+        {
+            EndBusy();
+            return;
+        }
+
         var result = await GitTools.PointFolderAtRepoAsync(folder, project.RepoUrl);
         EndBusy();
 
