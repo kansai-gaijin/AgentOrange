@@ -36,6 +36,8 @@ public partial class MainWindow
     // A long operation can finish after they've left its project, and what happened still has to reach them.
     private readonly Dictionary<string, string> _heldProblems = [];
     private string? _settingsProjectId;
+    private bool _recheckAfterBusy;
+    private readonly Dictionary<string, int> _engineReads = [];
 
     // Only one long operation runs at a time. It keeps going if the person leaves the page.
     private string? _busyProjectId;
@@ -303,7 +305,7 @@ public partial class MainWindow
         RenderProject(project);
 
         var folder = _database.GetProjectFolder(project.Id);
-        var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl, await GitTools.RemoteToReachAsync(folder, project.RepoUrl));
+        var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl, folder);
 
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
         var folderProblem = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline
@@ -347,10 +349,15 @@ public partial class MainWindow
     private async Task ReadEngineVersionAsync(string projectId)
     {
         if (FindProject(projectId) is not { } project || _database.GetProjectFolder(projectId) is not { } folder) return;
+
+        // A slow read of the old folder mustn't land on top of a newer one's answer.
+        var read = _engineReads[projectId] = _engineReads.GetValueOrDefault(projectId) + 1;
+
         if (await GitTools.FolderProblemAsync(folder, project.RepoUrl) is not null) return;
 
         var version = await EngineVersions.FindAsync(project.Engine, folder);
-        if (version is null || FindProject(projectId) is not { } latest) return;
+        if (version is null || _engineReads[projectId] != read || _database.GetProjectFolder(projectId) != folder) return;
+        if (FindProject(projectId) is not { } latest || !GitTools.SameRepo(latest.RepoUrl, project.RepoUrl)) return;
         if (latest.Engine != project.Engine || latest.EngineVersion == version) return;
 
         _database.SetEngineVersion(projectId, project.Engine, version);
@@ -376,6 +383,7 @@ public partial class MainWindow
         if (_projectCheck is not { } check)
         {
             body.Children.Add(CenteredNote("Checking the repo…"));
+            AddPageProblem(body);
             return;
         }
 
@@ -398,6 +406,7 @@ public partial class MainWindow
         {
             body.Children.Add(new TextBlock { Text = folder, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = folder });
             body.Children.Add(CenteredNote("Nothing here yet."));
+            AddPageProblem(body);
             return;
         }
 
@@ -544,6 +553,14 @@ public partial class MainWindow
             buttons.Children.Add(action);
         }
         body.Children.Add(buttons);
+
+        // A copy on this PC may reach the repo in a way the URL alone doesn't, such as its own SSH setup.
+        if (check.Access == RepoAccess.GitCantReach)
+        {
+            var useFolder = Card(Row("Select its folder", "If a copy on this PC can already reach this repo, that's enough.", SelectFolderButton(project)));
+            useFolder.Margin = new Thickness(0, 12, 0, 0);
+            body.Children.Add(useFolder);
+        }
         AddBusyAndProblem(body, project);
     }
 
@@ -575,13 +592,17 @@ public partial class MainWindow
             }
         }
 
-        if (_pageProblem is not null)
-        {
-            var problem = ProblemText();
-            ShowProblem(problem, _pageProblem);
-            problem.TextWrapping = TextWrapping.Wrap;
-            body.Children.Add(problem);
-        }
+        AddPageProblem(body);
+    }
+
+    private void AddPageProblem(StackPanel body)
+    {
+        if (_pageProblem is null) return;
+
+        var problem = ProblemText();
+        ShowProblem(problem, _pageProblem);
+        problem.TextWrapping = TextWrapping.Wrap;
+        body.Children.Add(problem);
     }
 
     private void StartBusy(Project project, string text)
@@ -596,7 +617,16 @@ public partial class MainWindow
     {
         _busyProjectId = null;
         _busyText = null;
-        if (_openProject is not null) RenderProject(_openProject);
+        if (_openProject is null) return;
+
+        RenderProject(_openProject);
+
+        // Settings closed while this ran, and what's on the page may be out of date.
+        if (_recheckAfterBusy)
+        {
+            _recheckAfterBusy = false;
+            _ = RecheckIfStillOpenAsync(_openProject.Id);
+        }
     }
 
     // Shows the result if the person is still looking at this project.
@@ -619,7 +649,7 @@ public partial class MainWindow
 
         // The page may have been open a while. Access may have come back, or a different
         // account be active, and what they agreed to named the account it would go under.
-        var latestCheck = await GitTools.CheckRepoAccessAsync(project.RepoUrl);
+        var latestCheck = await GitTools.CheckRepoAccessAsync(project.RepoUrl, _database.GetProjectFolder(project.Id));
         if (latestCheck != shownCheck)
         {
             EndBusy();
@@ -659,7 +689,18 @@ public partial class MainWindow
             return;
         }
 
-        var result = await GitTools.CreatePrivateRepoAsync(project.Name, folder!, project.RepoUrl);
+        // Held until it's linked, so settings can't give it to another project meanwhile.
+        var linkedBefore = _database.GetProjectFolder(project.Id);
+        _database.ReserveFolder(folder!, project);
+        GitResult result;
+        try
+        {
+            result = await GitTools.CreatePrivateRepoAsync(project.Name, folder!, project.RepoUrl);
+        }
+        finally
+        {
+            _database.ReleaseFolder(folder!);
+        }
         EndBusy();
 
         if (!result.Worked)
@@ -677,16 +718,26 @@ public partial class MainWindow
         }
         if (!GitTools.SameRepo(latest.RepoUrl, project.RepoUrl))
         {
-            ShowPageProblem(project.Id, $"The repo was created at {result.Value}, but this project moved to a different repo in the meantime, so it wasn't changed.");
+            _confirmingNewRepo = false;
+            await RecheckThenShowAsync(project.Id, $"The repo was created at {result.Value}, but this project moved to a different repo in the meantime, so it wasn't changed.");
             return;
         }
 
         var updated = latest with { RepoUrl = result.Value };
         _database.SaveProject(updated);
-        _database.SetProjectFolder(project.Id, folder!);
+
+        // A folder chosen in settings while this ran is more recent, so it stays.
+        if (_database.GetProjectFolder(project.Id) == linkedBefore) _database.SetProjectFolder(project.Id, folder!);
         _ = _sync.SyncNowAsync();
         _confirmingNewRepo = false;
         await RefreshThenRecheckAsync(updated.Id);
+    }
+
+    // For a result that the page has to be up to date to make sense of.
+    private async Task RecheckThenShowAsync(string projectId, string problem)
+    {
+        _heldProblems[projectId] = problem;
+        await RecheckIfStillOpenAsync(projectId);
     }
 
     private async Task RefreshThenRecheckAsync(string projectId)
@@ -703,27 +754,9 @@ public partial class MainWindow
     private void AddGetProjectOptions(StackPanel body, Project project, string? linkedFolder)
     {
         var busy = _busyProjectId is not null;
-        var select = ActionButton("Select folder");
-        select.IsEnabled = !busy;
+        var select = SelectFolderButton(project);
         var clone = ActionButton("Clone");
         clone.IsEnabled = !busy && project.RepoUrl.Length > 0;
-
-        select.Click += async (_, _) =>
-        {
-            var dialog = new OpenFolderDialog { Title = $"Find the folder for {project.Name}" };
-            if (dialog.ShowDialog() != true) return;
-
-            StartBusy(project, "Checking that folder…");
-            var folderProblem = await GitTools.FolderProblemAsync(dialog.FolderName, project.RepoUrl);
-            if (folderProblem is null && await _database.ProjectUsingFolderAsync(dialog.FolderName, project.Id) is { } other)
-            {
-                folderProblem = $"{other.Name} already uses that folder. A folder can only be one project.";
-            }
-            EndBusy();
-
-            if (folderProblem is null) await UseFolderAsync(project.Id, dialog.FolderName);
-            else ShowPageProblem(project.Id, folderProblem);
-        };
 
         clone.Click += async (_, _) =>
         {
@@ -759,7 +792,7 @@ public partial class MainWindow
                 && (_database.GetProjectFolder(project.Id) != folderBefore || !GitTools.SameRepo(latest.RepoUrl, project.RepoUrl)))
             {
                 // Settings stay open during a clone, and what was chosen there is more recent.
-                ShowPageProblem(project.Id, $"Cloned to {result.Value}, but this project changed while that ran, so it wasn't linked. The clone is still there.");
+                await RecheckThenShowAsync(project.Id, $"Cloned to {result.Value}, but this project changed while that ran, so it wasn't linked. The clone is still there.");
             }
             else
             {
@@ -806,6 +839,29 @@ public partial class MainWindow
         AddBusyAndProblem(body, project);
     }
 
+    private Button SelectFolderButton(Project project)
+    {
+        var select = ActionButton("Select folder");
+        select.IsEnabled = _busyProjectId is null;
+        select.Click += async (_, _) =>
+        {
+            var dialog = new OpenFolderDialog { Title = $"Find the folder for {project.Name}" };
+            if (dialog.ShowDialog() != true) return;
+
+            StartBusy(project, "Checking that folder…");
+            var folderProblem = await GitTools.FolderProblemAsync(dialog.FolderName, project.RepoUrl);
+            if (folderProblem is null && await _database.ProjectUsingFolderAsync(dialog.FolderName, project.Id) is { } other)
+            {
+                folderProblem = $"{other.Name} already uses that folder. A folder can only be one project.";
+            }
+            EndBusy();
+
+            if (folderProblem is null) await UseFolderAsync(project.Id, dialog.FolderName);
+            else ShowPageProblem(project.Id, folderProblem);
+        };
+        return select;
+    }
+
     private async Task PointFolderAtRepoAsync(Project project, string folder)
     {
         if (_busyProjectId is not null) return;
@@ -833,8 +889,7 @@ public partial class MainWindow
         if (parts.Length != 3) return;
         if (int.TryParse(parts[0], out var id) && long.TryParse(parts[1], out var started) && IsStillRunning(id, started)) return;
 
-        await GitTools.RemoveLeftoverCloneAsync(parts[2]);
-        _database.SetSetting(CloneInProgressSetting, "");
+        if (await GitTools.RemoveLeftoverCloneAsync(parts[2])) _database.SetSetting(CloneInProgressSetting, "");
     }
 
     // The start time rules out another program that has since been given the same ID.
@@ -896,6 +951,7 @@ public partial class MainWindow
         // The repo or folder may have changed. Work already running gets to finish first.
         if (_busyProjectId == openId)
         {
+            _recheckAfterBusy = true;
             RefreshProjects();
             return;
         }

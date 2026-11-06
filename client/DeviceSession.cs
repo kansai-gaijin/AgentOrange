@@ -71,8 +71,11 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
             }
             response.EnsureSuccessStatusCode();
 
+            // Anything answering that address gets here, and it may not be an Agent Orange server.
             var paired = await response.Content.ReadFromJsonAsync<PairResponse>();
-            var encrypted = ProtectedData.Protect(Encoding.UTF8.GetBytes(paired!.Token), null, DataProtectionScope.CurrentUser);
+            if (string.IsNullOrEmpty(paired?.Token)) return PairResult.CantReach;
+
+            var encrypted = ProtectedData.Protect(Encoding.UTF8.GetBytes(paired.Token), null, DataProtectionScope.CurrentUser);
             database.SetSetting(TokenSettingFor(address), Convert.ToBase64String(encrypted));
             PairingChanged?.Invoke();
             return PairResult.Paired;

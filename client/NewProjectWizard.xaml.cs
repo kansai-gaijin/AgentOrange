@@ -290,7 +290,7 @@ public partial class NewProjectWizard : UserControl
             return ("", false, "That folder is connected to a different repo than that URL.");
         }
 
-        var check = await GitTools.CheckRepoAccessAsync(url, state.AliasRemote);
+        var check = await GitTools.CheckRepoAccessAsync(url, state.Origin is not null ? project.Folder : null);
         switch (check.Access)
         {
             case RepoAccess.Allowed or RepoAccess.Offline:
@@ -307,7 +307,8 @@ public partial class NewProjectWizard : UserControl
         if (state.Origin is null)
         {
             status("Connecting the folder to the repo…");
-            var connected = await GitTools.ConnectFolderAsync(project.Folder, url);
+            var form = check.Access == RepoAccess.Allowed ? await GitTools.ReachableFormAsync(url) ?? url : url;
+            var connected = await GitTools.ConnectFolderAsync(project.Folder, form);
             if (!connected.Worked) return ("", false, connected.Value);
         }
 

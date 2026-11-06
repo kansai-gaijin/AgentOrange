@@ -8,7 +8,7 @@ public sealed class SyncEngine
     private const int BatchSize = 200;
 
     // The server accepts requests up to 2 MB, and images make up most of the data.
-    private const int MaxBatchCharacters = 1_400_000;
+    private const int MaxBatchBytes = 1_400_000;
 
     private readonly LocalDatabase _database;
     private readonly ServerConnection _server;
@@ -53,7 +53,7 @@ public sealed class SyncEngine
 
             while (_server.Address == address)
             {
-                var batch = _database.ReadOutbox(BatchSize, MaxBatchCharacters);
+                var batch = _database.ReadOutbox(BatchSize, MaxBatchBytes);
                 var response = await _devices.SyncAsync(cursor, batch);
                 if (response is null) return;
 

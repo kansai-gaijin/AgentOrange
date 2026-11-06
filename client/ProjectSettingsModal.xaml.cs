@@ -90,7 +90,7 @@ public partial class ProjectSettingsModal : UserControl
         folder.Width = 230;
         folder.IsReadOnly = true;
         folder.ToolTip = folder.Text.Length > 0 ? folder.Text : null;
-        SaveOnLeave(repo, project.RepoUrl, value => SaveRepoAsync(projectId, value, folder));
+        SaveOnLeave(repo, project.RepoUrl, value => SaveRepo(projectId, value));
 
         var browse = ActionButton("Browse");
         browse.Click += async (_, _) => await ChooseFolderAsync(projectId, folder);
@@ -232,30 +232,15 @@ public partial class ProjectSettingsModal : UserControl
         return Row(title, description, preview, choose, remove);
     }
 
-    private async Task<string?> SaveRepoAsync(string projectId, string url, TextBox folderField)
+    // A folder left on the old repo stays linked. Opening the project then offers to connect
+    // it, because it may hold work that isn't pushed.
+    private Task<string?> SaveRepo(string projectId, string url)
     {
-        if (url.Length == 0) return "A project needs a repo.";
-        if (GitTools.RepoUrlProblem(url) is { } problem) return problem;
-
-        // A folder that's really from another repo can't stay linked. Forgetting it, without
-        // touching the files, lets a project move repos instead of getting stuck between the
-        // two. A folder that's just missing right now, such as on an unplugged drive, stays.
-        var session = _session;
-        var linked = _database.GetProjectFolder(projectId);
-        var unlink = linked is not null && await GitTools.FolderUsesOtherRepoAsync(linked, url);
+        if (url.Length == 0) return Task.FromResult<string?>("A project needs a repo.");
+        if (GitTools.RepoUrlProblem(url) is { } problem) return Task.FromResult<string?>(problem);
 
         Update(projectId, current => current with { RepoUrl = url });
-        if (!unlink) return null;
-
-        _database.SetProjectFolder(projectId, "");
-        Changed?.Invoke();
-        if (session == _session)
-        {
-            folderField.Text = "";
-            folderField.ToolTip = null;
-            ReportProblem("This project's folder used a different repo, so it's no longer linked. Its files weren't changed. Choose or clone the right folder.");
-        }
-        return null;
+        return Task.FromResult<string?>(null);
     }
 
     private async Task ChooseFolderAsync(string projectId, TextBox field)

@@ -39,6 +39,7 @@ public sealed class LocalDatabase
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly string _connectionString;
+    private readonly Dictionary<string, Project> _reservedFolders = new(StringComparer.OrdinalIgnoreCase);
 
     public LocalDatabase(string databasePath)
     {
@@ -205,6 +206,11 @@ public sealed class LocalDatabase
         }
     }
 
+    /// <summary>Holds a folder for a project during slow work, so nothing else can claim it before it's linked.</summary>
+    public void ReserveFolder(string folder, Project project) => _reservedFolders[folder] = project;
+
+    public void ReleaseFolder(string folder) => _reservedFolders.Remove(folder);
+
     /// <summary>A folder can only be one project, so this finds who already has it, by any path.</summary>
     public async Task<Project?> ProjectUsingFolderAsync(string folder, string? exceptProjectId = null)
     {
@@ -212,6 +218,9 @@ public sealed class LocalDatabase
             .Where(project => project.Id != exceptProjectId)
             .Select(project => (Project: project, Folder: GetProjectFolder(project.Id)))
             .Where(link => link.Folder is not null)
+            .Concat(_reservedFolders
+                .Where(reserved => reserved.Value.Id != exceptProjectId)
+                .Select(reserved => (Project: reserved.Value, Folder: (string?)reserved.Key)))
             .ToList();
 
         return await Task.Run(() => linked.FirstOrDefault(link => FolderIdentity.Same(link.Folder!, folder)).Project);
@@ -284,7 +293,7 @@ public sealed class LocalDatabase
     }
 
     /// <summary>Reads queued changes, stopping at a size the server accepts in one request.</summary>
-    public List<SyncChange> ReadOutbox(int limit, int maxCharacters)
+    public List<SyncChange> ReadOutbox(int limit, int maxBytes)
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
@@ -297,8 +306,9 @@ public sealed class LocalDatabase
         while (reader.Read())
         {
             var data = reader.GetString(2);
-            if (changes.Count > 0 && total + data.Length > maxCharacters) break;
-            total += data.Length;
+            var size = JsonEncodedText.Encode(data).EncodedUtf8Bytes.Length; // What it takes up once it's sent.
+            if (changes.Count > 0 && total + size > maxBytes) break;
+            total += size;
             changes.Add(new SyncChange(reader.GetString(0), reader.GetString(1), data, reader.GetInt64(3) != 0));
         }
         return changes;

@@ -40,7 +40,7 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
         RepoAccess.Restricted => ("GitHub is blocking this login from the repo", "An organization or token setting doesn't let this login see it, so trying again won't help. Authorize the login for the organization on GitHub, or sign in again with gh auth refresh."),
         RepoAccess.NotFound => ("This repo doesn't exist", "It may have been deleted or renamed, or your GitHub login may not be allowed to see it."),
         RepoAccess.NotFoundOrNoAccess => ("Can't find this repo", "It was deleted, or your GitHub account doesn't have access. GitHub doesn't say which. If you should have access, ask the owner."),
-        RepoAccess.GitCantReach => ("Git on this PC can't reach this repo", "Check this PC's Git setup, such as its SSH keys, or run gh auth setup-git."),
+        RepoAccess.GitCantReach => ("Git on this PC can't reach this repo", "Your GitHub account has access, but Git doesn't get through from here. Check this PC's Git setup, such as its SSH keys or a firewall, or run gh auth setup-git."),
         RepoAccess.BadUrl => ("This repo URL can't be used", "It has to be a GitHub repo, with no password or token in the URL. Change it in project settings."),
         RepoAccess.Offline => ("Couldn't reach GitHub", "This PC seems to be offline, and it hasn't had access to this repo before."),
         RepoAccess.Allowed => ("You have access", ""),
@@ -56,9 +56,6 @@ public sealed record FolderRepo(bool InsideRepo, bool IsRepoRoot, string? Origin
 
     /// <summary>The remote, in its plain GitHub form if it has one, such as when it's an SSH alias for GitHub.</summary>
     public string? OriginToCompare => GitHubOrigin ?? Origin;
-
-    /// <summary>An alias usually exists to pick an SSH key, so reaching the repo has to go through it.</summary>
-    public string? AliasRemote => GitHubOrigin is not null && GitHubOrigin != Origin ? Origin : null;
 }
 
 /// <summary>What projects need from Git and the GitHub CLI.</summary>
@@ -108,9 +105,10 @@ public static partial class GitTools
     /// <summary>
     /// Whether this PC can work on a repo. GitHub answers "not found" both for a repo
     /// that's gone and for a private one you can't see, so a repo outside your own
-    /// accounts can only be reported as one or the other.
+    /// accounts can only be reported as one or the other. The URL says which repo this is,
+    /// but not how this PC gets to it, so a folder that's connected to it is what gets tried.
     /// </summary>
-    public static async Task<RepoCheck> CheckRepoAccessAsync(string url, string? reachThrough = null)
+    public static async Task<RepoCheck> CheckRepoAccessAsync(string url, string? folder = null)
     {
         // Synced URLs come from other PCs, so they're checked before anything runs them.
         if (RepoUrlProblem(url) is not null) return new RepoCheck(RepoAccess.BadUrl);
@@ -120,7 +118,7 @@ public static partial class GitTools
         var view = await ViewRepoAsync(slug, null);
         if (view is null) return new RepoCheck(RepoAccess.NoGitHubCli);
 
-        if (view.ExitCode == 0 && WritePermission().IsMatch(view.Output)) return await CheckGitCanReachAsync(reachThrough ?? url);
+        if (view.ExitCode == 0 && WritePermission().IsMatch(view.Output)) return await CheckGitCanReachAsync(url, folder);
 
         var readOnly = view.ExitCode == 0;
         var notFound = SaysRepoMissing(view.Errors);
@@ -224,14 +222,6 @@ public static partial class GitTools
     /// <summary>A disconnected network drive can take a long time to answer, so this stays off the UI thread.</summary>
     public static Task<bool> FolderExistsAsync(string folder) => Task.Run(() => Directory.Exists(folder));
 
-    /// <summary>True only when Git clearly says the folder's remote is some other repo.</summary>
-    public static async Task<bool> FolderUsesOtherRepoAsync(string folder, string repoUrl)
-    {
-        if (!await FolderExistsAsync(folder)) return false;
-        var state = await InspectFolderAsync(folder);
-        return state?.OriginToCompare is { } origin && !SameRepo(origin, repoUrl);
-    }
-
     /// <summary>Whether a folder can move to a new repo: readable, a repo's top or no repo at all, and not using an unrelated one.</summary>
     public static async Task<bool> FolderCanReplaceRepoAsync(string folder, string oldRepo)
     {
@@ -241,12 +231,41 @@ public static partial class GitTools
             && (state.Origin is null || SameRepo(state.OriginToCompare!, oldRepo));
     }
 
-    /// <summary>The way to reach a repo from a folder that's connected to it through an SSH alias.</summary>
-    public static async Task<string?> RemoteToReachAsync(string? folder, string repoUrl)
+    /// <summary>
+    /// The form of a repo's URL that works from this PC, HTTPS or SSH. The synced URL may have
+    /// come from a PC set up differently. Null if neither works.
+    /// </summary>
+    public static async Task<string?> ReachableFormAsync(string url)
     {
-        if (folder is null || !await FolderExistsAsync(folder)) return null;
-        var state = await InspectFolderAsync(folder);
-        return state?.AliasRemote is { } alias && SameRepo(state.OriginToCompare!, repoUrl) ? alias : null;
+        foreach (var form in new[] { url, OtherForm(url) })
+        {
+            if (await LsRemoteAsync(form, Path.GetTempPath()) is { ExitCode: 0 }) return form;
+        }
+        return null;
+    }
+
+    private static string OtherForm(string url) =>
+        url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            ? $"git@github.com:{GitHubPath(url)}.git"
+            : $"https://github.com/{GitHubPath(url)}.git";
+
+    private static string GitHubPath(string url)
+    {
+        var text = url.Trim().TrimEnd('/');
+        text = ScpStyleRepo().IsMatch(text)
+            ? text[(text.IndexOf(':') + 1)..]
+            : Uri.TryCreate(text, UriKind.Absolute, out var uri) ? uri.AbsolutePath.Trim('/') : text;
+        return text.EndsWith(".git", StringComparison.OrdinalIgnoreCase) ? text[..^4] : text;
+    }
+
+    // This PC's remote for another repo, reached the same way. An alias usually exists to
+    // choose an SSH key, so losing it could lose access.
+    private static string SameWayTo(string remote, string url)
+    {
+        var path = GitHubPath(url);
+        if (ScpStyleRepo().IsMatch(remote)) return $"{remote[..remote.IndexOf(':')]}:{path}.git";
+        if (Uri.TryCreate(remote, UriKind.Absolute, out var uri) && uri.Scheme == "ssh") return $"ssh://{uri.UserInfo}@{uri.Authority}/{path}.git";
+        return $"https://github.com/{path}.git";
     }
 
     // Git's SSH form doesn't have to say github.com. A host can be an alias in the person's
@@ -299,7 +318,8 @@ public static partial class GitTools
         if (state.IsInsideAnotherRepo) return new GitResult(false, "That folder is inside another Git repo.");
         if (state.Origin is null) return await ConnectFolderAsync(folder, repoUrl);
 
-        var changed = await RunAsync("git", folder, "remote", "set-url", "origin", repoUrl);
+        var newRemote = state.GitHubOrigin is not null ? SameWayTo(state.Origin, repoUrl) : repoUrl;
+        var changed = await RunAsync("git", folder, "remote", "set-url", "origin", newRemote);
         return changed is { ExitCode: 0 }
             ? new GitResult(true, repoUrl)
             : new GitResult(false, "Couldn't connect that folder to the repo.");
@@ -367,27 +387,36 @@ public static partial class GitTools
         if (created is not { ExitCode: 0 })
         {
             if (created?.Errors == TimedOut) return new GitResult(false, $"GitHub took too long to answer, so {repoName} may have been created anyway. Check GitHub before trying again.");
-            return new GitResult(false, created?.Errors.Contains("already exists", StringComparison.OrdinalIgnoreCase) == true
-                ? $"You already have a repo called {repoName}. Enter its URL, or rename this project."
-                : "Couldn't create the repo on GitHub.");
+            if (created?.Errors.Contains("already exists", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                return new GitResult(false, $"You already have a repo called {repoName}. Enter its URL, or rename this project.");
+            }
+            var reason = created?.Errors.Split('\n', StringSplitOptions.RemoveEmptyEntries).LastOrDefault()?.Trim();
+            return new GitResult(false, string.IsNullOrEmpty(reason) ? "Couldn't create the repo on GitHub." : $"Couldn't create the repo on GitHub: {reason}");
         }
 
-        // A PC that reached the old repo over SSH may have no other way in, so it stays on SSH.
-        var keepSsh = replacingRepo is not null && (UsesSsh(replacingRepo) || (state.Origin is { } oldOrigin && UsesSsh(oldOrigin)));
+        // The folder keeps reaching GitHub the way it does now. With no remote yet, a PC whose
+        // project was on SSH may have no other way in.
         var webUrl = CreatedRepoUrl().Match(created.Output).Value;
-        if (state.Origin is not null || (keepSsh && webUrl.Length > 0))
+        if (state.Origin is not null && webUrl.Length == 0) return new GitResult(false, "The repo was created, but couldn't be linked to that folder.");
+
+        string? newOrigin = null;
+        if (state.GitHubOrigin is not null) newOrigin = SameWayTo(state.Origin!, webUrl);
+        else if (replacingRepo is not null && UsesSsh(replacingRepo) && webUrl.Length > 0) newOrigin = SameWayTo(replacingRepo, webUrl);
+
+        if (newOrigin is not null && await RunAsync("git", folder, "remote", "set-url", "origin", newOrigin) is not { ExitCode: 0 })
         {
-            var newOrigin = keepSsh ? $"git@github.com:{webUrl["https://github.com/".Length..]}.git" : $"{webUrl}.git";
-            if (webUrl.Length == 0 || await RunAsync("git", folder, "remote", "set-url", "origin", newOrigin) is not { ExitCode: 0 })
-            {
-                return new GitResult(false, "The repo was created, but couldn't be linked to that folder.");
-            }
+            return new GitResult(false, "The repo was created, but couldn't be linked to that folder.");
         }
 
         var finalState = await InspectFolderAsync(folder);
-        return finalState?.Origin is { } origin
-            ? new GitResult(true, origin)
-            : new GitResult(false, "The repo was created, but couldn't be linked to that folder.");
+        if (finalState?.Origin is null) return new GitResult(false, "The repo was created, but couldn't be linked to that folder.");
+
+        // What syncs says which repo this is. How this PC's folder reaches it stays in the folder.
+        var projectUrl = webUrl.Length > 0 ? $"{webUrl}.git" : finalState.OriginToCompare!;
+        return RepoUrlProblem(projectUrl) is null
+            ? new GitResult(true, projectUrl)
+            : new GitResult(false, $"The repo was created, but its address couldn't be worked out from {finalState.Origin}.");
     }
 
     /// <summary>Where a clone of this repo would end up inside a folder, if the URL names one.</summary>
@@ -404,6 +433,7 @@ public static partial class GitTools
         if (FolderNameFor(url) is not { } name) return new GitResult(false, "That repo URL doesn't name a folder to clone into.");
 
         var destination = Path.Combine(parentFolder, name);
+        var form = await ReachableFormAsync(url) ?? url;
 
         // Cloning into a folder that only this clone owns means a failure can never remove
         // anything else, and the real name only appears once the clone is complete.
@@ -413,7 +443,7 @@ public static partial class GitTools
         {
             if (await DestinationTakenAsync(destination)) return new GitResult(false, $"{destination} already exists and isn't empty.");
 
-            var result = await RunAsync("git", parentFolder, null, ["clone", "--", url, working], cancel, await SshSettingsAsync());
+            var result = await RunAsync("git", parentFolder, null, ["clone", "--", form, working], cancel, await SshSettingsAsync(Path.GetTempPath()));
             if (result is null) return new GitResult(false, "Git wasn't found on this PC.");
 
             if (result.ExitCode != 0)
@@ -435,13 +465,20 @@ public static partial class GitTools
         }
     }
 
-    /// <summary>Removes what a clone left when the app closed in the middle of it. Only ever touches a folder named by CloneAsync.</summary>
-    public static async Task RemoveLeftoverCloneAsync(string folder)
+    /// <summary>
+    /// Removes what a clone left when the app closed in the middle of it. Only ever touches a
+    /// folder named by CloneAsync. False means it's still there, or its drive isn't plugged
+    /// in, so it should be tried again next time.
+    /// </summary>
+    public static async Task<bool> RemoveLeftoverCloneAsync(string folder)
     {
-        if (Path.IsPathFullyQualified(folder) && CloneWorkingFolderName().IsMatch(Path.GetFileName(folder)))
-        {
-            await TryDeleteOwnedFolderAsync(folder);
-        }
+        if (!Path.IsPathFullyQualified(folder) || !CloneWorkingFolderName().IsMatch(Path.GetFileName(folder))) return true;
+
+        var parent = Path.GetDirectoryName(folder);
+        if (parent is null || !await FolderExistsAsync(parent)) return false;
+
+        await TryDeleteOwnedFolderAsync(folder);
+        return !await FolderExistsAsync(folder);
     }
 
     // A virus scanner can hold new files for a moment, and giving up would throw away a whole clone.
@@ -541,20 +578,31 @@ public static partial class GitTools
         return user is { ExitCode: 0 } ? user.Output.Trim() : null;
     }
 
-    // A GitHub login isn't enough, because Git may use a different key or credential on this PC.
-    private static async Task<RepoCheck> CheckGitCanReachAsync(string url)
+    // A GitHub login isn't enough, because Git may use a different key or credential on this
+    // PC. GitHub has just answered by now, so this PC isn't offline, even if Git can't get out.
+    private static async Task<RepoCheck> CheckGitCanReachAsync(string url, string? folder)
     {
-        var result = await RunAsync("git", Path.GetTempPath(), null, ["ls-remote", "--", url, "HEAD"], default, await SshSettingsAsync());
-        if (result is null) return new RepoCheck(RepoAccess.NoGit);
-        if (result.ExitCode == 0) return new RepoCheck(RepoAccess.Allowed);
-        return new RepoCheck(LooksLikeNetworkFailure(result.Errors) ? RepoAccess.Offline : RepoAccess.GitCantReach);
+        if (FindOnPath("git") is null) return new RepoCheck(RepoAccess.NoGit);
+
+        // A connected folder is how this PC really works with the repo. It runs from inside
+        // the folder because the folder's own Git settings can say which key to use.
+        var state = folder is not null && await FolderExistsAsync(folder) ? await InspectFolderAsync(folder) : null;
+        if (state?.OriginToCompare is { } origin && SameRepo(origin, url))
+        {
+            return new RepoCheck(await LsRemoteAsync(state.Origin!, folder!) is { ExitCode: 0 } ? RepoAccess.Allowed : RepoAccess.GitCantReach);
+        }
+
+        return new RepoCheck(await ReachableFormAsync(url) is not null ? RepoAccess.Allowed : RepoAccess.GitCantReach);
     }
+
+    private static async Task<CommandResult?> LsRemoteAsync(string remote, string folder) =>
+        await RunAsync("git", folder, null, ["ls-remote", "--", remote, "HEAD"], default, await SshSettingsAsync(folder));
 
     // There's no terminal to answer SSH's questions in, so it should fail rather than wait.
     // A custom SSH command from the person's Git settings is left alone.
-    private static async Task<Dictionary<string, string>?> SshSettingsAsync()
+    private static async Task<Dictionary<string, string>?> SshSettingsAsync(string folder)
     {
-        var custom = await RunAsync("git", Path.GetTempPath(), "config", "--get", "core.sshCommand");
+        var custom = await RunAsync("git", folder, "config", "--get", "core.sshCommand");
         var hasCustom = custom is { ExitCode: 0 } && custom.Output.Trim().Length > 0;
         return hasCustom
             || Environment.GetEnvironmentVariable("GIT_SSH_COMMAND") is { Length: > 0 }

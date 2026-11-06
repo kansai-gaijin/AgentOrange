@@ -8,7 +8,7 @@ while IFS= read -r file; do
     [ -n "$file" ] || continue
 
     case "$file" in
-        .githooks/*) continue ;;
+        .githooks/pre-commit) continue ;; # It names the very patterns it looks for.
         *.db | *.db-* | *.sqlite | *.sqlite-* | *.sqlite3 | *.sqlite3-*)
             echo "Blocked: $file looks like a database." >&2
             status=1
