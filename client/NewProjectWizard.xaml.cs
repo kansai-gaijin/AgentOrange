@@ -406,17 +406,25 @@ public partial class NewProjectWizard : UserControl
         if (GitTools.ProjectUsingRepo(url) is { } otherProject) return ("", false, $"{otherProject} already uses that repo. A repo can only be one project.");
 
         // GitHub still answers to a repo's old name, so that isn't enough to tell them apart.
-        if (await GitTools.RenamedRepoUrlAsync(url) is { } renamed && GitTools.ProjectUsingRepo(renamed) is { } holder)
+        var renamed = await GitTools.RenamedRepoUrlAsync(url);
+        if (renamed is not null && GitTools.ProjectUsingRepo(renamed) is { } holder)
         {
             return ("", false, $"{holder} already uses that repo, which GitHub now calls {renamed}. A repo can only be one project.");
         }
         if (state.Origin is not null && !GitTools.SameRepo(state.OriginToCompare!, url))
         {
-            if (!await GitTools.MoveIfRepoRenamedAsync(project.Folder, state, url)) return ("", false, "That folder is connected to a different repo than that URL.");
+            if (await GitTools.MoveIfRepoRenamedAsync(project.Folder, state, url))
+            {
+                state = await GitTools.InspectFolderAsync(project.Folder);
+                if (state is null) return ("", false, "Git wasn't found on this PC.");
+                if (state.Problem is not null) return ("", false, state.Problem);
+            }
 
-            state = await GitTools.InspectFolderAsync(project.Folder);
-            if (state is null) return ("", false, "Git wasn't found on this PC.");
-            if (state.Problem is not null) return ("", false, state.Problem);
+            // The URL can be the one with the old name, which is the same repo. Selecting a folder accepts that too.
+            else if (renamed is null || !GitTools.SameRepo(renamed, state.OriginToCompare!))
+            {
+                return ("", false, "That folder is connected to a different repo than that URL.");
+            }
         }
 
         // The same check as selecting a folder for an existing project, such as where it pushes to.

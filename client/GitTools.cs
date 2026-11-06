@@ -605,6 +605,23 @@ public static partial class GitTools
     // a problem to show, or null once it has moved. Nothing is left half done either way.
     private static async Task<string?> MoveOriginAsync(string folder, string remote)
     {
+        var turn = RemoteMoves.GetOrAdd(folder.ToLowerInvariant(), _ => new SemaphoreSlim(1, 1));
+        await turn.WaitAsync();
+        try
+        {
+            return await MoveOriginInTurnAsync(folder, remote);
+        }
+        finally
+        {
+            turn.Release();
+        }
+    }
+
+    // An open page, a background engine read and a check can all notice one rename at once.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> RemoteMoves = new();
+
+    private static async Task<string?> MoveOriginInTurnAsync(string folder, string remote)
+    {
         if (await RemoteSetElsewhereAsync(folder) is { } elsewhere) return elsewhere;
 
         const string couldNotChange = "Couldn't change that folder's remote.";
@@ -630,6 +647,8 @@ public static partial class GitTools
 
         var movedUrls = await MovedAsync(urls);
         var movedPushUrls = await MovedAsync(pushUrls);
+        if (movedUrls.SequenceEqual(urls) && movedPushUrls.SequenceEqual(pushUrls)) return null; // Already there.
+
         if (await SetAddressesAsync(folder, "remote.origin.url", movedUrls) && (movedPushUrls.Length == 0 || await SetAddressesAsync(folder, "remote.origin.pushurl", movedPushUrls))) return null;
 
         await SetAddressesAsync(folder, "remote.origin.url", urls);
@@ -1056,7 +1075,7 @@ public static partial class GitTools
                 // Git's own answer that it holds no commits can cost what's in it.
                 if (!cancel.IsCancellationRequested && await FolderExistsAsync(working) && !SaysNoCommits(await RunAsync("git", working, "rev-parse", "--verify", "-q", "HEAD")))
                 {
-                    checkoutProblem = $"Everything downloaded, but some files couldn't be put in place: {AsSentence(reason)} Fix that, then run git restore --source=HEAD --staged --worktree :/ in the folder.";
+                    checkoutProblem = $"Everything downloaded, but some files couldn't be put in place: {AsSentence(reason)} Fix that, then run git restore --source=HEAD --staged --worktree :/ in the folder. That also discards any changes made in it since.";
                 }
                 else
                 {
@@ -1107,16 +1126,17 @@ public static partial class GitTools
         if (head is not { ExitCode: 0 or 1 }) return noAnswer;
         var hasCommits = head.ExitCode == 0;
 
-        // Git can't fetch what's listed in files that never arrived, and would say all is well. A
-        // checkout that failed outright hasn't even listed them yet, so Git's own list is asked too.
+        // A checkout that failed outright leaves Git with no list of the repo's files at all, and
+        // with nothing to go on it would say all is well. Files someone has since deleted or changed
+        // are ordinary work, and have no bearing on this.
         if (hasCommits)
         {
-            var unlisted = await RunAsync("git", folder, "diff-index", "--cached", "--quiet", "--diff-filter=D", "HEAD", "--");
-            var absent = await RunAsync("git", folder, "ls-files", "--deleted");
-            if (unlisted is not { ExitCode: 0 or 1 } || absent is not { ExitCode: 0 }) return noAnswer;
-            if (unlisted.ExitCode == 1 || absent.Output.Length > 0)
+            var listed = await RunAsync("git", folder, "ls-files");
+            var inCommit = await RunAsync("git", folder, "ls-tree", "HEAD");
+            if (listed is not { ExitCode: 0 } || inCommit is not { ExitCode: 0 }) return noAnswer;
+            if (listed.Output.Length == 0 && inCommit.Output.Length > 0)
             {
-                return "Some of this repo's files still aren't in the folder, so the rest can't be finished yet. Fix what stopped them, then run git restore --source=HEAD --staged --worktree :/ in the folder and try again.";
+                return "This repo's files were never put in the folder, so the rest can't be finished yet. Fix what stopped them, then run git restore --source=HEAD --staged --worktree :/ in the folder and try again. That also discards any changes made in it since.";
             }
         }
 
@@ -1646,7 +1666,7 @@ public static partial class GitTools
         var isCreate = arguments is ["repo", "create", ..];
 
         // Before a clone can be called finished, on what can be a very large repo and a cold disk.
-        var readsWholeRepo = arguments is ["ls-files", "--deleted"] or ["diff-index", ..] or ["grep", ..];
+        var readsWholeRepo = arguments is ["ls-files"] or ["grep", ..];
         using var timeout = new CancellationTokenSource(isClone ? Timeout.InfiniteTimeSpan : isCreate ? CreateTimeout : readsWholeRepo ? WholeRepoTimeout : CommandTimeout);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancel);
 

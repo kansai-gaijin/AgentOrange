@@ -235,15 +235,16 @@ public partial class MainWindow : Window
             (ServerStatus.Text, ServerStatus.Foreground) = ("Sync is paused until this PC can update", MutedBrush);
             return;
         }
-        if (_devices.VersionsDiffer)
-        {
-            (ServerStatus.Text, ServerStatus.Foreground) = ("Sync is paused until this PC and the server are on the same version", MutedBrush);
-            return;
-        }
-
         if (_server.State == ServerState.NoAddress || !_devices.IsPaired)
         {
             (ServerStatus.Text, ServerStatus.Foreground) = ("Not connected to a server", MutedBrush);
+            return;
+        }
+
+        // Only known from the server's last answer, so it says nothing once that can't be reached.
+        if (_devices.VersionsDiffer && _server.State == ServerState.Connected)
+        {
+            (ServerStatus.Text, ServerStatus.Foreground) = ("Sync is paused until this PC and the server are on the same version", MutedBrush);
             return;
         }
 

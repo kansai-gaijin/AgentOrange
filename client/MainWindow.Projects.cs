@@ -1468,9 +1468,10 @@ public partial class MainWindow
             var folderBefore = _database.GetProjectFolder(project.Id);
             StartBusy(project, "Checking that folder…");
             string? folderProblem;
+            var allowedJustNow = false;
             try
             {
-                var allowedJustNow = await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
+                allowedJustNow = await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
                 folderProblem = await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
                 if (folderProblem is null && await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other)
                 {
@@ -1483,8 +1484,8 @@ public partial class MainWindow
                 EndBusy();
             }
 
-            if (folderProblem is null) await UseFolderAsync(project, chosen, folderBefore);
-            else ShowPageProblem(project.Id, folderProblem);
+            if (folderProblem is not null) ShowPageProblem(project.Id, folderProblem);
+            else if (!await UseFolderAsync(project, chosen, folderBefore) && allowedJustNow) GitTools.ForgetAllowedFolderSettings(chosen);
         };
         return select;
     }
@@ -1523,6 +1524,14 @@ public partial class MainWindow
         if (why is not null && !Dialogs.Confirm($"{why}\n\nConnecting them changes no files and pushes nothing, but the next push could send this folder's history there. Connect them anyway?"))
         {
             EndBusy();
+            return;
+        }
+
+        // That can stay open a long time, and sync keeps running behind it.
+        if (FindProject(project.Id) is not { } latest || !GitTools.SameRepo(latest.RepoUrl, project.RepoUrl))
+        {
+            EndBusy();
+            await RecheckIfStillOpenAsync(project.Id);
             return;
         }
 
@@ -1578,25 +1587,25 @@ public partial class MainWindow
     }
 
     // Saved even if they've left the page, because the clone or the choice was real.
-    private async Task UseFolderAsync(Project chosenFor, string folder, string? folderBefore)
+    private async Task<bool> UseFolderAsync(Project chosenFor, string folder, string? folderBefore)
     {
         var projectId = chosenFor.Id;
-        if (FindProject(projectId) is not { } project) return;
+        if (FindProject(projectId) is not { } project) return false;
         if (await _database.ClaimFolderAsync(folder, project) is { } other)
         {
             ShowPageProblem(projectId, $"{other.Name} already uses {folder}. A folder can only be one project.");
-            return;
+            return false;
         }
 
         try
         {
             // Settings stay open during slow work, and sync keeps running, so this has to look again now.
-            if (FindProject(projectId) is not { } latest) return;
+            if (FindProject(projectId) is not { } latest) return false;
             if (_database.GetProjectFolder(projectId) != folderBefore || !GitTools.SameRepo(latest.RepoUrl, chosenFor.RepoUrl))
             {
                 _database.ReleaseFolder(folder);
                 await RecheckThenShowAsync(projectId, $"{folder} wasn't linked, because this project's folder or repo changed while that was being checked.");
-                return;
+                return false;
             }
 
             _database.SetProjectFolder(projectId, folder);
@@ -1607,6 +1616,7 @@ public partial class MainWindow
         }
         await ReadEngineVersionAsync(projectId);
         await RefreshThenRecheckAsync(projectId);
+        return true;
     }
 
     private void OpenProjectSettings(string projectId)
@@ -1643,6 +1653,7 @@ public partial class MainWindow
             RefreshProjects();
             return;
         }
+        KeepProblemThroughReopen(openId);
         await RefreshThenRecheckAsync(openId);
     }
 

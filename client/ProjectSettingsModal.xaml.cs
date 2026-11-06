@@ -424,6 +424,7 @@ public partial class ProjectSettingsModal : UserControl
                 var latest = Find(projectId);
                 if (latest is null || !GitTools.SameRepo(latest.RepoUrl, current.RepoUrl))
                 {
+                    if (allowedJustNow) GitTools.ForgetAllowedFolderSettings(chosen);
                     if (latest is not null && session == _session) ReportProblem("This project's repo changed while that folder was being checked, so it wasn't linked.");
                     return;
                 }
