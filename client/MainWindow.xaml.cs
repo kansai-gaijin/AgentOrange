@@ -49,7 +49,7 @@ public partial class MainWindow : Window
         _database = new LocalDatabase(folders.DatabasePath);
         Settings.Folders = folders;
         Settings.Database = _database;
-        Settings.Providers = new AgentProviders(_database);
+        Settings.Providers = new AgentProviders(_database, folders.AgentFolder);
         Settings.Editors = new EditorMonitor(_database);
         Settings.AppVersion = _updates.IsInstalled ? _updates.CurrentVersion?.ToString() ?? "Unknown" : "Dev build";
         Settings.CheckForUpdates = CheckForUpdatesFromSettingsAsync;

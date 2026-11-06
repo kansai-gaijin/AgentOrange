@@ -22,7 +22,18 @@ public sealed class AppFolders
 
         // The database can move, so its location has to be kept outside it.
         _pointerFile = Path.Combine(_appFolder, "database-location.txt");
+
+        AgentFolder = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            installed ? ".agent-orange" : ".agent-orange-dev");
+        Directory.CreateDirectory(AgentFolder);
     }
+
+    /// <summary>
+    /// What agent sessions load, such as tools and skills, plus things like chat
+    /// caches. It keeps these out of login folders, which other apps also use.
+    /// </summary>
+    public string AgentFolder { get; }
 
     public string LogsFolder => Path.Combine(_appFolder, "logs");
 

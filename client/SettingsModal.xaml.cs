@@ -558,6 +558,9 @@ public partial class SettingsModal : UserControl
             Application.Current.Shutdown();
         };
 
+        var openAgentFolder = Action("Open");
+        openAgentFolder.Click += (_, _) => Process.Start("explorer.exe", Folders.AgentFolder)?.Dispose();
+
         var downloadsFolder = Folders.DownloadsFolder(Database);
         var downloadsPath = FolderField(downloadsFolder);
         var changeDownloads = Action("Change");
@@ -574,7 +577,8 @@ public partial class SettingsModal : UserControl
             Section("On this PC"),
             Card(
                 Row("Database", $"Your offline copy of every project. {AppFolders.FormatSize(Folders.DatabaseSize)}.", FolderField(Folders.DatabaseFolder), changeDatabase),
-                downloadsRow),
+                downloadsRow,
+                Row("Agent files", "Tools and skills that load in agent sessions, and chat caches.", FolderField(Folders.AgentFolder), openAgentFolder)),
             problem,
         ];
     }

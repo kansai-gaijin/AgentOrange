@@ -17,7 +17,7 @@ public sealed record ProviderStatus(bool ProgramFound, string? Version, bool Sig
 /// hold local paths. The programs' own status commands are the source of truth
 /// for whether they're signed in.
 /// </summary>
-public sealed partial class AgentProviders(LocalDatabase database)
+public sealed partial class AgentProviders(LocalDatabase database, string agentFolder)
 {
     private const string Setting = "agent_providers";
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(30);
@@ -57,7 +57,7 @@ public sealed partial class AgentProviders(LocalDatabase database)
 
     public string NewLoginFolder(ProviderKind kind)
     {
-        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".agent-orange", "logins");
+        var root = Path.Combine(agentFolder, "logins");
         var prefix = kind == ProviderKind.Claude ? "claude" : "codex";
         var taken = List().Select(provider => provider.LoginFolder).ToHashSet(StringComparer.OrdinalIgnoreCase);
         for (var number = 1; ; number++)

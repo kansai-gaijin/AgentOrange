@@ -43,6 +43,7 @@ public partial class SettingsModal
         ("Sync now", "Server"),
         ("Database", "Local data"),
         ("Downloads", "Local data"),
+        ("Agent files", "Local data"),
         ("Client version", "About"),
         ("Server version", "About"),
         ("Logs", "About"),
