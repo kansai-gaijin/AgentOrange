@@ -28,6 +28,8 @@ public partial class MainWindow
     private Project? _openProject;
     private RepoCheck? _projectCheck;
     private string? _folderProblem;
+    private static readonly TimeSpan AccessCheckInterval = TimeSpan.FromMinutes(5);
+    private DateTimeOffset _lastAccessCheck;
     private bool _folderExists;
     private bool _folderLacksFiles;
     private bool _folderMayNotMatch;
@@ -185,6 +187,16 @@ public partial class MainWindow
             await OpenProjectAsync(project);
         };
 
+        // Reordering has to work without a mouse too.
+        card.PreviewKeyDown += (_, e) =>
+        {
+            if (Keyboard.Modifiers != ModifierKeys.Control) return;
+            var step = e.Key switch { Key.Left or Key.Up => -1, Key.Right or Key.Down => 1, _ => 0 };
+            if (step == 0) return;
+            e.Handled = true;
+            MoveCardBy(project.Id, step);
+        };
+
         card.PreviewMouseLeftButtonDown += (_, e) =>
         {
             _pressedCard = card;
@@ -207,6 +219,22 @@ public partial class MainWindow
         };
 
         return card;
+    }
+
+    private void MoveCardBy(string projectId, int step)
+    {
+        var order = CurrentOrder();
+        var from = order.IndexOf(projectId);
+        var to = from + step;
+        if (from < 0 || to < 0 || to >= order.Count) return;
+
+        (order[from], order[to]) = (order[to], order[from]);
+        _database.SaveProjectOrder(order);
+        _ = _sync.SyncNowAsync();
+        RefreshProjects();
+        Dispatcher.InvokeAsync(
+            () => ProjectGrid.Children.OfType<Button>().FirstOrDefault(card => (string)card.Tag == projectId)?.Focus(),
+            System.Windows.Threading.DispatcherPriority.Input);
     }
 
     private ImageSource? CoverFor(string projectId)
@@ -314,6 +342,7 @@ public partial class MainWindow
     private async Task OpenProjectAsync(Project project)
     {
         var navigation = ++_navigation;
+        _lastAccessCheck = DateTimeOffset.UtcNow;
         _openProject = project;
         _projectCheck = null;
         _folderProblem = null;
@@ -364,8 +393,16 @@ public partial class MainWindow
             return;
         }
 
-        if (check.Access == RepoAccess.Allowed) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(project.RepoUrl));
-        else if (check.IsDenied) _database.SetSetting(VerifiedSetting(project.Id), "");
+        if (check.Access == RepoAccess.Allowed)
+        {
+            _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(project.RepoUrl));
+            _database.SetSetting(CreatedHereSetting(project.Id), "");
+        }
+        else if (check.IsDenied)
+        {
+            _database.SetSetting(VerifiedSetting(project.Id), "");
+            _database.SetSetting(CreatedHereSetting(project.Id), "");
+        }
 
         _projectCheck = check;
         _settingsToAllow = useFolderSettings || runnable is null or { IsEmpty: true } ? null : runnable;
@@ -410,6 +447,24 @@ public partial class MainWindow
 
     private static string VerifiedSetting(string projectId) => $"project_verified:{projectId}";
 
+    // Created on this PC with no connection, so nothing has said it can't be used yet.
+    private static string CreatedHereSetting(string projectId) => $"project_created_here:{projectId}";
+
+    // Quietly, and only changes the page if the answer has changed. A check before each agent
+    // action belongs here too, once agents work inside projects.
+    private async Task RecheckAccessOnReturnAsync()
+    {
+        if (_openProject is not { } project || _projectCheck is not { } shown || _busyProjectId is not null) return;
+        if (DateTimeOffset.UtcNow - _lastAccessCheck < AccessCheckInterval) return;
+        _lastAccessCheck = DateTimeOffset.UtcNow;
+
+        var folder = _database.GetProjectFolder(project.Id);
+        var runnable = folder is null ? FolderGitSettings.None : await GitTools.FolderRunnableSettingsAsync(folder);
+        var useFolderSettings = runnable is not null && (folder is null || GitTools.AreAllowed(folder, runnable));
+        var latest = await GitTools.CheckRepoAccessAsync(project.RepoUrl, folder, useFolderSettings);
+        if (latest != shown && _openProject?.Id == project.Id && _busyProjectId is null) await RecheckIfStillOpenAsync(project.Id);
+    }
+
     private void RenderProject(Project project)
     {
         _openProject = project;
@@ -436,8 +491,9 @@ public partial class MainWindow
         }
 
         // Getting no answer doesn't mean access was lost, so a PC that's reached this exact repo before can keep working.
+        var hasHadAccess = _database.GetSetting(VerifiedSetting(project.Id)) == GitTools.RepoKey(project.RepoUrl);
         var workingOffline = check.Access is RepoAccess.Offline or RepoAccess.CheckFailed
-            && _database.GetSetting(VerifiedSetting(project.Id)) == GitTools.RepoKey(project.RepoUrl);
+            && (hasHadAccess || _database.GetSetting(CreatedHereSetting(project.Id)) == GitTools.RepoKey(project.RepoUrl));
         if (check.Access != RepoAccess.Allowed && !workingOffline)
         {
             AddRepoProblem(body, project, check);
@@ -447,7 +503,7 @@ public partial class MainWindow
         if (workingOffline)
         {
             var reason = check.Access == RepoAccess.Offline ? "Couldn't reach GitHub" : "GitHub didn't give a clear answer";
-            body.Children.Add(new TextBlock { Text = $"{reason}, so the repo wasn't checked. This PC has had access before.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+            body.Children.Add(new TextBlock { Text = hasHadAccess ? $"{reason}, so the repo wasn't checked. This PC has had access before." : $"{reason}, so this new project's repo hasn't been checked yet. That happens the next time it opens with a connection.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
         }
 
         var folder = _database.GetProjectFolder(project.Id);
@@ -1241,7 +1297,7 @@ public partial class MainWindow
     private async void ProjectSettings_Closed()
     {
         MainContent.Effect = null;
-        MainContent.IsEnabled = _requiredVersion is null;
+        MainContent.IsEnabled = UpdateOverlay.Visibility != Visibility.Visible;
 
         // The engine or folder may have changed.
         if (_settingsProjectId is { } changedProject) _ = ReadEngineVersionAsync(changedProject);
@@ -1266,7 +1322,7 @@ public partial class MainWindow
     private void ProjectSettings_Deleted()
     {
         MainContent.Effect = null;
-        MainContent.IsEnabled = _requiredVersion is null;
+        MainContent.IsEnabled = UpdateOverlay.Visibility != Visibility.Visible;
         BackToProjects();
         RefreshProjects();
         _ = _sync.SyncNowAsync();

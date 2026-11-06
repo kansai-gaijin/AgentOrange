@@ -8,6 +8,14 @@ After cloning, turn on the check that keeps databases and keys out of this publi
 git config core.hooksPath .githooks
 ```
 
+## Restoring the server's database
+
+After restoring a backup, run this against the database, so every PC sends what it has again and the newest copy of each record wins:
+
+```
+UPDATE sync_meta SET epoch = md5(random()::text || clock_timestamp()::text);
+```
+
 ## Reaching the server
 
 The server only listens on its own machine, and the client only uses HTTPS, except for an address on the same PC. So it needs an HTTPS front for each way in.

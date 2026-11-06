@@ -100,17 +100,21 @@ public partial class MainWindow : Window
         // Dev builds aren't installed, so there's nothing for them to update.
         if (_updates.IsInstalled)
         {
-            // Required stays required, even if restarting without a connection hides it for now.
+            // Offline-first: a PC with no connection can't download it, so it keeps working from
+            // its own data, without syncing, until the first check that gets through.
             if (RememberedUpdate() is { } remembered)
             {
                 _requiredVersion = remembered;
-                ShowUpdateRequired(remembered);
+                ShowServerState();
             }
 
             var updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
             updateTimer.Tick += async (_, _) => await CheckForUpdateAsync();
             updateTimer.Start();
         }
+
+        // Coming back to a page that's been open a while is when access may have changed.
+        Activated += async (_, _) => await RecheckAccessOnReturnAsync();
 
         Loaded += async (_, _) =>
         {
@@ -133,7 +137,7 @@ public partial class MainWindow : Window
     private void ProjectWizard_Closed()
     {
         MainContent.Effect = null;
-        MainContent.IsEnabled = _requiredVersion is null;
+        MainContent.IsEnabled = UpdateOverlay.Visibility != Visibility.Visible;
     }
 
     private void ProjectWizard_Created(NewProject project)
@@ -143,6 +147,7 @@ public partial class MainWindow : Window
         // Folders differ between PCs, so this stays here and only the rest syncs.
         if (!project.CloneIntoFolder) _database.SetProjectFolder(id, project.Folder);
         if (project.RepoConfirmed) _database.SetSetting(VerifiedSetting(id), GitTools.RepoKey(project.RepoUrl));
+        else _database.SetSetting(CreatedHereSetting(id), GitTools.RepoKey(project.RepoUrl));
 
         RefreshProjects();
         _ = _sync.SyncNowAsync();
@@ -161,11 +166,17 @@ public partial class MainWindow : Window
     {
         Settings.Visibility = Visibility.Collapsed;
         MainContent.Effect = null;
-        MainContent.IsEnabled = _requiredVersion is null;
+        MainContent.IsEnabled = UpdateOverlay.Visibility != Visibility.Visible;
     }
 
     private void ShowServerState()
     {
+        if (_requiredVersion is not null && UpdateOverlay.Visibility != Visibility.Visible)
+        {
+            (ServerStatus.Text, ServerStatus.Foreground) = ("Sync is paused until this PC can update", MutedBrush);
+            return;
+        }
+
         if (_server.State == ServerState.NoAddress || !_devices.IsPaired)
         {
             (ServerStatus.Text, ServerStatus.Foreground) = ("Not connected to a server", MutedBrush);
@@ -215,7 +226,7 @@ public partial class MainWindow : Window
         if (_downloading) return true;
 
         var version = update.TargetFullRelease.Version.ToString();
-        var isNewVersion = _requiredVersion != version;
+        var isNewVersion = _requiredVersion != version || UpdateOverlay.Visibility != Visibility.Visible;
         _requiredUpdate = update;
         _requiredVersion = version;
         _database.SetSetting(RequiredUpdateSetting, version);
@@ -237,6 +248,7 @@ public partial class MainWindow : Window
         _requiredUpdate = null;
         _database.SetSetting(RequiredUpdateSetting, "");
         UpdateOverlay.Visibility = Visibility.Collapsed;
+        ShowServerState();
         ProjectWizard.IsEnabled = true;
         ProjectSettings.IsEnabled = true;
         Settings.IsEnabled = true;

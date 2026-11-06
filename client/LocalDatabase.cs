@@ -12,7 +12,11 @@ public sealed record Project(string Id, string Name, string Engine, string Engin
     public string Summary => GameType == "Other" ? EngineLabel : $"{EngineLabel} · {GameType}";
 }
 
-public sealed record SyncChange(string Collection, string Id, string Data, bool Deleted);
+/// <summary>
+/// ChangedAt is when this copy was made, in milliseconds. Resend means it's only being sent again
+/// because a server lost its data, so it mustn't replace anything newer.
+/// </summary>
+public sealed record SyncChange(string Collection, string Id, string Data, bool Deleted, long ChangedAt = 0, bool Resend = false);
 
 /// <summary>
 /// This PC's own database, so the app works without the server. Everything that
@@ -26,6 +30,16 @@ public sealed class LocalDatabase
     private const string SettingsCollection = "settings";
     private const string ImagesCollection = "project_images";
     private const string EnginesCollection = "project_engines";
+
+    // Edits to a project, one record per field, so two PCs changing different things both
+    // count. The project's own record is only written to create or delete it, so an edit made
+    // offline can't bring back a project that was deleted meanwhile.
+    private const string FieldsCollection = "project_fields";
+    private const string NameField = "name";
+    private const string EngineField = "engine";
+    private const string GameTypeField = "gameType";
+    private const string RepoUrlField = "repoUrl";
+    private static readonly string[] ProjectFields = [NameField, EngineField, GameTypeField, RepoUrlField];
     private const string ProjectOrderRecord = "project_order";
     private const string UnknownChoice = "Other";
 
@@ -68,6 +82,9 @@ public sealed class LocalDatabase
                 value TEXT NOT NULL
             );
             """);
+        AddColumn(connection, "records", "changed_at INTEGER NOT NULL DEFAULT 0");
+        AddColumn(connection, "outbox", "changed_at INTEGER NOT NULL DEFAULT 0");
+        AddColumn(connection, "outbox", "resend INTEGER NOT NULL DEFAULT 0");
         MoveOldProjectsTable(connection);
     }
 
@@ -79,6 +96,8 @@ public sealed class LocalDatabase
         command.Parameters.AddWithValue("$collection", ProjectsCollection);
 
         var engines = ReadEngineRecords(connection);
+        var enginesHere = ReadEnginesHere(connection);
+        var fields = ReadProjectFields(connection);
         var projects = new List<Project>();
         using var reader = command.ExecuteReader();
         while (reader.Read())
@@ -97,16 +116,22 @@ public sealed class LocalDatabase
             if (data?.Name is null) continue;
 
             var id = reader.GetString(0);
-            var engine = data.Engine ?? UnknownChoice;
-            var version = engines.TryGetValue(id, out var found) ? (found.Engine == engine ? found.Version : "") : data.EngineVersion ?? "";
+            string Latest(string field, string? original) => fields.GetValueOrDefault((id, field)) ?? original ?? "";
+
+            var engine = Latest(EngineField, data.Engine ?? UnknownChoice);
+
+            // What this PC's own copy says comes first, as other PCs can be on other branches.
+            var version = enginesHere.TryGetValue(id, out var here) && here.Engine == engine ? here.Version
+                : engines.TryGetValue(id, out var found) ? (found.Engine == engine ? found.Version : "")
+                : data.EngineVersion ?? "";
 
             projects.Add(new Project(
                 id,
-                data.Name,
+                Latest(NameField, data.Name),
                 engine,
                 version,
-                data.GameType ?? UnknownChoice,
-                data.RepoUrl ?? "",
+                Latest(GameTypeField, data.GameType ?? UnknownChoice),
+                Latest(RepoUrlField, data.RepoUrl),
                 data.CreatedAt));
         }
 
@@ -120,22 +145,98 @@ public sealed class LocalDatabase
 
     public string CreateProject(string name, string engine, string gameType, string repoUrl)
     {
-        var project = new Project(Guid.NewGuid().ToString(), name, engine, "", gameType, repoUrl, DateTimeOffset.UtcNow);
-        SaveProject(project);
-        return project.Id;
+        var id = Guid.NewGuid().ToString();
+        var data = new ProjectData(name, DateTimeOffset.UtcNow, engine, repoUrl, null, gameType);
+        SaveRecord(ProjectsCollection, id, JsonSerializer.Serialize(data, JsonOptions));
+        return id;
     }
 
+    /// <summary>Saves only what's changed. A project that's been deleted stays deleted.</summary>
     public void SaveProject(Project project)
     {
-        var data = new ProjectData(project.Name, project.CreatedAt, project.Engine, project.RepoUrl, null, project.GameType);
-        SaveRecord(ProjectsCollection, project.Id, JsonSerializer.Serialize(data, JsonOptions));
+        if (ListProjects().FirstOrDefault(current => current.Id == project.Id) is not { } current) return;
+
+        void Save(string field, string before, string after)
+        {
+            if (before != after) SaveRecord(FieldsCollection, FieldId(project.Id, field), after);
+        }
+        Save(NameField, current.Name, project.Name);
+        Save(EngineField, current.Engine, project.Engine);
+        Save(GameTypeField, current.GameType, project.GameType);
+        Save(RepoUrlField, current.RepoUrl, project.RepoUrl);
     }
 
-    /// <summary>What the project's own files say. Only ever written when it has changed.</summary>
+    private static string FieldId(string projectId, string field) => $"{projectId}:{field}";
+
+    private static Dictionary<(string ProjectId, string Field), string> ReadProjectFields(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id, data FROM records WHERE collection = $collection AND deleted = 0";
+        command.Parameters.AddWithValue("$collection", FieldsCollection);
+
+        var fields = new Dictionary<(string, string), string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var id = reader.GetString(0);
+            var split = id.LastIndexOf(':');
+            if (split > 0) fields[(id[..split], id[(split + 1)..])] = reader.GetString(1);
+        }
+        return fields;
+    }
+
+    /// <summary>
+    /// What the project's own files say on this PC, which it shows for itself. PCs without a copy
+    /// see the newest any PC has found, so two PCs on different branches don't keep overwriting
+    /// each other's answer.
+    /// </summary>
     public void SetEngineVersion(string projectId, string engine, string version)
     {
-        var data = JsonSerializer.Serialize(new EngineRecord(engine, version), JsonOptions);
-        if (GetRecord(EnginesCollection, projectId) != data) SaveRecord(EnginesCollection, projectId, data);
+        SetSetting(EngineHereKey(projectId), JsonSerializer.Serialize(new EngineRecord(engine, version), JsonOptions));
+
+        var synced = GetRecord(EnginesCollection, projectId) is { Length: > 0 } stored ? ParseEngineRecord(stored) : null;
+        if (synced is null || synced.Engine != engine || IsNewerVersion(version, synced.Version))
+        {
+            SaveRecord(EnginesCollection, projectId, JsonSerializer.Serialize(new EngineRecord(engine, version), JsonOptions));
+        }
+    }
+
+    private static string EngineHereKey(string projectId) => $"engine_here:{projectId}";
+
+    private static EngineRecord? ParseEngineRecord(string text)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<EngineRecord>(text, JsonOptions) is { Engine: not null, Version: not null } record ? record : null;
+        }
+        catch (JsonException error)
+        {
+            AppLog.Write($"Skipped an unreadable engine version: {error.Message}");
+            return null;
+        }
+    }
+
+    // A version with no numbers, like a custom build, can't be said to be newer than anything.
+    private static bool IsNewerVersion(string version, string than)
+    {
+        if (than.Length == 0) return version.Length > 0;
+        return Version.TryParse(version.Contains('.') ? version : $"{version}.0", out var a)
+            && Version.TryParse(than.Contains('.') ? than : $"{than}.0", out var b)
+            && a > b;
+    }
+
+    private static Dictionary<string, EngineRecord> ReadEnginesHere(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT key, value FROM settings WHERE key LIKE 'engine_here:%' AND value <> ''";
+
+        var engines = new Dictionary<string, EngineRecord>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (ParseEngineRecord(reader.GetString(1)) is { } record) engines[reader.GetString(0)["engine_here:".Length..]] = record;
+        }
+        return engines;
     }
 
     private static Dictionary<string, EngineRecord> ReadEngineRecords(SqliteConnection connection)
@@ -148,17 +249,7 @@ public sealed class LocalDatabase
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            try
-            {
-                if (JsonSerializer.Deserialize<EngineRecord>(reader.GetString(1), JsonOptions) is { Engine: not null, Version: not null } record)
-                {
-                    engines[reader.GetString(0)] = record;
-                }
-            }
-            catch (JsonException error)
-            {
-                AppLog.Write($"Skipped an unreadable engine version: {error.Message}");
-            }
+            if (ParseEngineRecord(reader.GetString(1)) is { } record) engines[reader.GetString(0)] = record;
         }
         return engines;
     }
@@ -169,6 +260,10 @@ public sealed class LocalDatabase
         SaveRecord(ProjectsCollection, projectId, "{}", deleted: true);
         foreach (var kind in Enum.GetValues<ProjectImageKind>()) SetProjectImage(projectId, kind, null);
         SaveRecord(EnginesCollection, projectId, "", deleted: true);
+        foreach (var field in ProjectFields)
+        {
+            if (GetRecord(FieldsCollection, FieldId(projectId, field)) is not null) SaveRecord(FieldsCollection, FieldId(projectId, field), "", deleted: true);
+        }
 
         var order = ProjectOrder();
         if (order.Remove(projectId)) SaveProjectOrder(order);
@@ -200,6 +295,12 @@ public sealed class LocalDatabase
                 if (GetRecord(ImagesCollection, ImageId(projectId, kind)) is not null) SetProjectImage(projectId, kind, null);
             }
             if (GetRecord(EnginesCollection, projectId) is not null) SaveRecord(EnginesCollection, projectId, "", deleted: true);
+
+            // An edit made elsewhere can still arrive after the delete, which wins.
+            foreach (var field in ProjectFields)
+            {
+                if (GetRecord(FieldsCollection, FieldId(projectId, field)) is not null) SaveRecord(FieldsCollection, FieldId(projectId, field), "", deleted: true);
+            }
             if (GetProjectFolder(projectId) is not null) SetProjectFolder(projectId, "");
             if (!string.IsNullOrEmpty(GetSetting($"project_verified:{projectId}"))) SetSetting($"project_verified:{projectId}", "");
         }
@@ -277,6 +378,7 @@ public sealed class LocalDatabase
         {
             SetSetting(AllowedSettingsKey(old), "");
             SetSetting(SharesRepoKey(old), "");
+            SetSetting(EngineHereKey(projectId), "");
         }
         SetSetting($"project_folder:{projectId}", folder);
     }
@@ -319,8 +421,9 @@ public sealed class LocalDatabase
     {
         using var connection = Open();
         using var transaction = connection.BeginTransaction();
-        Upsert(connection, "records", new SyncChange(collection, id, data, deleted));
-        Upsert(connection, "outbox", new SyncChange(collection, id, data, deleted));
+        var change = new SyncChange(collection, id, data, deleted, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        Upsert(connection, "records", change);
+        Upsert(connection, "outbox", change);
         transaction.Commit();
     }
 
@@ -339,7 +442,7 @@ public sealed class LocalDatabase
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT collection, id, data, deleted FROM outbox LIMIT $limit";
+        command.CommandText = "SELECT collection, id, data, deleted, changed_at, resend FROM outbox LIMIT $limit";
         command.Parameters.AddWithValue("$limit", limit);
 
         var changes = new List<SyncChange>();
@@ -351,7 +454,7 @@ public sealed class LocalDatabase
             var size = JsonEncodedText.Encode(data).EncodedUtf8Bytes.Length; // What it takes up once it's sent.
             if (changes.Count > 0 && total + size > maxBytes) break;
             total += size;
-            changes.Add(new SyncChange(reader.GetString(0), reader.GetString(1), data, reader.GetInt64(3) != 0));
+            changes.Add(new SyncChange(reader.GetString(0), reader.GetString(1), data, reader.GetInt64(3) != 0, reader.GetInt64(4), reader.GetInt64(5) != 0));
         }
         return changes;
     }
@@ -390,13 +493,25 @@ public sealed class LocalDatabase
         var applied = 0;
         foreach (var change in changes)
         {
+            // Something only being sent again gives way to a copy that's at least as new.
+            using (var superseded = connection.CreateCommand())
+            {
+                superseded.CommandText = """
+                    DELETE FROM outbox
+                    WHERE collection = $collection AND id = $id AND resend = 1
+                      AND $changedAt >= COALESCE((SELECT changed_at FROM records WHERE collection = $collection AND id = $id), 0)
+                    """;
+                AddChange(superseded, change);
+                superseded.ExecuteNonQuery();
+            }
+
             using var command = connection.CreateCommand();
             command.CommandText = """
-                INSERT INTO records (collection, id, data, deleted)
-                SELECT $collection, $id, $data, $deleted
+                INSERT INTO records (collection, id, data, deleted, changed_at)
+                SELECT $collection, $id, $data, $deleted, $changedAt
                 WHERE NOT EXISTS (SELECT 1 FROM outbox WHERE collection = $collection AND id = $id)
                   AND NOT EXISTS (SELECT 1 FROM records WHERE collection = $collection AND id = $id AND data = $data AND deleted = $deleted)
-                ON CONFLICT (collection, id) DO UPDATE SET data = excluded.data, deleted = excluded.deleted
+                ON CONFLICT (collection, id) DO UPDATE SET data = excluded.data, deleted = excluded.deleted, changed_at = excluded.changed_at
                 """;
             AddChange(command, change);
             applied += command.ExecuteNonQuery();
@@ -409,8 +524,14 @@ public sealed class LocalDatabase
     public void QueueAllRecords()
     {
         using var connection = Open();
-        Execute(connection, "INSERT OR REPLACE INTO outbox SELECT collection, id, data, deleted FROM records");
+        Execute(connection, ResendEverything);
     }
+
+    // Real edits already waiting stay as they are, and go through as edits.
+    private const string ResendEverything = """
+        INSERT OR IGNORE INTO outbox (collection, id, data, deleted, changed_at, resend)
+        SELECT collection, id, data, deleted, changed_at, 1 FROM records
+        """;
 
     /// <summary>
     /// A server that lost its data gets everything sent again. All in one step, because
@@ -420,7 +541,7 @@ public sealed class LocalDatabase
     {
         using var connection = Open();
         using var transaction = connection.BeginTransaction();
-        Execute(connection, "INSERT OR REPLACE INTO outbox SELECT collection, id, data, deleted FROM records");
+        Execute(connection, ResendEverything);
         WriteSetting(connection, epochSetting, epoch);
         WriteSetting(connection, cursorSetting, "0");
         transaction.Commit();
@@ -478,9 +599,10 @@ public sealed class LocalDatabase
     private static void Upsert(SqliteConnection connection, string table, SyncChange change)
     {
         using var command = connection.CreateCommand();
+        var isNowAnEdit = table == "outbox" ? ", resend = 0" : "";
         command.CommandText = $"""
-            INSERT INTO {table} (collection, id, data, deleted) VALUES ($collection, $id, $data, $deleted)
-            ON CONFLICT (collection, id) DO UPDATE SET data = excluded.data, deleted = excluded.deleted
+            INSERT INTO {table} (collection, id, data, deleted, changed_at) VALUES ($collection, $id, $data, $deleted, $changedAt)
+            ON CONFLICT (collection, id) DO UPDATE SET data = excluded.data, deleted = excluded.deleted, changed_at = excluded.changed_at{isNowAnEdit}
             """;
         AddChange(command, change);
         command.ExecuteNonQuery();
@@ -492,6 +614,19 @@ public sealed class LocalDatabase
         command.Parameters.AddWithValue("$id", change.Id);
         command.Parameters.AddWithValue("$data", change.Data);
         command.Parameters.AddWithValue("$deleted", change.Deleted ? 1 : 0);
+        command.Parameters.AddWithValue("$changedAt", change.ChangedAt);
+    }
+
+    private static void AddColumn(SqliteConnection connection, string table, string column)
+    {
+        try
+        {
+            Execute(connection, $"ALTER TABLE {table} ADD COLUMN {column}");
+        }
+        catch (SqliteException error) when (error.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase))
+        {
+            // Already there, from an earlier start.
+        }
     }
 
     private static void Execute(SqliteConnection connection, string sql)

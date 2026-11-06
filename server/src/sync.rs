@@ -34,6 +34,7 @@ pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
             updated_by TEXT NOT NULL,
             PRIMARY KEY (collection, id)
          );
+         ALTER TABLE sync_records ADD COLUMN IF NOT EXISTS changed_at BIGINT NOT NULL DEFAULT 0;
          CREATE INDEX IF NOT EXISTS sync_records_seq ON sync_records (seq);
          CREATE TABLE IF NOT EXISTS sync_meta (epoch TEXT NOT NULL);
          INSERT INTO sync_meta (epoch)
@@ -49,6 +50,12 @@ pub struct Change {
     id: String,
     data: String,
     deleted: bool,
+    /// When the device made this copy, in milliseconds.
+    #[serde(default, rename = "changedAt")]
+    changed_at: i64,
+    /// Only being sent again because a server lost its data, so it mustn't replace anything newer.
+    #[serde(default, skip_serializing)]
+    resend: bool,
 }
 
 #[derive(Deserialize)]
@@ -147,19 +154,23 @@ pub async fn sync(
         state
             .db
             .execute(
-                "INSERT INTO sync_records (collection, id, data, deleted, seq, updated_by)
-                 VALUES ($1, $2, $3, $4, nextval('sync_seq'), $5)
+                "INSERT INTO sync_records (collection, id, data, deleted, seq, updated_by, changed_at)
+                 VALUES ($1, $2, $3, $4, nextval('sync_seq'), $5, $6)
                  ON CONFLICT (collection, id) DO UPDATE SET
                     data = excluded.data,
                     deleted = excluded.deleted,
                     seq = excluded.seq,
-                    updated_by = excluded.updated_by",
+                    updated_by = excluded.updated_by,
+                    changed_at = excluded.changed_at
+                 WHERE NOT $7::boolean OR excluded.changed_at > sync_records.changed_at",
                 &[
                     &change.collection,
                     &change.id,
                     &change.data,
                     &change.deleted,
                     &device,
+                    &change.changed_at,
+                    &change.resend,
                 ],
             )
             .await
@@ -172,12 +183,12 @@ pub async fn sync(
     let rows = state
         .db
         .query(
-            "SELECT collection, id, data, deleted, seq, page_rows FROM (
-                SELECT collection, id, data, deleted, seq,
+            "SELECT collection, id, data, deleted, seq, page_rows, changed_at FROM (
+                SELECT collection, id, data, deleted, seq, changed_at,
                        COUNT(*) OVER () AS page_rows,
                        SUM(pg_column_size(data)) OVER (ORDER BY seq) - pg_column_size(data) AS bytes_before
                 FROM (
-                    SELECT collection, id, data, deleted, seq FROM sync_records
+                    SELECT collection, id, data, deleted, seq, changed_at FROM sync_records
                     WHERE seq > $1 ORDER BY seq LIMIT $2
                 ) AS page
              ) AS sized
@@ -208,6 +219,8 @@ pub async fn sync(
             id: row.get(1),
             data,
             deleted: row.get(3),
+            changed_at: row.get(6),
+            resend: false,
         });
     }
 
