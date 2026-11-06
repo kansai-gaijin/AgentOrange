@@ -376,17 +376,22 @@ public partial class ProjectSettingsModal : UserControl
 
     // A folder left on the old repo stays linked. Opening the project then offers to connect
     // it, because it may hold work that isn't pushed.
-    private Task<string?> SaveRepo(string projectId, string url)
+    private async Task<string?> SaveRepo(string projectId, string url)
     {
-        if (url.Length == 0) return Task.FromResult<string?>("A project needs a repo.");
-        if (GitTools.RepoUrlProblem(url) is { } problem) return Task.FromResult<string?>(problem);
-        if (_database.ListProjects().FirstOrDefault(other => other.Id != projectId && GitTools.SameRepo(other.RepoUrl, url)) is { } taken)
+        if (url.Length == 0) return "A project needs a repo.";
+        if (GitTools.RepoUrlProblem(url) is { } problem) return problem;
+
+        Project? TakenBy(string address) => _database.ListProjects().FirstOrDefault(other => other.Id != projectId && GitTools.SameRepo(other.RepoUrl, address));
+        if (TakenBy(url) is { } taken) return $"{taken.Name} already uses that repo. A repo can only be one project.";
+
+        // GitHub still answers to a repo's old name, so that isn't enough to tell them apart.
+        if (await GitTools.RenamedRepoUrlAsync(url) is { } renamed && TakenBy(renamed) is { } holder)
         {
-            return Task.FromResult<string?>($"{taken.Name} already uses that repo. A repo can only be one project.");
+            return $"{holder.Name} already uses that repo, which GitHub now calls {renamed}. A repo can only be one project.";
         }
 
         Update(projectId, current => current with { RepoUrl = url });
-        return Task.FromResult<string?>(null);
+        return null;
     }
 
     private async Task ChooseFolderAsync(string projectId, TextBox field)
@@ -414,7 +419,7 @@ public partial class ProjectSettingsModal : UserControl
 
             // Sync can have moved the project to another repo while this folder was being checked.
             var latest = Find(projectId);
-            if (latest is null || latest.RepoUrl != current.RepoUrl)
+            if (latest is null || !GitTools.SameRepo(latest.RepoUrl, current.RepoUrl))
             {
                 _database.ReleaseFolder(chosen);
                 if (latest is not null && session == _session) ReportProblem("This project's repo changed while that folder was being checked, so it wasn't linked.");

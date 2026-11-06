@@ -119,6 +119,7 @@ public sealed class SyncEngine
 
                 if (response.Epoch is { Length: > 0 } current && current != epoch)
                 {
+                    _database.ReplaceEpoch(epoch, current);
                     epoch = current;
                     cursorSetting = CursorSetting(epoch);
 

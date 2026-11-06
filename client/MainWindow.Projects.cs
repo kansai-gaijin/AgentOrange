@@ -31,6 +31,7 @@ public partial class MainWindow
     private static readonly TimeSpan AccessCheckInterval = TimeSpan.FromMinutes(5);
     private DateTimeOffset _lastAccessCheck;
     private bool _folderExists;
+    private string? _renamedRepoHeldBy;
     private string? _folderEngine;
     private string? _folderPushesTo;
     private bool _folderLacksFiles;
@@ -354,6 +355,7 @@ public partial class MainWindow
         _projectCheck = null;
         _folderProblem = null;
         _folderExists = false;
+        _renamedRepoHeldBy = null;
         _folderEngine = null;
         _folderPushesTo = null;
         _folderLacksFiles = false;
@@ -391,6 +393,11 @@ public partial class MainWindow
         var pushesTo = folderExists && folderProblem is null ? await GitTools.PushesElsewhereAsync(folder!, project.RepoUrl) : null;
         if (folderExists && check.IsDenied) _database.ForgetFolderSharesRepo(folder!);
 
+        // Asked before the latest copy of the project is read below, as this can take a while.
+        var renamed = check.Access is RepoAccess.Allowed or RepoAccess.ReadOnly or RepoAccess.GitCantReach or RepoAccess.GitReadOnly
+            ? await GitTools.RenamedRepoUrlAsync(project.RepoUrl)
+            : null;
+
         if (navigation != _navigation) return; // They moved on, or something newer started.
 
         var latest = FindProject(project.Id);
@@ -407,9 +414,8 @@ public partial class MainWindow
 
         // Renamed or moved on GitHub, which follows that for a while but won't forever. This is
         // the same repo, so the project and its folder just move to the new address.
-        if (check.Access is RepoAccess.Allowed or RepoAccess.ReadOnly or RepoAccess.GitCantReach or RepoAccess.GitReadOnly
-            && await GitTools.RenamedRepoUrlAsync(latest.RepoUrl) is { } renamed
-            && GitTools.ProjectUsingRepo(renamed) is null)
+        var renamedHeldBy = renamed is null ? null : GitTools.ProjectUsingRepo(renamed);
+        if (renamed is not null && renamedHeldBy is null)
         {
             _database.SaveProject(latest with { RepoUrl = renamed });
             if (folderExists && folderProblem is null) await GitTools.PointFolderAtRepoAsync(folder!, renamed);
@@ -436,6 +442,7 @@ public partial class MainWindow
         _folderLacksFiles = lacksFiles;
         _folderMayNotMatch = mayNotMatch;
         _folderEngine = folderEngine;
+        _renamedRepoHeldBy = renamedHeldBy;
         _folderPushesTo = pushesTo;
         RenderProject(latest);
         await ReadEngineVersionAsync(latest.Id);
@@ -506,6 +513,10 @@ public partial class MainWindow
         if (project.RepoUrl.Length > 0 && _database.ListProjects().FirstOrDefault(other => other.Id != project.Id && GitTools.SameRepo(other.RepoUrl, project.RepoUrl)) is { } twin)
         {
             body.Children.Add(new TextBlock { Text = $"{twin.Name} uses this repo too, and a repo can only be one project. This can happen when two PCs add it before syncing. Delete the extra one in its project settings.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+        }
+        if (_renamedRepoHeldBy is { } holder)
+        {
+            body.Children.Add(new TextBlock { Text = $"GitHub says this repo has been renamed, and {holder} already uses it under its new name. A repo can only be one project, so delete the extra one in its project settings.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
         }
         ProjectPage.Children.Add(body);
 

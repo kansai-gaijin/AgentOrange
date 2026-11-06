@@ -166,6 +166,11 @@ public partial class NewProjectWizard : UserControl
         var repoName = Field(_wantedRepoName);
         repoName.Width = 300;
         repoName.TextChanged += (_, _) => _wantedRepoName = repoName.Text;
+
+        // Only used when creating a repo, so it can't look like it does something otherwise.
+        void ShowRepoNameFor(string url) => repoName.IsEnabled = !_working && url.Trim().Length == 0;
+        repo.TextChanged += (_, _) => ShowRepoNameFor(repo.Text);
+        ShowRepoNameFor(repo.Text);
         var progress = new TextBlock { FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 8, 0, 0), Visibility = Visibility.Collapsed };
 
         folder.TextChanged += (_, _) =>
@@ -218,7 +223,7 @@ public partial class NewProjectWizard : UserControl
             browse.IsEnabled = !working;
             folder.IsEnabled = !working;
             repo.IsEnabled = !working;
-            repoName.IsEnabled = !working;
+            ShowRepoNameFor(repo.Text);
             progress.Text = status ?? "";
             progress.Visibility = status is null ? Visibility.Collapsed : Visibility.Visible;
         }
@@ -371,6 +376,12 @@ public partial class NewProjectWizard : UserControl
 
         if (GitTools.RepoUrlProblem(url) is { } urlProblem) return ("", false, urlProblem);
         if (GitTools.ProjectUsingRepo(url) is { } otherProject) return ("", false, $"{otherProject} already uses that repo. A repo can only be one project.");
+
+        // GitHub still answers to a repo's old name, so that isn't enough to tell them apart.
+        if (await GitTools.RenamedRepoUrlAsync(url) is { } renamed && GitTools.ProjectUsingRepo(renamed) is { } holder)
+        {
+            return ("", false, $"{holder} already uses that repo, which GitHub now calls {renamed}. A repo can only be one project.");
+        }
         if (state.Origin is not null && !GitTools.SameRepo(state.OriginToCompare!, url))
         {
             return ("", false, "That folder is connected to a different repo than that URL.");

@@ -392,6 +392,17 @@ public sealed class LocalDatabase
         return id;
     }
 
+    /// <summary>A server's data started over, and its other addresses are still that same server.</summary>
+    public void ReplaceEpoch(string old, string latest)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE settings SET value = $latest WHERE key LIKE 'sync_epoch:%' AND value = $old";
+        command.Parameters.AddWithValue("$latest", latest);
+        command.Parameters.AddWithValue("$old", old);
+        command.ExecuteNonQuery();
+    }
+
     /// <summary>Every server address this PC has been paired with, whichever it's using now.</summary>
     public List<string> AddressesWithLogin()
     {

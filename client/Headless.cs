@@ -232,7 +232,18 @@ internal static partial class Headless
         using (var context = drawing.RenderOpen())
         {
             context.DrawRectangle(window.Background, null, new Rect(size));
-            context.DrawRectangle(new VisualBrush(content), null, new Rect(size));
+
+            // Measured from the window's corner. Left to itself, a brush crops to whatever was
+            // painted and stretches that, which loses the margins of a nearly empty screen.
+            var brush = new VisualBrush(content)
+            {
+                ViewboxUnits = BrushMappingMode.Absolute,
+                Viewbox = new Rect(size),
+                Stretch = Stretch.None,
+                AlignmentX = AlignmentX.Left,
+                AlignmentY = AlignmentY.Top,
+            };
+            context.DrawRectangle(brush, null, new Rect(size));
         }
 
         var bitmap = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32);

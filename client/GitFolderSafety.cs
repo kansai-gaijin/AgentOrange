@@ -36,34 +36,36 @@ internal static partial class GitFolderSafety
 
     private static async Task<string?> InspectAsync(string folder, Func<string, Task<string?>> readSettingsFile)
     {
-        string? entry = null;
+        var foundOne = false;
         try
         {
             var full = Path.GetFullPath(folder);
             if (IsNetworkPath(full)) return null;
 
-            entry = FindGitEntry(full);
-            if (entry is null) return null;
-            return await PointsAtNetworkAsync(entry, readSettingsFile) ? Problem : null;
+            foreach (var entry in FindGitEntries(full))
+            {
+                foundOne = true;
+                if (await PointsAtNetworkAsync(entry, readSettingsFile)) return Problem;
+            }
+            return null;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             AppLog.Write($"Couldn't check a folder's Git settings: {error.Message}");
-            return entry is null ? null : Problem;
+            return foundOne ? Problem : null;
         }
     }
 
-    // Git looks upward from where it runs, and the nearest one counts. This doesn't follow a link
-    // to see what's there, as File.Exists would. A folder that's a repo with no .git at all, a bare
-    // one, is ruled out by how Git is run.
-    private static string? FindGitEntry(string folder)
+    // Git looks upward from where it runs, and skips one that isn't valid, so every one on the way
+    // up counts. This doesn't follow a link to see what's there, as File.Exists would. A folder
+    // that's a repo with no .git at all, a bare one, is ruled out by how Git is run.
+    private static IEnumerable<string> FindGitEntries(string folder)
     {
         for (var at = folder; at is not null; at = Path.GetDirectoryName(at))
         {
             var entry = Path.Combine(at, ".git");
-            if (Exists(entry)) return entry;
+            if (Exists(entry)) yield return entry;
         }
-        return null;
     }
 
     private static async Task<bool> PointsAtNetworkAsync(string entry, Func<string, Task<string?>> readSettingsFile)
@@ -113,13 +115,14 @@ internal static partial class GitFolderSafety
     {
         var objects = Path.Combine(gitDirectory, "objects");
         var alternates = Path.Combine(objects, "info", "alternates");
-        if (!File.Exists(alternates)) return false;
-        if (new FileInfo(alternates).Length > MaxBytes) return true;
+        if (!Exists(alternates)) return false;
+        if (SshConfigFile.IsLink(alternates) || new FileInfo(alternates).Length > MaxBytes) return true;
 
+        // A quoted line can spell a path in escapes, and ordinary ones have no need to be quoted.
         return File.ReadLines(alternates)
             .Select(line => line.Trim())
             .Where(line => line.Length > 0 && !line.StartsWith('#'))
-            .Any(line => StartsLikeShare(line) || IsUnsafeToOpen(SshConfigFile.Resolve(line.Trim('"'), objects)));
+            .Any(line => line.StartsWith('"') || StartsLikeShare(line) || IsUnsafeToOpen(SshConfigFile.Resolve(line, objects)));
     }
 
     private static async Task<bool> SettingsPointAtNetworkAsync(string file, int depth, Func<string, Task<string?>> readSettingsFile)
@@ -141,10 +144,14 @@ internal static partial class GitFolderSafety
             if (parts.Length < 2) continue;
 
             // No setting has a reason to name a network location in a folder that isn't on one.
-            if (StartsLikeShare(parts[1])) return true;
+            // %(prefix) is Git's own shorthand, which leaves a path this can't see the end of.
+            var value = parts[1];
+            if (StartsLikeShare(value) || value.StartsWith("%(prefix)", StringComparison.Ordinal) || NamesNetworkDrive(value)) return true;
+
+            if (PathSetting().IsMatch(parts[0]) && IsUnsafeToOpen(SshConfigFile.Resolve(value, directory))) return true;
 
             if (!IncludeSetting().IsMatch(parts[0])) continue;
-            if (await SettingsPointAtNetworkAsync(SshConfigFile.Resolve(parts[1], directory), depth + 1, readSettingsFile)) return true;
+            if (await SettingsPointAtNetworkAsync(SshConfigFile.Resolve(value, directory), depth + 1, readSettingsFile)) return true;
         }
         return false;
     }
@@ -164,8 +171,21 @@ internal static partial class GitFolderSafety
         }
     }
 
+    // Windows treats either kind of slash the same here, in any mix.
     private static bool StartsLikeShare(string path) =>
-        path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal);
+        path.Length >= 2 && path[0] is '\\' or '/' && path[1] is '\\' or '/';
+
+    private static bool NamesNetworkDrive(string value)
+    {
+        try
+        {
+            return IsNetworkPath(value);
+        }
+        catch (ArgumentException)
+        {
+            return false; // Most settings aren't paths at all.
+        }
+    }
 
     private static bool IsNetworkPath(string path)
     {
@@ -176,4 +196,7 @@ internal static partial class GitFolderSafety
 
     [GeneratedRegex(@"^include(if\..*)?\.path$", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
     private static partial Regex IncludeSetting();
+
+    [GeneratedRegex(@"^core\.(worktree|hookspath|excludesfile|attributesfile)$", RegexOptions.IgnoreCase)]
+    private static partial Regex PathSetting();
 }

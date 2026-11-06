@@ -771,6 +771,10 @@ public static partial class GitTools
     {
         if (await FolderHasNoCommitsAsync(folder) is not false) return FolderHistory.CantTell;
 
+        // Looking for a commit can fetch it in a folder set up as a partial clone, which could use
+        // that folder's own settings, and those only run once they've been allowed.
+        if (await FolderRunnableSettingsAsync(folder) is not { } settings || !AreAllowed(folder, settings)) return FolderHistory.CantTell;
+
         var form = await ReachableFormAsync(url) ?? url;
         var heads = await RunAsync("git", Path.GetTempPath(), null, ["ls-remote", "--", form, "HEAD", "refs/heads/*"], default, await SshSettingsAsync(Path.GetTempPath()));
         if (heads is not { ExitCode: 0 }) return FolderHistory.CantTell;
