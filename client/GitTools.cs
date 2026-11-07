@@ -313,9 +313,15 @@ public static partial class GitTools
             }
 
             // The project can be the one with the old name, and it moves on when it's next opened.
-            else if (await RenamedRepoUrlAsync(repoUrl) is not { } current || !SameRepo(current, state.OriginToCompare!))
+            else
             {
-                return $"That folder uses a different repo: {state.Origin}";
+                var (current, answered) = await CurrentRepoUrlAsync(repoUrl);
+                if (!SameRepo(current, state.OriginToCompare!))
+                {
+                    return answered && (await CurrentRepoUrlAsync(state.OriginToCompare!)).Answered
+                        ? $"That folder uses a different repo: {state.Origin}"
+                        : $"{MayUseDifferentRepo}{state.Origin}. GitHub can't be reached to check whether that's this repo under an older name.";
+                }
             }
         }
 
@@ -1168,7 +1174,14 @@ public static partial class GitTools
     /// <summary>Whether a problem with a folder is that it's on another repo, which is what moving it to this one fixes.</summary>
     public static bool ConnectingCanFix(string folderProblem) =>
         folderProblem.StartsWith("That folder uses a different repo", StringComparison.Ordinal)
+        || folderProblem.StartsWith(MayUseDifferentRepo, StringComparison.Ordinal)
         || folderProblem.StartsWith("That folder isn't connected to a repo", StringComparison.Ordinal);
+
+    /// <summary>Whether a folder was really seen on another repo, and not just thought to be with no way to check.</summary>
+    public static bool SeenOnAnotherRepo(string folderProblem) =>
+        ConnectingCanFix(folderProblem) && !folderProblem.StartsWith(MayUseDifferentRepo, StringComparison.Ordinal);
+
+    private const string MayUseDifferentRepo = "That folder may use a different repo: ";
 
     /// <summary>Whether a repo has anything in it, or null if that couldn't be found out.</summary>
     public static async Task<bool?> RepoHasContentAsync(string url)

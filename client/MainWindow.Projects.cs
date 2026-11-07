@@ -557,7 +557,7 @@ public partial class MainWindow
         {
             // Seen to be on another repo, so what it found earlier can't speak for this project now.
             // Anything else, such as an unplugged drive, says nothing about that.
-            if (GitTools.ConnectingCanFix(problem) && _engineReads[projectId] == read && _database.GetProjectFolder(projectId) == folder && _database.ForgetEngineVersionHere(projectId)) RefreshProjects();
+            if (GitTools.SeenOnAnotherRepo(problem) && _engineReads[projectId] == read && _database.GetProjectFolder(projectId) == folder && _database.ForgetEngineVersionHere(projectId)) RefreshProjects();
             return;
         }
 

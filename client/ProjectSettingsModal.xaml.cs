@@ -89,9 +89,9 @@ public partial class ProjectSettingsModal : UserControl
         }
     }
 
-    private void RefreshIfUntouched(TextBox? field, string latest)
+    private void RefreshIfUntouched(TextBox? field, string latest, bool evenWithFocus = false)
     {
-        if (field is null || field.IsKeyboardFocusWithin || _invalidFields.ContainsKey(field)) return;
+        if (field is null || (field.IsKeyboardFocusWithin && !evenWithFocus) || _invalidFields.ContainsKey(field)) return;
         if (!_saved.TryGetValue(field, out var saved) || field.Text.Trim() != saved || saved == latest) return;
         _saved[field] = latest;
         field.Text = latest;
@@ -527,9 +527,12 @@ public partial class ProjectSettingsModal : UserControl
                 if (value == _saved[field])
                 {
                     if (_invalidFields.Remove(field)) ClearGeneralProblem();
+
+                    // Skipped while it had focus, and nothing else would come back to it.
                     if (Current() is { } latest)
                     {
-                        foreach (var refresh in _refreshes) refresh(latest);
+                        if (field == _nameField) RefreshIfUntouched(field, latest.Name, evenWithFocus: true);
+                        else if (field == _repoField) RefreshIfUntouched(field, latest.RepoUrl, evenWithFocus: true);
                     }
                     return;
                 }
