@@ -449,8 +449,11 @@ public partial class MainWindow
         var renamedHeldBy = renamed is null ? null : GitTools.ProjectUsingRepo(renamed);
         if (renamed is not null && renamedHeldBy is null)
         {
+            var wasVerified = _database.GetSetting(VerifiedSetting(project.Id)) == GitTools.RepoKey(latest.RepoUrl);
+            var wasCreatedHere = _database.GetSetting(CreatedHereSetting(project.Id)) == GitTools.RepoKey(latest.RepoUrl);
             _database.SaveProject(latest with { RepoUrl = renamed });
-            if (check.Access == RepoAccess.Allowed) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(renamed));
+            if (check.Access == RepoAccess.Allowed || wasVerified) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(renamed));
+            if (wasCreatedHere) _database.SetSetting(CreatedHereSetting(project.Id), GitTools.RepoKey(renamed));
             if (folderExists && folderProblem is null) await GitTools.PointFolderAtRepoAsync(folder!, renamed);
             _ = _sync.SyncNowAsync();
             KeepProblemThroughReopen(project.Id);
@@ -1408,11 +1411,18 @@ public partial class MainWindow
             // An empty folder is where the project goes, not a place to put another folder in.
             // Busy while that's looked at, because a slow drive leaves time for a second click.
             if (_busyProjectId is not null) return;
-            StartBusy(latest, "Checking that folder…");
             var chosen = Path.TrimEndingDirectorySeparator(parentFolder);
             var aboveIt = Path.GetDirectoryName(chosen);
-            var intoIt = aboveIt is not null && await GitTools.FolderIsEmptyAsync(chosen) && !await GitTools.FolderIsLinkAsync(chosen);
-            EndBusy();
+            bool intoIt;
+            try
+            {
+                StartBusy(latest, "Checking that folder…");
+                intoIt = aboveIt is not null && await GitTools.FolderIsEmptyAsync(chosen) && !await GitTools.FolderIsLinkAsync(chosen);
+            }
+            finally
+            {
+                EndBusy();
+            }
             await (intoIt ? CloneProjectAsync(latest, aboveIt!, chosen) : CloneProjectAsync(latest, parentFolder));
         };
 
@@ -1467,11 +1477,11 @@ public partial class MainWindow
             if (Dialogs.PickFolder($"Find the folder for {project.Name}") is not { } chosen || _busyProjectId is not null) return;
 
             var folderBefore = _database.GetProjectFolder(project.Id);
-            StartBusy(project, "Checking that folder…");
             string? folderProblem;
             var allowedJustNow = false;
             try
             {
+                StartBusy(project, "Checking that folder…");
                 allowedJustNow = await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
                 folderProblem = await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
                 if (folderProblem is null && await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other)
@@ -1581,9 +1591,15 @@ public partial class MainWindow
             using var process = Process.GetProcessById(id);
             return process.StartTime.ToUniversalTime().Ticks == startedTicks;
         }
-        catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException)
         {
             return false;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            // Access denied, as for a window running as administrator. Being wrong in this direction
+            // leaves a folder for a later start, and being wrong in the other deletes a live clone.
+            return true;
         }
     }
 

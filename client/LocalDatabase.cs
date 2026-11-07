@@ -283,17 +283,7 @@ public sealed class LocalDatabase
     /// </summary>
     public void CleanUpDeletedProjects()
     {
-        var deleted = new List<string>();
-        using (var connection = Open())
-        using (var command = connection.CreateCommand())
-        {
-            command.CommandText = "SELECT id FROM records WHERE collection = $collection AND deleted = 1";
-            command.Parameters.AddWithValue("$collection", ProjectsCollection);
-            using var reader = command.ExecuteReader();
-            while (reader.Read()) deleted.Add(reader.GetString(0));
-        }
-
-        foreach (var projectId in deleted)
+        foreach (var projectId in DeletedProjectIds())
         {
             foreach (var kind in Enum.GetValues<ProjectImageKind>())
             {
@@ -357,7 +347,22 @@ public sealed class LocalDatabase
     {
         var order = projectIds.ToList();
         order.AddRange(ProjectOrder().Except(order));
-        SaveRecord(SettingsCollection, ProjectOrderRecord, JsonSerializer.Serialize(order, JsonOptions));
+
+        // Ones this PC hasn't received yet stay in it, and ones it knows are gone don't.
+        var gone = DeletedProjectIds();
+        SaveRecord(SettingsCollection, ProjectOrderRecord, JsonSerializer.Serialize(order.Where(id => !gone.Contains(id)), JsonOptions));
+    }
+
+    private HashSet<string> DeletedProjectIds()
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id FROM records WHERE collection = $collection AND deleted = 1";
+        command.Parameters.AddWithValue("$collection", ProjectsCollection);
+        var deleted = new HashSet<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read()) deleted.Add(reader.GetString(0));
+        return deleted;
     }
 
     private List<string> ProjectOrder()

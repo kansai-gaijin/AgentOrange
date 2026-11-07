@@ -172,7 +172,41 @@ internal static partial class GitFolderSafety
             if (await SettingsProblemAsync(chosen, Path.Combine(directory, "config"), 0, readSettingsFile) is { } settings) return settings;
             if (await SettingsProblemAsync(chosen, Path.Combine(directory, "config.worktree"), 0, readSettingsFile) is { } worktreeSettings) return worktreeSettings;
         }
+
+        // Git opens a submodule's own settings and history as soon as it works in one.
+        if (!Directory.Exists(gitDirectory)) return null;
+        foreach (var module in ModuleDirectories(gitDirectory))
+        {
+            if (AlternateProblem(chosen, Path.Combine(module, "objects"), 0) is { } alternate) return alternate;
+            if (await SettingsProblemAsync(chosen, Path.Combine(module, "config"), 0, readSettingsFile) is { } settings) return settings;
+        }
         return null;
+    }
+
+    /// <summary>Where a repo keeps its submodules' Git data, including submodules inside those. A submodule's name can have slashes in it.</summary>
+    public static List<string> ModuleDirectories(string gitDirectory)
+    {
+        var found = new List<string>();
+        var waiting = new Stack<string>();
+        waiting.Push(Path.Combine(gitDirectory, "modules"));
+        while (waiting.TryPop(out var directory))
+        {
+            if (!Directory.Exists(directory)) continue;
+            foreach (var entry in new DirectoryInfo(directory).EnumerateDirectories())
+            {
+                if (entry.LinkTarget is not null) continue; // Refused by what looks for links, and not to be followed.
+                if (Exists(Path.Combine(entry.FullName, "HEAD")))
+                {
+                    found.Add(entry.FullName);
+                    waiting.Push(Path.Combine(entry.FullName, "modules"));
+                }
+                else
+                {
+                    waiting.Push(entry.FullName);
+                }
+            }
+        }
+        return found;
     }
 
     // Git opens what it finds among a repo's own files, such as following a branch that's a link.
