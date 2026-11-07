@@ -70,6 +70,7 @@ public partial class MainWindow : Window
 
         // A delete interrupted last time can leave parts of a project behind.
         _database.CleanUpDeletedProjects();
+        _database.RetryRefused();
         Settings.Folders = folders;
         Settings.Database = _database;
         Settings.Providers = new AgentProviders(_database, folders.AgentFolder);

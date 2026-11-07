@@ -633,6 +633,30 @@ public sealed class LocalDatabase
         transaction.Commit();
     }
 
+    /// <summary>
+    /// A project's own record is only written when it's created or deleted, so no later edit would
+    /// ever send that one again, and what stopped it may be sorted out by now, such as a clock
+    /// that was wrong. One that's refused again just goes back to being set aside.
+    /// </summary>
+    public void RetryRefused()
+    {
+        using var connection = Open();
+        using var transaction = connection.BeginTransaction();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        using var retry = connection.CreateCommand();
+        retry.CommandText = """
+            UPDATE records SET changed_at = $now
+            WHERE changed_at > $latestRealTime AND EXISTS (SELECT 1 FROM refused WHERE refused.collection = records.collection AND refused.id = records.id);
+            INSERT OR IGNORE INTO outbox (collection, id, data, deleted, changed_at, resend)
+            SELECT records.collection, records.id, records.data, records.deleted, records.changed_at, 0
+            FROM records JOIN refused ON refused.collection = records.collection AND refused.id = records.id;
+            """;
+        retry.Parameters.AddWithValue("$now", now);
+        retry.Parameters.AddWithValue("$latestRealTime", now + DayMilliseconds);
+        retry.ExecuteNonQuery();
+        transaction.Commit();
+    }
+
     public int CountRefused()
     {
         using var connection = Open();

@@ -1353,6 +1353,13 @@ public static partial class GitTools
         return null;
     }
 
+    /// <summary>For when the person has got what was missing some other way, or doesn't need it.</summary>
+    public static async Task ForgetUnfinishedDownloadAsync(string folder)
+    {
+        RememberUnfinishedDownload(folder, false);
+        await NoteUnfinishedInFolderAsync(folder, false);
+    }
+
     private const string UnfinishedNoteFile = "agent-orange-unfinished";
 
     private const int MaxUnfinishedNoteBytes = 100;
@@ -1581,6 +1588,7 @@ public static partial class GitTools
         if (await IsLinkInFolderAsync(folder, ".lfsconfig")) return "The clone finished, but its large files weren't fetched, because its .lfsconfig is a link, which could lead onto a network share and send your Windows login there. Replace it with a real file, then try again.";
         var lfsConfig = await RunAsync("git", folder, "config", "--blob", "HEAD:.lfsconfig", "-z", "--list");
         var lfsConfigHere = await Task.Run(() => File.Exists(Path.Combine(folder, ".lfsconfig"))) ? await ReadSettingsFileAsync(Path.Combine(folder, ".lfsconfig")) : "";
+        if (lfsConfig is null or { ExitCode: < 0 } || lfsConfigHere is null) return "Git couldn't read where this repo says its large files are, so they can't be fetched yet. Try again.";
         foreach (var setting in ((lfsConfig is { ExitCode: 0 } ? lfsConfig.Output : "") + lfsConfigHere).Split('\0', StringSplitOptions.RemoveEmptyEntries).Select(entry => entry.Split('\n', 2)).Where(parts => parts.Length == 2 && LargeFileUrlSetting().IsMatch(parts[0])))
         {
             if (!AllowedLargeFileUrl().IsMatch(setting[1])) return $"The clone finished, but its large files weren't fetched, because the repo says they're at {HideLogins(OneLine(setting[1]))}, which isn't on GitHub. Git LFS would answer a server asking for Windows authentication with your login. If you trust it, run git lfs pull in the folder yourself.";

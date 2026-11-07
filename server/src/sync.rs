@@ -13,6 +13,7 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
 };
+use http_body_util::LengthLimitError;
 use serde::{Deserialize, Serialize};
 use tokio_postgres::Client;
 
@@ -121,7 +122,7 @@ pub async fn sync(
     let bytes = to_bytes(body, MAX_REQUEST_BYTES).await.map_err(|error| {
         // Anything else is the connection failing, which the device tries again, and it mustn't
         // take this as the server refusing what it sent.
-        if error.to_string().contains("length limit") {
+        if std::error::Error::source(&error).is_some_and(|cause| cause.is::<LengthLimitError>()) {
             StatusCode::PAYLOAD_TOO_LARGE
         } else {
             StatusCode::REQUEST_TIMEOUT
@@ -179,7 +180,7 @@ pub async fn sync(
             return Err(StatusCode::BAD_REQUEST);
         }
 
-        state
+        let stored = state
             .db
             .execute(
                 "INSERT INTO sync_records (collection, id, data, deleted, seq, updated_by, changed_at)
@@ -204,6 +205,25 @@ pub async fn sync(
             )
             .await
             .map_err(internal_error)?;
+
+        // It lost to something newer, which this device's cursor may already be past. Without this
+        // it would keep its own value, with no sign of that.
+        if stored == 0 {
+            state
+                .db
+                .execute(
+                    "UPDATE sync_records SET seq = nextval('sync_seq')
+                     WHERE collection = $1 AND id = $2 AND (data <> $3 OR deleted <> $4)",
+                    &[
+                        &change.collection,
+                        &change.id,
+                        &change.data,
+                        &change.deleted,
+                    ],
+                )
+                .await
+                .map_err(internal_error)?;
+        }
     }
 
     // Images make records large, so rows past the limit are left out here instead of

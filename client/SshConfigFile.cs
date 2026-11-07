@@ -96,10 +96,15 @@ internal static partial class SshConfigFile
         while (shared < parts.Length && shared < chosen.Length && parts[shared].Equals(chosen[shared], StringComparison.OrdinalIgnoreCase)) shared++;
 
         // Nothing in common, such as another drive, and its first part is only the drive's name.
-        var current = shared == 0 ? Path.GetPathRoot(full)! : string.Join(Path.DirectorySeparatorChar, parts[..shared]) + Path.DirectorySeparatorChar;
+        // On a share, the first two parts together are what a drive's name would be.
+        var isShare = full.StartsWith(@"\\", StringComparison.Ordinal);
+        var partsInRoot = isShare ? 2 : 1;
+        var current = shared < partsInRoot
+            ? Path.GetPathRoot(full)!
+            : (isShare ? @"\\" : "") + string.Join(Path.DirectorySeparatorChar, parts[..shared]) + Path.DirectorySeparatorChar;
         try
         {
-            foreach (var part in parts[Math.Max(shared, 1)..])
+            foreach (var part in parts[Math.Max(shared, partsInRoot)..])
             {
                 current = Path.Combine(current, part);
                 if (IsLink(current)) return true;
@@ -143,7 +148,7 @@ internal static partial class SshConfigFile
         {
             var negated = pattern.StartsWith('!');
             var wanted = "^" + Regex.Escape(negated ? pattern[1..] : pattern).Replace("\\*", ".*").Replace("\\?", ".") + "$";
-            if (!Regex.IsMatch(host, wanted, RegexOptions.IgnoreCase)) continue;
+            if (!Regex.IsMatch(host, wanted, RegexOptions.IgnoreCase | RegexOptions.NonBacktracking)) continue;
             if (negated) return false;
             matched = true;
         }

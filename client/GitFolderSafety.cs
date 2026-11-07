@@ -10,8 +10,8 @@ namespace AgentOrange;
 /// runs it, and a folder can come from anyone. So this looks at those files first, without
 /// following anything onto a network. Settings files are read by Git itself, from outside the
 /// folder and without includes, so they mean exactly what they'd mean to Git. If any of this
-/// can't be worked out, the folder is refused. A folder that's already on a network drive has
-/// nothing to add to that risk, so it's left alone.
+/// can't be worked out, the folder is refused. A folder chosen on a network share means that share
+/// is trusted, but not any other it points at.
 /// </summary>
 internal static partial class GitFolderSafety
 {
@@ -58,7 +58,6 @@ internal static partial class GitFolderSafety
         try
         {
             var full = Path.GetFullPath(folder);
-            if (IsNetworkPath(full)) return null;
 
             for (var at = full; at is not null; at = Path.GetDirectoryName(at))
             {
@@ -189,8 +188,6 @@ internal static partial class GitFolderSafety
     {
         var found = await Task.Run(async () =>
         {
-            if (IsNetworkPath(Path.GetFullPath(chosen))) return null;
-
             return LinkInside(place) is { } link ? $"{link} is a link"
                 : AlternateProblem(chosen, Path.Combine(place, "objects"), 0)
                 ?? await SettingsProblemAsync(chosen, Path.Combine(place, "config"), 0, readSettingsFile)
@@ -358,7 +355,9 @@ internal static partial class GitFolderSafety
         return null;
     }
 
-    private static bool IsUnsafeToOpen(string chosen, string path) => IsNetworkPath(path) || SshConfigFile.HasLinkBelowChosenPath(chosen, path);
+    private static bool IsUnsafeToOpen(string chosen, string path) =>
+        (IsNetworkPath(path) && !string.Equals(Path.GetPathRoot(Path.GetFullPath(path)), Path.GetPathRoot(Path.GetFullPath(chosen)), StringComparison.OrdinalIgnoreCase))
+        || SshConfigFile.HasLinkBelowChosenPath(chosen, path);
 
     private static bool Exists(string path)
     {

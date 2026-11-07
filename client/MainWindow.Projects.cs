@@ -666,6 +666,19 @@ public partial class MainWindow
                         body.Children.Add(new TextBlock { Text = $"{FindProject(busyId)?.Name ?? "Another project"} is busy. This will be available when it finishes.", FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
                     }
                 }
+
+                // Some of what can stop this only the person can sort out, and it can't say so forever.
+                var sorted = TwoClickAction("I've sorted this myself", async () =>
+                {
+                    await GitTools.ForgetUnfinishedDownloadAsync(folder!);
+                    _finishSettingsToAllow = null;
+                    _pageProblem = null;
+                    if (_openProject?.Id == project.Id) RenderProject(_openProject);
+                });
+                sorted.HorizontalAlignment = HorizontalAlignment.Left;
+                sorted.Margin = new Thickness(0, 8, 0, 0);
+                sorted.IsEnabled = _busyProjectId is null;
+                body.Children.Add(sorted);
             }
             body.Children.Add(CenteredNote("Nothing here yet."));
             AddOwnBusy(body, project);

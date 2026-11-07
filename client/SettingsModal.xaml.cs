@@ -379,7 +379,7 @@ public partial class SettingsModal : UserControl
         host.Children.Add(Card(
             Row("Last synced", "Everything works offline and syncs when it can.", lastSynced),
             Row("Waiting to sync", "Changes made on this PC that the server doesn't have yet.", waiting),
-            Row("Refused by the server", "Changes it wouldn't take, which stay on this PC. The log says which. Editing one tries again.", refused),
+            Row("Refused by the server", "Changes it wouldn't take, which stay on this PC. The log says which. They're tried again each time the app starts.", refused),
             Row("Sync now", "Send and receive changes now.", syncNow)));
 
         var devices = await Devices.ListAsync();
