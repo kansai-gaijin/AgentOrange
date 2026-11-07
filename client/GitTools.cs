@@ -85,9 +85,9 @@ public sealed record FolderRepo(bool InsideRepo, bool IsRepoRoot, string? Origin
     public bool NeedsSettingsApproval => Problem?.StartsWith(GitTools.CantTellSshSettings, StringComparison.Ordinal) == true;
 }
 
-/// <summary>What projects need from Git and the GitHub CLI.</summary>
 public enum LeftoverClone { Gone, TryAgain, KeptFinished }
 
+/// <summary>What projects need from Git and the GitHub CLI.</summary>
 public static partial class GitTools
 {
     private const string TimedOut = "timeout";
@@ -303,7 +303,9 @@ public static partial class GitTools
         if (state.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
         if (!SameRepo(state.OriginToCompare!, repoUrl))
         {
-            if (await MoveIfRepoRenamedAsync(folder, state, repoUrl))
+            var (renamed, moveProblem) = await MoveIfRepoRenamedAsync(folder, state, repoUrl);
+            if (moveProblem is not null) return moveProblem;
+            if (renamed)
             {
                 state = await InspectFolderAsync(folder);
                 if (state?.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
@@ -323,12 +325,13 @@ public static partial class GitTools
     /// <summary>
     /// An older copy of a repo that's since been renamed is still that repo. GitHub says so without
     /// running anything from the folder, so its remote just moves to the new name, the way it
-    /// connects now. False if it isn't the same repo, or it couldn't be moved.
+    /// connects now. Moved is false if it isn't the same repo, and Problem says why one that is couldn't be moved.
     /// </summary>
-    public static async Task<bool> MoveIfRepoRenamedAsync(string folder, FolderRepo state, string repoUrl)
+    public static async Task<(bool Moved, string? Problem)> MoveIfRepoRenamedAsync(string folder, FolderRepo state, string repoUrl)
     {
-        if (state.Origin is null || await RenamedRepoUrlAsync(state.OriginToCompare!) is not { } current || !SameRepo(current, repoUrl)) return false;
-        return await MoveOriginAsync(folder, SameWayTo(state.Origin, repoUrl), state.OriginToCompare!) is null;
+        if (state.Origin is null || await RenamedRepoUrlAsync(state.OriginToCompare!) is not { } current || !SameRepo(current, repoUrl)) return (false, null);
+        var problem = await MoveOriginAsync(folder, SameWayTo(state.Origin, repoUrl), state.OriginToCompare!);
+        return (problem is null, problem);
     }
 
     /// <summary>
@@ -862,15 +865,21 @@ public static partial class GitTools
         if (urls.Length == 0) return RemoteChangedMeanwhile;
 
         // An SSH alias, as a second GitHub account uses, has to be read as the repo it really is.
-        var oldRepo = (await GitHubFormAsync(urls[0], folder)).Item1 ?? urls[0];
+        async Task<string> RepoOfAsync(string address)
+        {
+            var expanded = await RunAsync("git", folder, "ls-remote", "--get-url", "--", address);
+            var full = expanded is { ExitCode: 0 } && expanded.Output.Trim().Length > 0 ? expanded.Output.Trim() : address;
+            return (await GitHubFormAsync(full, folder)).Item1 ?? full;
+        }
+
+        var oldRepo = await RepoOfAsync(urls[0]);
         if (!SameRepo(oldRepo, onlyIfOnRepo)) return RemoteChangedMeanwhile;
         async Task<string[]> MovedAsync(string[] addresses)
         {
             var moved = new List<string>();
             foreach (var address in addresses)
             {
-                var (gitHubForm, _) = await GitHubFormAsync(address, folder);
-                moved.Add(SameRepo(gitHubForm ?? address, oldRepo) ? remote : address);
+                moved.Add(SameRepo(await RepoOfAsync(address), oldRepo) ? remote : address);
             }
             return moved.Distinct().ToArray();
         }
@@ -1790,14 +1799,39 @@ public static partial class GitTools
         if (parent is null || !await FolderExistsAsync(parent)) return LeftoverClone.TryAgain;
 
         // It finished, and only forgetting about it failed, such as with the database out of reach.
-        if (await Task.Run(() => File.Exists(Path.Combine(folder, ".git", UnfinishedNoteFile))))
+        switch (await Task.Run(() => NoteIsThere(Path.Combine(folder, ".git", UnfinishedNoteFile))))
         {
-            AppLog.Write($"Kept a finished clone that was still on the cleanup list: {folder}");
-            return LeftoverClone.KeptFinished;
+            case true:
+                AppLog.Write($"Kept a finished clone that was still on the cleanup list: {folder}");
+                return LeftoverClone.KeptFinished;
+            case null:
+                return LeftoverClone.TryAgain;
         }
+
+        // A drive that's just dropped says the note isn't there too.
+        if (!await FolderExistsAsync(parent)) return LeftoverClone.TryAgain;
 
         await TryDeleteOwnedFolderAsync(folder);
         return await FolderExistsAsync(folder) ? LeftoverClone.TryAgain : LeftoverClone.Gone;
+    }
+
+    // Null if that can't be told, which anything other than it being missing means.
+    private static bool? NoteIsThere(string note)
+    {
+        try
+        {
+            File.GetAttributes(note);
+            return true;
+        }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return false;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write($"Couldn't tell whether a clone had finished: {error.Message}");
+            return null;
+        }
     }
 
     // A virus scanner can hold new files for a moment, and giving up would throw away a whole clone.

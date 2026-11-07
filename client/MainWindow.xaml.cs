@@ -232,7 +232,20 @@ public partial class MainWindow : Window
 
         RefreshProjects();
         _ = _sync.SyncNowAsync();
-        _ = project.CloneIntoFolder ? CloneIntoChosenFolderAsync(id, project.Folder) : ReadEngineVersionAsync(id);
+        _ = TellIfDatabaseFailsAsync(project.CloneIntoFolder ? CloneIntoChosenFolderAsync(id, project.Folder) : ReadEngineVersionAsync(id));
+    }
+
+    // Nothing's waiting on this, so the person would otherwise never hear about it.
+    private async Task TellIfDatabaseFailsAsync(Task work)
+    {
+        try
+        {
+            await work;
+        }
+        catch (SqliteException error)
+        {
+            _ = Dispatcher.BeginInvoke(new Action(() => throw error));
+        }
     }
 
     private void OpenSettings_Click(object sender, RoutedEventArgs e)
@@ -419,8 +432,18 @@ public partial class MainWindow : Window
             : required;
     }
 
-    private string? CloningProjectName() =>
-        _cloneCancel is null ? null : (_busyProjectId is { } id ? FindProject(id)?.Name : null) ?? "A project";
+    private string? CloningProjectName()
+    {
+        if (_cloneCancel is null) return null;
+        try
+        {
+            return (_busyProjectId is { } id ? FindProject(id)?.Name : null) ?? "A project";
+        }
+        catch (SqliteException)
+        {
+            return "A project"; // Not being able to name it is no reason to skip saying a clone would stop.
+        }
+    }
 
     // A clone can take hours, and whatever stops it means starting again from nothing.
     private bool ConfirmStoppingClone(string action)

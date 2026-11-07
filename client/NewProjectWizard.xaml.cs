@@ -446,7 +446,9 @@ public partial class NewProjectWizard : UserControl
 
         if (state.Origin is not null && !GitTools.SameRepo(state.OriginToCompare!, url))
         {
-            if (await GitTools.MoveIfRepoRenamedAsync(project.Folder, state, url))
+            var (moved, moveProblem) = await GitTools.MoveIfRepoRenamedAsync(project.Folder, state, url);
+            if (moveProblem is not null) return ("", false, moveProblem);
+            if (moved)
             {
                 state = await GitTools.InspectFolderAsync(project.Folder);
                 if (state is null) return ("", false, "Git wasn't found on this PC.");

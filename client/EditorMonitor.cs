@@ -67,9 +67,18 @@ public sealed partial class EditorMonitor
     public EditorSettings SettingsOf(EditorDefinition editor)
     {
         var stored = _database.GetSetting(SettingKey(editor));
-        return string.IsNullOrEmpty(stored)
-            ? new EditorSettings(FindProgram(editor.Id) ?? "", editor.DefaultKind, editor.DefaultAddress)
-            : JsonSerializer.Deserialize<EditorSettings>(stored, JsonOptions)!;
+        if (!string.IsNullOrEmpty(stored))
+        {
+            try
+            {
+                if (JsonSerializer.Deserialize<EditorSettings>(stored, JsonOptions) is { } saved) return saved;
+            }
+            catch (JsonException error)
+            {
+                AppLog.Write($"Skipped unreadable settings for {editor.Id}: {error.Message}");
+            }
+        }
+        return new EditorSettings(FindProgram(editor.Id) ?? "", editor.DefaultKind, editor.DefaultAddress);
     }
 
     public void Save(EditorDefinition editor, EditorSettings settings)

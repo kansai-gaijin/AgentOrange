@@ -210,5 +210,5 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     }
 
     private static bool IsNetworkFailure(Exception error) =>
-        error is HttpRequestException or TaskCanceledException or JsonException or NotSupportedException;
+        error is HttpRequestException or TaskCanceledException or JsonException or NotSupportedException or InvalidOperationException;
 }
