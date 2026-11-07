@@ -429,6 +429,7 @@ public partial class MainWindow
 
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
         var folderShown = folderExists && check.ShowsFolder;
+        var usable = CanWorkIn(project, check);
         var folderProblem = folderShown ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl) : null;
 
         // It may have been connected while offline, when nothing could say the repo had files.
@@ -444,8 +445,8 @@ public partial class MainWindow
             : FolderHistory.CantTell;
         if (history == FolderHistory.SharesCommits) _database.RememberFolderSharesRepo(folder!, repoKey);
         var mayNotMatch = history == FolderHistory.SharesNothing;
-        var folderEngine = folderShown && folderProblem is null ? await EngineVersions.DetectAsync(folder!) : null;
-        var pushesTo = folderShown && folderProblem is null ? await GitTools.PushesElsewhereAsync(folder!, project.RepoUrl) : null;
+        var folderEngine = folderShown && usable && folderProblem is null ? await EngineVersions.DetectAsync(folder!) : null;
+        var pushesTo = folderShown && usable && folderProblem is null ? await GitTools.PushesElsewhereAsync(folder!, project.RepoUrl) : null;
         if (folderExists && check.IsDenied) _database.ForgetFolderSharesRepo(folder!);
 
         // Asked before the latest copy of the project is read below, as this can take a while.
@@ -541,7 +542,7 @@ public partial class MainWindow
         _renamedRepoHeldBy = renamedHeldBy;
         _folderPushesTo = pushesTo;
         RenderProject(latest);
-        if (folderShown) await ReadEngineVersionAsync(latest.Id);
+        if (folderShown && usable) await ReadEngineVersionAsync(latest.Id);
     }
 
     // A project on this PC may have moved to a newer engine since it was last opened. This never
@@ -585,6 +586,15 @@ public partial class MainWindow
     }
 
     private Project? FindProject(string id) => _database.ListProjects().FirstOrDefault(project => project.Id == id);
+
+    // Allowed, or no clear answer on a PC that's been let in before or made the project here. Anything
+    // else is a page that's blocked, whatever it shows.
+    private bool CanWorkIn(Project project, RepoCheck check)
+    {
+        if (check.Access == RepoAccess.Allowed) return true;
+        var repoKey = GitTools.RepoKey(project.RepoUrl);
+        return check.IsUnanswered && (_database.GetSetting(VerifiedSetting(project.Id)) == repoKey || _database.GetSetting(CreatedHereSetting(project.Id)) == repoKey);
+    }
 
     private static string VerifiedSetting(string projectId) => $"project_verified:{projectId}";
 
@@ -1240,6 +1250,7 @@ public partial class MainWindow
         try
         {
             if (FindProject(projectId) is not { } project) return;
+            _database.TransferFolderHold(folder, project);
             await OpenProjectAsync(project);
             if (_busyProjectId is not null)
             {
@@ -1248,7 +1259,15 @@ public partial class MainWindow
             }
             if (FindProject(projectId) is not { } latest) return;
 
-            _database.TransferFolderHold(folder, latest);
+            // What the page found when it opened is what the clone goes by, as the page would only
+            // have offered one if that let it.
+            if (_openProject?.Id != projectId || _projectCheck is not { } check || !CanWorkIn(latest, check))
+            {
+                if (_openProject?.Id == projectId) ShowPageProblem(projectId, $"The clone into {folder} didn't start, because this repo can't be used from this PC right now.");
+                else _heldProblems[projectId] = $"The clone into {folder} didn't start, because this project's page was left before its repo was checked. Open it and choose Clone to try again.";
+                return;
+            }
+
             var exact = Path.TrimEndingDirectorySeparator(folder);
             await CloneProjectAsync(latest, Path.GetDirectoryName(exact)!, exact);
         }

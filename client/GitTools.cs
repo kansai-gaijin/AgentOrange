@@ -2111,7 +2111,7 @@ public static partial class GitTools
             }
 
             var where = folder ?? scratch!;
-            List<string> push = folder is null ? [] : ["-c", $"remote.{remote}.mirror=false"];
+            List<string> push = folder is null ? ["-c", "push.gpgSign=false"] : ["-c", $"remote.{remote}.mirror=false", "-c", "push.gpgSign=false"];
             push.AddRange(["push", "--dry-run", "--no-verify", "--", remote, $":refs/heads/agent-orange-check-{Guid.NewGuid():N}"]);
             var result = await RunAsync("git", where, null, push.ToArray(), cancel, await SshSettingsAsync(where));
             if (result is null or { ExitCode: < 0 }) return PushAnswer.CantTell;
