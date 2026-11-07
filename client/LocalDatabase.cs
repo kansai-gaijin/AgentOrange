@@ -155,10 +155,14 @@ public sealed class LocalDatabase
         return id;
     }
 
-    /// <summary>Saves only what's changed. A project that's been deleted stays deleted.</summary>
-    public void SaveProject(Project project)
+    /// <summary>
+    /// Saves only what's changed, made to the project as it is now, as another window or a sync can
+    /// have changed the rest since it was last read. A project that's been deleted stays deleted.
+    /// </summary>
+    public void UpdateProject(string projectId, Func<Project, Project> change)
     {
-        if (ListProjects().FirstOrDefault(current => current.Id == project.Id) is not { } current) return;
+        if (ListProjects().FirstOrDefault(current => current.Id == projectId) is not { } current) return;
+        var project = change(current);
 
         void Save(string field, string before, string after)
         {
@@ -510,7 +514,20 @@ public sealed class LocalDatabase
             read.Parameters.AddWithValue("$id", id);
             previous = read.ExecuteScalar() is long known ? known : 0;
         }
-        var change = new SyncChange(collection, id, data, deleted, Math.Max(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), previous + 1));
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        // Dated by a clock that was wrong, as it was refused for it. Nothing has to come after that,
+        // and starting from it would get every edit from now on refused too.
+        var wasBadTime = false;
+        if (previous > now + DayMilliseconds)
+        {
+            using var refused = connection.CreateCommand();
+            refused.CommandText = "SELECT 1 FROM refused WHERE collection = $collection AND id = $id";
+            refused.Parameters.AddWithValue("$collection", collection);
+            refused.Parameters.AddWithValue("$id", id);
+            wasBadTime = refused.ExecuteScalar() is not null;
+        }
+        var change = new SyncChange(collection, id, data, deleted, wasBadTime ? now : Math.Max(now, previous + 1));
         Upsert(connection, "records", change);
         Upsert(connection, "outbox", change);
 
@@ -534,6 +551,8 @@ public sealed class LocalDatabase
         command.Parameters.AddWithValue("$id", id);
         return command.ExecuteScalar() as string;
     }
+
+    private const long DayMilliseconds = 24 * 60 * 60 * 1000;
 
     /// <summary>Reads queued changes, stopping at a size the server accepts in one request.</summary>
     public List<SyncChange> ReadOutbox(int limit, int maxBytes)
@@ -663,9 +682,15 @@ public sealed class LocalDatabase
                 SELECT $collection, $id, $data, $deleted, $changedAt
                 WHERE NOT EXISTS (SELECT 1 FROM outbox WHERE collection = $collection AND id = $id)
                   AND NOT EXISTS (SELECT 1 FROM records WHERE collection = $collection AND id = $id AND data = $data AND deleted = $deleted)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM refused
+                      JOIN records ON records.collection = refused.collection AND records.id = refused.id
+                      WHERE refused.collection = $collection AND refused.id = $id
+                        AND records.changed_at > $changedAt AND records.changed_at <= $latestRealTime)
                 ON CONFLICT (collection, id) DO UPDATE SET data = excluded.data, deleted = excluded.deleted, changed_at = excluded.changed_at
                 """;
             AddChange(command, change);
+            command.Parameters.AddWithValue("$latestRealTime", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + DayMilliseconds);
             var changed = command.ExecuteNonQuery();
             if (changed > 0) ForgiveRefused(connection, change);
             applied += changed;

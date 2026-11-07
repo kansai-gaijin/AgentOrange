@@ -1328,10 +1328,10 @@ public static partial class GitTools
         // are ordinary work, and have no bearing on this.
         if (hasCommits)
         {
-            var listed = await RunAsync("git", folder, "ls-files");
+            var list = await RunAsync("git", folder, "rev-parse", "--git-path", "index");
             var inCommit = await RunAsync("git", folder, "ls-tree", "HEAD");
-            if (listed is not { ExitCode: 0 } || inCommit is not { ExitCode: 0 }) return noAnswer;
-            if (listed.Output.Length == 0 && inCommit.Output.Length > 0)
+            if (list is not { ExitCode: 0 } || inCommit is not { ExitCode: 0 }) return noAnswer;
+            if (inCommit.Output.Length > 0 && !await Task.Run(() => File.Exists(Path.GetFullPath(list.Output.Trim(), folder))))
             {
                 return "This repo's files were never put in the folder, so the rest can't be finished yet. Fix what stopped them, then run git restore --source=HEAD --staged --worktree :/ in the folder and try again. That also discards any changes made in it since.";
             }
@@ -1389,8 +1389,18 @@ public static partial class GitTools
         }
     }
 
+    // Null if it isn't there. Anything stopping it being read throws, which isn't the same answer.
     private static Task<string?> ReadUnfinishedNoteAsync(string note) => Task.Run(() =>
-        File.Exists(note) && !SshConfigFile.IsLink(note) && new FileInfo(note).Length <= MaxUnfinishedNoteBytes ? File.ReadAllText(note).Trim() : null);
+    {
+        try
+        {
+            return SshConfigFile.IsLink(note) || new FileInfo(note).Length > MaxUnfinishedNoteBytes ? null : File.ReadAllText(note).Trim();
+        }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null;
+        }
+    });
 
     // True if it's a clone from this PC, false if it's been seen not to be, and null if that can't be told.
     private static async Task<bool?> HoldsNoteFromHereAsync(string folder)
@@ -1398,7 +1408,10 @@ public static partial class GitTools
         try
         {
             if (!await FolderExistsAsync(folder)) return null;
-            return await ReadUnfinishedNoteAsync(Path.Combine(folder, ".git", UnfinishedNoteFile)) is { } written && IsUnfinishedNoteFromHere(written);
+            if (await ReadUnfinishedNoteAsync(Path.Combine(folder, ".git", UnfinishedNoteFile)) is { } written && IsUnfinishedNoteFromHere(written)) return true;
+
+            // A drive can drop while that was being read, which would look just the same.
+            return await FolderExistsAsync(folder) ? false : null;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -1570,8 +1583,15 @@ public static partial class GitTools
         var lfsConfigHere = await Task.Run(() => File.Exists(Path.Combine(folder, ".lfsconfig"))) ? await ReadSettingsFileAsync(Path.Combine(folder, ".lfsconfig")) : "";
         foreach (var setting in ((lfsConfig is { ExitCode: 0 } ? lfsConfig.Output : "") + lfsConfigHere).Split('\0', StringSplitOptions.RemoveEmptyEntries).Select(entry => entry.Split('\n', 2)).Where(parts => parts.Length == 2 && LargeFileUrlSetting().IsMatch(parts[0])))
         {
-            if (!AllowedLargeFileUrl().IsMatch(setting[1])) return $"The clone finished, but its large files weren't fetched, because the repo says they're at {HideLogins(OneLine(setting[1]))}, which isn't an address on a server. Fix that in .lfsconfig, then try again.";
+            if (!AllowedLargeFileUrl().IsMatch(setting[1])) return $"The clone finished, but its large files weren't fetched, because the repo says they're at {HideLogins(OneLine(setting[1]))}, which isn't on GitHub. Git LFS would answer a server asking for Windows authentication with your login. If you trust it, run git lfs pull in the folder yourself.";
         }
+
+        // It goes by the remote otherwise, and a submodule's can be anywhere.
+        var remote = await RunAsync("git", folder, "remote", "get-url", "origin");
+        if (remote is not { ExitCode: 0 }) return "Git couldn't say where this repo's large files come from, so they can't be called finished yet. Try again.";
+        var address = WithoutCredentials(remote.Output.Trim());
+        var (remoteOnGitHub, _) = await GitHubFormAsync(address, folder);
+        if (RepoUrlProblem(remoteOnGitHub ?? address) is not null) return $"The clone finished, but the large files in {folder} weren't fetched, because they'd come from {HideLogins(OneLine(address))}, which isn't on GitHub. Git LFS would answer a server asking for Windows authentication with your login. If you trust it, run git lfs pull in that folder yourself.";
 
         var gitDirectory = await RunAsync("git", folder, "rev-parse", "--absolute-git-dir");
         if (gitDirectory is not { ExitCode: 0 }) return "Git didn't answer when asked where this repo's data is, so its large files can't be called finished yet. Try again.";
@@ -1976,6 +1996,11 @@ public static partial class GitTools
         {
             info.ArgumentList.Add("-c");
             info.ArgumentList.Add("safe.bareRepository=explicit");
+
+            // A repo can name any server for its submodules. One that asks for Windows authentication
+            // would otherwise get the person's Windows login. This reaches submodule commands too.
+            info.ArgumentList.Add("-c");
+            info.ArgumentList.Add("http.emptyAuth=false");
         }
 
         // Projects need the GitHub CLI anyway, so its login backs up whatever Git has of its own.
@@ -2006,11 +2031,12 @@ public static partial class GitTools
         // Never a login window: the person has a GitHub CLI login by the time any of this runs.
         var isClone = arguments is ["clone", ..] or ["lfs", "pull"] || arguments.Contains("submodule");
         info.Environment["GCM_INTERACTIVE"] = "never";
+        info.Environment["GCM_ALLOW_WINDOWSAUTH"] = "0";
 
         var isCreate = arguments is ["repo", "create", ..];
 
         // Before a clone can be called finished, on what can be a very large repo and a cold disk.
-        var readsWholeRepo = arguments is ["ls-files"] or ["grep", ..];
+        var readsWholeRepo = arguments is ["grep", ..];
         using var timeout = new CancellationTokenSource(isClone ? Timeout.InfiniteTimeSpan : isCreate ? CreateTimeout : readsWholeRepo ? WholeRepoTimeout : CommandTimeout);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancel);
 
@@ -2206,7 +2232,7 @@ public static partial class GitTools
     [GeneratedRegex(@"\A((core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks|longpaths|autocrlf|eol|safecrlf)|remote\.[^\r\n]*\.(url|fetch|pushurl|tagopt|prune|promisor|partialclonefilter|gh-resolved)|branch\.[^\r\n]*\.(remote|merge)|submodule\.[^\r\n]*\.(url|active|branch|ignore)|lfs\.repositoryformatversion|user\.(name|email))\n[^\r\n]*\z|filter\.lfs\.(clean|smudge|process)\ngit-lfs [^&|;<>`$\r\n]*\z|filter\.lfs\.required\n(true|false)\z|lfs\.[^\r\n]*\.access\n(basic|none|private|negotiate|ntlm)\z|lfs\.[^\r\n]*\.locksverify\n(true|false)\z|core\.fsmonitor\nfalse\z|core\.hookspath\n/dev/null\z|submodule\.[^\r\n]*\.update\n(checkout|none)\z)", RegexOptions.IgnoreCase)]
     private static partial Regex SafeWhileFinishing();
 
-    [GeneratedRegex(@"^(https://|ssh://|git@)")]
+    [GeneratedRegex(@"^(https://github\.com/|ssh://git@github\.com/|git@github\.com:)", RegexOptions.IgnoreCase)]
     private static partial Regex AllowedLargeFileUrl();
 
     [GeneratedRegex(@"^(lfs\.url|lfs\.pushurl|remote\..*\.(lfsurl|lfspushurl))$", RegexOptions.IgnoreCase | RegexOptions.Singleline)]

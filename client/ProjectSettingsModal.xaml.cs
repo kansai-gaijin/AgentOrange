@@ -480,8 +480,7 @@ public partial class ProjectSettingsModal : UserControl
 
     private void Update(string projectId, Func<Project, Project> change)
     {
-        if (Find(projectId) is not { } current) return;
-        _database.SaveProject(change(current));
+        _database.UpdateProject(projectId, change);
         if (Find(projectId) is { } saved) _showNameToType?.Invoke(saved);
         ClearGeneralProblem();
         Changed?.Invoke();

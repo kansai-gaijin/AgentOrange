@@ -470,7 +470,7 @@ public partial class MainWindow
         {
             var wasVerified = _database.GetSetting(VerifiedSetting(project.Id)) == GitTools.RepoKey(latest.RepoUrl);
             var wasCreatedHere = _database.GetSetting(CreatedHereSetting(project.Id)) == GitTools.RepoKey(latest.RepoUrl);
-            _database.SaveProject(latest with { RepoUrl = renamed });
+            _database.UpdateProject(project.Id, current => current with { RepoUrl = renamed });
             if (check.Access == RepoAccess.Allowed || wasVerified) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(renamed));
             if (wasCreatedHere) _database.SetSetting(CreatedHereSetting(project.Id), GitTools.RepoKey(renamed));
             if (folderExists && folderProblem is null) await GitTools.PointFolderAtRepoAsync(folder!, renamed);
@@ -1089,10 +1089,9 @@ public partial class MainWindow
             return;
         }
 
-        var updated = latest with { RepoUrl = result.Value };
         try
         {
-            _database.SaveProject(updated);
+            _database.UpdateProject(project.Id, current => current with { RepoUrl = result.Value });
             _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(result.Value)); // This PC just made it.
 
             // A folder chosen in settings while this ran is more recent, so it stays.
@@ -1107,7 +1106,7 @@ public partial class MainWindow
         }
         _ = _sync.SyncNowAsync();
         _confirmingNewRepo = false;
-        await RefreshThenRecheckAsync(updated.Id);
+        await RefreshThenRecheckAsync(project.Id);
     }
 
     // For a result that the page has to be up to date to make sense of.

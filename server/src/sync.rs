@@ -26,7 +26,7 @@ const MAX_KEY_LENGTH: usize = 128;
 const PAGE_SIZE: i64 = 500;
 const MAX_RESPONSE_BYTES: usize = 1_500_000;
 const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
-const YEAR_MILLISECONDS: i64 = 366 * 24 * 60 * 60 * 1000;
+const DAY_MILLISECONDS: i64 = 24 * 60 * 60 * 1000;
 
 pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
     db.batch_execute(
@@ -118,9 +118,15 @@ pub async fn sync(
     }
 
     // Only now, so anyone able to reach this can't make it read and parse much without a login.
-    let bytes = to_bytes(body, MAX_REQUEST_BYTES)
-        .await
-        .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
+    let bytes = to_bytes(body, MAX_REQUEST_BYTES).await.map_err(|error| {
+        // Anything else is the connection failing, which the device tries again, and it mustn't
+        // take this as the server refusing what it sent.
+        if error.to_string().contains("length limit") {
+            StatusCode::PAYLOAD_TOO_LARGE
+        } else {
+            StatusCode::REQUEST_TIMEOUT
+        }
+    })?;
     let Json(request) =
         Json::<SyncRequest>::from_bytes(&bytes).map_err(|rejection| rejection.status())?;
 
@@ -160,7 +166,7 @@ pub async fn sync(
         .map_or(0, |elapsed| elapsed.as_millis() as i64);
     for change in &request.changes {
         if change.changed_at < 0
-            || change.changed_at > now.saturating_add(YEAR_MILLISECONDS)
+            || change.changed_at > now.saturating_add(DAY_MILLISECONDS)
             || change.collection.is_empty()
             || change.id.is_empty()
             || change.collection.len() > MAX_KEY_LENGTH
