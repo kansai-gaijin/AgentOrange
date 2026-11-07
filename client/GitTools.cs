@@ -574,6 +574,30 @@ public static partial class GitTools
     /// <summary>Set up when the app starts. Gives the name of a project already on this repo.</summary>
     public static Func<string, string?> ProjectUsingRepo { get; set; } = _ => null;
 
+    public static Func<IReadOnlyList<Project>> AllProjects { get; set; } = () => [];
+
+    /// <summary>
+    /// A project that hasn't been opened since GitHub renamed its repo still has the old name, and
+    /// only GitHub can say that's this one. Null if none does, or that can't be told.
+    /// </summary>
+    public static async Task<string?> ProjectUnderOldNameAsync(string url, string? exceptProjectId = null)
+    {
+        using var turns = new SemaphoreSlim(4);
+        var answers = await Task.WhenAll(AllProjects().Where(project => project.Id != exceptProjectId && !SameRepo(project.RepoUrl, url)).Select(async project =>
+        {
+            await turns.WaitAsync();
+            try
+            {
+                return await RenamedRepoUrlAsync(project.RepoUrl) is { } current && SameRepo(current, url) ? project.Name : null;
+            }
+            finally
+            {
+                turns.Release();
+            }
+        }));
+        return answers.FirstOrDefault(name => name is not null);
+    }
+
     public static bool AreAllowed(string folder, FolderGitSettings settings) =>
         settings.IsEmpty || (settings.CanBeApproved && AllowedFolderSettings(folder) == settings.Fingerprint);
 
@@ -1192,6 +1216,28 @@ public static partial class GitTools
         return null;
     }
 
+    /// <summary>A clone is prepared beside the folder it's going into, so it only has the real name once it's complete.</summary>
+    public static async Task<bool> CanWorkBesideAsync(string folder)
+    {
+        if (Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(folder)) is not { } parent) return false;
+
+        var trial = Path.Combine(parent, $".ao-{Guid.NewGuid():N}"[..12]);
+        try
+        {
+            await Task.Run(() =>
+            {
+                Directory.CreateDirectory(trial);
+                Directory.Delete(trial);
+            });
+            return true;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write($"Can't work beside a folder: {error.Message}");
+            return false;
+        }
+    }
+
     /// <summary>
     /// Clones into a new folder inside the chosen one, or into exactFolder if it's empty, and
     /// returns the resulting folder's path. workingFolder says where it's working, so that can
@@ -1271,7 +1317,7 @@ public static partial class GitTools
             await TryDeleteOwnedFolderAsync(working);
             return new GitResult(false, exactFolder is null
                 ? $"Couldn't put the project in {parentFolder}."
-                : $"Couldn't clone into {exactFolder}. The clone is prepared beside it, in {parentFolder}, and that can't be written to. Choose a folder somewhere it can.");
+                : $"Couldn't clone into {exactFolder}. The clone is prepared beside it, in {parentFolder}, and that can't be written to. Make a new folder inside this one and choose that.");
         }
 
         // From here it's a finished clone, which could have taken hours, so it's never deleted,

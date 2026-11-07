@@ -61,6 +61,10 @@ public partial class MainWindow : Window
         ProjectWizard.ClaimFolder = async (folder, name) =>
             (await _database.ClaimFolderAsync(folder, new Project($"new-project-{Guid.NewGuid():N}", name, "", "", "", "", DateTimeOffset.UtcNow)))?.Name;
         ProjectWizard.ReleaseFolder = _database.ReleaseFolder;
+        ProjectWizard.ClaimRepo = async (url, name) =>
+            (await _database.ClaimRepoAsync(url, new Project($"new-project-{Guid.NewGuid():N}", name, "", "", "", "", DateTimeOffset.UtcNow)))?.Name;
+        ProjectWizard.ReleaseRepo = _database.ReleaseRepo;
+        GitTools.AllProjects = () => _database.ListProjects();
         GitTools.ProjectUsingRepo = url => _database.ListProjects().FirstOrDefault(project => GitTools.SameRepo(project.RepoUrl, url))?.Name;
         GitTools.AllowedFolderSettings = _database.AllowedFolderSettings;
         GitTools.RememberAllowedFolderSettings = _database.AllowFolderSettings;
@@ -171,6 +175,7 @@ public partial class MainWindow : Window
         void EndCardPress()
         {
             _pressedCard = null;
+            _gearPressed = false;
             if (_refreshAfterDrag && _draggedCard is null)
             {
                 _refreshAfterDrag = false;

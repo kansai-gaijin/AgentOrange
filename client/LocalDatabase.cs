@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
@@ -53,8 +55,8 @@ public sealed class LocalDatabase
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly string _connectionString;
-    private readonly Dictionary<string, Project> _reservedFolders = new(StringComparer.OrdinalIgnoreCase);
-    private readonly SemaphoreSlim _folderClaims = new(1, 1);
+    private readonly string _claimTurnName;
+    private readonly Dictionary<string, (string Token, Mutex Alive)> _holds = new(StringComparer.OrdinalIgnoreCase);
 
     private const int DamagedErrorCode = 11;
     private const int NotADatabaseErrorCode = 26;
@@ -78,6 +80,7 @@ public sealed class LocalDatabase
     {
         Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
         _connectionString = new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString();
+        _claimTurnName = $@"Local\AgentOrangeClaims-{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(databasePath).ToLowerInvariant())))[..32]}";
 
         using var connection = Open();
         using (var check = connection.CreateCommand())
@@ -112,6 +115,8 @@ public sealed class LocalDatabase
         Execute(connection, """
             CREATE TABLE IF NOT EXISTS refused (collection TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (collection, id));
             CREATE INDEX IF NOT EXISTS records_changed_at ON records (changed_at);
+
+            CREATE TABLE IF NOT EXISTS holds (token TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL, project_id TEXT NOT NULL, project_name TEXT NOT NULL);
 
             CREATE TABLE IF NOT EXISTS revisions (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
             INSERT OR IGNORE INTO revisions (name, value) VALUES ('records', 0);
@@ -344,44 +349,179 @@ public sealed class LocalDatabase
         }
     }
 
+    private const string FolderHold = "folder";
+    private const string RepoHold = "repo";
+    private static readonly TimeSpan LongestClaimWait = TimeSpan.FromSeconds(30);
+
     /// <summary>
     /// Holds a folder for a project until ReleaseFolder, once it's linked or that's given up on.
-    /// One claim runs at a time, so two can't both find it free. Returns the project that
-    /// already has it, in which case nothing is held.
+    /// One claim runs at a time across every window, so two can't both find it free. Returns the
+    /// project that already has it, in which case nothing is held.
     /// </summary>
-    public async Task<Project?> ClaimFolderAsync(string folder, Project claimant)
-    {
-        await _folderClaims.WaitAsync();
-        try
-        {
-            var owner = await ProjectUsingFolderAsync(folder, claimant.Id);
-            if (owner is null) _reservedFolders[folder] = claimant;
-            return owner;
-        }
-        finally
-        {
-            _folderClaims.Release();
-        }
-    }
+    public Task<Project?> ClaimFolderAsync(string folder, Project claimant) =>
+        ClaimAsync(FolderHold, folder, claimant, () => FolderOwner(folder, claimant.Id));
 
-    public void ReleaseFolder(string folder) => _reservedFolders.Remove(folder);
+    public void ReleaseFolder(string folder) => Release(FolderHold, folder);
+
+    /// <summary>The same for a repo, until ReleaseRepo, once the project says it uses it.</summary>
+    public Task<Project?> ClaimRepoAsync(string url, Project claimant) =>
+        ClaimAsync(RepoHold, url, claimant, () => RepoOwner(url, claimant.Id));
+
+    public void ReleaseRepo(string url) => Release(RepoHold, url);
 
     /// <summary>
     /// A folder can only be one project, so this finds who already has it, by any path. A folder
     /// inside or around another project's counts too, since their repos and engine files would mix.
     /// </summary>
-    public async Task<Project?> ProjectUsingFolderAsync(string folder, string? exceptProjectId = null)
+    public Task<Project?> ProjectUsingFolderAsync(string folder, string? exceptProjectId = null) =>
+        Task.Run(() => FolderOwner(folder, exceptProjectId));
+
+    private Project? FolderOwner(string folder, string? exceptProjectId)
     {
         var linked = ListProjects()
             .Where(project => project.Id != exceptProjectId)
             .Select(project => (Project: project, Folder: GetProjectFolder(project.Id)))
             .Where(link => link.Folder is not null)
-            .Concat(_reservedFolders
-                .Where(reserved => reserved.Value.Id != exceptProjectId)
-                .Select(reserved => (Project: reserved.Value, Folder: (string?)reserved.Key)))
+            .Concat(LiveHolds(FolderHold, exceptProjectId).Select(hold => (Project: hold.Holder, Folder: (string?)hold.Target)))
             .ToList();
 
-        return await Task.Run(() => linked.FirstOrDefault(link => FolderIdentity.Overlap(folder, link.Folder!)).Project);
+        return linked.FirstOrDefault(link => FolderIdentity.Overlap(folder, link.Folder!)).Project;
+    }
+
+    private Project? RepoOwner(string url, string? exceptProjectId) =>
+        ListProjects().FirstOrDefault(project => project.Id != exceptProjectId && GitTools.SameRepo(project.RepoUrl, url))
+        ?? LiveHolds(RepoHold, exceptProjectId).FirstOrDefault(hold => GitTools.SameRepo(hold.Target, url)).Holder;
+
+    private Task<Project?> ClaimAsync(string kind, string target, Project claimant, Func<Project?> findOwner) => Task.Run(() =>
+    {
+        using var turn = TakeClaimTurn();
+        var owner = findOwner();
+        if (owner is null) Hold(kind, target, claimant);
+        return owner;
+    });
+
+    // Null if it can't be had, which is a window running as administrator or one that's stuck. Going
+    // ahead then is the lesser problem, as the worst of it is a project page saying two share a repo.
+    private ClaimTurn? TakeClaimTurn()
+    {
+        Mutex turn;
+        try
+        {
+            turn = new Mutex(false, _claimTurnName);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        try
+        {
+            if (turn.WaitOne(LongestClaimWait)) return new ClaimTurn(turn);
+        }
+        catch (AbandonedMutexException)
+        {
+            return new ClaimTurn(turn); // A window closed partway through, and it's this one's now.
+        }
+        turn.Dispose();
+        return null;
+    }
+
+    private sealed class ClaimTurn(Mutex turn) : IDisposable
+    {
+        public void Dispose()
+        {
+            turn.ReleaseMutex();
+            turn.Dispose();
+        }
+    }
+
+    private static string HoldHandleName(string token) => $@"Local\AgentOrangeHold-{token}";
+
+    // Each has a handle that only stays while its window does, so one left by a window that's gone
+    // can be told apart, and doesn't hold anything up.
+    private void Hold(string kind, string target, Project claimant)
+    {
+        Release(kind, target);
+
+        var token = Guid.NewGuid().ToString("N");
+        var alive = new Mutex(false, HoldHandleName(token));
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO holds (token, kind, target, project_id, project_name) VALUES ($token, $kind, $target, $id, $name)";
+        command.Parameters.AddWithValue("$token", token);
+        command.Parameters.AddWithValue("$kind", kind);
+        command.Parameters.AddWithValue("$target", target);
+        command.Parameters.AddWithValue("$id", claimant.Id);
+        command.Parameters.AddWithValue("$name", claimant.Name);
+        command.ExecuteNonQuery();
+        lock (_holds) _holds[$"{kind}:{target}"] = (token, alive);
+    }
+
+    private void Release(string kind, string target)
+    {
+        (string Token, Mutex Alive) held;
+        lock (_holds)
+        {
+            if (!_holds.Remove($"{kind}:{target}", out held)) return;
+        }
+        held.Alive.Dispose();
+
+        try
+        {
+            RemoveHold(held.Token);
+        }
+        catch (SqliteException error)
+        {
+            AppLog.Write($"Couldn't clear a hold, which clears itself next time it's looked at: {error.Message}");
+        }
+    }
+
+    private void RemoveHold(string token)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM holds WHERE token = $token";
+        command.Parameters.AddWithValue("$token", token);
+        command.ExecuteNonQuery();
+    }
+
+    private List<(string Target, Project Holder)> LiveHolds(string kind, string? exceptProjectId)
+    {
+        var found = new List<(string Token, string Target, string Id, string Name)>();
+        using (var connection = Open())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT token, target, project_id, project_name FROM holds WHERE kind = $kind";
+            command.Parameters.AddWithValue("$kind", kind);
+            using var reader = command.ExecuteReader();
+            while (reader.Read()) found.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+        }
+
+        var live = new List<(string Target, Project Holder)>();
+        foreach (var hold in found)
+        {
+            if (!HoldIsAlive(hold.Token))
+            {
+                RemoveHold(hold.Token);
+                continue;
+            }
+            if (hold.Id != exceptProjectId) live.Add((hold.Target, new Project(hold.Id, hold.Name, "", "", "", "", DateTimeOffset.UtcNow)));
+        }
+        return live;
+    }
+
+    private static bool HoldIsAlive(string token)
+    {
+        try
+        {
+            if (!Mutex.TryOpenExisting(HoldHandleName(token), out var hold)) return false;
+            hold.Dispose();
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return true; // There is one, and it belongs to a window running as administrator.
+        }
     }
 
     /// <summary>Projects this PC hasn't received yet keep their place in line, behind these.</summary>

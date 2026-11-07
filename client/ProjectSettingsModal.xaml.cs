@@ -390,7 +390,23 @@ public partial class ProjectSettingsModal : UserControl
             return $"{holder.Name} already uses that repo, which GitHub now calls {renamed}. A repo can only be one project.";
         }
 
-        Update(projectId, current => current with { RepoUrl = url });
+        // And the other way around, with this being the new name.
+        if (await GitTools.ProjectUnderOldNameAsync(url, projectId) is { } older)
+        {
+            return $"{older} already uses that repo, under the name it had before GitHub renamed it. A repo can only be one project.";
+        }
+
+        // Another window can have got to it during all of that.
+        if (Find(projectId) is not { } project) return null;
+        if (await _database.ClaimRepoAsync(url, project) is { } other) return $"{other.Name} already uses that repo. A repo can only be one project.";
+        try
+        {
+            Update(projectId, current => current with { RepoUrl = url });
+        }
+        finally
+        {
+            _database.ReleaseRepo(url);
+        }
         return null;
     }
 

@@ -55,6 +55,11 @@ public partial class NewProjectWizard : UserControl
 
     public Action<string> ReleaseFolder { get; set; } = _ => { };
 
+    /// <summary>The same for a repo. Returns the project that already has it, if one does.</summary>
+    public Func<string, string, Task<string?>> ClaimRepo { get; set; } = (_, _) => Task.FromResult<string?>(null);
+
+    public Action<string> ReleaseRepo { get; set; } = _ => { };
+
     public event Action? Closed;
 
     /// <summary>Stopping now could leave a repo on GitHub with no project pointing at it.</summary>
@@ -260,6 +265,7 @@ public partial class NewProjectWizard : UserControl
             string url;
             bool confirmed;
             var claimed = false;
+            var repoHeld = false;
             try
             {
                 if (!await GitTools.FolderExistsAsync(path))
@@ -310,6 +316,13 @@ public partial class NewProjectWizard : UserControl
                     // An approval only stands if the folder then gets used.
                     if ((allowedJustNow || _allowedForThisTry) && failure is not null) GitTools.ForgetAllowedFolderSettings(path);
                 }
+
+                // Another window can have got to this repo during all of that.
+                if (failure is null)
+                {
+                    if (await ClaimRepo(url, _name) is { } repoHolder) (url, confirmed, failure) = ("", false, $"{repoHolder} already uses that repo. A repo can only be one project.");
+                    else repoHeld = true;
+                }
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
             {
@@ -348,6 +361,10 @@ public partial class NewProjectWizard : UserControl
                 ReleaseFolder(path);
                 ShowProblem(problem, "The app's database can't be reached, so the project may not have been saved. Once it's back, check your projects before trying again.");
                 return;
+            }
+            finally
+            {
+                if (repoHeld) ReleaseRepo(url);
             }
             if (!_cloneIntoFolder) ReleaseFolder(path);
             Close();
@@ -412,6 +429,12 @@ public partial class NewProjectWizard : UserControl
         if (renamed is not null && GitTools.ProjectUsingRepo(renamed) is { } holder)
         {
             return ("", false, $"{holder} already uses that repo, which GitHub now calls {renamed}. A repo can only be one project.");
+        }
+
+        // And the other way around, with this being the new name.
+        if (await GitTools.ProjectUnderOldNameAsync(url) is { } older)
+        {
+            return ("", false, $"{older} already uses that repo, under the name it had before GitHub renamed it. A repo can only be one project.");
         }
         if (state.Origin is not null && !GitTools.SameRepo(state.OriginToCompare!, url))
         {
@@ -496,6 +519,7 @@ public partial class NewProjectWizard : UserControl
                 {
                     if (Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(project.Folder)) is null) return ("", false, "That's a whole drive, and a repo's files can't be cloned onto it. Choose a folder on it.");
                     if (await GitTools.FolderIsLinkAsync(project.Folder)) return ("", false, "That folder is a link, and a clone would replace it. Choose the real folder it points to.");
+                    if (!await GitTools.CanWorkBesideAsync(project.Folder)) return ("", false, "A clone is prepared beside the folder it's going into, and this PC can't write there. Make a new folder inside this one and choose that.");
 
                     _cloneIntoFolder = true;
                     return (url, true, null);

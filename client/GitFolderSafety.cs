@@ -361,7 +361,13 @@ internal static partial class GitFolderSafety
 
             // Pointing a setting at nothing is the usual way to turn off a repo's hooks.
             // Git can read these from either place, depending on what's asking.
-            if (PathSetting().IsMatch(parts[0]) && value != "/dev/null" && (IsUnsafeGitPath(chosen, value, directory, true, out _) || IsUnsafeGitPath(chosen, value, chosen, true, out _))) return named;
+            if (PathSetting().IsMatch(parts[0]) && value is not ("" or "/dev/null"))
+            {
+                // How Git Bash writes a drive, which may be how this got set. Anything else with one
+                // slash at the start isn't something this can be sure how Git reads, so it's refused.
+                var path = BashDrivePath().Replace(value, "$1:/$2");
+                if (IsUnsafeGitPath(chosen, path, directory, true, out _) || IsUnsafeGitPath(chosen, path, chosen, true, out _)) return named;
+            }
 
             if (!IncludeSetting().IsMatch(parts[0])) continue;
             if (IsUnsafeGitPath(chosen, value, directory, true, out var included)) return named;
@@ -412,6 +418,9 @@ internal static partial class GitFolderSafety
         var root = Path.GetPathRoot(path);
         return !string.IsNullOrEmpty(root) && new DriveInfo(root).DriveType == DriveType.Network;
     }
+
+    [GeneratedRegex(@"^/([A-Za-z])/(.*)$", RegexOptions.Singleline)]
+    private static partial Regex BashDrivePath();
 
     [GeneratedRegex(@"^[A-Za-z]:[\\/]")]
     private static partial Regex DrivePath();

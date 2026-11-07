@@ -75,11 +75,12 @@ public partial class MainWindow
     private Point _pressPoint;
     private DateTimeOffset _dragEnded;
     private bool _refreshAfterDrag;
+    private bool _gearPressed; // Not a card being pressed, as that could start a drag, but a rebuild would still remove it.
 
     private void RefreshProjects()
     {
         // A rebuild while a card is pressed would remove it, and the click would be lost.
-        if (_draggedCard is not null || _pressedCard is not null)
+        if (_draggedCard is not null || _pressedCard is not null || _gearPressed)
         {
             _refreshAfterDrag = true;
             return;
@@ -179,7 +180,11 @@ public partial class MainWindow
             Visibility = Visibility.Hidden,
         };
         AutomationProperties.SetName(gear, $"Settings for {project.Name}");
-        gear.PreviewMouseLeftButtonDown += (_, _) => _pressedCard = null;
+        gear.PreviewMouseLeftButtonDown += (_, _) =>
+        {
+            _pressedCard = null;
+            _gearPressed = true;
+        };
         gear.Click += (_, e) =>
         {
             e.Handled = true;
@@ -297,6 +302,7 @@ public partial class MainWindow
     {
         var folder = _database.GetProjectFolder(projectId);
         var here = folder is not null && await GitTools.FolderExistsAsync(folder);
+        label.Text = folder is null ? "Not on this PC" : "Folder not found"; // It can just be on a drive that's unplugged.
         label.Visibility = here ? Visibility.Collapsed : Visibility.Visible;
     }
 
@@ -466,11 +472,19 @@ public partial class MainWindow
         // Renamed or moved on GitHub, which follows that for a while but won't forever. This is
         // the same repo, so the project and its folder just move to the new address.
         var renamedHeldBy = renamed is null ? null : GitTools.ProjectUsingRepo(renamed);
+        if (renamed is not null && renamedHeldBy is null) renamedHeldBy = (await _database.ClaimRepoAsync(renamed, latest))?.Name;
         if (renamed is not null && renamedHeldBy is null)
         {
             var wasVerified = _database.GetSetting(VerifiedSetting(project.Id)) == GitTools.RepoKey(latest.RepoUrl);
             var wasCreatedHere = _database.GetSetting(CreatedHereSetting(project.Id)) == GitTools.RepoKey(latest.RepoUrl);
-            _database.UpdateProject(project.Id, current => current with { RepoUrl = renamed });
+            try
+            {
+                _database.UpdateProject(project.Id, current => current with { RepoUrl = renamed });
+            }
+            finally
+            {
+                _database.ReleaseRepo(renamed);
+            }
             if (check.Access == RepoAccess.Allowed || wasVerified) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(renamed));
             if (wasCreatedHere) _database.SetSetting(CreatedHereSetting(project.Id), GitTools.RepoKey(renamed));
 
