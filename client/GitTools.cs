@@ -303,7 +303,7 @@ public static partial class GitTools
         if (state.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
         if (!SameRepo(state.OriginToCompare!, repoUrl))
         {
-            var (renamed, moveProblem) = await MoveIfRepoRenamedAsync(folder, state, repoUrl);
+            var (renamed, moveProblem, originAnswered) = await MoveIfRepoRenamedAsync(folder, state, repoUrl);
             if (moveProblem is not null) return moveProblem;
             if (renamed)
             {
@@ -318,7 +318,7 @@ public static partial class GitTools
                 var (current, answered) = await CurrentRepoUrlAsync(repoUrl);
                 if (!SameRepo(current, state.OriginToCompare!))
                 {
-                    return answered && (await CurrentRepoUrlAsync(state.OriginToCompare!)).Answered
+                    return answered && originAnswered
                         ? $"That folder uses a different repo: {state.Origin}"
                         : $"{MayUseDifferentRepo}{state.Origin}. GitHub can't be reached to check whether that's this repo under an older name.";
                 }
@@ -334,11 +334,13 @@ public static partial class GitTools
     /// running anything from the folder, so its remote just moves to the new name, the way it
     /// connects now. Moved is false if it isn't the same repo, and Problem says why one that is couldn't be moved.
     /// </summary>
-    public static async Task<(bool Moved, string? Problem)> MoveIfRepoRenamedAsync(string folder, FolderRepo state, string repoUrl)
+    public static async Task<(bool Moved, string? Problem, bool OriginAnswered)> MoveIfRepoRenamedAsync(string folder, FolderRepo state, string repoUrl)
     {
-        if (state.Origin is null || await RenamedRepoUrlAsync(state.OriginToCompare!) is not { } current || !SameRepo(current, repoUrl)) return (false, null);
+        if (state.Origin is null) return (false, null, true);
+        var (current, answered) = await CurrentRepoUrlAsync(state.OriginToCompare!);
+        if (!answered || SameRepo(current, state.OriginToCompare!) || !SameRepo(current, repoUrl)) return (false, null, answered);
         var problem = await MoveOriginAsync(folder, SameWayTo(state.Origin, repoUrl), state.OriginToCompare!);
-        return (problem is null, problem);
+        return (problem is null, problem, true);
     }
 
     /// <summary>
@@ -1757,8 +1759,8 @@ public static partial class GitTools
         return answer;
     }
 
-    // The address itself if it hasn't moved, or that can't be told. Answered says GitHub could be
-    // asked at all, as a repo that's gone is still an answer.
+    // The address itself if it hasn't moved, or that can't be told. Answered says GitHub really
+    // answered, with a name or by saying the repo's gone, and anything else isn't kept or relied on.
     private static async Task<(string Current, bool Answered)> CurrentRepoUrlAsync(string url)
     {
         if (RepoUrlProblem(url) is not null) return (url, true);
@@ -1766,9 +1768,10 @@ public static partial class GitTools
         var parts = RepoIdentity(url).Split('/');
         var slug = $"{parts[1]}/{parts[2]}";
         var view = await RunAsync("gh", Path.GetTempPath(), "repo", "view", slug, "--json", "nameWithOwner", "--jq", ".nameWithOwner");
-        if (view is null or { ExitCode: < 0 } || (view.ExitCode != 0 && LooksLikeNetworkFailure(view.Errors))) return (url, false);
+        if (view is null or { ExitCode: < 0 }) return (url, false);
+        if (view.ExitCode != 0) return (url, SaysRepoMissing(view.Errors) || view.Errors.Contains("HTTP 404", StringComparison.Ordinal));
 
-        var current = view.ExitCode == 0 ? view.Output.Trim() : "";
+        var current = view.Output.Trim();
         if (current.Length == 0 || current.Equals(slug, StringComparison.OrdinalIgnoreCase)) return (url, true);
 
         var renamed = $"https://github.com/{current}.git";

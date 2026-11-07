@@ -446,7 +446,7 @@ public partial class NewProjectWizard : UserControl
 
         if (state.Origin is not null && !GitTools.SameRepo(state.OriginToCompare!, url))
         {
-            var (moved, moveProblem) = await GitTools.MoveIfRepoRenamedAsync(project.Folder, state, url);
+            var (moved, moveProblem, _) = await GitTools.MoveIfRepoRenamedAsync(project.Folder, state, url);
             if (moveProblem is not null) return ("", false, moveProblem);
             if (moved)
             {

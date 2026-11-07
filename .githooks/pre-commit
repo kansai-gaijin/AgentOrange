@@ -26,7 +26,7 @@ while IFS= read -r file; do
 
     hook=no
     case "$file" in
-        .githooks/*) hook=yes ;; # They name the very patterns they look for, so only that check is skipped.
+        .githooks/pre-commit) hook=yes ;; # It names the very patterns it looks for, so only that check is skipped.
         *.db | *.db-* | *.sqlite | *.sqlite-* | *.sqlite3 | *.sqlite3-*)
             echo "Blocked: $file looks like a database." >&2
             status=1

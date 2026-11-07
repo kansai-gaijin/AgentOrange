@@ -516,7 +516,7 @@ public partial class ProjectSettingsModal : UserControl
         _saved[field] = initial;
         var session = _session;
 
-        void Queue()
+        void Queue(bool leaving)
         {
             // The value is fixed now. It may have been edited again by the time this runs.
             var value = field.Text.Trim();
@@ -531,8 +531,8 @@ public partial class ProjectSettingsModal : UserControl
                     // Skipped while it had focus, and nothing else would come back to it.
                     if (Current() is { } latest)
                     {
-                        if (field == _nameField) RefreshIfUntouched(field, latest.Name, evenWithFocus: true);
-                        else if (field == _repoField) RefreshIfUntouched(field, latest.RepoUrl, evenWithFocus: true);
+                        if (field == _nameField) RefreshIfUntouched(field, latest.Name, evenWithFocus: leaving);
+                        else if (field == _repoField) RefreshIfUntouched(field, latest.RepoUrl, evenWithFocus: leaving);
                     }
                     return;
                 }
@@ -564,10 +564,10 @@ public partial class ProjectSettingsModal : UserControl
             });
         }
 
-        field.LostKeyboardFocus += (_, _) => Queue();
+        field.LostKeyboardFocus += (_, _) => Queue(true);
         field.KeyDown += (_, e) =>
         {
-            if (e.Key == Key.Enter) Queue();
+            if (e.Key == Key.Enter) Queue(false);
         };
     }
 
