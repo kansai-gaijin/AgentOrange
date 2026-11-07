@@ -1284,7 +1284,7 @@ public partial class MainWindow
                 var isLinked = _database.GetProjectFolder(project.Id) == result.Value;
 
                 // Files that never got put in place come first, and it stays unfinished until they're sorted out.
-                if (isLinked && hold is not null && result.Note is null)
+                if (isLinked && hold is not null && result.Note is null && await GitTools.LookBeforeFinishingAsync(result.Value) is { Refused: null } look && GitTools.AreAllowed(GitTools.FinishApprovalKey(result.Value), look.Settings))
                 {
                     missing = await GitTools.FinishDownloadAsync(result.Value, cancel.Token, stage => ShowBusyStage("Cloning…", stage));
                 }

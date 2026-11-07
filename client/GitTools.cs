@@ -366,6 +366,7 @@ public static partial class GitTools
             var gitDirectory = Path.Combine(folder, ".git");
             if (await Task.Run(() => File.Exists(gitDirectory))) return new SubmoduleLook(lines, "This folder keeps its Git data somewhere else, which a clone from this app never does, so what it would use can't be checked and nothing was run in it. If you trust it, run git submodule update --init --recursive and git lfs pull in the folder yourself.");
             if (!await Task.Run(() => Directory.Exists(gitDirectory))) return new SubmoduleLook(lines, null);
+            lines.AddRange(await Task.Run(() => HooksIn(gitDirectory, ".git")));
             var places = new HashSet<string>(await Task.Run(() => GitFolderSafety.ModuleDirectories(gitDirectory)), StringComparer.OrdinalIgnoreCase);
 
             // A submodule's folder can also keep its Git data itself, or say it's somewhere else.
@@ -400,7 +401,7 @@ public static partial class GitTools
                     if (await ReadSettingsFileAsync(settingsFile) is not { } settings) return null;
                     lines.AddRange(settings.Split('\0', StringSplitOptions.RemoveEmptyEntries).Where(setting => !SafeWhileFinishing().IsMatch(setting) && !IsSubmodulesOwnWorktree(setting, place, folder)).Select(setting => $"{name}: {setting}"));
                 }
-                lines.AddRange(await Task.Run(() => SubmoduleHooks(place, name)));
+                lines.AddRange(await Task.Run(() => HooksIn(place, name)));
             }
             return new SubmoduleLook(lines, null);
         }
@@ -474,20 +475,18 @@ public static partial class GitTools
     }
 
     // Anything that isn't one of Git's samples, or a hook Git LFS added for itself.
-    private static List<string> SubmoduleHooks(string place, string name)
+    private static List<string> HooksIn(string place, string name)
     {
         var found = new List<string>();
         var hooks = new DirectoryInfo(Path.Combine(place, "hooks"));
         if (!hooks.Exists) return found;
         foreach (var hook in hooks.EnumerateFiles().Where(file => !file.Name.EndsWith(".sample", StringComparison.OrdinalIgnoreCase)))
         {
-            if (hook.Length > MaxHookBytes)
-            {
-                found.Add($"{name}: the hook {hook.Name} ({hook.Length} bytes)");
-                continue;
-            }
-            var bytes = File.ReadAllBytes(hook.FullName);
-            if (!StandardLfsHook().IsMatch(Encoding.UTF8.GetString(bytes))) found.Add($"{name}: the hook {hook.Name} ({Convert.ToHexString(SHA256.HashData(bytes))[..12]})");
+            if (hook.Length <= MaxHookBytes && StandardLfsHook().IsMatch(File.ReadAllText(hook.FullName))) continue;
+
+            // Read as it goes, as one could be any size, and approving it covers everything in it.
+            using var contents = hook.OpenRead();
+            found.Add($"{name}: the hook {hook.Name} ({Convert.ToHexString(SHA256.HashData(contents))[..12]})");
         }
         return found;
     }
@@ -1283,6 +1282,19 @@ public static partial class GitTools
     /// </summary>
     public static async Task<string?> FinishDownloadAsync(string folder, CancellationToken cancel = default, Action<string>? progress = null)
     {
+        try
+        {
+            return await FinishDownloadInFolderAsync(folder, cancel, progress);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write($"Couldn't finish a download: {error.Message}");
+            return $"That folder stopped being available: {error.Message} What's arrived so far is kept, so try again once it's back.";
+        }
+    }
+
+    private static async Task<string?> FinishDownloadInFolderAsync(string folder, CancellationToken cancel, Action<string>? progress)
+    {
         // Getting no answer isn't the same as there being nothing to do, so it stays unfinished.
         const string noAnswer = "Git didn't answer when asked what this folder still needs, so it can't be called finished yet. Try again.";
 
@@ -1522,6 +1534,13 @@ public static partial class GitTools
         foreach (var setting in ((lfsConfig is { ExitCode: 0 } ? lfsConfig.Output : "") + lfsConfigHere).Split('\0', StringSplitOptions.RemoveEmptyEntries).Select(entry => entry.Split('\n', 2)).Where(parts => parts.Length == 2 && LargeFileUrlSetting().IsMatch(parts[0])))
         {
             if (!AllowedLargeFileUrl().IsMatch(setting[1])) return $"The clone finished, but its large files weren't fetched, because the repo says they're at {HideLogins(OneLine(setting[1]))}, which isn't an address on a server. Fix that in .lfsconfig, then try again.";
+        }
+
+        var gitDirectory = await RunAsync("git", folder, "rev-parse", "--absolute-git-dir");
+        if (gitDirectory is not { ExitCode: 0 }) return "Git didn't answer when asked where this repo's data is, so its large files can't be called finished yet. Try again.";
+        if (await Task.Run(() => GitFolderSafety.LargeFileStoreProblem(gitDirectory.Output.Trim())) is { } leadsAway)
+        {
+            return $"The clone finished, but its large files weren't fetched, because {leadsAway}, which is on a network or goes through too many links. Opening one could send your Windows login there. Fix that, then try again.";
         }
 
         progress?.Invoke("Downloading large files");

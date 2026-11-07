@@ -240,6 +240,53 @@ internal static partial class GitFolderSafety
         return null;
     }
 
+    /// <summary>
+    /// Moving big files onto another drive with a link is normal, so the usual look leaves them
+    /// alone, but Git LFS opens what's there. So where each link leads is read, without following
+    /// it, and one onto a network is refused. Only for when Git LFS is about to run, as there can
+    /// be a lot of these. Says what stopped it, or null if nothing did.
+    /// </summary>
+    public static string? LargeFileStoreProblem(string gitDirectory)
+    {
+        var waiting = new Stack<(string Path, int Hops)>();
+        waiting.Push((Path.Combine(gitDirectory, "lfs"), 0));
+        while (waiting.TryPop(out var place))
+        {
+            var directory = new DirectoryInfo(place.Path);
+            if (!directory.Exists) continue;
+
+            if (directory.LinkTarget is { } leadsTo)
+            {
+                if (LeadsAway(directory.Parent?.FullName, leadsTo, place.Hops, out var next)) return $"{directory.FullName} leads to {leadsTo}";
+                waiting.Push((next, place.Hops + 1));
+                continue;
+            }
+
+            foreach (var entry in directory.EnumerateFileSystemInfos())
+            {
+                if (entry.Attributes.HasFlag(FileAttributes.Directory))
+                {
+                    waiting.Push((entry.FullName, place.Hops));
+                }
+                else if (entry.LinkTarget is { } fileLeadsTo)
+                {
+                    if (LeadsAway(place.Path, fileLeadsTo, place.Hops, out _)) return $"{entry.FullName} leads to {fileLeadsTo}";
+                }
+            }
+        }
+        return null;
+    }
+
+    private static bool LeadsAway(string? from, string target, int hops, out string next)
+    {
+        // The form Windows can keep a local target in, which would otherwise look like a share.
+        var plain = target.StartsWith(@"\\?\", StringComparison.Ordinal) && !target.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase) ? target[4..] : target;
+        next = "";
+        if (hops >= MaxIncludeDepth || StartsLikeShare(plain) || from is null) return true;
+        next = Path.GetFullPath(plain, from);
+        return IsNetworkPath(next);
+    }
+
     private static bool IsSubmoduleData(string gitDirectory, string directory) =>
         directory.StartsWith(Path.Combine(gitDirectory, "modules") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) && Exists(Path.Combine(directory, "HEAD"));
 

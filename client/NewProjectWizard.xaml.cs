@@ -433,7 +433,7 @@ public partial class NewProjectWizard : UserControl
             }
         }
 
-        // The same check as selecting a folder for an existing project, such as where it pushes to.
+        // The same check as selecting a folder for an existing project.
         if (state.Origin is not null && await GitTools.FolderProblemAsync(project.Folder, url) is { } folderProblem)
         {
             return ("", false, folderProblem);
