@@ -65,8 +65,15 @@ public static partial class EngineVersions
                 if (inside is not null && (!Directory.Exists(within) || SshConfigFile.IsLink(within))) continue;
                 foreach (var file in Directory.EnumerateFiles(within, pattern, Everything).Where(path => !SshConfigFile.IsLink(path)))
                 {
-                    if (new FileInfo(file).Length > MaxProjectFileBytes) continue;
-                    if (parse(File.ReadAllText(file)) is { } found) return found;
+                    try
+                    {
+                        if (new FileInfo(file).Length > MaxProjectFileBytes) continue;
+                        if (parse(File.ReadAllText(file)) is { } found) return found;
+                    }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
+                    {
+                        AppLog.Write($"Couldn't read the engine version: {error.Message}");
+                    }
                 }
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)

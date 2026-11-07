@@ -1270,7 +1270,7 @@ public partial class MainWindow
             }
             if (_projectCheck is not { } check)
             {
-                ShowPageProblem(projectId, $"The clone into {folder} didn't start, because this project changed while it was being checked. Choose Clone and pick {folder} again.");
+                ShowPageProblem(projectId, $"The clone into {folder} didn't start, because this project's repo was still being checked. Choose Clone and pick {folder} again.");
                 return;
             }
             if (!CanWorkIn(latest, check))
@@ -1815,7 +1815,9 @@ public partial class MainWindow
         {
             if (!heldAlready) _database.ReleaseFolder(folder);
         }
-        await ReadEngineVersionAsync(projectId);
+
+        // An open page reads it after its own check, and only if that lets this PC work in the project.
+        if (_openProject?.Id != projectId) await ReadEngineVersionAsync(projectId);
         await RefreshThenRecheckAsync(projectId);
         return true;
     }

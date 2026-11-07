@@ -24,7 +24,7 @@ checks_out() {
         echo "Blocked: this seems to hold a personal path or a private address." >&2
         return 1
     fi
-    if grep -IoE '[[:alnum:]._%+-]+@([[:alnum:]-]+\.)+[[:alpha:]]{2,}' "$1" | grep -vqE '^git@github\.com$|@example\.(com|org)$|noreply'; then
+    if grep -IoE '[[:alnum:]._%+-]+@([[:alnum:]-]+\.)+[[:alpha:]]{2,}' "$1" | grep -vqE '^git@github\.com$|@example\.(com|org)$|@users\.noreply\.github\.com$|^noreply@'; then
         echo "Blocked: this seems to hold an email address." >&2
         return 1
     fi

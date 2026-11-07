@@ -165,21 +165,24 @@ pub async fn sync(
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis() as i64);
-    for change in &request.changes {
-        if change.changed_at < 0
+    // All of it is looked at before any is written, so a refused batch takes none of it.
+    let refused = request.changes.iter().any(|change| {
+        change.changed_at < 0
             || change.changed_at > now.saturating_add(DAY_MILLISECONDS)
             || change.collection.is_empty()
             || change.id.is_empty()
             || change.collection.len() > MAX_KEY_LENGTH
             || change.id.len() > MAX_KEY_LENGTH
+            // Postgres can't store this, and a 500 would be retried forever.
             || [&change.collection, &change.id, &change.data]
                 .iter()
                 .any(|text| text.contains('\0'))
-        // Postgres can't store this, and a 500 would be retried forever.
-        {
-            return Err(StatusCode::BAD_REQUEST);
-        }
+    });
+    if refused {
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
+    for change in &request.changes {
         let stored = state
             .db
             .execute(
