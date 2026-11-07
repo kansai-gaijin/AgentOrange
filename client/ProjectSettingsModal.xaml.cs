@@ -394,7 +394,7 @@ public partial class ProjectSettingsModal : UserControl
         var url = GitTools.AsProjectUrl(typed);
         if (url.Length == 0) return "A project needs a repo.";
         if (GitTools.RepoUrlProblem(url) is { } problem) return problem;
-        if (ProjectIsBusy(projectId)) return "This project is busy. Change its repo when that finishes.";
+        if (ProjectIsBusy(projectId)) return "This project is busy. Change its repo when that finishes, or put the old one back.";
 
         // GitHub still answers to a repo's old names, so the address isn't enough to tell them apart.
         var (currentUrl, holder, underAnotherName) = await GitTools.WhoHasRepoAsync(url, projectId);

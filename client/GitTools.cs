@@ -88,6 +88,12 @@ public sealed record FinishLook(FolderGitSettings Settings, string? Refused);
 /// <summary>What a chosen folder is, as far as Git is concerned.</summary>
 public sealed record FolderRepo(bool InsideRepo, bool IsRepoRoot, string? Origin, string? Problem = null, string? GitHubOrigin = null)
 {
+    /// <summary>
+    /// The remote as Git has it, with any login in it. Never shown, logged or saved anywhere but
+    /// that folder's own remote, and internal so a record's text form leaves it out.
+    /// </summary>
+    internal string? OriginWithLogin { get; init; }
+
     /// <summary>A folder inside someone else's repo would inherit that repo without really being it.</summary>
     public bool IsInsideAnotherRepo => InsideRepo && !IsRepoRoot;
 
@@ -305,7 +311,7 @@ public static partial class GitTools
         {
             var remote = WithoutCredentials(origin.Output.Trim());
             var (gitHubForm, aliasProblem) = await GitHubFormAsync(remote, folder);
-            return new FolderRepo(true, true, remote, aliasProblem, gitHubForm);
+            return new FolderRepo(true, true, remote, aliasProblem, gitHubForm) { OriginWithLogin = origin.Output.Trim() };
         }
 
         // Git documents exit code 2 for a remote that doesn't exist.
@@ -369,7 +375,7 @@ public static partial class GitTools
         var originName = await CurrentRepoUrlAsync(state.OriginToCompare!);
         var (current, answered) = (originName.Current, originName.Answered);
         if (!answered || SameRepo(current, state.OriginToCompare!) || !SameRepo(current, repoUrl)) return (false, null, answered, current);
-        var problem = await MoveOriginAsync(folder, SameWayTo(state.Origin, repoUrl), state.OriginToCompare!);
+        var problem = await MoveOriginAsync(folder, SameWayTo(state, repoUrl), state.OriginToCompare!);
         return (problem is null, problem, true, current);
     }
 
@@ -760,6 +766,19 @@ public static partial class GitTools
         return $"https://github.com/{path}.git";
     }
 
+    // The same, keeping the login in a folder's HTTPS address, as an SSH alias is kept.
+    private static string SameWayTo(FolderRepo state, string url)
+    {
+        var address = SameWayTo(state.Origin!, url);
+        if (state.OriginWithLogin is not { } withLogin
+            || !Uri.TryCreate(withLogin, UriKind.Absolute, out var from) || from.Scheme != Uri.UriSchemeHttps || from.UserInfo.Length == 0
+            || !Uri.TryCreate(address, UriKind.Absolute, out var to) || to.Scheme != Uri.UriSchemeHttps || !string.Equals(from.Host, to.Host, StringComparison.OrdinalIgnoreCase))
+        {
+            return address;
+        }
+        return $"https://{from.UserInfo}@{to.Authority}{to.AbsolutePath}";
+    }
+
     // Git's SSH form doesn't have to say github.com. A host can be an alias in the person's
     // SSH settings, which is common with more than one GitHub account.
     private static async Task<(string? GitHubForm, string? Problem)> GitHubFormAsync(string remote, string folder)
@@ -858,7 +877,7 @@ public static partial class GitTools
         if (state.Origin is null && onlyIfOnRepo is not null) return new GitResult(false, RemoteChangedMeanwhile);
         if (state.Origin is null) return await ConnectFolderAsync(folder, await ReachableFormAsync(repoUrl) ?? repoUrl);
 
-        var newRemote = state.GitHubOrigin is not null ? SameWayTo(state.Origin, repoUrl) : await ReachableFormAsync(repoUrl) ?? repoUrl;
+        var newRemote = state.GitHubOrigin is not null ? SameWayTo(state, repoUrl) : await ReachableFormAsync(repoUrl) ?? repoUrl;
         return await MoveOriginAsync(folder, newRemote, onlyIfOnRepo ?? state.OriginToCompare!) is { } moveProblem
             ? new GitResult(false, moveProblem)
             : new GitResult(true, repoUrl);
@@ -1165,7 +1184,7 @@ public static partial class GitTools
         if (state.Origin is not null && webUrl.Length == 0) return new GitResult(false, $"The repo {repoName} was created, but couldn't be linked to that folder. Enter its URL to use it.");
 
         string? newOrigin = null;
-        if (state.GitHubOrigin is not null) newOrigin = SameWayTo(state.Origin!, webUrl);
+        if (state.GitHubOrigin is not null) newOrigin = SameWayTo(state, webUrl);
         else if (state.Origin is not null) newOrigin = $"{webUrl}.git";
         else if (replacingRepo is not null && UsesSsh(replacingRepo) && webUrl.Length > 0) newOrigin = SameWayTo(replacingRepo, webUrl);
 
@@ -2050,8 +2069,8 @@ public static partial class GitTools
                 // A folder that pushes somewhere else gets reported as that, without contacting it.
                 // Its access to this repo is still asked, at the repo's own address, reached the way
                 // the folder fetches, as a URL doesn't go by the folder's push addresses.
-                var pushesElsewhere = await FolderProblemAsync(folder!, url) is not null || await PushAddressElsewhereAsync(folder!, "origin", url) is not null;
-                return new RepoCheck(await GitPushAnswerAsync(pushesElsewhere ? SameWayTo(state.Origin!, url) : "origin", folder!) switch
+                var pushesElsewhere = await PushAddressElsewhereAsync(folder!, "origin", url) is not null;
+                return new RepoCheck(await GitPushAnswerAsync(pushesElsewhere ? SameWayTo(state, url) : "origin", folder!) switch
                 {
                     PushAnswer.CanPush => RepoAccess.Allowed,
                     PushAnswer.Refused => RepoAccess.GitReadOnly,

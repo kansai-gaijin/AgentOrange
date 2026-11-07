@@ -1302,9 +1302,9 @@ public partial class MainWindow
             StartBusy(project, "Checking that folder…");
             var owner = destination is null ? null : await _database.ClaimFolderAsync(destination, project);
             isHeld = destination is not null && owner is null;
-            EndBusy();
             if (owner is not null)
             {
+                EndBusy();
                 ShowPageProblem(project.Id, LocalDatabase.RefusalFor(owner, $"{owner.Name} already uses a folder that overlaps where this would clone to. Project folders can't overlap."));
                 return;
             }
@@ -1400,7 +1400,7 @@ public partial class MainWindow
             && (_database.GetProjectFolder(project.Id) != folderBefore
                 || (!GitTools.SameRepo(latest.RepoUrl, project.RepoUrl) && !GitTools.SameRepo(await GitTools.RenamedRepoUrlAsync(project.RepoUrl) ?? "", latest.RepoUrl))))
         {
-            // Settings stay open during a clone, and what was chosen there is more recent.
+            // Changed through sync or in another window while this ran, and that's more recent.
             _cloneCancel = null;
             EndBusy();
             await RecheckThenShowAsync(project.Id, $"Cloned to {result.Value}, but this project changed while that ran, so it wasn't linked. The clone is still there.");
