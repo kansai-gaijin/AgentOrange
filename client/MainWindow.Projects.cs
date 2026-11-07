@@ -409,13 +409,16 @@ public partial class MainWindow
         if (_busyProjectId == project.Id)
         {
             _recheckAfterBusy = project.Id;
-            if (_openProject?.Id == project.Id)
+            if (_openProject?.Id == project.Id && GitTools.SameRepo(project.RepoUrl, _openProject.RepoUrl))
             {
                 _openProject = project;
                 RenderProject(project);
                 return;
             }
         }
+
+        // This is the look that was waiting.
+        else if (_recheckAfterBusy == project.Id) _recheckAfterBusy = null;
 
         var navigation = ++_navigation;
         _lastAccessCheck = DateTimeOffset.UtcNow;
@@ -934,7 +937,7 @@ public partial class MainWindow
         body.Children.Add(buttons);
 
         // A copy on this PC may reach the repo in a way the URL alone doesn't, such as its own SSH setup.
-        if (check.Access is RepoAccess.GitCantReach or RepoAccess.GitReadOnly or RepoAccess.GitOffline)
+        if (check.Access is RepoAccess.GitCantReach or RepoAccess.GitReadOnly || check.Access == RepoAccess.GitOffline && _settingsToAllow is { ChangesConnection: true })
         {
             var rows = new List<FrameworkElement>();
             var linked = _database.GetProjectFolder(project.Id);
@@ -1039,20 +1042,23 @@ public partial class MainWindow
         _busyCardText = null;
         _downloadIsInPlace = false;
         if (UpdateOverlay.IsVisible && !_downloading) ShowUpdateMessage();
-        // Settings closed for this project while that ran. If its page is still open, that looks again,
-        // and otherwise its folder is read the way any background read is.
-        var settingsChanged = _recheckAfterBusy;
-        _recheckAfterBusy = null;
+        if (_recheckAfterBusy is { } waiting) _ = Dispatcher.InvokeAsync(() => LookAgainAfterBusy(waiting), System.Windows.Threading.DispatcherPriority.Background);
         if (_openProject is null)
         {
-            if (settingsChanged is not null) _ = TellIfDatabaseFailsAsync(ReadEngineVersionAsync(settingsChanged));
             RefreshProjects();
             return;
         }
-
         RenderProject(_openProject);
-        if (settingsChanged == _openProject.Id) _ = RecheckIfStillOpenAsync(settingsChanged);
-        else if (settingsChanged is not null) _ = TellIfDatabaseFailsAsync(ReadEngineVersionAsync(settingsChanged));
+    }
+
+    // Something about this project changed while its job ran. If its page is still open, that looks
+    // again, and otherwise its folder is read the way any background read is. Left a moment, as what
+    // ended the job often looks again itself, or starts the next job, whose end is then soon enough.
+    private void LookAgainAfterBusy(string projectId)
+    {
+        if (_recheckAfterBusy != projectId || _busyProjectId is not null) return;
+        _recheckAfterBusy = null;
+        _ = TellIfDatabaseFailsAsync(_openProject?.Id == projectId ? RecheckIfStillOpenAsync(projectId) : ReadEngineVersionAsync(projectId));
     }
 
     // Shows the result if the person is still looking at this project.

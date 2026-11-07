@@ -75,7 +75,7 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
 }
 
 /// <summary>A folder's own Git settings that matter. The fingerprint says whether they've changed, without keeping them.</summary>
-public sealed record FolderGitSettings(string Shown, string Fingerprint, bool CanBeApproved = true)
+public sealed record FolderGitSettings(string Shown, string Fingerprint, bool CanBeApproved = true, bool ChangesConnection = false)
 {
     public static readonly FolderGitSettings None = new("", "");
 
@@ -595,8 +595,9 @@ public static partial class GitTools
 
         // Everything approved has to have been read, so what can't all be shown can't be approved.
         var shown = settings.Select(ForShowing).ToList();
-        if (shown.Count > MaxSettingsShown || shown.Any(line => line.Length > MaxSettingShown)) return new FolderGitSettings("", fingerprint, false);
-        return new FolderGitSettings(string.Join('\n', shown), fingerprint);
+        var changesConnection = settings.Any(setting => ConnectionSetting().IsMatch(setting.Split('\n')[0]));
+        if (shown.Count > MaxSettingsShown || shown.Any(line => line.Length > MaxSettingShown)) return new FolderGitSettings("", fingerprint, false, changesConnection);
+        return new FolderGitSettings(string.Join('\n', shown), fingerprint, ChangesConnection: changesConnection);
     }
 
     // Enough to judge what a setting does, without putting a login on the screen. A value can't
@@ -2454,6 +2455,10 @@ public static partial class GitTools
 
     [GeneratedRegex(@"marked as read.only|Permission to \S+ denied|Permission denied \(|error: 403|authentication failed|could not read username|invalid username|host key verification failed", RegexOptions.IgnoreCase)]
     private static partial Regex PushRefusal();
+
+    // Settings that change how Git gets to a server: the SSH program, a proxy, or another address.
+    [GeneratedRegex(@"^(core\.(sshcommand|gitproxy)|ssh\.|http\.|url\..*\.(insteadof|pushinsteadof)$|remote\..*\.proxy$)", RegexOptions.IgnoreCase)]
+    private static partial Regex ConnectionSetting();
 
     [GeneratedRegex(@"://[^/@\s]+@")]
     private static partial Regex LoginInUrl();
