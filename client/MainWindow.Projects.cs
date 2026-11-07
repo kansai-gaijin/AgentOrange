@@ -546,7 +546,9 @@ public partial class MainWindow
     }
 
     // A project on this PC may have moved to a newer engine since it was last opened. This never
-    // saves the project itself, because this PC's copy of it may be out of date.
+    // saves the project itself, because this PC's copy of it may be out of date. With no check of
+    // its own, it goes by whether this PC has been let into the project, while an open page also
+    // goes by what its check just found.
     private async Task ReadEngineVersionsAsync()
     {
         foreach (var project in _database.ListProjects()) await ReadEngineVersionAsync(project.Id);
@@ -662,16 +664,14 @@ public partial class MainWindow
         }
 
         // Getting no answer doesn't mean access was lost, so a PC that's reached this exact repo before can keep working.
-        var hasHadAccess = _database.GetSetting(VerifiedSetting(project.Id)) == GitTools.RepoKey(project.RepoUrl);
-        var workingOffline = check.IsUnanswered
-            && (hasHadAccess || _database.GetSetting(CreatedHereSetting(project.Id)) == GitTools.RepoKey(project.RepoUrl));
-        if (check.Access != RepoAccess.Allowed && !workingOffline)
+        if (!CanWorkIn(project, check))
         {
             AddRepoProblem(body, project, check);
             return;
         }
 
-        if (workingOffline)
+        var hasHadAccess = _database.GetSetting(VerifiedSetting(project.Id)) == GitTools.RepoKey(project.RepoUrl);
+        if (check.Access != RepoAccess.Allowed)
         {
             var (reason, nextTime) = check.Access switch
             {
@@ -1245,8 +1245,8 @@ public partial class MainWindow
     // ordinary clone, on its page, means it shows progress and can be cancelled.
     private async Task CloneIntoChosenFolderAsync(string projectId, string folder)
     {
-        // The wizard's hold stays until here, so nothing else can take the folder during the check.
-        var held = true;
+        // The wizard's hold becomes this project's before its page opens, so nothing else can take the
+        // folder during the check, and the project itself isn't turned away from it.
         try
         {
             if (FindProject(projectId) is not { } project) return;
@@ -1261,10 +1261,21 @@ public partial class MainWindow
 
             // What the page found when it opened is what the clone goes by, as the page would only
             // have offered one if that let it.
-            if (_openProject?.Id != projectId || _projectCheck is not { } check || !CanWorkIn(latest, check))
+            if (_openProject?.Id != projectId)
             {
-                if (_openProject?.Id == projectId) ShowPageProblem(projectId, $"The clone into {folder} didn't start, because this repo can't be used from this PC right now.");
-                else _heldProblems[projectId] = $"The clone into {folder} didn't start, because this project's page was left before its repo was checked. Open it and choose Clone to try again.";
+                // Its card says there's something to see, as nothing else would rebuild it.
+                _heldProblems[projectId] = $"The clone into {folder} didn't start, because this project's page was left before its repo was checked. Open it and choose Clone to try again.";
+                RefreshProjects();
+                return;
+            }
+            if (_projectCheck is not { } check)
+            {
+                ShowPageProblem(projectId, $"The clone into {folder} didn't start, because this project changed while it was being checked. Choose Clone and pick {folder} again.");
+                return;
+            }
+            if (!CanWorkIn(latest, check))
+            {
+                ShowPageProblem(projectId, $"The clone into {folder} didn't start, because this repo can't be used from this PC right now.");
                 return;
             }
 
@@ -1273,7 +1284,7 @@ public partial class MainWindow
         }
         finally
         {
-            if (held) _database.ReleaseFolder(folder);
+            _database.ReleaseFolder(folder);
         }
     }
 

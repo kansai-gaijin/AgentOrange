@@ -63,9 +63,11 @@ public static partial class EngineVersions
                 // the person's Windows login to whoever runs it.
                 var within = inside is null ? place : Path.Combine(place, inside);
                 if (inside is not null && (!Directory.Exists(within) || SshConfigFile.IsLink(within))) continue;
-                var file = Directory.EnumerateFiles(within, pattern, Everything).FirstOrDefault(path => !SshConfigFile.IsLink(path));
-                if (file is null || new FileInfo(file).Length > MaxProjectFileBytes) continue;
-                if (parse(File.ReadAllText(file)) is { } found) return found;
+                foreach (var file in Directory.EnumerateFiles(within, pattern, Everything).Where(path => !SshConfigFile.IsLink(path)))
+                {
+                    if (new FileInfo(file).Length > MaxProjectFileBytes) continue;
+                    if (parse(File.ReadAllText(file)) is { } found) return found;
+                }
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
             {
