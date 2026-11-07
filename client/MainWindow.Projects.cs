@@ -1127,12 +1127,18 @@ public partial class MainWindow
         // The linked folder only qualifies if it can really move to the new repo.
         var folder = _database.GetProjectFolder(project.Id);
         var folderIsUsable = folder is not null && await GitTools.FolderCanReplaceRepoAsync(folder, project.RepoUrl);
-        EndBusy();
 
+        // Still busy while the folder dialog is open, so nothing looks at the page behind it and
+        // forgets what they agreed to.
         if (!folderIsUsable)
         {
+            StartBusy(project, "Choosing a folder…");
             folder = Dialogs.PickFolder($"Choose the folder for {project.Name}");
-            if (folder is null || _busyProjectId is not null) return;
+            if (folder is null)
+            {
+                EndBusy();
+                return;
+            }
 
             // The dialog can stay open a long time, and what they agreed to named an account.
             StartBusy(project, "Checking the repo again…");
