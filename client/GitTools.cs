@@ -32,6 +32,7 @@ public enum RepoAccess
     BadUrl,
     Offline,
     CheckFailed,
+    GitPushUnchecked,
 }
 
 /// <summary>Account is the signed-in GitHub account this applies to, when there is one.</summary>
@@ -56,6 +57,7 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
         RepoAccess.GitReadOnly => ("Git on this PC can only read this repo", "Your GitHub account can work on it, but the key or login Git uses here can't push to it. Check this PC's Git setup, such as a read-only deploy key, or run gh auth setup-git."),
         RepoAccess.BadUrl => ("This repo URL can't be used", "It has to be a GitHub repo, with no password or token in the URL. Change it in project settings."),
         RepoAccess.Offline => ("Couldn't reach GitHub", "This PC seems to be offline or blocked from GitHub, and it hasn't had access to this repo before."),
+        RepoAccess.GitPushUnchecked => ("Couldn't check pushing", "Your GitHub account has access, but Git on this PC couldn't finish checking whether it can push to this repo. Try again in a moment."),
         RepoAccess.Allowed => ("You have access", ""),
         _ => ("Couldn't check this repo", "GitHub gave an unexpected answer. Try again in a moment."),
     };
@@ -538,7 +540,7 @@ public static partial class GitTools
         return found;
     }
 
-    public static string FinishApprovalKey(string folder) => $"{folder}|finish";
+    public static string FinishApprovalKey(string folder) => $"{Path.TrimEndingDirectorySeparator(folder)}|finish";
 
     private static async Task<FolderGitSettings?> ReadFolderSettingsAsync(string folder, string wanted, Func<string, bool>? harmless) =>
         await ReadSettingLinesAsync(folder, wanted, harmless) is { } settings ? SummedUp(settings) : null;
@@ -2036,7 +2038,7 @@ public static partial class GitTools
                 {
                     PushAnswer.CanPush => RepoAccess.Allowed,
                     PushAnswer.Refused => RepoAccess.GitReadOnly,
-                    _ => RepoAccess.CheckFailed,
+                    _ => RepoAccess.GitPushUnchecked,
                 });
             }
 
@@ -2078,7 +2080,7 @@ public static partial class GitTools
             }
             usualWay ??= GitFailure(attempt);
         }
-        return readOnly ? RepoAccess.GitReadOnly : unsure ? RepoAccess.CheckFailed : usualWay ?? RepoAccess.Offline;
+        return readOnly ? RepoAccess.GitReadOnly : unsure ? RepoAccess.GitPushUnchecked : usualWay ?? RepoAccess.Offline;
     }
 
     private enum PushAnswer { CanPush, Refused, CantTell }
@@ -2100,7 +2102,9 @@ public static partial class GitTools
             }
 
             var where = folder ?? scratch!;
-            var result = await RunAsync("git", where, null, ["push", "--dry-run", "--no-verify", "--", remote, $":refs/heads/agent-orange-check-{Guid.NewGuid():N}"], cancel, await SshSettingsAsync(where));
+            List<string> push = folder is null ? [] : ["-c", $"remote.{remote}.mirror=false"];
+            push.AddRange(["push", "--dry-run", "--no-verify", "--", remote, $":refs/heads/agent-orange-check-{Guid.NewGuid():N}"]);
+            var result = await RunAsync("git", where, null, push.ToArray(), cancel, await SshSettingsAsync(where));
             if (result is null or { ExitCode: < 0 }) return PushAnswer.CantTell;
             if (result.ExitCode == 0) return PushAnswer.CanPush;
 

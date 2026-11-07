@@ -126,6 +126,37 @@ public sealed class LocalDatabase
             CREATE TRIGGER IF NOT EXISTS records_removed AFTER DELETE ON records BEGIN UPDATE revisions SET value = value + 1 WHERE name = 'records'; END;
             """);
         MoveOldProjectsTable(connection);
+        MoveFolderKeys(connection);
+    }
+
+    // Approvals and what a folder's been seen to share, kept under the path as it was written. Where
+    // both spellings are there, the one already under the new key is the newer.
+    private static void MoveFolderKeys(SqliteConnection connection)
+    {
+        var old = new List<(string Key, string Value)>();
+        using (var read = connection.CreateCommand())
+        {
+            read.CommandText = "SELECT key, value FROM settings WHERE key LIKE 'folder_settings_allowed:%' OR key LIKE 'folder_shares_repo:%'";
+            using var reader = read.ExecuteReader();
+            while (reader.Read()) old.Add((reader.GetString(0), reader.GetString(1)));
+        }
+
+        foreach (var (key, value) in old)
+        {
+            // An approval for finishing a download names the folder, then what it's for.
+            var split = key.IndexOf(':');
+            var rest = key[(split + 1)..];
+            var forFinishing = rest.EndsWith("|finish", StringComparison.Ordinal);
+            var moved = $"{key[..split]}:{SameFolderKey(forFinishing ? rest[..^"|finish".Length] : rest)}{(forFinishing ? "|finish" : "")}";
+            if (moved == key) continue;
+
+            using var move = connection.CreateCommand();
+            move.CommandText = "INSERT OR IGNORE INTO settings (key, value) VALUES ($moved, $value); DELETE FROM settings WHERE key = $key";
+            move.Parameters.AddWithValue("$moved", moved);
+            move.Parameters.AddWithValue("$value", value);
+            move.Parameters.AddWithValue("$key", key);
+            move.ExecuteNonQuery();
+        }
     }
 
     public List<Project> ListProjects()
@@ -385,8 +416,8 @@ public sealed class LocalDatabase
         string token;
         lock (_holds)
         {
-            if (!_holds.TryGetValue($"{FolderHold}:{folder}", out var held)) return;
-            _holds[$"{FolderHold}:{folder}"] = (held.Token, held.Alive, to.Id);
+            if (!_holds.TryGetValue(HoldKey(FolderHold, folder), out var held)) return;
+            _holds[HoldKey(FolderHold, folder)] = (held.Token, held.Alive, to.Id);
             token = held.Token;
         }
 
@@ -450,7 +481,7 @@ public sealed class LocalDatabase
     /// <summary>Already held by this window for this project, so nothing needs waiting for.</summary>
     public bool IsHoldingFolder(string folder, string projectId)
     {
-        lock (_holds) return _holds.TryGetValue($"{FolderHold}:{folder}", out var held) && held.ProjectId == projectId;
+        lock (_holds) return _holds.TryGetValue(HoldKey(FolderHold, folder), out var held) && held.ProjectId == projectId;
     }
 
     // Null if it can't be had in that time, and then the claim is refused, as two windows could
@@ -511,7 +542,7 @@ public sealed class LocalDatabase
         command.Parameters.AddWithValue("$id", claimant.Id);
         command.Parameters.AddWithValue("$name", claimant.Name);
         command.ExecuteNonQuery();
-        lock (_holds) _holds[$"{kind}:{target}"] = (token, alive, claimant.Id);
+        lock (_holds) _holds[HoldKey(kind, target)] = (token, alive, claimant.Id);
     }
 
     private void Release(string kind, string target)
@@ -519,7 +550,7 @@ public sealed class LocalDatabase
         (string Token, Mutex Alive, string ProjectId) held;
         lock (_holds)
         {
-            if (!_holds.Remove($"{kind}:{target}", out held)) return;
+            if (!_holds.Remove(HoldKey(kind, target), out held)) return;
         }
         held.Alive.Dispose();
 
@@ -715,7 +746,19 @@ public sealed class LocalDatabase
 
     private static string SharesRepoKey(string folder) => $"folder_shares_repo:{SameFolderKey(folder)}";
 
-    private static string SameFolderKey(string folder) => Path.TrimEndingDirectorySeparator(folder).ToLowerInvariant();
+    private static string SameFolderKey(string folder)
+    {
+        try
+        {
+            return Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder)).ToLowerInvariant();
+        }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return Path.TrimEndingDirectorySeparator(folder).ToLowerInvariant();
+        }
+    }
+
+    private static string HoldKey(string kind, string target) => kind == FolderHold ? $"{kind}:{SameFolderKey(target)}" : $"{kind}:{target}";
 
     /// <summary>The fingerprint of a folder's own Git settings that the person has allowed on this PC.</summary>
     public string? AllowedFolderSettings(string folder) => GetSetting(AllowedSettingsKey(folder));

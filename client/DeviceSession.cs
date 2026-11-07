@@ -127,7 +127,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
             LastSyncRefused = response is { StatusCode: HttpStatusCode.BadRequest or HttpStatusCode.RequestEntityTooLarge or HttpStatusCode.UnprocessableEntity }
                 && response.Headers.Contains("X-Agent-Orange");
             var versionsDiffer = response?.StatusCode == HttpStatusCode.UpgradeRequired;
-            if (versionsDiffer != VersionsDiffer)
+            if (response is not null && response.Headers.Contains("X-Agent-Orange") && versionsDiffer != VersionsDiffer)
             {
                 database.SetSetting(VersionsDifferSetting, versionsDiffer ? "1" : "");
                 PairingChanged?.Invoke();

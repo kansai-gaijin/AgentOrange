@@ -163,7 +163,7 @@ public sealed class SyncEngine
                 _database.QueueAllRecords();
                 _database.SetSetting(cursorSetting, "0");
             }
-            var cursor = stored is null ? 0 : long.Parse(stored);
+            var cursor = stored is not null && long.TryParse(stored, out var storedCursor) ? storedCursor : 0;
 
             var onlyReceive = false;
             while (_server.Address == address && !IsPaused())
@@ -197,7 +197,7 @@ public sealed class SyncEngine
                     {
                         _database.ReplaceEpoch(oldEpoch, epoch);
                         _database.SetSetting(epochSetting, epoch);
-                        cursor = long.Parse(known);
+                        cursor = long.TryParse(known, out var knownCursor) ? knownCursor : 0;
                         continue;
                     }
 
