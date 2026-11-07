@@ -433,14 +433,15 @@ public partial class MainWindow
         var folderProblem = folderShown ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl) : null;
 
         // It may have been connected while offline, when nothing could say the repo had files.
-        var lacksFiles = check.Access == RepoAccess.Allowed && folderExists && folderProblem is null
+        var askAboutRepo = usable && check.GitHubSeesRepo;
+        var lacksFiles = askAboutRepo && folderExists && folderProblem is null
             && await GitTools.FolderHasNoCommitsAsync(folder!) == true && await GitTools.RepoHasContentAsync(project.RepoUrl) == true;
 
         // A folder with its own commits may not be this project at all, however it was connected.
         // This keeps saying so until the two share a commit, which is then remembered for that
         // folder and repo, as this asks GitHub each time until it does.
         var repoKey = GitTools.RepoKey(project.RepoUrl);
-        var history = check.Access == RepoAccess.Allowed && folderExists && folderProblem is null && !lacksFiles && !_database.FolderSharesRepo(folder!, repoKey)
+        var history = askAboutRepo && folderExists && folderProblem is null && !lacksFiles && !_database.FolderSharesRepo(folder!, repoKey)
             ? await GitTools.CompareFolderHistoryAsync(folder!, project.RepoUrl)
             : FolderHistory.CantTell;
         if (history == FolderHistory.SharesCommits) _database.RememberFolderSharesRepo(folder!, repoKey);
@@ -1818,6 +1819,12 @@ public partial class MainWindow
 
         // An open page reads it after its own check, and only if that lets this PC work in the project.
         if (_openProject?.Id != projectId) await ReadEngineVersionAsync(projectId);
+        else
+        {
+            await RefreshThenRecheckAsync(projectId);
+            if (_openProject?.Id != projectId) await ReadEngineVersionAsync(projectId);
+            return true;
+        }
         await RefreshThenRecheckAsync(projectId);
         return true;
     }
@@ -1841,7 +1848,7 @@ public partial class MainWindow
         MainContent.IsEnabled = UpdateOverlay.Visibility != Visibility.Visible;
 
         // The engine or folder may have changed.
-        if (_settingsProjectId is { } changedProject) _ = ReadEngineVersionAsync(changedProject);
+        if (_settingsProjectId is { } changedProject && changedProject != _openProject?.Id) _ = ReadEngineVersionAsync(changedProject);
 
         var openId = _openProject?.Id;
         if (openId is null)

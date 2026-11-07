@@ -468,9 +468,10 @@ public partial class NewProjectWizard : UserControl
         var check = await GitTools.CheckRepoAccessAsync(url, state.Origin is not null ? project.Folder : null, useFolderSettings);
         switch (check.Access)
         {
-            // With no clear answer, the project is made here, and gets its first real check when it opens.
-            case RepoAccess.Allowed:
-            case RepoAccess when check.IsUnanswered:
+            // Offline is the only unanswered case let through. The project is made here and gets its first
+            // real check when it opens. Any other unclear answer could hide that the repo already has files,
+            // which decides whether this clones or connects, so it's asked again.
+            case RepoAccess.Allowed or RepoAccess.Offline:
                 break;
             case RepoAccess.GitCantReach or RepoAccess.GitReadOnly when !useFolderSettings && runnable is { CanBeApproved: false }:
                 return ("", false, "Git can't reach this repo without this folder's own Git settings, and there are too many of them to show here for you to check. Cut them down, or choose another copy.");
