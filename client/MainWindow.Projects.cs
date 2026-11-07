@@ -428,7 +428,7 @@ public partial class MainWindow
         var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl, folder, useFolderSettings);
 
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
-        var folderShown = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitPushUnchecked or RepoAccess.GitCantReach or RepoAccess.GitReadOnly;
+        var folderShown = folderExists && check.ShowsFolder;
         var folderProblem = folderShown ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl) : null;
 
         // It may have been connected while offline, when nothing could say the repo had files.
@@ -449,7 +449,7 @@ public partial class MainWindow
         if (folderExists && check.IsDenied) _database.ForgetFolderSharesRepo(folder!);
 
         // Asked before the latest copy of the project is read below, as this can take a while.
-        var renamed = check.Access is RepoAccess.Allowed or RepoAccess.ReadOnly or RepoAccess.GitCantReach or RepoAccess.GitReadOnly
+        var renamed = check.GitHubSeesRepo
             ? await GitTools.RenamedRepoUrlAsync(project.RepoUrl)
             : null;
 
@@ -557,6 +557,8 @@ public partial class MainWindow
     private async Task ReadEngineVersionAsync(string projectId)
     {
         if (FindProject(projectId) is not { } project || _database.GetProjectFolder(projectId) is not { } folder) return;
+        var repoKey = GitTools.RepoKey(project.RepoUrl);
+        if (_database.GetSetting(VerifiedSetting(projectId)) != repoKey && _database.GetSetting(CreatedHereSetting(projectId)) != repoKey) return;
 
         // A slow read of the old folder mustn't land on top of a newer one's answer.
         var read = _engineReads[projectId] = _engineReads.GetValueOrDefault(projectId) + 1;
@@ -604,7 +606,7 @@ public partial class MainWindow
 
         // The folder may have changed too, as anything can happen to it while no one's looking.
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
-        var folderProblem = folderExists && latest.Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitPushUnchecked or RepoAccess.GitCantReach or RepoAccess.GitReadOnly
+        var folderProblem = folderExists && latest.ShowsFolder
             ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl)
             : null;
         var changed = latest != shown || folder != _checkedFolder || folderExists != _folderExists || folderProblem != _folderProblem;
@@ -651,7 +653,7 @@ public partial class MainWindow
 
         // Getting no answer doesn't mean access was lost, so a PC that's reached this exact repo before can keep working.
         var hasHadAccess = _database.GetSetting(VerifiedSetting(project.Id)) == GitTools.RepoKey(project.RepoUrl);
-        var workingOffline = check.Access is RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitPushUnchecked
+        var workingOffline = check.IsUnanswered
             && (hasHadAccess || _database.GetSetting(CreatedHereSetting(project.Id)) == GitTools.RepoKey(project.RepoUrl));
         if (check.Access != RepoAccess.Allowed && !workingOffline)
         {
@@ -661,13 +663,13 @@ public partial class MainWindow
 
         if (workingOffline)
         {
-            var reason = check.Access switch
+            var (reason, nextTime) = check.Access switch
             {
-                RepoAccess.Offline => "Couldn't reach GitHub",
-                RepoAccess.GitPushUnchecked => "Git on this PC couldn't finish checking whether it can push",
-                _ => "GitHub didn't give a clear answer",
+                RepoAccess.Offline => ("Couldn't reach GitHub, so the repo wasn't checked.", "That happens the next time it opens with a connection."),
+                RepoAccess.GitPushUnchecked => ("GitHub says you have access, but Git on this PC couldn't finish checking whether it can push.", "It's checked again the next time this opens. If this keeps happening, check this PC's Git setup."),
+                _ => ("GitHub didn't give a clear answer, so the repo wasn't checked.", "It's checked again the next time this opens."),
             };
-            body.Children.Add(new TextBlock { Text = hasHadAccess ? $"{reason}, so the repo wasn't checked. This PC has had access before." : $"{reason}, so this new project's repo hasn't been checked yet. That happens the next time it opens with a connection.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+            body.Children.Add(new TextBlock { Text = hasHadAccess ? $"{reason} This PC has had access before." : $"{reason} This new project's repo hasn't been checked yet. {nextTime}", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
         }
 
         var folder = _database.GetProjectFolder(project.Id);

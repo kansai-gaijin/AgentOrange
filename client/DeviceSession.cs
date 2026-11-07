@@ -126,10 +126,13 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
             // change. Anything else is just a sync that didn't go through, and everything stays queued.
             LastSyncRefused = response is { StatusCode: HttpStatusCode.BadRequest or HttpStatusCode.RequestEntityTooLarge or HttpStatusCode.UnprocessableEntity }
                 && response.Headers.Contains("X-Agent-Orange");
-            var versionsDiffer = response?.StatusCode == HttpStatusCode.UpgradeRequired;
-            if (response is not null && response.Headers.Contains("X-Agent-Orange") && versionsDiffer != VersionsDiffer)
+            bool? versionsDiffer = response is null || !response.Headers.Contains("X-Agent-Orange") ? null
+                : response.StatusCode == HttpStatusCode.UpgradeRequired ? true
+                : response.IsSuccessStatusCode ? false
+                : null;
+            if (versionsDiffer is { } differ && differ != VersionsDiffer)
             {
-                database.SetSetting(VersionsDifferSetting, versionsDiffer ? "1" : "");
+                database.SetSetting(VersionsDifferSetting, differ ? "1" : "");
                 PairingChanged?.Invoke();
             }
             if (response is null || !response.IsSuccessStatusCode) return null;

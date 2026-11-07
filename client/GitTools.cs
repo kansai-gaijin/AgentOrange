@@ -41,6 +41,15 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
     /// <summary>The check got a clear answer that this PC can't use the repo, as opposed to not getting one.</summary>
     public bool IsDenied => Access is RepoAccess.ReadOnly or RepoAccess.Archived or RepoAccess.Restricted or RepoAccess.NotFound or RepoAccess.NotFoundOrNoAccess or RepoAccess.GitReadOnly or RepoAccess.BadUrl;
 
+    /// <summary>GitHub said this account can see the repo, so what it calls the repo now can be trusted.</summary>
+    public bool GitHubSeesRepo => Access is RepoAccess.Allowed or RepoAccess.ReadOnly or RepoAccess.GitCantReach or RepoAccess.GitReadOnly or RepoAccess.GitPushUnchecked;
+
+    /// <summary>Whether the page shows the folder at all, which is when it's worth looking through.</summary>
+    public bool ShowsFolder => Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitPushUnchecked or RepoAccess.GitCantReach or RepoAccess.GitReadOnly;
+
+    /// <summary>No clear answer, so a PC that has had access, or a project made here, can keep working.</summary>
+    public bool IsUnanswered => Access is RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitPushUnchecked;
+
     public (string Heading, string Description) Describe() => Access switch
     {
         RepoAccess.NoGitHubCli => ("The GitHub CLI is needed", "Agent Orange uses it to check your access. Install it from cli.github.com, then try again."),
@@ -57,7 +66,7 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
         RepoAccess.GitReadOnly => ("Git on this PC can only read this repo", "Your GitHub account can work on it, but the key or login Git uses here can't push to it. Check this PC's Git setup, such as a read-only deploy key, or run gh auth setup-git."),
         RepoAccess.BadUrl => ("This repo URL can't be used", "It has to be a GitHub repo, with no password or token in the URL. Change it in project settings."),
         RepoAccess.Offline => ("Couldn't reach GitHub", "This PC seems to be offline or blocked from GitHub, and it hasn't had access to this repo before."),
-        RepoAccess.GitPushUnchecked => ("Couldn't check pushing", "Your GitHub account has access, but Git on this PC couldn't finish checking whether it can push to this repo. Try again in a moment."),
+        RepoAccess.GitPushUnchecked => ("Couldn't check pushing", "Your GitHub account has access, but Git on this PC couldn't finish checking whether it can push to this repo. Try again in a moment, and if this keeps happening, check this PC's Git setup, such as a proxy or firewall."),
         RepoAccess.Allowed => ("You have access", ""),
         _ => ("Couldn't check this repo", "GitHub gave an unexpected answer. Try again in a moment."),
     };

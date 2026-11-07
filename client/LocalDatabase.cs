@@ -129,8 +129,9 @@ public sealed class LocalDatabase
         MoveFolderKeys(connection);
     }
 
-    // Approvals and what a folder's been seen to share, kept under the path as it was written. Where
-    // both spellings are there, the one already under the new key is the newer.
+    // Approvals and what a folder's been seen to share, kept under the path as it was written. One
+    // already under the new key stays. Two old spellings of one folder keep whichever comes first,
+    // which may not be the newer, and the worst of that is an approval being asked for again.
     private static void MoveFolderKeys(SqliteConnection connection)
     {
         var old = new List<(string Key, string Value)>();
@@ -734,7 +735,7 @@ public sealed class LocalDatabase
 
     public void RememberUnfinishedNote(string token, bool unfinished) => SetSetting($"download_note:{token}", unfinished ? "1" : "");
 
-    private static string UnfinishedDownloadKey(string folder) => $"download_unfinished:{Path.TrimEndingDirectorySeparator(folder).ToLowerInvariant()}";
+    private static string UnfinishedDownloadKey(string folder) => $"download_unfinished:{SameFolderKey(folder)}";
 
     /// <summary>Whether this folder has been seen to share a commit with this repo, which stands until it's disconnected.</summary>
     public bool FolderSharesRepo(string folder, string repoKey) => GetSetting(SharesRepoKey(folder)) == repoKey;
