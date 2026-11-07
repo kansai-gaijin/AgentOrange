@@ -326,7 +326,7 @@ public static partial class GitTools
     public static async Task<bool> MoveIfRepoRenamedAsync(string folder, FolderRepo state, string repoUrl)
     {
         if (state.Origin is null || await RenamedRepoUrlAsync(state.OriginToCompare!) is not { } current || !SameRepo(current, repoUrl)) return false;
-        return await MoveOriginAsync(folder, SameWayTo(state.Origin, repoUrl)) is null;
+        return await MoveOriginAsync(folder, SameWayTo(state.Origin, repoUrl), state.OriginToCompare) is null;
     }
 
     /// <summary>
@@ -595,7 +595,7 @@ public static partial class GitTools
 
         foreach (var group in others.Chunk(RepoNamesAskedAtOnce))
         {
-            var answers = await Task.WhenAll(group.Select(project => CurrentRepoUrlAsync(project.RepoUrl)));
+            var answers = await Task.WhenAll(group.Select(project => RecentRepoUrlAsync(project.RepoUrl)));
             if (group.Zip(answers).FirstOrDefault(pair => SameRepo(pair.Second.Current, current)).First is { } older) return (current, older.Name, true);
             if (answers.Any(answer => !answer.Answered)) break;
         }
@@ -785,7 +785,7 @@ public static partial class GitTools
     }
 
     /// <summary>Points a folder at a repo after the project moved, whatever remote it had. Its files don't change.</summary>
-    public static async Task<GitResult> PointFolderAtRepoAsync(string folder, string repoUrl)
+    public static async Task<GitResult> PointFolderAtRepoAsync(string folder, string repoUrl, string? onlyIfOnRepo = null)
     {
         if (RepoUrlProblem(repoUrl) is { } problem) return new GitResult(false, problem);
 
@@ -793,10 +793,11 @@ public static partial class GitTools
         if (state is null) return new GitResult(false, "Git wasn't found on this PC.");
         if (state.Problem is not null) return new GitResult(false, state.Problem);
         if (state.IsInsideAnotherRepo) return new GitResult(false, "That folder is inside another Git repo.");
+        if (state.Origin is null && onlyIfOnRepo is not null) return new GitResult(false, RemoteChangedMeanwhile);
         if (state.Origin is null) return await ConnectFolderAsync(folder, await ReachableFormAsync(repoUrl) ?? repoUrl);
 
         var newRemote = state.GitHubOrigin is not null ? SameWayTo(state.Origin, repoUrl) : await ReachableFormAsync(repoUrl) ?? repoUrl;
-        return await MoveOriginAsync(folder, newRemote) is { } moveProblem
+        return await MoveOriginAsync(folder, newRemote, onlyIfOnRepo) is { } moveProblem
             ? new GitResult(false, moveProblem)
             : new GitResult(true, repoUrl);
     }
@@ -804,13 +805,23 @@ public static partial class GitTools
     // A push address on the old repo would otherwise keep sending work there, so that moves too.
     // One that goes anywhere else is a fork, which someone set up on purpose, and it stays. Returns
     // a problem to show, or null once it has moved. Nothing is left half done either way.
-    private static async Task<string?> MoveOriginAsync(string folder, string remote)
+    private static async Task<string?> MoveOriginAsync(string folder, string remote, string? onlyIfOnRepo = null)
     {
         var turn = RemoteMoves.GetOrAdd(folder.ToLowerInvariant(), _ => new SemaphoreSlim(1, 1));
         await turn.WaitAsync();
         try
         {
-            return await MoveOriginInTurnAsync(folder, remote);
+            // Other windows too. A semaphore, as this is held across steps that can change threads.
+            using var windows = RemoteMoveTurn(folder);
+            if (windows is null || !await Task.Run(() => windows.WaitOne(LongestRemoteMoveWait))) return "Another window of the app is changing that folder's remote. Try again in a moment.";
+            try
+            {
+                return await MoveOriginInTurnAsync(folder, remote, onlyIfOnRepo);
+            }
+            finally
+            {
+                windows.Release();
+            }
         }
         finally
         {
@@ -818,10 +829,25 @@ public static partial class GitTools
         }
     }
 
+    private const string RemoteChangedMeanwhile = "That folder's remote changed while this was being checked, so it was left as it is.";
+    private static readonly TimeSpan LongestRemoteMoveWait = TimeSpan.FromSeconds(10);
+
+    private static Semaphore? RemoteMoveTurn(string folder)
+    {
+        try
+        {
+            return new Semaphore(1, 1, $@"Local\AgentOrangeRemote-{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.TrimEndingDirectorySeparator(folder).ToLowerInvariant())))[..32]}");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null; // A window running as administrator is taking its turn.
+        }
+    }
+
     // An open page, a background engine read and a check can all notice one rename at once.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> RemoteMoves = new();
 
-    private static async Task<string?> MoveOriginInTurnAsync(string folder, string remote)
+    private static async Task<string?> MoveOriginInTurnAsync(string folder, string remote, string? onlyIfOnRepo)
     {
         if (await RemoteSetElsewhereAsync(folder) is { } elsewhere) return elsewhere;
 
@@ -831,10 +857,12 @@ public static partial class GitTools
         var urls = await AddressesInAsync(folder, "remote.origin.url");
         var pushUrls = await AddressesInAsync(folder, "remote.origin.pushurl");
         if (urls is null || pushUrls is null) return couldNotChange;
+        if (urls.Length == 0 && onlyIfOnRepo is not null) return RemoteChangedMeanwhile;
         if (urls.Length == 0) return await SetAddressesAsync(folder, "remote.origin.url", [remote]) ? null : couldNotChange;
 
         // An SSH alias, as a second GitHub account uses, has to be read as the repo it really is.
         var oldRepo = (await GitHubFormAsync(urls[0], folder)).Item1 ?? urls[0];
+        if (onlyIfOnRepo is not null && !SameRepo(oldRepo, onlyIfOnRepo)) return RemoteChangedMeanwhile;
         async Task<string[]> MovedAsync(string[] addresses)
         {
             var moved = new List<string>();
@@ -1326,11 +1354,11 @@ public static partial class GitTools
 
         // From here it's a finished clone, which could have taken hours, so it's never deleted,
         // including by the cleanup at the next start if the app closes during this.
-        TryNoting(() => workingFolder(null));
         if (!await NoteUnfinishedInFolderAsync(working, true))
         {
             checkoutProblem ??= "The clone finished, but this app couldn't write to its Git data, so its large files and submodules weren't fetched. If it uses them, run git submodule update --init --recursive and git lfs pull in the folder.";
         }
+        TryNoting(() => workingFolder(null));
 
         // Already marked is some other clone's, which this one not getting there says nothing about.
         var alreadyMarked = false;
@@ -1687,6 +1715,19 @@ public static partial class GitTools
         return SameRepo(current, url) ? null : current;
     }
 
+    private static readonly TimeSpan RepoNamesKeptFor = TimeSpan.FromMinutes(10);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Current, DateTimeOffset Asked)> RecentRepoNames = new(StringComparer.OrdinalIgnoreCase);
+
+    // Only for looking through every project, as these have to be worth asking about all at once.
+    private static async Task<(string Current, bool Answered)> RecentRepoUrlAsync(string url)
+    {
+        if (RecentRepoNames.TryGetValue(url, out var known) && DateTimeOffset.UtcNow - known.Asked < RepoNamesKeptFor) return (known.Current, true);
+
+        var answer = await CurrentRepoUrlAsync(url);
+        if (answer.Answered) RecentRepoNames[url] = (answer.Current, DateTimeOffset.UtcNow);
+        return answer;
+    }
+
     // The address itself if it hasn't moved, or that can't be told. Answered says GitHub could be
     // asked at all, as a repo that's gone is still an answer.
     private static async Task<(string Current, bool Answered)> CurrentRepoUrlAsync(string url)
@@ -1741,6 +1782,13 @@ public static partial class GitTools
 
         var parent = Path.GetDirectoryName(folder);
         if (parent is null || !await FolderExistsAsync(parent)) return false;
+
+        // It finished, and only forgetting about it failed, such as with the database out of reach.
+        if (await Task.Run(() => File.Exists(Path.Combine(folder, ".git", UnfinishedNoteFile))))
+        {
+            AppLog.Write($"Kept a finished clone that was still on the cleanup list: {folder}");
+            return true;
+        }
 
         await TryDeleteOwnedFolderAsync(folder);
         return !await FolderExistsAsync(folder);

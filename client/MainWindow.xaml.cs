@@ -59,10 +59,14 @@ public partial class MainWindow : Window
 
         _database = OpenDatabase(folders.DatabasePath);
         ProjectWizard.ClaimFolder = async (folder, name) =>
-            (await _database.ClaimFolderAsync(folder, new Project($"new-project-{Guid.NewGuid():N}", name, "", "", "", "", DateTimeOffset.UtcNow)))?.Name;
+            await _database.ClaimFolderAsync(folder, new Project($"new-project-{Guid.NewGuid():N}", name, "", "", "", "", DateTimeOffset.UtcNow)) is { } owner
+                ? LocalDatabase.RefusalFor(owner, $"{owner.Name} already uses that folder, or one that overlaps it. Project folders can't overlap.")
+                : null;
         ProjectWizard.ReleaseFolder = _database.ReleaseFolder;
         ProjectWizard.ClaimRepo = async (url, name) =>
-            (await _database.ClaimRepoAsync(url, new Project($"new-project-{Guid.NewGuid():N}", name, "", "", "", "", DateTimeOffset.UtcNow)))?.Name;
+            await _database.ClaimRepoAsync(url, new Project($"new-project-{Guid.NewGuid():N}", name, "", "", "", "", DateTimeOffset.UtcNow)) is { } owner
+                ? LocalDatabase.RefusalFor(owner, $"{owner.Name} already uses that repo. A repo can only be one project.")
+                : null;
         ProjectWizard.ReleaseRepo = _database.ReleaseRepo;
         GitTools.AllProjects = () => _database.ListProjects();
         GitTools.ProjectUsingRepo = url => _database.ListProjects().FirstOrDefault(project => GitTools.SameRepo(project.RepoUrl, url))?.Name;

@@ -71,7 +71,9 @@ public sealed class SyncEngine
 
         AppLog.Write($"The server refused a change, so it was set aside and stays on this PC: {batch[0].Collection}/{batch[0].Id}");
         _database.SetAsideRefused(batch[0]);
-        _batchLimit = BatchSize;
+
+        // Doubles back up as they go through, as what got this one refused can be true of the rest.
+        _batchLimit = 1;
     }
 
     private bool HasSyncTurn()
@@ -163,18 +165,24 @@ public sealed class SyncEngine
             }
             var cursor = stored is null ? 0 : long.Parse(stored);
 
+            var onlyReceive = false;
             while (_server.Address == address && !IsPaused())
             {
                 // The last answer was that this PC and the server are on different releases, so
                 // this just asks again. Sending queued images would be thrown away every time.
-                var batch = _devices.VersionsDiffer ? [] : _database.ReadOutbox(_batchLimit, MaxBatchBytes);
+                var batch = _devices.VersionsDiffer || onlyReceive ? [] : _database.ReadOutbox(_batchLimit, MaxBatchBytes);
+                onlyReceive = false;
                 var response = await _devices.SyncAsync(cursor, batch, epoch);
                 if (response is null)
                 {
-                    if (_devices.LastSyncRefused && batch.Count > 0) NarrowDownRefused(batch);
-                    return;
+                    if (!_devices.LastSyncRefused || batch.Count == 0) return;
+
+                    // Working through what it refuses shouldn't hold up what other PCs have sent.
+                    NarrowDownRefused(batch);
+                    onlyReceive = true;
+                    continue;
                 }
-                _batchLimit = Math.Min(BatchSize, _batchLimit * 2);
+                if (batch.Count > 0) _batchLimit = Math.Min(BatchSize, _batchLimit * 2);
 
                 _database.RemoveFromOutbox(batch);
 

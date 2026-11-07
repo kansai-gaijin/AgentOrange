@@ -475,8 +475,9 @@ public partial class MainWindow
         var holdingRenamed = false;
         if (renamed is not null && renamedHeldBy is null)
         {
-            renamedHeldBy = (await _database.ClaimRepoAsync(renamed, latest))?.Name;
-            holdingRenamed = renamedHeldBy is null;
+            var renameClaim = await _database.ClaimRepoAsync(renamed, latest);
+            holdingRenamed = renameClaim is null;
+            if (renameClaim is not null && !LocalDatabase.MeansNoTurn(renameClaim)) renamedHeldBy = renameClaim.Name;
         }
         if (holdingRenamed && (navigation != _navigation || FindProject(project.Id) is not { } stillOnIt || !GitTools.SameRepo(stillOnIt.RepoUrl, project.RepoUrl)))
         {
@@ -503,7 +504,7 @@ public partial class MainWindow
             if (wasCreatedHere) _database.SetSetting(CreatedHereSetting(project.Id), GitTools.RepoKey(renamed!));
 
             // Asked again, as the check above skips the folder for some answers, and one on any other repo stays as it is.
-            if (folderExists && await GitTools.FolderProblemAsync(folder!, project.RepoUrl) is null) await GitTools.PointFolderAtRepoAsync(folder!, renamed!);
+            if (folderExists && await GitTools.FolderProblemAsync(folder!, project.RepoUrl) is null) await GitTools.PointFolderAtRepoAsync(folder!, renamed!, project.RepoUrl);
             _ = _sync.SyncNowAsync();
             KeepProblemThroughReopen(project.Id);
             if (navigation == _navigation && FindProject(project.Id) is { } moved) await OpenProjectAsync(moved);
@@ -1101,7 +1102,7 @@ public partial class MainWindow
         if (await _database.ClaimFolderAsync(folder!, project) is { } owner)
         {
             EndBusy();
-            ShowPageProblem(project.Id, $"{owner.Name} already uses that folder, or one that overlaps it. Project folders can't overlap.");
+            ShowPageProblem(project.Id, LocalDatabase.RefusalFor(owner, $"{owner.Name} already uses that folder, or one that overlaps it. Project folders can't overlap."));
             return;
         }
 
@@ -1162,6 +1163,13 @@ public partial class MainWindow
 
         try
         {
+            // Another window can have given this new repo to another project while it was being made.
+            if (await _database.ClaimRepoAsync(result.Value, latest) is { } repoOwner)
+            {
+                ShowPageProblem(project.Id, LocalDatabase.RefusalFor(repoOwner, $"The repo was created at {result.Value}, but {repoOwner.Name} uses it now, so this project wasn't changed.") + (LocalDatabase.MeansNoTurn(repoOwner) ? $" The repo is at {result.Value}, so enter that in project settings." : ""));
+                return;
+            }
+
             _database.UpdateProject(project.Id, current => current with { RepoUrl = result.Value });
             _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(result.Value)); // This PC just made it.
 
@@ -1172,6 +1180,10 @@ public partial class MainWindow
         {
             SayAddressNotSaved(error);
             return;
+        }
+        finally
+        {
+            _database.ReleaseRepo(result.Value);
         }
         _ = _sync.SyncNowAsync();
         _confirmingNewRepo = false;
@@ -1240,7 +1252,7 @@ public partial class MainWindow
             EndBusy();
             if (owner is not null)
             {
-                ShowPageProblem(project.Id, $"{owner.Name} already uses a folder that overlaps where this would clone to. Project folders can't overlap.");
+                ShowPageProblem(project.Id, LocalDatabase.RefusalFor(owner, $"{owner.Name} already uses a folder that overlaps where this would clone to. Project folders can't overlap."));
                 return;
             }
 
@@ -1705,9 +1717,10 @@ public partial class MainWindow
     {
         var projectId = chosenFor.Id;
         if (FindProject(projectId) is not { } project) return false;
-        if (await _database.ClaimFolderAsync(folder, project) is { } other)
+        var heldAlready = _database.IsHoldingFolder(folder, projectId);
+        if (!heldAlready && await _database.ClaimFolderAsync(folder, project) is { } other)
         {
-            ShowPageProblem(projectId, $"{other.Name} already uses {folder}. A folder can only be one project.");
+            ShowPageProblem(projectId, LocalDatabase.RefusalFor(other, $"{other.Name} already uses {folder}. A folder can only be one project."));
             return false;
         }
 
@@ -1717,7 +1730,7 @@ public partial class MainWindow
             if (FindProject(projectId) is not { } latest) return false;
             if (_database.GetProjectFolder(projectId) != folderBefore || !GitTools.SameRepo(latest.RepoUrl, chosenFor.RepoUrl))
             {
-                _database.ReleaseFolder(folder);
+                if (!heldAlready) _database.ReleaseFolder(folder);
                 await RecheckThenShowAsync(projectId, $"{folder} wasn't linked, because this project's folder or repo changed while that was being checked.");
                 return false;
             }
@@ -1727,7 +1740,7 @@ public partial class MainWindow
         }
         finally
         {
-            _database.ReleaseFolder(folder);
+            if (!heldAlready) _database.ReleaseFolder(folder);
         }
         await ReadEngineVersionAsync(projectId);
         await RefreshThenRecheckAsync(projectId);

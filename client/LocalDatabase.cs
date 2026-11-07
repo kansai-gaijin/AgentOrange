@@ -57,7 +57,7 @@ public sealed class LocalDatabase
 
     private readonly string _connectionString;
     private readonly string _claimTurnName;
-    private readonly Dictionary<string, (string Token, Mutex Alive)> _holds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (string Token, Mutex Alive, string ProjectId)> _holds = new(StringComparer.OrdinalIgnoreCase);
 
     private const int DamagedErrorCode = 11;
     private const int NotADatabaseErrorCode = 26;
@@ -291,7 +291,7 @@ public sealed class LocalDatabase
         return (version, parts.Groups[2].Value switch { "a" => 0, "b" => 1, "p" => 3, _ => 2 }, release);
     }
 
-    private static readonly Regex VersionParts = new(@"^(\d+(?:\.\d+){0,3})(?:([abfp])(\d+))?$", RegexOptions.CultureInvariant);
+    private static readonly Regex VersionParts = new(@"^(\d+(?:\.\d+){0,3})(?:([abfp])(\d+)(?:c\d+)?)?$", RegexOptions.CultureInvariant);
 
     private static Dictionary<string, EngineRecord> ReadEnginesHere(SqliteConnection connection)
     {
@@ -411,7 +411,7 @@ public sealed class LocalDatabase
     private Task<Project?> ClaimAsync(string kind, string target, Project claimant, Func<Project?> findOwner) => Task.Run(() =>
     {
         using var turn = TakeClaimTurn();
-        if (turn is null) return AnotherWindow;
+        if (turn is null) return TurnNotAvailable;
 
         var owner = findOwner();
         if (owner is null) Hold(kind, target, claimant);
@@ -419,6 +419,19 @@ public sealed class LocalDatabase
     });
 
     private static readonly Project AnotherWindow = new("", "Another window of the app", "", "", "", "", DateTimeOffset.MinValue);
+    private static readonly Project TurnNotAvailable = new("", "", "", "", "", "", DateTimeOffset.MinValue);
+
+    /// <summary>What a refused claim should say, as not getting a turn doesn't mean anyone has it.</summary>
+    public static string RefusalFor(Project owner, string taken) =>
+        ReferenceEquals(owner, TurnNotAvailable) ? "Another window of the app is busy with a slow folder, so this couldn't go ahead. Try again in a moment." : taken;
+
+    public static bool MeansNoTurn(Project owner) => ReferenceEquals(owner, TurnNotAvailable);
+
+    /// <summary>Already held by this window for this project, so nothing needs waiting for.</summary>
+    public bool IsHoldingFolder(string folder, string projectId)
+    {
+        lock (_holds) return _holds.TryGetValue($"{FolderHold}:{folder}", out var held) && held.ProjectId == projectId;
+    }
 
     // Null if it can't be had in that time, and then the claim is refused, as two windows could
     // otherwise both find the same place free.
@@ -478,12 +491,12 @@ public sealed class LocalDatabase
         command.Parameters.AddWithValue("$id", claimant.Id);
         command.Parameters.AddWithValue("$name", claimant.Name);
         command.ExecuteNonQuery();
-        lock (_holds) _holds[$"{kind}:{target}"] = (token, alive);
+        lock (_holds) _holds[$"{kind}:{target}"] = (token, alive, claimant.Id);
     }
 
     private void Release(string kind, string target)
     {
-        (string Token, Mutex Alive) held;
+        (string Token, Mutex Alive, string ProjectId) held;
         lock (_holds)
         {
             if (!_holds.Remove($"{kind}:{target}", out held)) return;

@@ -51,11 +51,12 @@ public partial class NewProjectWizard : UserControl
     public event Action<NewProject>? Created;
 
     /// <summary>Holds a folder for a new project of this name. Gives the name of any project already using it.</summary>
+    /// <summary>Holds a folder while this runs. Returns what's stopping that, if anything.</summary>
     public Func<string, string, Task<string?>> ClaimFolder { get; set; } = (_, _) => Task.FromResult<string?>(null);
 
     public Action<string> ReleaseFolder { get; set; } = _ => { };
 
-    /// <summary>The same for a repo. Returns the project that already has it, if one does.</summary>
+    /// <summary>The same for a repo.</summary>
     public Func<string, string, Task<string?>> ClaimRepo { get; set; } = (_, _) => Task.FromResult<string?>(null);
 
     public Action<string> ReleaseRepo { get; set; } = _ => { };
@@ -273,9 +274,9 @@ public partial class NewProjectWizard : UserControl
                 {
                     (url, confirmed, failure) = ("", false, "That folder doesn't exist.");
                 }
-                else if (await ClaimFolder(path, _name) is { } otherProject)
+                else if (await ClaimFolder(path, _name) is { } folderTaken)
                 {
-                    (url, confirmed, failure) = ("", false, $"{otherProject} already uses that folder, or one that overlaps it. Project folders can't overlap.");
+                    (url, confirmed, failure) = ("", false, folderTaken);
                 }
                 else if (_replacingUrl is { } replacing)
                 {
@@ -322,7 +323,7 @@ public partial class NewProjectWizard : UserControl
                 if (failure is null)
                 {
                     if (IsCreatingRepo) madeRepo = url;
-                    if (await ClaimRepo(url, _name) is { } repoHolder) (url, confirmed, failure) = ("", false, $"{repoHolder} already uses that repo. A repo can only be one project.");
+                    if (await ClaimRepo(url, _name) is { } repoTaken) (url, confirmed, failure) = ("", false, repoTaken);
                     else repoHeld = true;
                 }
             }
@@ -437,7 +438,6 @@ public partial class NewProjectWizard : UserControl
                 ? $"{holder} already uses that repo, under another name it's had on GitHub. A repo can only be one project."
                 : $"{holder} already uses that repo. A repo can only be one project.");
         }
-        var renamed = GitTools.SameRepo(current, url) ? null : current;
         url = current;
         if (state.Origin is not null && !GitTools.SameRepo(state.OriginToCompare!, url))
         {
@@ -448,14 +448,9 @@ public partial class NewProjectWizard : UserControl
                 if (state.Problem is not null) return ("", false, state.Problem);
             }
 
-            // The URL can be the one with the old name, which is the same repo. Selecting a folder accepts that too.
-            else if (renamed is null || !GitTools.SameRepo(renamed, state.OriginToCompare!))
-            {
-                return ("", false, "That folder is connected to a different repo than that URL.");
-            }
             else
             {
-                url = renamed;
+                return ("", false, "That folder is connected to a different repo than that URL.");
             }
         }
 

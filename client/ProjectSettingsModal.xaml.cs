@@ -274,7 +274,15 @@ public partial class ProjectSettingsModal : UserControl
             // Queued, so a slow save can't bring the project back afterward.
             QueueWork(() =>
             {
-                _database.DeleteProject(projectId);
+                try
+                {
+                    _database.DeleteProject(projectId);
+                }
+                catch
+                {
+                    delete.IsEnabled = true; // It says to try again, and that has to be possible.
+                    throw;
+                }
                 _closing = true;
                 Visibility = Visibility.Collapsed;
                 Deleted?.Invoke();
@@ -392,7 +400,7 @@ public partial class ProjectSettingsModal : UserControl
 
         // Another window can have got to it during all of that.
         if (Find(projectId) is not { } project) return null;
-        if (await _database.ClaimRepoAsync(currentUrl, project) is { } other) return $"{other.Name} already uses that repo. A repo can only be one project.";
+        if (await _database.ClaimRepoAsync(currentUrl, project) is { } other) return LocalDatabase.RefusalFor(other, $"{other.Name} already uses that repo. A repo can only be one project.");
         try
         {
             Update(projectId, current => current with { RepoUrl = currentUrl });
@@ -419,7 +427,7 @@ public partial class ProjectSettingsModal : UserControl
             var problem = await GitTools.FolderProblemAsync(chosen, current.RepoUrl);
             if (problem is null && await _database.ClaimFolderAsync(chosen, current) is { } other)
             {
-                problem = $"{other.Name} already uses that folder, or one that overlaps it. Project folders can't overlap.";
+                problem = LocalDatabase.RefusalFor(other, $"{other.Name} already uses that folder, or one that overlaps it. Project folders can't overlap.");
             }
             if (allowedJustNow && problem is not null) GitTools.ForgetAllowedFolderSettings(chosen);
             if (problem is not null)
