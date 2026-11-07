@@ -1210,12 +1210,12 @@ public partial class MainWindow
             {
                 // Finished, so the cleanup at the next start has to leave it alone from now on.
                 var finished = cloneRecord;
-                SaveCloneRecords(CloneRecords().Where(record => record != finished));
+                ChangeCloneRecords(records => records.Where(record => record != finished));
                 cloneRecord = null;
                 return;
             }
             cloneRecord = CloneRecord(working);
-            SaveCloneRecords(CloneRecords().Append(cloneRecord));
+            ChangeCloneRecords(records => records.Append(cloneRecord));
         }, exactFolder, stage => ShowBusyStage("Cloning…", stage));
 
         try
@@ -1225,7 +1225,7 @@ public partial class MainWindow
                 // One that couldn't be fully removed stays on the list, to be tried again next start.
                 if (cloneRecord is not null && (workingFolder is null || !await GitTools.FolderExistsAsync(workingFolder)))
                 {
-                    SaveCloneRecords(CloneRecords().Where(record => record != cloneRecord));
+                    ChangeCloneRecords(records => records.Where(record => record != cloneRecord));
                 }
             });
         }
@@ -1284,9 +1284,14 @@ public partial class MainWindow
                 var isLinked = _database.GetProjectFolder(project.Id) == result.Value;
 
                 // Files that never got put in place come first, and it stays unfinished until they're sorted out.
-                if (isLinked && hold is not null && result.Note is null && await GitTools.LookBeforeFinishingAsync(result.Value) is { Refused: null } look && GitTools.AreAllowed(GitTools.FinishApprovalKey(result.Value), look.Settings))
+                if (isLinked && hold is not null && result.Note is null)
                 {
-                    missing = await GitTools.FinishDownloadAsync(result.Value, cancel.Token, stage => ShowBusyStage("Cloning…", stage));
+                    var look = await GitTools.LookBeforeFinishingAsync(result.Value);
+                    if (look?.Refused is { } refused) missing = refused;
+                    else if (look is not null && GitTools.AreAllowed(GitTools.FinishApprovalKey(result.Value), look.Settings))
+                    {
+                        missing = await GitTools.FinishDownloadAsync(result.Value, cancel.Token, stage => ShowBusyStage("Cloning…", stage));
+                    }
                 }
             }
             _cloneCancel = null;
@@ -1597,15 +1602,15 @@ public partial class MainWindow
             if (parts.Length != 3 || await GitTools.RemoveLeftoverCloneAsync(parts[2])) finished.Add(record);
         }
 
-        // Read again, because a new clone can have started while a slow drive held this up.
-        SaveCloneRecords(CloneRecords().Except(finished));
+        ChangeCloneRecords(records => records.Except(finished));
     }
 
     private List<string> CloneRecords() =>
         (_database.GetSetting(CloneInProgressSetting) ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList();
 
-    private void SaveCloneRecords(IEnumerable<string> records) =>
-        _database.SetSetting(CloneInProgressSetting, string.Join('\n', records));
+    // Read and written together, as another window can be starting or finishing a clone of its own.
+    private void ChangeCloneRecords(Func<IEnumerable<string>, IEnumerable<string>> change) =>
+        _database.ChangeSetting(CloneInProgressSetting, current => string.Join('\n', change((current ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries))));
 
     // The start time rules out another program that has since been given the same ID.
     private static bool IsStillRunning(int id, long startedTicks)

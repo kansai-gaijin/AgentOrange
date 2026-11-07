@@ -2,11 +2,15 @@
 //! text and never reads inside them, so the data's shape can change freely
 //! without changes here.
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use axum::{
     Json,
-    extract::{State, rejection::JsonRejection},
+    body::{Body, to_bytes},
+    extract::State,
     http::{HeaderMap, StatusCode},
 };
 use serde::{Deserialize, Serialize};
@@ -21,6 +25,8 @@ const MAX_CHANGES_PER_REQUEST: usize = 500;
 const MAX_KEY_LENGTH: usize = 128;
 const PAGE_SIZE: i64 = 500;
 const MAX_RESPONSE_BYTES: usize = 1_500_000;
+const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
+const YEAR_MILLISECONDS: i64 = 366 * 24 * 60 * 60 * 1000;
 
 pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
     db.batch_execute(
@@ -101,7 +107,7 @@ fn client_is_out_of_date(headers: &HeaderMap) -> bool {
 pub async fn sync(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    request: Result<Json<SyncRequest>, JsonRejection>,
+    body: Body,
 ) -> Result<Json<SyncResponse>, StatusCode> {
     let device = authenticate(&state, &headers).await?;
 
@@ -110,7 +116,13 @@ pub async fn sync(
     if client_is_out_of_date(&headers) {
         return Err(StatusCode::UPGRADE_REQUIRED);
     }
-    let Json(request) = request.map_err(|rejection| rejection.status())?;
+
+    // Only now, so anyone able to reach this can't make it read and parse much without a login.
+    let bytes = to_bytes(body, MAX_REQUEST_BYTES)
+        .await
+        .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
+    let Json(request) =
+        Json::<SyncRequest>::from_bytes(&bytes).map_err(|rejection| rejection.status())?;
 
     if request.changes.len() > MAX_CHANGES_PER_REQUEST {
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
@@ -142,8 +154,14 @@ pub async fn sync(
         }
     }
 
+    // A time far from now can only be a broken device, and would then win over every real edit.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64);
     for change in &request.changes {
-        if change.collection.is_empty()
+        if change.changed_at < 0
+            || change.changed_at > now.saturating_add(YEAR_MILLISECONDS)
+            || change.collection.is_empty()
             || change.id.is_empty()
             || change.collection.len() > MAX_KEY_LENGTH
             || change.id.len() > MAX_KEY_LENGTH

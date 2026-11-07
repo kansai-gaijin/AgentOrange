@@ -348,10 +348,14 @@ public static partial class GitTools
     public static async Task<FinishLook?> LookBeforeFinishingAsync(string folder)
     {
         // What's remembered goes by path, and something else can have appeared there since.
-        if (!await HoldsNoteFromHereAsync(folder))
+        switch (await HoldsNoteFromHereAsync(folder))
         {
-            TryNoting(() => RememberUnfinishedDownload(folder, false));
-            return new FinishLook(FolderGitSettings.None, "This isn't the folder that was being downloaded, so nothing was run in it. If its large files or submodules are missing and you trust it, run git lfs pull and git submodule update --init --recursive in it yourself.");
+            case false:
+                TryNoting(() => RememberUnfinishedDownload(folder, false));
+                return new FinishLook(FolderGitSettings.None, "This isn't the folder that was being downloaded, so nothing was run in it. If its large files or submodules are missing and you trust it, run git lfs pull and git submodule update --init --recursive in it yourself.");
+            case null:
+                // It may just be on a drive that's unplugged, and it's still unfinished when that's back.
+                return new FinishLook(FolderGitSettings.None, "That folder can't be read right now, so nothing was run in it. Finish the download once it's available again.");
         }
 
         var own = await ReadSettingLinesAsync(folder, ".", setting => SafeWhileFinishing().IsMatch(setting));
@@ -1273,7 +1277,10 @@ public static partial class GitTools
         // From here it's a finished clone, which could have taken hours, so it's never deleted,
         // including by the cleanup at the next start if the app closes during this.
         TryNoting(() => workingFolder(null));
-        await NoteUnfinishedInFolderAsync(working, true);
+        if (!await NoteUnfinishedInFolderAsync(working, true))
+        {
+            checkoutProblem ??= "The clone finished, but this app couldn't write to its Git data, so its large files and submodules weren't fetched. If it uses them, run git submodule update --init --recursive and git lfs pull in the folder.";
+        }
         TryNoting(() => RememberUnfinishedDownload(destination, true));
         try
         {
@@ -1358,7 +1365,7 @@ public static partial class GitTools
     // Also kept with the clone itself, as a folder that gets moved leaves what's remembered by its
     // path behind. It holds something only this PC knows, as a folder can come from anyone, and
     // it shouldn't be able to bring a button that runs Git in it.
-    private static async Task NoteUnfinishedInFolderAsync(string folder, bool unfinished)
+    private static async Task<bool> NoteUnfinishedInFolderAsync(string folder, bool unfinished)
     {
         var note = Path.Combine(folder, ".git", UnfinishedNoteFile);
         try
@@ -1368,31 +1375,35 @@ public static partial class GitTools
                 var token = Guid.NewGuid().ToString("N");
                 TryNoting(() => RememberUnfinishedNote(token, true));
                 await File.WriteAllTextAsync(note, token);
-                return;
+                return true;
             }
 
             if (await ReadUnfinishedNoteAsync(note) is { } written) TryNoting(() => RememberUnfinishedNote(written, false));
             await Task.Run(() => File.Delete(note));
+            return true;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             AppLog.Write($"Couldn't note a clone's unfinished download in its folder: {error.Message}");
+            return false;
         }
     }
 
     private static Task<string?> ReadUnfinishedNoteAsync(string note) => Task.Run(() =>
         File.Exists(note) && !SshConfigFile.IsLink(note) && new FileInfo(note).Length <= MaxUnfinishedNoteBytes ? File.ReadAllText(note).Trim() : null);
 
-    private static async Task<bool> HoldsNoteFromHereAsync(string folder)
+    // True if it's a clone from this PC, false if it's been seen not to be, and null if that can't be told.
+    private static async Task<bool?> HoldsNoteFromHereAsync(string folder)
     {
         try
         {
+            if (!await FolderExistsAsync(folder)) return null;
             return await ReadUnfinishedNoteAsync(Path.Combine(folder, ".git", UnfinishedNoteFile)) is { } written && IsUnfinishedNoteFromHere(written);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             AppLog.Write($"Couldn't read a folder's unfinished note: {error.Message}");
-            return false;
+            return null;
         }
     }
 

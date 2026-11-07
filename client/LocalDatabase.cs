@@ -385,7 +385,7 @@ public sealed class LocalDatabase
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) || ':' || COALESCE(SUM(changed_at), 0) || ':' || COALESCE((SELECT group_concat(value, '|') FROM settings WHERE key LIKE 'project_folder:%'), '') FROM records";
+        command.CommandText = "SELECT COUNT(*) || ':' || COALESCE(SUM(changed_at % 1000000000), 0) || ':' || COALESCE((SELECT group_concat(value, '|') FROM settings WHERE key LIKE 'project_folder:%'), '') FROM records";
         return command.ExecuteScalar() as string ?? "";
     }
 
@@ -747,6 +747,22 @@ public sealed class LocalDatabase
         command.CommandText = "SELECT value FROM settings WHERE key = $key";
         command.Parameters.AddWithValue("$key", key);
         return command.ExecuteScalar() as string;
+    }
+
+    /// <summary>Reads and writes a setting as one step, so another window's change to it can't be lost.</summary>
+    public void ChangeSetting(string key, Func<string?, string> change)
+    {
+        using var connection = Open();
+        using var transaction = connection.BeginTransaction();
+        string? current;
+        using (var read = connection.CreateCommand())
+        {
+            read.CommandText = "SELECT value FROM settings WHERE key = $key";
+            read.Parameters.AddWithValue("$key", key);
+            current = read.ExecuteScalar() as string;
+        }
+        WriteSetting(connection, key, change(current));
+        transaction.Commit();
     }
 
     public void SetSetting(string key, string value)
