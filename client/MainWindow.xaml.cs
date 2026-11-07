@@ -123,7 +123,7 @@ public partial class MainWindow : Window
                     }
                     else if (_projectCheck is not null && DownloadStateOf(folder) != _shownDownloadState)
                     {
-                        RenderProject(open);
+                        RenderProjectKeepingFocus(open);
                     }
                 }
             }
@@ -399,7 +399,8 @@ public partial class MainWindow : Window
 
         try
         {
-            _requiredUpdate = await _updates.CheckForUpdatesAsync() ?? _requiredUpdate;
+            // The feed answered, and there's nothing newer now, such as a release having been withdrawn.
+            _requiredUpdate = await _updates.CheckForUpdatesAsync();
             if (_requiredUpdate is null)
             {
                 StopRequiringUpdate();

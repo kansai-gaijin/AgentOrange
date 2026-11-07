@@ -630,6 +630,8 @@ public sealed class LocalDatabase
         var applied = 0;
         foreach (var change in changes)
         {
+            if (KeepsHigherEngineVersion(connection, change)) continue;
+
             // A queued edit that's older would only be refused when it got there, and this copy
             // of it would then never be corrected. Something only being sent again gives way to
             // one that's just as new too.
@@ -670,6 +672,38 @@ public sealed class LocalDatabase
         }
         transaction.Commit();
         return applied;
+    }
+
+    // The synced version only goes up, but two PCs offline can each find a different one, and the
+    // server goes by time. So one that's lower for the same engine doesn't land here, and this PC's
+    // goes back out, which every PC then settles on.
+    private static bool KeepsHigherEngineVersion(SqliteConnection connection, SyncChange change)
+    {
+        if (change.Collection != EnginesCollection || change.Deleted) return false;
+
+        string? held;
+        using (var read = connection.CreateCommand())
+        {
+            read.CommandText = "SELECT data FROM records WHERE collection = $collection AND id = $id AND deleted = 0";
+            read.Parameters.AddWithValue("$collection", change.Collection);
+            read.Parameters.AddWithValue("$id", change.Id);
+            held = read.ExecuteScalar() as string;
+        }
+        if (string.IsNullOrEmpty(held) || ParseEngineRecord(held) is not { } ours || ParseEngineRecord(change.Data) is not { } theirs) return false;
+        if (ours.Engine != theirs.Engine || !IsNewerVersion(ours.Version, theirs.Version)) return false;
+
+        var changedAt = Math.Max(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), change.ChangedAt + 1);
+        using var resend = connection.CreateCommand();
+        resend.CommandText = """
+            UPDATE records SET changed_at = $changedAt WHERE collection = $collection AND id = $id;
+            INSERT OR REPLACE INTO outbox (collection, id, data, deleted, changed_at, resend) VALUES ($collection, $id, $data, 0, $changedAt, 0);
+            """;
+        resend.Parameters.AddWithValue("$collection", change.Collection);
+        resend.Parameters.AddWithValue("$id", change.Id);
+        resend.Parameters.AddWithValue("$data", held);
+        resend.Parameters.AddWithValue("$changedAt", changedAt);
+        resend.ExecuteNonQuery();
+        return true;
     }
 
     /// <summary>Queues everything, for the first sync with a server that may not have it.</summary>

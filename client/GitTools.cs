@@ -364,6 +364,7 @@ public static partial class GitTools
         try
         {
             var gitDirectory = Path.Combine(folder, ".git");
+            if (await Task.Run(() => File.Exists(gitDirectory))) return new SubmoduleLook(lines, "This folder keeps its Git data somewhere else, which a clone from this app never does, so what it would use can't be checked and nothing was run in it. If you trust it, run git submodule update --init --recursive and git lfs pull in the folder yourself.");
             if (!await Task.Run(() => Directory.Exists(gitDirectory))) return new SubmoduleLook(lines, null);
             var places = new HashSet<string>(await Task.Run(() => GitFolderSafety.ModuleDirectories(gitDirectory)), StringComparer.OrdinalIgnoreCase);
 
@@ -372,15 +373,18 @@ public static partial class GitTools
             waiting.Push((folder, 0));
             while (waiting.TryPop(out var worktree))
             {
+                static string CantBeUsed(string what, string why) => $"{what} can't be used, so nothing was run in this folder: {why}. Git would follow it, so this can't be allowed. Fix that, or use another copy.";
+
+                if (await IsLinkInFolderAsync(worktree.Folder, ".gitmodules")) return new SubmoduleLook(lines, CantBeUsed(".gitmodules", "it's a link"));
                 if (await DeclaredSubmodulePathsAsync(worktree.Folder) is not { } paths) return null;
                 foreach (var path in paths)
                 {
                     var (problem, keeps, carriesOn) = await Task.Run(() => WhereSubmoduleKeepsData(folder, gitDirectory, worktree.Folder, path));
-                    if (problem is not null) lines.Add($"{path}: {problem}");
+                    if (problem is not null) return new SubmoduleLook(lines, CantBeUsed($"The submodule {OneLine(path)}", problem));
                     if (keeps is not null) places.Add(keeps);
                     if (carriesOn is null) continue;
-                    if (worktree.Depth >= MaxSubmoduleDepth) lines.Add($"{path}: is too many submodules deep to check");
-                    else waiting.Push((carriesOn, worktree.Depth + 1));
+                    if (worktree.Depth >= MaxSubmoduleDepth) return new SubmoduleLook(lines, CantBeUsed($"The submodule {OneLine(path)}", "submodules go too many levels deep to check"));
+                    waiting.Push((carriesOn, worktree.Depth + 1));
                 }
             }
 
@@ -1095,7 +1099,7 @@ public static partial class GitTools
         await RunAsync("git", folder, "rev-parse", "--verify", "-q", "HEAD") switch
         {
             { ExitCode: 0 } => false,
-            { ExitCode: 1 or 128 } => true, // What Git says for no commits, and for not being a repo.
+            var answer when SaysNoCommits(answer) => true,
             _ => null,
         };
 
@@ -1457,6 +1461,18 @@ public static partial class GitTools
         }
 
         progress?.Invoke("Fetching submodules");
+        // Nothing here can be reached through a link, as just looking could reach a network share.
+        var declaredPaths = SubmodulePathsIn(committed.Output).Concat(SubmodulePathsIn(inFolder)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        foreach (var path in declaredPaths)
+        {
+            var submodule = Path.GetFullPath(Path.Combine(folder, path));
+            var isInside = submodule.StartsWith(Path.TrimEndingDirectorySeparator(folder) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+            if (!isInside || await Task.Run(() => SshConfigFile.HasLinkBelowChosenPath(folder, submodule)))
+            {
+                return $"The clone finished, but its submodules weren't fetched, because {OneLine(path)} is outside the project or reached through a link, which could lead onto a network share and send your Windows login there. Fix that in the repo, then try again.";
+            }
+        }
+
         // One level at a time, so each one's list of addresses is checked before Git acts on it.
         var settings = await SshSettingsAsync(folder) ?? [];
         settings["GIT_LFS_SKIP_SMUDGE"] = "1"; // Fetched next, where its address gets checked and it can pick up where it left off.
@@ -1467,11 +1483,10 @@ public static partial class GitTools
             return $"The clone finished, but its submodules didn't. {AsSentence(reason)} Finish the download to try again.";
         }
 
-        foreach (var path in SubmodulePathsIn(committed.Output).Concat(SubmodulePathsIn(inFolder)).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var path in declaredPaths)
         {
             if (cancel.IsCancellationRequested) return null; // Whoever asked for this to stop gets told.
             var submodule = Path.GetFullPath(Path.Combine(folder, path));
-            if (!submodule.StartsWith(Path.TrimEndingDirectorySeparator(folder) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) continue;
             if (!await Task.Run(() => File.Exists(Path.Combine(submodule, ".git")) || Directory.Exists(Path.Combine(submodule, ".git")))) continue;
             if (await FetchSubmodulesAsync(submodule, cancel, progress, depth + 1) is { } further) return further;
             if (cancel.IsCancellationRequested) return null;
@@ -2129,7 +2144,7 @@ public static partial class GitTools
 
     // A key and its value, as Git lists them. What a clone, Git LFS and submodules set up for
     // themselves, and nothing that can name a program, a hook or another settings file.
-    [GeneratedRegex(@"\A((core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks|longpaths|autocrlf|eol|safecrlf)|remote\.[^\r\n]*\.(url|fetch|pushurl|tagopt|prune|promisor|partialclonefilter)|branch\.[^\r\n]*\.(remote|merge)|submodule\.[^\r\n]*\.(url|active|branch|ignore)|lfs\.repositoryformatversion|user\.(name|email))\n[^\r\n]*\z|filter\.lfs\.(clean|smudge|process)\ngit-lfs [^&|;<>`$\r\n]*\z|filter\.lfs\.required\n(true|false)\z|lfs\.[^\r\n]*\.access\n(basic|none|private|negotiate|ntlm)\z|lfs\.[^\r\n]*\.locksverify\n(true|false)\z|core\.fsmonitor\nfalse\z|core\.hookspath\n/dev/null\z|submodule\.[^\r\n]*\.update\n(checkout|none)\z)", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"\A((core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks|longpaths|autocrlf|eol|safecrlf)|remote\.[^\r\n]*\.(url|fetch|pushurl|tagopt|prune|promisor|partialclonefilter|gh-resolved)|branch\.[^\r\n]*\.(remote|merge)|submodule\.[^\r\n]*\.(url|active|branch|ignore)|lfs\.repositoryformatversion|user\.(name|email))\n[^\r\n]*\z|filter\.lfs\.(clean|smudge|process)\ngit-lfs [^&|;<>`$\r\n]*\z|filter\.lfs\.required\n(true|false)\z|lfs\.[^\r\n]*\.access\n(basic|none|private|negotiate|ntlm)\z|lfs\.[^\r\n]*\.locksverify\n(true|false)\z|core\.fsmonitor\nfalse\z|core\.hookspath\n/dev/null\z|submodule\.[^\r\n]*\.update\n(checkout|none)\z)", RegexOptions.IgnoreCase)]
     private static partial Regex SafeWhileFinishing();
 
     [GeneratedRegex(@"^(https://|ssh://|git@)")]

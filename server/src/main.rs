@@ -81,11 +81,26 @@ async fn main() {
     println!("Agent Orange server listening on {bind}");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown_requested())
         .await
         .expect("server stopped unexpectedly");
+}
+
+/// systemd stops a service with SIGTERM, so a restart finishes the requests under way.
+async fn shutdown_requested() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = signal(SignalKind::terminate()).expect("could not listen for SIGTERM");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Clients only give up a login when told to by this server, and not by a proxy on the way to it.

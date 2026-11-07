@@ -114,6 +114,11 @@ public sealed class SyncEngine
         if (IsPaused() || _server.State != ServerState.Connected || !_devices.IsPaired)
         {
             GiveUpSyncTurn();
+            if (OtherWindowSyncs)
+            {
+                OtherWindowSyncs = false; // Nothing's known about that while this can't sync at all.
+                StatusChanged?.Invoke();
+            }
             return;
         }
 

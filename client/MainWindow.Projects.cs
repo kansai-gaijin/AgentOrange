@@ -114,8 +114,27 @@ public partial class MainWindow
         }
         else if (!_confirmingNewRepo)
         {
-            RenderProject(current); // Its header image syncs as a separate record. Not while someone's typing.
+            RenderProjectKeepingFocus(current); // Its header image syncs as a separate record. Not while someone's typing.
         }
+    }
+
+    // Drawing the page again would otherwise send someone using the keyboard back to the start.
+    private void RenderProjectKeepingFocus(Project project)
+    {
+        static IEnumerable<Button> Buttons(DependencyObject root)
+        {
+            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            {
+                var child = VisualTreeHelper.GetChild(root, i);
+                if (child is Button button) yield return button;
+                foreach (var inside in Buttons(child)) yield return inside;
+            }
+        }
+
+        var focused = Buttons(ProjectPage).FirstOrDefault(button => button.IsKeyboardFocusWithin)?.Content as string;
+        RenderProject(project);
+        if (focused is null) return;
+        _ = Dispatcher.InvokeAsync(() => Buttons(ProjectPage).FirstOrDefault(button => button.Content as string == focused)?.Focus(), System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
     // Library
