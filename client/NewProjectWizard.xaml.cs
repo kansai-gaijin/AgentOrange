@@ -346,7 +346,7 @@ public partial class NewProjectWizard : UserControl
             {
                 AppLog.Write($"Couldn't save a new project: {error.Message}");
                 ReleaseFolder(path);
-                ShowProblem(problem, "The app's database can't be reached, so the project wasn't saved. Try again once it's back.");
+                ShowProblem(problem, "The app's database can't be reached, so the project may not have been saved. Once it's back, check your projects before trying again.");
                 return;
             }
             if (!_cloneIntoFolder) ReleaseFolder(path);

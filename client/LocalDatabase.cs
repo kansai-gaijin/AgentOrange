@@ -723,10 +723,17 @@ public sealed class LocalDatabase
     /// A server that lost its data gets everything sent again. All in one step, because
     /// if only the new epoch were saved, this would never be noticed again after a crash.
     /// </summary>
-    public void StartOverWithServer(string epochSetting, string epoch, string cursorSetting)
+    public void StartOverWithServer(string epochSetting, string oldEpoch, string epoch, string cursorSetting)
     {
         using var connection = Open();
         using var transaction = connection.BeginTransaction();
+        using (var others = connection.CreateCommand())
+        {
+            others.CommandText = "UPDATE settings SET value = $latest WHERE key LIKE 'sync_epoch:%' AND value = $old";
+            others.Parameters.AddWithValue("$latest", epoch);
+            others.Parameters.AddWithValue("$old", oldEpoch);
+            others.ExecuteNonQuery();
+        }
         Execute(connection, ResendEverything);
         WriteSetting(connection, epochSetting, epoch);
         WriteSetting(connection, cursorSetting, "0");

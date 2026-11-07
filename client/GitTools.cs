@@ -347,6 +347,13 @@ public static partial class GitTools
     /// </summary>
     public static async Task<FinishLook?> LookBeforeFinishingAsync(string folder)
     {
+        // What's remembered goes by path, and something else can have appeared there since.
+        if (!await HoldsNoteFromHereAsync(folder))
+        {
+            TryNoting(() => RememberUnfinishedDownload(folder, false));
+            return new FinishLook(FolderGitSettings.None, "This isn't the folder that was being downloaded, so nothing was run in it. If its large files or submodules are missing and you trust it, run git lfs pull and git submodule update --init --recursive in it yourself.");
+        }
+
         var own = await ReadSettingLinesAsync(folder, ".", setting => SafeWhileFinishing().IsMatch(setting));
         var inSubmodules = await LookThroughSubmodulesAsync(folder);
         if (own is null || inSubmodules is null) return null;
@@ -366,6 +373,7 @@ public static partial class GitTools
             var gitDirectory = Path.Combine(folder, ".git");
             if (await Task.Run(() => File.Exists(gitDirectory))) return new SubmoduleLook(lines, "This folder keeps its Git data somewhere else, which a clone from this app never does, so what it would use can't be checked and nothing was run in it. If you trust it, run git submodule update --init --recursive and git lfs pull in the folder yourself.");
             if (!await Task.Run(() => Directory.Exists(gitDirectory))) return new SubmoduleLook(lines, null);
+            if (await Task.Run(() => File.Exists(Path.Combine(gitDirectory, "commondir")))) return new SubmoduleLook(lines, CantBeUsed("This folder's Git data", "it has a commondir file, which keeps its hooks and settings somewhere else"));
             lines.AddRange(await Task.Run(() => HooksIn(gitDirectory, ".git")));
             var places = new HashSet<string>(await Task.Run(() => GitFolderSafety.ModuleDirectories(gitDirectory)), StringComparer.OrdinalIgnoreCase);
 
@@ -374,8 +382,6 @@ public static partial class GitTools
             waiting.Push((folder, 0));
             while (waiting.TryPop(out var worktree))
             {
-                static string CantBeUsed(string what, string why) => $"{what} can't be used, so nothing was run in this folder: {why}. Git would follow it, so this can't be allowed. Fix that, or use another copy.";
-
                 if (await IsLinkInFolderAsync(worktree.Folder, ".gitmodules")) return new SubmoduleLook(lines, CantBeUsed(".gitmodules", "it's a link"));
                 if (await DeclaredSubmodulePathsAsync(worktree.Folder) is not { } paths) return null;
                 foreach (var path in paths)
@@ -394,11 +400,16 @@ public static partial class GitTools
                 if (await GitFolderSafety.SubmoduleDataProblemAsync(folder, place, ReadSettingsFileAsync) is { } refused) return new SubmoduleLook(lines, refused);
 
                 var name = Path.GetRelativePath(folder, place);
+                if (await Task.Run(() => File.Exists(Path.Combine(place, "commondir")))) return new SubmoduleLook(lines, CantBeUsed($"The Git data at {name}", "it has a commondir file, which keeps its hooks and settings somewhere else"));
                 foreach (var file in new[] { "config", "config.worktree" })
                 {
                     var settingsFile = Path.Combine(place, file);
                     if (!await Task.Run(() => File.Exists(settingsFile))) continue;
                     if (await ReadSettingsFileAsync(settingsFile) is not { } settings) return null;
+                    if (settings.Split('\0', StringSplitOptions.RemoveEmptyEntries).Any(setting => SubmoduleInclude().IsMatch(setting.Split('\n', 2)[0])))
+                    {
+                        return new SubmoduleLook(lines, CantBeUsed($"The Git data at {name}", "its settings include another file, which could change after being allowed"));
+                    }
                     lines.AddRange(settings.Split('\0', StringSplitOptions.RemoveEmptyEntries).Where(setting => !SafeWhileFinishing().IsMatch(setting) && !IsSubmodulesOwnWorktree(setting, place, folder)).Select(setting => $"{name}: {setting}"));
                 }
                 lines.AddRange(await Task.Run(() => HooksIn(place, name)));
@@ -411,6 +422,8 @@ public static partial class GitTools
             return null;
         }
     }
+
+    private static string CantBeUsed(string what, string why) => $"{what} can't be used, so nothing was run in this folder: {why}. Git would follow it, so this can't be allowed. Fix that, or use another copy.";
 
     // What Git sets up for a submodule, which is safe as long as it stays inside the project.
     private static bool IsSubmodulesOwnWorktree(string setting, string place, string folder)
@@ -1260,6 +1273,7 @@ public static partial class GitTools
         // From here it's a finished clone, which could have taken hours, so it's never deleted,
         // including by the cleanup at the next start if the app closes during this.
         TryNoting(() => workingFolder(null));
+        await NoteUnfinishedInFolderAsync(working, true);
         TryNoting(() => RememberUnfinishedDownload(destination, true));
         try
         {
@@ -1271,7 +1285,6 @@ public static partial class GitTools
             TryNoting(() => RememberUnfinishedDownload(destination, false));
             return new GitResult(false, $"The clone finished, but it couldn't be named {destination}. It's kept at {await KeepVisibleAsync(working, destination)}. You can rename it and select it. If it uses large files or submodules, get them with git lfs pull and git submodule update --init --recursive.");
         }
-        await NoteUnfinishedInFolderAsync(destination, true);
         return new GitResult(true, destination, checkoutProblem);
     }
 
@@ -1369,6 +1382,19 @@ public static partial class GitTools
 
     private static Task<string?> ReadUnfinishedNoteAsync(string note) => Task.Run(() =>
         File.Exists(note) && !SshConfigFile.IsLink(note) && new FileInfo(note).Length <= MaxUnfinishedNoteBytes ? File.ReadAllText(note).Trim() : null);
+
+    private static async Task<bool> HoldsNoteFromHereAsync(string folder)
+    {
+        try
+        {
+            return await ReadUnfinishedNoteAsync(Path.Combine(folder, ".git", UnfinishedNoteFile)) is { } written && IsUnfinishedNoteFromHere(written);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write($"Couldn't read a folder's unfinished note: {error.Message}");
+            return false;
+        }
+    }
 
     /// <summary>A clone from this PC, chosen after being moved, still has what it had when it was left unfinished.</summary>
     public static async Task PickUpUnfinishedNoteAsync(string folder)
@@ -2148,6 +2174,9 @@ public static partial class GitTools
 
     [GeneratedRegex(@"https://github\.com/[\w.-]+/[\w.-]+")]
     private static partial Regex CreatedRepoUrl();
+
+    [GeneratedRegex(@"^include(if\..*)?\.", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex SubmoduleInclude();
 
     [GeneratedRegex(@"^submodule\..*\.path$", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
     private static partial Regex SubmodulePathSetting();

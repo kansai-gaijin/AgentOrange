@@ -187,12 +187,15 @@ internal static partial class GitFolderSafety
     /// <summary>The same look as a repo's own Git data gets, for one a submodule keeps somewhere of its own.</summary>
     public static async Task<string?> SubmoduleDataProblemAsync(string chosen, string place, Func<string, Task<string?>> readSettingsFile)
     {
-        if (IsNetworkPath(Path.GetFullPath(chosen))) return null;
+        var found = await Task.Run(async () =>
+        {
+            if (IsNetworkPath(Path.GetFullPath(chosen))) return null;
 
-        var found = LinkInside(place) is { } link ? $"{link} is a link"
-            : AlternateProblem(chosen, Path.Combine(place, "objects"), 0)
-            ?? await SettingsProblemAsync(chosen, Path.Combine(place, "config"), 0, readSettingsFile)
-            ?? await SettingsProblemAsync(chosen, Path.Combine(place, "config.worktree"), 0, readSettingsFile);
+            return LinkInside(place) is { } link ? $"{link} is a link"
+                : AlternateProblem(chosen, Path.Combine(place, "objects"), 0)
+                ?? await SettingsProblemAsync(chosen, Path.Combine(place, "config"), 0, readSettingsFile)
+                ?? await SettingsProblemAsync(chosen, Path.Combine(place, "config.worktree"), 0, readSettingsFile);
+        });
         return found is null ? null : Refusal(found);
     }
 
@@ -248,43 +251,52 @@ internal static partial class GitFolderSafety
     /// </summary>
     public static string? LargeFileStoreProblem(string gitDirectory)
     {
-        var waiting = new Stack<(string Path, int Hops)>();
-        waiting.Push((Path.Combine(gitDirectory, "lfs"), 0));
+        var linksFollowed = 0;
+        var waiting = new Stack<string>();
+        waiting.Push(Path.Combine(gitDirectory, "lfs"));
         while (waiting.TryPop(out var place))
         {
-            var directory = new DirectoryInfo(place.Path);
-            if (!directory.Exists) continue;
+            if (!Exists(place)) continue;
 
+            var directory = new DirectoryInfo(place);
             if (directory.LinkTarget is { } leadsTo)
             {
-                if (LeadsAway(directory.Parent?.FullName, leadsTo, place.Hops, out var next)) return $"{directory.FullName} leads to {leadsTo}";
-                waiting.Push((next, place.Hops + 1));
+                if (++linksFollowed > MaxIncludeDepth || LeadsAway(directory.Parent?.FullName, leadsTo, out var next)) return $"{directory.FullName} leads to {leadsTo}";
+                waiting.Push(next);
                 continue;
             }
 
             foreach (var entry in directory.EnumerateFileSystemInfos())
             {
-                if (entry.Attributes.HasFlag(FileAttributes.Directory))
-                {
-                    waiting.Push((entry.FullName, place.Hops));
-                }
-                else if (entry.LinkTarget is { } fileLeadsTo)
-                {
-                    if (LeadsAway(place.Path, fileLeadsTo, place.Hops, out _)) return $"{entry.FullName} leads to {fileLeadsTo}";
-                }
+                if (entry.Attributes.HasFlag(FileAttributes.Directory)) waiting.Push(entry.FullName);
+
+                // Git LFS keeps real files here, so one that's a link didn't come from moving the store.
+                else if (entry.LinkTarget is { } fileLeadsTo) return $"{entry.FullName} leads to {fileLeadsTo}";
             }
         }
         return null;
     }
 
-    private static bool LeadsAway(string? from, string target, int hops, out string next)
+    // Read one step at a time, from the top, as just asking about a path goes through any link on
+    // the way to it. Another link on the way counts too, as it could lead anywhere.
+    private static bool LeadsAway(string? from, string target, out string next)
     {
         // The form Windows can keep a local target in, which would otherwise look like a share.
         var plain = target.StartsWith(@"\\?\", StringComparison.Ordinal) && !target.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase) ? target[4..] : target;
         next = "";
-        if (hops >= MaxIncludeDepth || StartsLikeShare(plain) || from is null) return true;
+        if (StartsLikeShare(plain) || from is null) return true;
+
         next = Path.GetFullPath(plain, from);
-        return IsNetworkPath(next);
+        if (IsNetworkPath(next)) return true;
+
+        var at = Path.GetPathRoot(next) ?? "";
+        foreach (var part in next[at.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            at = Path.Combine(at, part);
+            if (!Exists(at)) return false;
+            if (SshConfigFile.IsLink(at)) return true;
+        }
+        return false;
     }
 
     private static bool IsSubmoduleData(string gitDirectory, string directory) =>

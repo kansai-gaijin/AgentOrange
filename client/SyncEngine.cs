@@ -175,22 +175,24 @@ public sealed class SyncEngine
 
                 if (response.Epoch is { Length: > 0 } current && current != epoch)
                 {
-                    _database.ReplaceEpoch(epoch, current);
+                    var oldEpoch = epoch;
                     epoch = current;
                     cursorSetting = CursorSetting(epoch);
 
                     // Already caught up with this server's new data through another address.
                     if (_database.GetSetting(cursorSetting) is { } known)
                     {
+                        _database.ReplaceEpoch(oldEpoch, epoch);
                         _database.SetSetting(epochSetting, epoch);
                         cursor = long.Parse(known);
                         continue;
                     }
 
                     // A server that lost its data would never send anything past this PC's old
-                    // cursor, and doesn't have what this PC has. So everything starts over.
+                    // cursor, and doesn't have what this PC has. So everything starts over, all
+                    // at once, as stopping halfway would leave an old cursor in use with new data.
                     AppLog.Write("The server's data started over, so this PC is sending it everything again.");
-                    _database.StartOverWithServer(epochSetting, epoch, cursorSetting);
+                    _database.StartOverWithServer(epochSetting, oldEpoch, epoch, cursorSetting);
                     cursor = 0;
                     continue;
                 }
