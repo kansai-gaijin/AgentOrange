@@ -74,7 +74,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     {
         try
         {
-            var response = await _http.PostAsJsonAsync($"{address}/v1/pair", new { key, name, install = database.InstallId() });
+            using var response = await _http.PostAsJsonAsync($"{address}/v1/pair", new { key, name, install = database.InstallId() });
             switch (response.StatusCode)
             {
                 case HttpStatusCode.Unauthorized: return PairResult.WrongKey;
@@ -103,7 +103,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     {
         try
         {
-            var response = await SendAsync(HttpMethod.Get, "/v1/devices");
+            using var response = await SendAsync(HttpMethod.Get, "/v1/devices");
             if (response is null || !response.IsSuccessStatusCode) return null;
             return await response.Content.ReadFromJsonAsync<List<DeviceInfo>>();
         }
@@ -120,7 +120,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
         LastSyncRefused = false;
         try
         {
-            var response = await SendAsync(HttpMethod.Post, "/v1/sync", new { cursor, changes, epoch });
+            using var response = await SendAsync(HttpMethod.Post, "/v1/sync", new { cursor, changes, epoch });
 
             // Only the server itself, not a proxy along the way, whose limits say nothing about the
             // change. Anything else is just a sync that didn't go through, and everything stays queued.
@@ -152,7 +152,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     {
         try
         {
-            var response = await SendAsync(HttpMethod.Get, "/v1/version");
+            using var response = await SendAsync(HttpMethod.Get, "/v1/version");
             return response is { IsSuccessStatusCode: true } ? await response.Content.ReadAsStringAsync() : null;
         }
         catch (Exception error) when (IsNetworkFailure(error))
@@ -177,7 +177,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     {
         try
         {
-            var response = await SendAsync(method, path, body);
+            using var response = await SendAsync(method, path, body);
             return response is { IsSuccessStatusCode: true };
         }
         catch (Exception error) when (IsNetworkFailure(error))

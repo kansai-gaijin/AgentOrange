@@ -316,7 +316,8 @@ public sealed class LocalDatabase
         if (!parts.Success) return null;
 
         var numbers = parts.Groups[1].Value;
-        if (!Version.TryParse(numbers.Contains('.') ? numbers : $"{numbers}.0", out var version)) return null;
+        if (!Version.TryParse(numbers.Contains('.') ? numbers : $"{numbers}.0", out var parsed)) return null;
+        var version = new Version(parsed.Major, parsed.Minor, Math.Max(parsed.Build, 0), Math.Max(parsed.Revision, 0)); // So 5.3 and 5.3.0 are the same.
 
         var release = 0;
         if (parts.Groups[3].Success && !int.TryParse(parts.Groups[3].Value, out release)) return null;

@@ -54,7 +54,7 @@ public partial class MainWindow
     private readonly Dictionary<string, string> _heldProblems = [];
     private string? _settingsProjectId;
     private FolderGitSettings? _settingsToAllow;
-    private bool _recheckAfterBusy;
+    private string? _recheckAfterBusy;
     private readonly Dictionary<string, int> _engineReads = [];
 
     // Only one long operation runs at a time. It keeps going if the person leaves the page.
@@ -674,13 +674,14 @@ public partial class MainWindow
         var hasHadAccess = _database.GetSetting(VerifiedSetting(project.Id)) == GitTools.RepoKey(project.RepoUrl);
         if (check.Access != RepoAccess.Allowed)
         {
-            var (reason, nextTime) = check.Access switch
+            var (reason, forNewProject) = check.Access switch
             {
-                RepoAccess.Offline => ("Couldn't reach GitHub, so the repo wasn't checked.", "That happens the next time it opens with a connection."),
-                RepoAccess.GitPushUnchecked => ("GitHub says you have access, but Git on this PC couldn't finish checking whether it can push.", "It's checked again the next time this opens. If this keeps happening, check this PC's Git setup."),
-                _ => ("GitHub didn't give a clear answer, so the repo wasn't checked.", "It's checked again the next time this opens."),
+                RepoAccess.Offline => ("Couldn't reach GitHub, so the repo wasn't checked.", "This new project's repo hasn't been checked yet. That happens the next time it opens with a connection."),
+                RepoAccess.GitPushUnchecked => ("GitHub says you have access, but Git on this PC couldn't finish checking whether it can push.", "Whether this PC can push to it hasn't been checked yet. It's checked again the next time this opens. If this keeps happening, check this PC's Git setup."),
+                RepoAccess.GitOffline => ("GitHub says you have access, but Git on this PC couldn't connect to it.", "This PC hasn't reached it through Git yet. It's checked again the next time this opens. If this keeps happening, check this PC's network for Git, such as a proxy or a blocked SSH port."),
+                _ => ("GitHub didn't give a clear answer, so the repo wasn't checked.", "This new project's repo hasn't been checked yet. It's checked again the next time this opens."),
             };
-            body.Children.Add(new TextBlock { Text = hasHadAccess ? $"{reason} This PC has had access before." : $"{reason} This new project's repo hasn't been checked yet. {nextTime}", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+            body.Children.Add(new TextBlock { Text = hasHadAccess ? $"{reason} This PC has had access before." : $"{reason} {forNewProject}", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
         }
 
         var folder = _database.GetProjectFolder(project.Id);
@@ -1024,20 +1025,20 @@ public partial class MainWindow
         _busyCardText = null;
         _downloadIsInPlace = false;
         if (UpdateOverlay.IsVisible && !_downloading) ShowUpdateMessage();
+        // Settings closed for this project while that ran. If its page is still open, that looks again,
+        // and otherwise its folder is read the way any background read is.
+        var settingsChanged = _recheckAfterBusy;
+        _recheckAfterBusy = null;
         if (_openProject is null)
         {
+            if (settingsChanged is not null) _ = TellIfDatabaseFailsAsync(ReadEngineVersionAsync(settingsChanged));
             RefreshProjects();
             return;
         }
 
         RenderProject(_openProject);
-
-        // Settings closed while this ran, and what's on the page may be out of date.
-        if (_recheckAfterBusy)
-        {
-            _recheckAfterBusy = false;
-            _ = RecheckIfStillOpenAsync(_openProject.Id);
-        }
+        if (settingsChanged == _openProject.Id) _ = RecheckIfStillOpenAsync(settingsChanged);
+        else if (settingsChanged is not null) _ = TellIfDatabaseFailsAsync(ReadEngineVersionAsync(settingsChanged));
     }
 
     // Shows the result if the person is still looking at this project.
@@ -1860,13 +1861,16 @@ public partial class MainWindow
         // The repo or folder may have changed. Work already running gets to finish first.
         if (_busyProjectId == openId)
         {
-            _recheckAfterBusy = true;
+            _recheckAfterBusy = openId;
             RefreshProjects();
             return;
         }
         // What it says still stands, unless the folder or repo it was about has just been changed.
         if (_settingsOpenedWith == (_database.GetProjectFolder(openId), FindProject(openId)?.RepoUrl)) KeepProblemThroughReopen(openId);
         await RefreshThenRecheckAsync(openId);
+
+        // Left before its check got there, so it's read the way any background read is.
+        if (_openProject?.Id != openId) await ReadEngineVersionAsync(openId);
     }
 
     private void ProjectSettings_Deleted()
