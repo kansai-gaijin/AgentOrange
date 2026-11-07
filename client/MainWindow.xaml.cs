@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -56,7 +57,7 @@ public partial class MainWindow : Window
         AppLog.Start(folders.LogsFolder);
         AppLog.Write($"Started {(_updates.IsInstalled ? $"v{_updates.CurrentVersion}" : "dev build")}");
 
-        _database = new LocalDatabase(folders.DatabasePath);
+        _database = OpenDatabase(folders.DatabasePath);
         ProjectWizard.ClaimFolder = async (folder, name) =>
             (await _database.ClaimFolderAsync(folder, new Project($"new-project-{Guid.NewGuid():N}", name, "", "", "", "", DateTimeOffset.UtcNow)))?.Name;
         ProjectWizard.ReleaseFolder = _database.ReleaseFolder;
@@ -105,6 +106,9 @@ public partial class MainWindow : Window
             _openPageNeedsCheck |= wasLost;
             try
             {
+                // Another window can pair or sign out at the same address, which changes nothing here otherwise.
+                ShowServerState();
+
                 var latest = _database.RecordsSignature();
                 if (latest != knownRecords || wasLost)
                 {
@@ -233,6 +237,46 @@ public partial class MainWindow : Window
         Settings.Visibility = Visibility.Collapsed;
         MainContent.Effect = null;
         MainContent.IsEnabled = UpdateOverlay.Visibility != Visibility.Visible;
+    }
+
+    // A damaged database fails the same way each time, so this is the only way out of that from
+    // inside the app. Anything else stopping it opening can pass, such as a drive that's dropped.
+    private static LocalDatabase OpenDatabase(string path)
+    {
+        var canAsk = true;
+#if DEBUG
+        canAsk = !Headless.Active;
+#endif
+        try
+        {
+            return new LocalDatabase(path);
+        }
+        catch (SqliteException error) when (LocalDatabase.MeansDamaged(error))
+        {
+            AppLog.Write($"The database is damaged: {error.Message}");
+            if (canAsk)
+            {
+                var answer = MessageBox.Show(
+                    $"Agent Orange's database is damaged and can't be used:\n{path}\n\nChoose Yes to keep it under another name beside this one and start with a new one. Anything already synced comes back once this PC is paired with your server again, and you'll choose this PC's project folders again. Changes that hadn't synced stay only in the kept copy.\n\nChoose No to close Agent Orange and leave everything as it is.",
+                    "Agent Orange",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+                if (answer != MessageBoxResult.Yes) Environment.Exit(0);
+            }
+
+            try
+            {
+                AppLog.Write($"Kept the damaged database as {LocalDatabase.SetAside(path)}");
+                return new LocalDatabase(path);
+            }
+            catch (Exception setAsideError) when (setAsideError is IOException or UnauthorizedAccessException or SqliteException)
+            {
+                AppLog.Write($"Couldn't set the damaged database aside: {setAsideError.Message}");
+                if (canAsk) MessageBox.Show($"Agent Orange couldn't move its damaged database out of the way:\n{path}\n\nClose any other Agent Orange windows and open it again.", "Agent Orange", MessageBoxButton.OK, MessageBoxImage.Error);
+                Environment.Exit(1);
+                throw;
+            }
+        }
     }
 
     private void ShowServerState()

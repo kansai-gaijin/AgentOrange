@@ -473,7 +473,9 @@ public partial class MainWindow
             _database.UpdateProject(project.Id, current => current with { RepoUrl = renamed });
             if (check.Access == RepoAccess.Allowed || wasVerified) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(renamed));
             if (wasCreatedHere) _database.SetSetting(CreatedHereSetting(project.Id), GitTools.RepoKey(renamed));
-            if (folderExists && folderProblem is null) await GitTools.PointFolderAtRepoAsync(folder!, renamed);
+
+            // Asked again, as the check above skips the folder for some answers, and one on any other repo stays as it is.
+            if (folderExists && await GitTools.FolderProblemAsync(folder!, project.RepoUrl) is null) await GitTools.PointFolderAtRepoAsync(folder!, renamed);
             _ = _sync.SyncNowAsync();
             KeepProblemThroughReopen(project.Id);
             if (navigation == _navigation && FindProject(project.Id) is { } moved) await OpenProjectAsync(moved);
@@ -522,7 +524,12 @@ public partial class MainWindow
         // A slow read of the old folder mustn't land on top of a newer one's answer.
         var read = _engineReads[projectId] = _engineReads.GetValueOrDefault(projectId) + 1;
 
-        if (await GitTools.FolderProblemAsync(folder, project.RepoUrl) is not null) return;
+        if (await GitTools.FolderProblemAsync(folder, project.RepoUrl) is not null)
+        {
+            // Whatever it found earlier was about that folder, which can't speak for this project now.
+            if (_engineReads[projectId] == read && _database.GetProjectFolder(projectId) == folder && _database.ForgetEngineVersionHere(projectId)) RefreshProjects();
+            return;
+        }
 
         var version = await EngineVersions.FindAsync(project.Engine, folder);
         if (version is null || _engineReads[projectId] != read || _database.GetProjectFolder(projectId) != folder) return;

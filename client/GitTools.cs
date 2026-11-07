@@ -352,7 +352,7 @@ public static partial class GitTools
         {
             case false:
                 TryNoting(() => RememberUnfinishedDownload(folder, false));
-                return new FinishLook(FolderGitSettings.None, "This isn't the folder that was being downloaded, so nothing was run in it. If its large files or submodules are missing and you trust it, run git lfs pull and git submodule update --init --recursive in it yourself.");
+                return new FinishLook(FolderGitSettings.None, "This app can't confirm this is the copy it was downloading, so nothing was run in it. If its large files or submodules are missing and you trust it, run git lfs pull and git submodule update --init --recursive in it yourself.");
             case null:
                 // It may just be on a drive that's unplugged, and it's still unfinished when that's back.
                 return new FinishLook(FolderGitSettings.None, "That folder can't be read right now, so nothing was run in it. Finish the download once it's available again.");

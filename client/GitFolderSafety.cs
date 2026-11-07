@@ -113,6 +113,21 @@ internal static partial class GitFolderSafety
     private static string? GitPath(string value, string relativeTo, bool homeAllowed = false)
     {
         var text = value;
+
+        // Stays on whichever share it names, however it goes on, and that gets looked at next. An
+        // admin share has a $ in its name, which means nothing here.
+        if (StartsLikeShare(text))
+        {
+            try
+            {
+                return Path.GetFullPath(text);
+            }
+            catch (ArgumentException)
+            {
+                return null;
+            }
+        }
+
         if (text.Length == 0 || text.IndexOfAny(['%', '$']) >= 0 || text[0] is '/' or '\\') return null;
         if (text[0] == '~')
         {
@@ -312,7 +327,7 @@ internal static partial class GitFolderSafety
         foreach (var line in File.ReadLines(alternates).Select(line => line.Trim()).Where(line => line.Length > 0 && !line.StartsWith('#')))
         {
             // A quoted line can spell a path in escapes, and ordinary ones have no need to be quoted.
-            if (line.StartsWith('"') || StartsLikeShare(line)) return $"{alternates} points at {line}";
+            if (line.StartsWith('"')) return $"{alternates} points at {line}";
             if (IsUnsafeGitPath(chosen, line, objects, false, out var next)) return $"{alternates} points at {line}";
             if (Directory.Exists(next) && LinkInside(next) is { } link) return $"{link} is a link";
             if (AlternateProblem(chosen, next, depth + 1) is { } further) return further;
@@ -338,11 +353,11 @@ internal static partial class GitFolderSafety
             var parts = setting.Split('\n', 2);
             if (parts.Length < 2) continue;
 
-            // No setting has a reason to name a network location in a folder that isn't on one.
+            // No setting has a reason to name a network location, other than the share the folder's on.
             // %(prefix) is Git's own shorthand, which leaves a path this can't see the end of.
             var value = parts[1].StartsWith(OptionalPath, StringComparison.Ordinal) ? parts[1][OptionalPath.Length..] : parts[1];
             var named = $"the setting {parts[0]} in {file}";
-            if (StartsLikeShare(value) || value.StartsWith("%(prefix)", StringComparison.Ordinal) || NamesNetworkDrive(value)) return named;
+            if (NamesAnotherShare(chosen, value) || value.StartsWith("%(prefix)", StringComparison.Ordinal)) return named;
 
             // Pointing a setting at nothing is the usual way to turn off a repo's hooks.
             // Git can read these from either place, depending on what's asking.
@@ -355,9 +370,10 @@ internal static partial class GitFolderSafety
         return null;
     }
 
-    private static bool IsUnsafeToOpen(string chosen, string path) =>
-        (IsNetworkPath(path) && !string.Equals(Path.GetPathRoot(Path.GetFullPath(path)), Path.GetPathRoot(Path.GetFullPath(chosen)), StringComparison.OrdinalIgnoreCase))
-        || SshConfigFile.HasLinkBelowChosenPath(chosen, path);
+    private static bool IsUnsafeToOpen(string chosen, string path) => OnAnotherShare(chosen, path) || SshConfigFile.HasLinkBelowChosenPath(chosen, path);
+
+    private static bool OnAnotherShare(string chosen, string path) =>
+        IsNetworkPath(path) && !string.Equals(Path.GetPathRoot(Path.GetFullPath(path)), Path.GetPathRoot(Path.GetFullPath(chosen)), StringComparison.OrdinalIgnoreCase);
 
     private static bool Exists(string path)
     {
@@ -376,15 +392,17 @@ internal static partial class GitFolderSafety
     private static bool StartsLikeShare(string path) =>
         path.Length >= 2 && path[0] is '\\' or '/' && path[1] is '\\' or '/';
 
-    private static bool NamesNetworkDrive(string value)
+    // Most settings aren't paths at all, and "Z: Team" isn't one just because there's a Z drive.
+    private static bool NamesAnotherShare(string chosen, string value)
     {
+        if (!StartsLikeShare(value) && !DrivePath().IsMatch(value)) return false;
         try
         {
-            return IsNetworkPath(value);
+            return OnAnotherShare(chosen, value);
         }
         catch (ArgumentException)
         {
-            return false; // Most settings aren't paths at all.
+            return true; // Starts like one, and there's no telling where it leads.
         }
     }
 
@@ -394,6 +412,9 @@ internal static partial class GitFolderSafety
         var root = Path.GetPathRoot(path);
         return !string.IsNullOrEmpty(root) && new DriveInfo(root).DriveType == DriveType.Network;
     }
+
+    [GeneratedRegex(@"^[A-Za-z]:[\\/]")]
+    private static partial Regex DrivePath();
 
     [GeneratedRegex(@"^(ref:\s*refs/|[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")]
     private static partial Regex ValidHead();

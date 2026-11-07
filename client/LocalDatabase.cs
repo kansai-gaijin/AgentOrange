@@ -56,12 +56,36 @@ public sealed class LocalDatabase
     private readonly Dictionary<string, Project> _reservedFolders = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _folderClaims = new(1, 1);
 
+    private const int DamagedErrorCode = 11;
+    private const int NotADatabaseErrorCode = 26;
+
+    public static bool MeansDamaged(SqliteException error) => error.SqliteErrorCode is DamagedErrorCode or NotADatabaseErrorCode;
+
+    /// <summary>Moves a damaged database out of the way, under a name that says so. Nothing is deleted, as it can still hold changes that hadn't synced.</summary>
+    public static string SetAside(string databasePath)
+    {
+        SqliteConnection.ClearAllPools(); // The failed attempt can still be holding the file.
+        var kept = $"{databasePath}.damaged-{DateTimeOffset.Now:yyyyMMdd-HHmmss}";
+        File.Move(databasePath, kept);
+        foreach (var part in new[] { "-wal", "-shm" })
+        {
+            if (File.Exists(databasePath + part)) File.Move(databasePath + part, kept + part);
+        }
+        return kept;
+    }
+
     public LocalDatabase(string databasePath)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
         _connectionString = new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString();
 
         using var connection = Open();
+        using (var check = connection.CreateCommand())
+        {
+            check.CommandText = "PRAGMA quick_check(1)";
+            if (check.ExecuteScalar() as string is not "ok") throw new SqliteException("The database is damaged.", DamagedErrorCode);
+        }
+
         Execute(connection, """
             CREATE TABLE IF NOT EXISTS records (
                 collection TEXT NOT NULL,
@@ -207,6 +231,14 @@ public sealed class LocalDatabase
         {
             SaveRecord(EnginesCollection, projectId, JsonSerializer.Serialize(new EngineRecord(engine, version), JsonOptions));
         }
+    }
+
+    /// <summary>True if there was one to forget.</summary>
+    public bool ForgetEngineVersionHere(string projectId)
+    {
+        if (string.IsNullOrEmpty(GetSetting(EngineHereKey(projectId)))) return false;
+        SetSetting(EngineHereKey(projectId), "");
+        return true;
     }
 
     private static string EngineHereKey(string projectId) => $"engine_here:{projectId}";
@@ -384,12 +416,12 @@ public sealed class LocalDatabase
         }
     }
 
-    /// <summary>Changes whenever a synced record or this PC's folder for a project does, including from another window of the app.</summary>
+    /// <summary>Changes whenever a synced record, or this PC's folder or engine version for a project, does, including from another window of the app.</summary>
     public string RecordsSignature()
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) || ':' || COALESCE(SUM(changed_at % 1000000000), 0) || ':' || COALESCE((SELECT group_concat(value, '|') FROM settings WHERE key LIKE 'project_folder:%'), '') FROM records";
+        command.CommandText = "SELECT COUNT(*) || ':' || COALESCE(SUM(changed_at % 1000000000), 0) || ':' || COALESCE((SELECT group_concat(value, '|') FROM settings WHERE key LIKE 'project_folder:%' OR key LIKE 'engine_here:%'), '') FROM records";
         return command.ExecuteScalar() as string ?? "";
     }
 
