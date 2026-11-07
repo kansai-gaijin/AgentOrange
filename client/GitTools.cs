@@ -301,6 +301,10 @@ public static partial class GitTools
         if (state.Problem is not null) return state.Problem;
         if (state.IsInsideAnotherRepo) return "That folder is inside a repo. Choose the repo's top folder.";
         if (state.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
+
+        // The same owner and name somewhere that isn't really GitHub, or in a way Git won't use.
+        if (RepoUrlProblem(state.OriginToCompare!) is not null) return $"That folder uses a different repo address, which isn't one GitHub uses: {state.Origin}";
+
         if (!SameRepo(state.OriginToCompare!, repoUrl))
         {
             var (renamed, moveProblem, originAnswered, originNow) = await MoveIfRepoRenamedAsync(folder, state, repoUrl);
@@ -325,8 +329,7 @@ public static partial class GitTools
             }
         }
 
-        // The same owner and name somewhere that isn't really GitHub, or in a way Git won't use.
-        return RepoUrlProblem(state.OriginToCompare!) is not null ? $"That folder uses a different repo address, which isn't one GitHub uses: {state.Origin}" : null;
+        return null;
     }
 
     /// <summary>
@@ -1273,7 +1276,13 @@ public static partial class GitTools
         {
             var address = WithoutCredentials(line);
             var (gitHubForm, _) = await GitHubFormAsync(address, folder);
-            if (!SameRepo(gitHubForm ?? address, repoUrl) || RepoUrlProblem(gitHubForm ?? address) is not null) return address;
+            var form = gitHubForm ?? address;
+            if (RepoUrlProblem(form) is not null) return address;
+            if (SameRepo(form, repoUrl)) continue;
+
+            var (pushesNow, pushAnswered) = await RecentRepoUrlAsync(form);
+            var (projectNow, projectAnswered) = await RecentRepoUrlAsync(repoUrl);
+            if (!(pushAnswered && projectAnswered && SameRepo(pushesNow, projectNow))) return address;
         }
         return null;
     }

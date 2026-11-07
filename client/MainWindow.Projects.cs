@@ -500,11 +500,19 @@ public partial class MainWindow
             {
                 _database.ReleaseRepo(renamed!);
             }
-            if (check.Access == RepoAccess.Allowed || (wasVerified && !check.IsDenied)) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(renamed!));
-            if (wasCreatedHere) _database.SetSetting(CreatedHereSetting(project.Id), GitTools.RepoKey(renamed!));
+            if (check.IsDenied)
+            {
+                _database.SetSetting(VerifiedSetting(project.Id), "");
+                _database.SetSetting(CreatedHereSetting(project.Id), "");
+            }
+            else
+            {
+                if (check.Access == RepoAccess.Allowed || wasVerified) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(renamed!));
+                if (wasCreatedHere) _database.SetSetting(CreatedHereSetting(project.Id), GitTools.RepoKey(renamed!));
+            }
 
-            // Asked again, as the check above skips the folder for some answers, and one on any other repo stays as it is.
-            if (folderExists && await GitTools.FolderProblemAsync(folder!, project.RepoUrl) is null) await GitTools.PointFolderAtRepoAsync(folder!, renamed!, project.RepoUrl);
+            // Checking it against the new name moves it there if it's on any older name, and leaves one on any other repo as it is.
+            if (folderExists) await GitTools.FolderProblemAsync(folder!, renamed!);
             _ = _sync.SyncNowAsync();
             KeepProblemThroughReopen(project.Id);
             if (navigation == _navigation && FindProject(project.Id) is { } moved) await OpenProjectAsync(moved);
