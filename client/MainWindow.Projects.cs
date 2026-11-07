@@ -1170,7 +1170,14 @@ public partial class MainWindow
                 return;
             }
 
-            _database.UpdateProject(project.Id, current => current with { RepoUrl = result.Value });
+            if (FindProject(project.Id) is not { } stillOnOld || !GitTools.SameRepo(stillOnOld.RepoUrl, project.RepoUrl))
+            {
+                _confirmingNewRepo = false;
+                await RecheckThenShowAsync(project.Id, $"The repo was created at {result.Value}, but this project moved to a different repo in the meantime, so it wasn't changed.");
+                return;
+            }
+
+            _database.UpdateProject(project.Id, current => GitTools.SameRepo(current.RepoUrl, project.RepoUrl) ? current with { RepoUrl = result.Value } : current);
             _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(result.Value)); // This PC just made it.
 
             // A folder chosen in settings while this ran is more recent, so it stays.
@@ -1674,15 +1681,25 @@ public partial class MainWindow
     private async Task RemoveLeftoverCloneAsync()
     {
         var finished = new List<string>();
+        var kept = new List<string>();
         foreach (var record in CloneRecords())
         {
             var parts = record.Split('|', 3);
             var stillRunning = parts.Length == 3 && int.TryParse(parts[0], out var id) && long.TryParse(parts[1], out var started) && IsStillRunning(id, started);
             if (stillRunning) continue;
-            if (parts.Length != 3 || await GitTools.RemoveLeftoverCloneAsync(parts[2])) finished.Add(record);
+
+            var outcome = parts.Length == 3 ? await GitTools.RemoveLeftoverCloneAsync(parts[2]) : LeftoverClone.Gone;
+            if (outcome != LeftoverClone.TryAgain) finished.Add(record);
+            if (outcome == LeftoverClone.KeptFinished) kept.Add(parts[2]);
         }
 
         ChangeCloneRecords(records => records.Except(finished));
+
+        // Hours of download can be in there, in a folder no one would think to look at.
+        foreach (var folder in kept)
+        {
+            Dialogs.Notify($"A clone finished last time, but the app closed before it could be named or linked. It's at {folder}. You can rename it and select it. If it uses large files or submodules, get them with git lfs pull and git submodule update --init --recursive.");
+        }
     }
 
     private List<string> CloneRecords() =>

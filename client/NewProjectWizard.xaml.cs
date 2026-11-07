@@ -30,6 +30,7 @@ public partial class NewProjectWizard : UserControl
 
     private string _name = "";
     private string _engine = ProjectChoices.Engines[0];
+    private string? _heldRepo;
     private string _gameType = ProjectChoices.GameTypes[0];
     private string _folder = "";
     private string _repoUrl = "";
@@ -50,8 +51,7 @@ public partial class NewProjectWizard : UserControl
 
     public event Action<NewProject>? Created;
 
-    /// <summary>Holds a folder for a new project of this name. Gives the name of any project already using it.</summary>
-    /// <summary>Holds a folder while this runs. Returns what's stopping that, if anything.</summary>
+    /// <summary>Holds a folder for a new project of this name. Returns what's stopping that, if anything.</summary>
     public Func<string, string, Task<string?>> ClaimFolder { get; set; } = (_, _) => Task.FromResult<string?>(null);
 
     public Action<string> ReleaseFolder { get; set; } = _ => { };
@@ -194,7 +194,7 @@ public partial class NewProjectWizard : UserControl
         var browse = ActionButton("Browse");
         browse.Click += async (_, _) =>
         {
-            var startIn = await GitTools.FolderExistsAsync(_folder) ? _folder : null;
+            var startIn = Path.IsPathFullyQualified(_folder) && await GitTools.FolderExistsAsync(_folder) ? _folder : null;
             if (Dialogs.PickFolder("Choose the project folder", startIn) is not { } chosen) return;
 
             folder.Text = chosen;
@@ -266,7 +266,6 @@ public partial class NewProjectWizard : UserControl
             string url;
             bool confirmed;
             var claimed = false;
-            var repoHeld = false;
             string? madeRepo = null; // It's on GitHub from then on, and this may be all that says where.
             try
             {
@@ -319,12 +318,12 @@ public partial class NewProjectWizard : UserControl
                     if ((allowedJustNow || _allowedForThisTry) && failure is not null) GitTools.ForgetAllowedFolderSettings(path);
                 }
 
-                // Another window can have got to this repo during all of that.
-                if (failure is null)
+                // One that was just made couldn't be held any sooner, and another window could have got to it.
+                if (failure is null && _heldRepo is null)
                 {
                     if (IsCreatingRepo) madeRepo = url;
-                    if (await ClaimRepo(url, _name) is { } repoTaken) (url, confirmed, failure) = ("", false, repoTaken);
-                    else repoHeld = true;
+                    if (await ClaimRepo(url, _name) is { } repoTaken) (url, confirmed, failure) = ("", false, madeRepo is null ? repoTaken : $"The repo was created at {madeRepo}, but it couldn't be used here. {repoTaken}");
+                    else _heldRepo = url;
                 }
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
@@ -347,6 +346,7 @@ public partial class NewProjectWizard : UserControl
 
             if (failure is not null)
             {
+                ReleaseHeldRepo();
                 if (claimed) ReleaseFolder(path);
                 ShowProblem(problem, failure);
                 create.Focus(); // Being disabled took it away, and Esc needs it to be inside the wizard.
@@ -371,7 +371,7 @@ public partial class NewProjectWizard : UserControl
             }
             finally
             {
-                if (repoHeld) ReleaseRepo(url);
+                ReleaseHeldRepo();
             }
             if (!_cloneIntoFolder) ReleaseFolder(path);
             Close();
@@ -439,6 +439,11 @@ public partial class NewProjectWizard : UserControl
                 : $"{holder} already uses that repo. A repo can only be one project.");
         }
         url = current;
+
+        // Before anything is done to the folder, as nothing gets undone if this is refused later.
+        if (await ClaimRepo(url, project.Name) is { } repoTaken) return ("", false, repoTaken);
+        _heldRepo = url;
+
         if (state.Origin is not null && !GitTools.SameRepo(state.OriginToCompare!, url))
         {
             if (await GitTools.MoveIfRepoRenamedAsync(project.Folder, state, url))
@@ -539,6 +544,12 @@ public partial class NewProjectWizard : UserControl
         }
 
         return (url, check.Access == RepoAccess.Allowed, null);
+    }
+
+    private void ReleaseHeldRepo()
+    {
+        if (_heldRepo is { } held) ReleaseRepo(held);
+        _heldRepo = null;
     }
 
     private void Close()

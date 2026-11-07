@@ -86,6 +86,8 @@ public sealed record FolderRepo(bool InsideRepo, bool IsRepoRoot, string? Origin
 }
 
 /// <summary>What projects need from Git and the GitHub CLI.</summary>
+public enum LeftoverClone { Gone, TryAgain, KeptFinished }
+
 public static partial class GitTools
 {
     private const string TimedOut = "timeout";
@@ -326,7 +328,7 @@ public static partial class GitTools
     public static async Task<bool> MoveIfRepoRenamedAsync(string folder, FolderRepo state, string repoUrl)
     {
         if (state.Origin is null || await RenamedRepoUrlAsync(state.OriginToCompare!) is not { } current || !SameRepo(current, repoUrl)) return false;
-        return await MoveOriginAsync(folder, SameWayTo(state.Origin, repoUrl), state.OriginToCompare) is null;
+        return await MoveOriginAsync(folder, SameWayTo(state.Origin, repoUrl), state.OriginToCompare!) is null;
     }
 
     /// <summary>
@@ -797,7 +799,7 @@ public static partial class GitTools
         if (state.Origin is null) return await ConnectFolderAsync(folder, await ReachableFormAsync(repoUrl) ?? repoUrl);
 
         var newRemote = state.GitHubOrigin is not null ? SameWayTo(state.Origin, repoUrl) : await ReachableFormAsync(repoUrl) ?? repoUrl;
-        return await MoveOriginAsync(folder, newRemote, onlyIfOnRepo) is { } moveProblem
+        return await MoveOriginAsync(folder, newRemote, onlyIfOnRepo ?? state.OriginToCompare!) is { } moveProblem
             ? new GitResult(false, moveProblem)
             : new GitResult(true, repoUrl);
     }
@@ -805,7 +807,7 @@ public static partial class GitTools
     // A push address on the old repo would otherwise keep sending work there, so that moves too.
     // One that goes anywhere else is a fork, which someone set up on purpose, and it stays. Returns
     // a problem to show, or null once it has moved. Nothing is left half done either way.
-    private static async Task<string?> MoveOriginAsync(string folder, string remote, string? onlyIfOnRepo = null)
+    private static async Task<string?> MoveOriginAsync(string folder, string remote, string onlyIfOnRepo)
     {
         var turn = RemoteMoves.GetOrAdd(folder.ToLowerInvariant(), _ => new SemaphoreSlim(1, 1));
         await turn.WaitAsync();
@@ -847,7 +849,7 @@ public static partial class GitTools
     // An open page, a background engine read and a check can all notice one rename at once.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> RemoteMoves = new();
 
-    private static async Task<string?> MoveOriginInTurnAsync(string folder, string remote, string? onlyIfOnRepo)
+    private static async Task<string?> MoveOriginInTurnAsync(string folder, string remote, string onlyIfOnRepo)
     {
         if (await RemoteSetElsewhereAsync(folder) is { } elsewhere) return elsewhere;
 
@@ -857,12 +859,11 @@ public static partial class GitTools
         var urls = await AddressesInAsync(folder, "remote.origin.url");
         var pushUrls = await AddressesInAsync(folder, "remote.origin.pushurl");
         if (urls is null || pushUrls is null) return couldNotChange;
-        if (urls.Length == 0 && onlyIfOnRepo is not null) return RemoteChangedMeanwhile;
-        if (urls.Length == 0) return await SetAddressesAsync(folder, "remote.origin.url", [remote]) ? null : couldNotChange;
+        if (urls.Length == 0) return RemoteChangedMeanwhile;
 
         // An SSH alias, as a second GitHub account uses, has to be read as the repo it really is.
         var oldRepo = (await GitHubFormAsync(urls[0], folder)).Item1 ?? urls[0];
-        if (onlyIfOnRepo is not null && !SameRepo(oldRepo, onlyIfOnRepo)) return RemoteChangedMeanwhile;
+        if (!SameRepo(oldRepo, onlyIfOnRepo)) return RemoteChangedMeanwhile;
         async Task<string[]> MovedAsync(string[] addresses)
         {
             var moved = new List<string>();
@@ -974,7 +975,7 @@ public static partial class GitTools
             return new GitResult(false, "That folder already connects this way, and this way works from outside the folder, so its own Git settings are the likely problem. Nothing was changed.");
         }
 
-        return await MoveOriginAsync(folder, form) is { } moveProblem
+        return await MoveOriginAsync(folder, form, state.OriginToCompare!) is { } moveProblem
             ? new GitResult(false, moveProblem)
             : new GitResult(true, form);
     }
@@ -1102,7 +1103,8 @@ public static partial class GitTools
         else if (state.Origin is not null) newOrigin = $"{webUrl}.git";
         else if (replacingRepo is not null && UsesSsh(replacingRepo) && webUrl.Length > 0) newOrigin = SameWayTo(replacingRepo, webUrl);
 
-        if (newOrigin is not null && await MoveOriginAsync(folder, newOrigin) is { } moveProblem)
+        // With no remote before, the one gh just added is what's there.
+        if (newOrigin is not null && await MoveOriginAsync(folder, newOrigin, state.OriginToCompare ?? $"{webUrl}.git") is { } moveProblem)
         {
             return new GitResult(false, $"The repo {repoName} was created, but couldn't be linked to that folder. {moveProblem}");
         }
@@ -1357,8 +1359,10 @@ public static partial class GitTools
         if (!await NoteUnfinishedInFolderAsync(working, true))
         {
             checkoutProblem ??= "The clone finished, but this app couldn't write to its Git data, so its large files and submodules weren't fetched. If it uses them, run git submodule update --init --recursive and git lfs pull in the folder.";
+
+            // Without that note, this record is all that would say it's a clone to clean up.
+            TryNoting(() => workingFolder(null));
         }
-        TryNoting(() => workingFolder(null));
 
         // Already marked is some other clone's, which this one not getting there says nothing about.
         var alreadyMarked = false;
@@ -1372,8 +1376,10 @@ public static partial class GitTools
         {
             AppLog.Write($"Couldn't name a finished clone: {error.Message}");
             if (!alreadyMarked) TryNoting(() => RememberUnfinishedDownload(destination, false));
+            TryNoting(() => workingFolder(null));
             return new GitResult(false, $"The clone finished, but it couldn't be named {destination}. It's kept at {await KeepVisibleAsync(working, destination)}. You can rename it and select it. If it uses large files or submodules, get them with git lfs pull and git submodule update --init --recursive.");
         }
+        TryNoting(() => workingFolder(null));
         return new GitResult(true, destination, checkoutProblem);
     }
 
@@ -1773,25 +1779,25 @@ public static partial class GitTools
 
     /// <summary>
     /// Removes what a clone left when the app closed in the middle of it. Only ever touches a
-    /// folder named by CloneAsync. False means it's still there, or its drive isn't plugged
+    /// folder named by CloneAsync. TryAgain means it's still there, or its drive isn't plugged
     /// in, so it should be tried again next time.
     /// </summary>
-    public static async Task<bool> RemoveLeftoverCloneAsync(string folder)
+    public static async Task<LeftoverClone> RemoveLeftoverCloneAsync(string folder)
     {
-        if (!Path.IsPathFullyQualified(folder) || !CloneWorkingFolderName().IsMatch(Path.GetFileName(folder))) return true;
+        if (!Path.IsPathFullyQualified(folder) || !CloneWorkingFolderName().IsMatch(Path.GetFileName(folder))) return LeftoverClone.Gone;
 
         var parent = Path.GetDirectoryName(folder);
-        if (parent is null || !await FolderExistsAsync(parent)) return false;
+        if (parent is null || !await FolderExistsAsync(parent)) return LeftoverClone.TryAgain;
 
         // It finished, and only forgetting about it failed, such as with the database out of reach.
         if (await Task.Run(() => File.Exists(Path.Combine(folder, ".git", UnfinishedNoteFile))))
         {
             AppLog.Write($"Kept a finished clone that was still on the cleanup list: {folder}");
-            return true;
+            return LeftoverClone.KeptFinished;
         }
 
         await TryDeleteOwnedFolderAsync(folder);
-        return !await FolderExistsAsync(folder);
+        return await FolderExistsAsync(folder) ? LeftoverClone.TryAgain : LeftoverClone.Gone;
     }
 
     // A virus scanner can hold new files for a moment, and giving up would throw away a whole clone.
