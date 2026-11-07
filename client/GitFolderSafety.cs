@@ -187,6 +187,8 @@ internal static partial class GitFolderSafety
     /// <summary>The same look as a repo's own Git data gets, for one a submodule keeps somewhere of its own.</summary>
     public static async Task<string?> SubmoduleDataProblemAsync(string chosen, string place, Func<string, Task<string?>> readSettingsFile)
     {
+        if (IsNetworkPath(Path.GetFullPath(chosen))) return null;
+
         var found = LinkInside(place) is { } link ? $"{link} is a link"
             : AlternateProblem(chosen, Path.Combine(place, "objects"), 0)
             ?? await SettingsProblemAsync(chosen, Path.Combine(place, "config"), 0, readSettingsFile)
