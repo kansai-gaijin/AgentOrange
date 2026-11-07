@@ -138,7 +138,9 @@ public partial class MainWindow : Window
                     }
                     else if (_projectCheck is not null && DownloadStateOf(folder) != _shownDownloadState)
                     {
-                        RenderProjectKeepingFocus(open);
+                        // A remote move waited for another window's download, which has now finished.
+                        if (_folderProblem == GitTools.WaitingForDownload) _ = RecheckIfStillOpenAsync(open.Id);
+                        else RenderProjectKeepingFocus(open);
                     }
                 }
             }

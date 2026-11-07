@@ -939,6 +939,8 @@ public static partial class GitTools
 
     private static async Task<string?> MoveOriginInTurnAsync(string folder, string remote, string onlyIfOnRepo)
     {
+        // Its submodules and large files write the same config, and the two would collide on its lock.
+        if (DownloadIsHeldElsewhere(folder)) return WaitingForDownload;
         if (await RemoteSetElsewhereAsync(folder) is { } elsewhere) return elsewhere;
 
         const string couldNotChange = "Couldn't change that folder's remote.";
@@ -1687,8 +1689,13 @@ public static partial class GitTools
             for (var attempt = 0; attempt < 3; attempt++)
             {
                 if (attempt > 0) Thread.Sleep(100);
-                var hold = new Mutex(false, DownloadHoldName(folder), out var isFirst);
-                if (isFirst) return hold;
+                var name = DownloadHoldName(folder);
+                var hold = new Mutex(false, name, out var isFirst);
+                if (isFirst)
+                {
+                    lock (OwnDownloads) OwnDownloads.Add(name);
+                    return new OwnDownload(hold, name);
+                }
                 hold.Dispose();
             }
             return null;
@@ -1698,6 +1705,31 @@ public static partial class GitTools
             return null; // Another window has it, running as administrator.
         }
     }
+
+    // Downloads this window is finishing, so its own work in that folder isn't held back by them.
+    private static readonly HashSet<string> OwnDownloads = [];
+
+    private sealed class OwnDownload(Mutex hold, string name) : IDisposable
+    {
+        public void Dispose()
+        {
+            lock (OwnDownloads) OwnDownloads.Remove(name);
+            hold.Dispose();
+        }
+    }
+
+    /// <summary>Another window of the app is finishing this folder's download.</summary>
+    public static bool DownloadIsHeldElsewhere(string folder)
+    {
+        lock (OwnDownloads)
+        {
+            if (OwnDownloads.Contains(DownloadHoldName(folder))) return false;
+        }
+        return DownloadIsHeld(folder);
+    }
+
+    /// <summary>Said when a remote move waits for another window's download to finish.</summary>
+    public const string WaitingForDownload = "That folder's download is being finished in another window, so its remote is left as it is until that's done.";
 
     public static bool DownloadIsHeld(string folder)
     {

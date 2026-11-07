@@ -198,7 +198,9 @@ pub async fn sync(
                     changed_at = excluded.changed_at
                  WHERE excluded.changed_at > sync_records.changed_at
                     OR (excluded.changed_at = sync_records.changed_at
-                        AND (excluded.data <> sync_records.data OR excluded.deleted <> sync_records.deleted))",
+                        AND ((excluded.deleted AND NOT sync_records.deleted)
+                            OR (excluded.deleted = sync_records.deleted
+                                AND excluded.data COLLATE \"C\" > sync_records.data COLLATE \"C\")))",
                 &[
                     &change.collection,
                     &change.id,
