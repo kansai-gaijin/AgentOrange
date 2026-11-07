@@ -440,6 +440,7 @@ public partial class ProjectSettingsModal : UserControl
                 catch
                 {
                     _database.ReleaseFolder(chosen);
+                    if (allowedJustNow) GitTools.ForgetAllowedFolderSettings(chosen);
                     throw;
                 }
                 if (problem is not null) _database.ReleaseFolder(chosen);
@@ -574,8 +575,9 @@ public partial class ProjectSettingsModal : UserControl
                     return;
                 }
 
-                _saved[field] = value;
-                if (field.Text.Trim() == value) field.Text = value;
+                var savedAs = field == _repoField && Current() is { } now ? now.RepoUrl : value;
+                _saved[field] = savedAs;
+                if (field.Text.Trim() == value) field.Text = savedAs;
             });
         }
 

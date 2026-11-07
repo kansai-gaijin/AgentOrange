@@ -1614,8 +1614,16 @@ public partial class MainWindow
                 }
                 else
                 {
-                    allowedJustNow = await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
-                    folderProblem = await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
+                    try
+                    {
+                        allowedJustNow = await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
+                        folderProblem = await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
+                    }
+                    catch
+                    {
+                        if (allowedJustNow) GitTools.ForgetAllowedFolderSettings(chosen);
+                        throw;
+                    }
                 }
                 if (allowedJustNow && folderProblem is not null) GitTools.ForgetAllowedFolderSettings(chosen);
             }

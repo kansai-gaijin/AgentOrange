@@ -330,8 +330,9 @@ public static partial class GitTools
                 if (!SameRepo(projectRepo.Current, state.OriginToCompare!) && !(projectRepo.Answered && originAnswered && SameRepo(projectRepo.Current, originNow)))
                 {
                     // Only certain if this repo was really found. GitHub would then have led the folder's name to it, if it were one.
-                    return projectRepo.Found && originAnswered
-                        ? $"That folder uses a different repo: {state.Origin}"
+                    if (projectRepo.Found && originAnswered) return $"That folder uses a different repo: {state.Origin}";
+                    return projectRepo.Answered
+                        ? $"{MayUseDifferentRepo}{state.Origin}. GitHub can't find this project's repo, so it can't be told whether that folder is it under another name."
                         : $"{MayUseDifferentRepo}{state.Origin}. {NoAnswerAboutOlderName}";
                 }
             }
@@ -841,7 +842,7 @@ public static partial class GitTools
     // a problem to show, or null once it has moved. Nothing is left half done either way.
     private static async Task<string?> MoveOriginAsync(string folder, string remote, string onlyIfOnRepo)
     {
-        var turn = RemoteMoves.GetOrAdd(folder.ToLowerInvariant(), _ => new SemaphoreSlim(1, 1));
+        var turn = RemoteMoves.GetOrAdd(Path.TrimEndingDirectorySeparator(folder).ToLowerInvariant(), _ => new SemaphoreSlim(1, 1));
         await turn.WaitAsync();
         try
         {
@@ -1807,7 +1808,7 @@ public static partial class GitTools
         if (view.ExitCode != 0) return new(url, SaysRepoMissing(view.Errors) || view.Errors.Contains("HTTP 404", StringComparison.Ordinal), false);
 
         var current = view.Output.Trim();
-        if (current.Length == 0) return new(url, true, false);
+        if (current.Length == 0) return new(url, false, false);
         if (current.Equals(slug, StringComparison.OrdinalIgnoreCase)) return new(url, true, true);
 
         var renamed = $"https://github.com/{current}.git";
@@ -2355,7 +2356,7 @@ public static partial class GitTools
     [GeneratedRegex(@"^org-\d+\z")]
     private static partial Regex CertificateUser();
 
-    [GeneratedRegex(@"^(?:ssh://)?org-\d+@(?:ssh\.)?github\.com(?::\d+)?[:/]([A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9._-]+?)/?\z", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^(?:org-\d+@(?i:github\.com):|ssh://org-\d+@(?i:(?:ssh\.)?github\.com)(?::\d+)?/)([A-Za-z0-9][A-Za-z0-9_-]*/(?!(?:\.{1,2}|\.git)/?\z)[A-Za-z0-9._-]+?)/?\z")]
     private static partial Regex CertificateAddress();
 
     [GeneratedRegex(@"^git@github\.com:[A-Za-z0-9][A-Za-z0-9_-]*/(?!(\.{1,2}|\.git)/?\z)[A-Za-z0-9._-]+/?\z", RegexOptions.IgnoreCase)]
