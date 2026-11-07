@@ -112,6 +112,12 @@ public sealed class LocalDatabase
         Execute(connection, """
             CREATE TABLE IF NOT EXISTS refused (collection TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (collection, id));
             CREATE INDEX IF NOT EXISTS records_changed_at ON records (changed_at);
+
+            CREATE TABLE IF NOT EXISTS revisions (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
+            INSERT OR IGNORE INTO revisions (name, value) VALUES ('records', 0);
+            CREATE TRIGGER IF NOT EXISTS records_added AFTER INSERT ON records BEGIN UPDATE revisions SET value = value + 1 WHERE name = 'records'; END;
+            CREATE TRIGGER IF NOT EXISTS records_changed AFTER UPDATE ON records BEGIN UPDATE revisions SET value = value + 1 WHERE name = 'records'; END;
+            CREATE TRIGGER IF NOT EXISTS records_removed AFTER DELETE ON records BEGIN UPDATE revisions SET value = value + 1 WHERE name = 'records'; END;
             """);
         MoveOldProjectsTable(connection);
     }
@@ -421,7 +427,7 @@ public sealed class LocalDatabase
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) || ':' || COALESCE(SUM(changed_at % 1000000000), 0) || ':' || COALESCE((SELECT group_concat(value, '|') FROM settings WHERE key LIKE 'project_folder:%' OR key LIKE 'engine_here:%'), '') FROM records";
+        command.CommandText = "SELECT (SELECT value FROM revisions WHERE name = 'records') || ':' || COALESCE((SELECT group_concat(value, '|') FROM settings WHERE key LIKE 'project_folder:%' OR key LIKE 'engine_here:%'), '')";
         return command.ExecuteScalar() as string ?? "";
     }
 

@@ -1570,7 +1570,7 @@ public static partial class GitTools
     // connection only costs this step.
     private static async Task<string?> FetchLargeFilesAsync(string folder, CancellationToken cancel, Action<string>? progress)
     {
-        var declared = await RunAsync("git", folder, "grep", "-q", "-E", "^[^#]*filter=lfs", "HEAD", "--", "*.gitattributes");
+        var declared = await RunAsync("git", folder, "grep", "-q", "-E", "^[[:space:]]*[^#[:space:]].*filter=lfs", "HEAD", "--", "*.gitattributes");
         if (declared is { ExitCode: 1 }) return null;
         if (declared is not { ExitCode: 0 })
         {

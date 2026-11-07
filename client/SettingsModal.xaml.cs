@@ -416,10 +416,9 @@ public partial class SettingsModal : UserControl
 
     private string LastSyncedLabel()
     {
-        if (Sync.OtherWindowSyncs) return "Another window of the app is syncing";
-
         // Whichever is behind updates itself soon, and changes wait on this PC until then.
         if (Devices.VersionsDiffer) return "Paused until this PC and the server are on the same version";
+        if (Sync.OtherWindowSyncs) return "Another window of the app is syncing";
         if (Sync.LastSynced is not { } synced) return "Not yet";
         var ago = DateTimeOffset.UtcNow - synced;
         return ago.TotalMinutes < 1 ? "Just now" : ago.TotalHours < 1 ? $"{(int)ago.TotalMinutes} min ago" : $"{(int)ago.TotalHours} hr ago";

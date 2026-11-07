@@ -40,8 +40,10 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     /// <summary>The server's last answer was that it won't take what it was sent, so sending it again won't help.</summary>
     public bool LastSyncRefused { get; private set; }
 
-    /// <summary>The server's last answer was that it's on a different release than this PC.</summary>
-    public bool VersionsDiffer { get; private set; }
+    /// <summary>The server's last answer was that it's on a different release than this PC. Kept in the database, as only one window syncs.</summary>
+    public bool VersionsDiffer => database.GetSetting(VersionsDifferSetting) == "1";
+
+    private const string VersionsDifferSetting = "versions_differ";
 
     public bool IsPaired => HasLogin(server.Address);
 
@@ -127,7 +129,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
             var versionsDiffer = response?.StatusCode == HttpStatusCode.UpgradeRequired;
             if (versionsDiffer != VersionsDiffer)
             {
-                VersionsDiffer = versionsDiffer;
+                database.SetSetting(VersionsDifferSetting, versionsDiffer ? "1" : "");
                 PairingChanged?.Invoke();
             }
             if (response is null || !response.IsSuccessStatusCode) return null;

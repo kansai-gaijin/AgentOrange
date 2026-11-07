@@ -257,7 +257,7 @@ public partial class MainWindow : Window
             if (canAsk)
             {
                 var answer = MessageBox.Show(
-                    $"Agent Orange's database is damaged and can't be used:\n{path}\n\nChoose Yes to keep it under another name beside this one and start with a new one. Anything already synced comes back once this PC is paired with your server again, and you'll choose this PC's project folders again. Changes that hadn't synced stay only in the kept copy.\n\nChoose No to close Agent Orange and leave everything as it is.",
+                    $"Agent Orange's database is damaged and can't be used:\n{path}\n\nChoose Yes to keep it under another name beside this one and start with a new one. Anything already synced comes back once this PC is paired with your server again, and you'll choose this PC's project folders again. This PC will show as a new device, so the old one can be removed from your devices. Changes that hadn't synced stay only in the kept copy.\n\nChoose No to close Agent Orange and leave everything as it is.",
                     "Agent Orange",
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Warning);

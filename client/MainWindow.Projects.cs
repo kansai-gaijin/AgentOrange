@@ -524,10 +524,11 @@ public partial class MainWindow
         // A slow read of the old folder mustn't land on top of a newer one's answer.
         var read = _engineReads[projectId] = _engineReads.GetValueOrDefault(projectId) + 1;
 
-        if (await GitTools.FolderProblemAsync(folder, project.RepoUrl) is not null)
+        if (await GitTools.FolderProblemAsync(folder, project.RepoUrl) is { } problem)
         {
-            // Whatever it found earlier was about that folder, which can't speak for this project now.
-            if (_engineReads[projectId] == read && _database.GetProjectFolder(projectId) == folder && _database.ForgetEngineVersionHere(projectId)) RefreshProjects();
+            // Seen to be on another repo, so what it found earlier can't speak for this project now.
+            // Anything else, such as an unplugged drive, says nothing about that.
+            if (GitTools.ConnectingCanFix(problem) && _engineReads[projectId] == read && _database.GetProjectFolder(projectId) == folder && _database.ForgetEngineVersionHere(projectId)) RefreshProjects();
             return;
         }
 
