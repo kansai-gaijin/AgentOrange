@@ -379,6 +379,26 @@ public sealed class LocalDatabase
 
     public void ReleaseFolder(string folder) => Release(FolderHold, folder);
 
+    /// <summary>Hands this window's hold on a folder to another project, such as one the wizard just made.</summary>
+    public void TransferFolderHold(string folder, Project to)
+    {
+        string token;
+        lock (_holds)
+        {
+            if (!_holds.TryGetValue($"{FolderHold}:{folder}", out var held)) return;
+            _holds[$"{FolderHold}:{folder}"] = (held.Token, held.Alive, to.Id);
+            token = held.Token;
+        }
+
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE holds SET project_id = $id, project_name = $name WHERE token = $token";
+        command.Parameters.AddWithValue("$id", to.Id);
+        command.Parameters.AddWithValue("$name", to.Name);
+        command.Parameters.AddWithValue("$token", token);
+        command.ExecuteNonQuery();
+    }
+
     /// <summary>The same for a repo, until ReleaseRepo, once the project says it uses it.</summary>
     public Task<Project?> ClaimRepoAsync(string url, Project claimant) =>
         ClaimAsync(RepoHold, url, claimant, () => RepoOwner(url, claimant.Id));
@@ -663,7 +683,7 @@ public sealed class LocalDatabase
     public void SetProjectFolder(string projectId, string folder)
     {
         // A folder connected again later gets looked at again, including its own Git settings.
-        if (GetProjectFolder(projectId) is { } old && old != folder)
+        if (GetProjectFolder(projectId) is { } old && SameFolderKey(old) != SameFolderKey(folder))
         {
             SetSetting(AllowedSettingsKey(old), "");
             SetSetting(AllowedSettingsKey(GitTools.FinishApprovalKey(old)), "");
@@ -693,14 +713,16 @@ public sealed class LocalDatabase
     /// <summary>The repo may be gone, and whatever's made at that address next is a different one.</summary>
     public void ForgetFolderSharesRepo(string folder) => SetSetting(SharesRepoKey(folder), "");
 
-    private static string SharesRepoKey(string folder) => $"folder_shares_repo:{folder}";
+    private static string SharesRepoKey(string folder) => $"folder_shares_repo:{SameFolderKey(folder)}";
+
+    private static string SameFolderKey(string folder) => Path.TrimEndingDirectorySeparator(folder).ToLowerInvariant();
 
     /// <summary>The fingerprint of a folder's own Git settings that the person has allowed on this PC.</summary>
     public string? AllowedFolderSettings(string folder) => GetSetting(AllowedSettingsKey(folder));
 
     public void AllowFolderSettings(string folder, string fingerprint) => SetSetting(AllowedSettingsKey(folder), fingerprint);
 
-    private static string AllowedSettingsKey(string folder) => $"folder_settings_allowed:{folder}";
+    private static string AllowedSettingsKey(string folder) => $"folder_settings_allowed:{SameFolderKey(folder)}";
 
     public byte[]? GetProjectImage(string projectId, ProjectImageKind kind)
     {

@@ -691,13 +691,23 @@ public static partial class GitTools
     private static async Task<(string? Form, bool CanPush)> BestFormAsync(string url, CancellationToken cancel = default)
     {
         string? readable = null;
+        string? unsure = null;
         foreach (var form in await FormsToTryAsync(url))
         {
             if (await LsRemoteAsync(form, Path.GetTempPath(), cancel) is not { ExitCode: 0 }) continue;
-            if (!await GitRefusesPushAsync(form, null, cancel)) return (form, true);
+            switch (await GitPushAnswerAsync(form, null, cancel))
+            {
+                case PushAnswer.CanPush:
+                    return (form, true);
+                case PushAnswer.CantTell:
+                    unsure ??= form;
+                    break;
+            }
             readable ??= form;
         }
-        return (readable, false);
+
+        // Only a way to connect, which proves nothing about access, so one that wasn't refused will do.
+        return unsure is not null ? (unsure, true) : (readable, false);
     }
 
     // The one this PC's GitHub CLI is set to comes first. Anyone can read a public repo over
@@ -2022,7 +2032,12 @@ public static partial class GitTools
             {
                 // A folder that pushes somewhere else gets reported as that, without contacting it.
                 if (await FolderProblemAsync(folder!, url) is not null || await PushAddressElsewhereAsync(folder!, "origin", url) is not null) return new RepoCheck(RepoAccess.Allowed);
-                return new RepoCheck(await GitRefusesPushAsync("origin", folder!) ? RepoAccess.GitReadOnly : RepoAccess.Allowed);
+                return new RepoCheck(await GitPushAnswerAsync("origin", folder!) switch
+                {
+                    PushAnswer.CanPush => RepoAccess.Allowed,
+                    PushAnswer.Refused => RepoAccess.GitReadOnly,
+                    _ => RepoAccess.CheckFailed,
+                });
             }
 
             // No answer this way, such as a blocked SSH port, isn't being offline if there's
@@ -2042,24 +2057,37 @@ public static partial class GitTools
     {
         RepoAccess? usualWay = null;
         var readOnly = false;
+        var unsure = false;
         foreach (var form in await FormsToTryAsync(url))
         {
             var attempt = await LsRemoteAsync(form, Path.GetTempPath());
             if (attempt is { ExitCode: 0 })
             {
-                if (!await GitRefusesPushAsync(form, null)) return RepoAccess.Allowed;
-                readOnly = true;
+                switch (await GitPushAnswerAsync(form, null))
+                {
+                    case PushAnswer.CanPush:
+                        return RepoAccess.Allowed;
+                    case PushAnswer.Refused:
+                        readOnly = true;
+                        break;
+                    default:
+                        unsure = true;
+                        break;
+                }
                 continue;
             }
             usualWay ??= GitFailure(attempt);
         }
-        return readOnly ? RepoAccess.GitReadOnly : usualWay ?? RepoAccess.Offline;
+        return readOnly ? RepoAccess.GitReadOnly : unsure ? RepoAccess.CheckFailed : usualWay ?? RepoAccess.Offline;
     }
+
+    private enum PushAnswer { CanPush, Refused, CantTell }
 
     // Reading works with a read-only deploy key too, so this asks whether Git could push. It's a
     // dry run of deleting a branch that doesn't exist, which GitHub has to authorize the same way
-    // and which can't change anything. Only a clear refusal counts, so a blip can't lock anyone out.
-    private static async Task<bool> GitRefusesPushAsync(string remote, string? folder, CancellationToken cancel = default)
+    // and which can't change anything. Being told that branch doesn't exist means it was allowed
+    // to ask. A clear refusal is the only other answer, and anything else says nothing either way.
+    private static async Task<PushAnswer> GitPushAnswerAsync(string remote, string? folder, CancellationToken cancel = default)
     {
         // Git only pushes from inside a repo, and folder is the one whose settings are allowed.
         var scratch = folder is null ? Path.Combine(Path.GetTempPath(), $".ao-{Guid.NewGuid():N}"[..12]) : null;
@@ -2068,19 +2096,23 @@ public static partial class GitTools
             if (scratch is not null)
             {
                 await Task.Run(() => Directory.CreateDirectory(scratch));
-                if (await RunAsync("git", scratch, "init", "-q") is not { ExitCode: 0 }) return false;
+                if (await RunAsync("git", scratch, "init", "-q") is not { ExitCode: 0 }) return PushAnswer.CantTell;
             }
 
             var where = folder ?? scratch!;
             var result = await RunAsync("git", where, null, ["push", "--dry-run", "--no-verify", "--", remote, $":refs/heads/agent-orange-check-{Guid.NewGuid():N}"], cancel, await SshSettingsAsync(where));
+            if (result is null or { ExitCode: < 0 }) return PushAnswer.CantTell;
+            if (result.ExitCode == 0) return PushAnswer.CanPush;
 
             // Addresses come out first, because a repo can be called something like read-only-demo.
-            return result is { ExitCode: not 0 } && PushRefusal().IsMatch(QuotedText().Replace(result.Errors, ""));
+            var said = QuotedText().Replace(result.Errors, "");
+            if (PushRefusal().IsMatch(said)) return PushAnswer.Refused;
+            return said.Contains("remote ref does not exist", StringComparison.OrdinalIgnoreCase) ? PushAnswer.CanPush : PushAnswer.CantTell;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             AppLog.Write($"Couldn't check whether Git can push: {error.Message}");
-            return false;
+            return PushAnswer.CantTell;
         }
         finally
         {
@@ -2356,7 +2388,7 @@ public static partial class GitTools
     [GeneratedRegex(@"^org-\d+\z")]
     private static partial Regex CertificateUser();
 
-    [GeneratedRegex(@"^(?:org-\d+@(?i:github\.com):|ssh://org-\d+@(?i:(?:ssh\.)?github\.com)(?::\d+)?/)([A-Za-z0-9][A-Za-z0-9_-]*/(?!(?:\.{1,2}|\.git)/?\z)[A-Za-z0-9._-]+?)/?\z")]
+    [GeneratedRegex(@"^(?:org-\d+@(?i:(?:ssh\.)?github\.com):|ssh://org-\d+@(?i:(?:ssh\.)?github\.com)(?::\d+)?/)([A-Za-z0-9][A-Za-z0-9_-]*/(?!(?:\.{1,2}|\.git)/?\z)[A-Za-z0-9._-]+?)/?\z")]
     private static partial Regex CertificateAddress();
 
     [GeneratedRegex(@"^git@github\.com:[A-Za-z0-9][A-Za-z0-9_-]*/(?!(\.{1,2}|\.git)/?\z)[A-Za-z0-9._-]+/?\z", RegexOptions.IgnoreCase)]

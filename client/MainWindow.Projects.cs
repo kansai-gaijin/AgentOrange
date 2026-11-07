@@ -428,9 +428,8 @@ public partial class MainWindow
         var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl, folder, useFolderSettings);
 
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
-        var folderProblem = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitCantReach or RepoAccess.GitReadOnly
-            ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl)
-            : null;
+        var folderShown = folderExists && check.Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitCantReach or RepoAccess.GitReadOnly;
+        var folderProblem = folderShown ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl) : null;
 
         // It may have been connected while offline, when nothing could say the repo had files.
         var lacksFiles = check.Access == RepoAccess.Allowed && folderExists && folderProblem is null
@@ -445,8 +444,8 @@ public partial class MainWindow
             : FolderHistory.CantTell;
         if (history == FolderHistory.SharesCommits) _database.RememberFolderSharesRepo(folder!, repoKey);
         var mayNotMatch = history == FolderHistory.SharesNothing;
-        var folderEngine = folderExists && folderProblem is null ? await EngineVersions.DetectAsync(folder!) : null;
-        var pushesTo = folderExists && folderProblem is null ? await GitTools.PushesElsewhereAsync(folder!, project.RepoUrl) : null;
+        var folderEngine = folderShown && folderProblem is null ? await EngineVersions.DetectAsync(folder!) : null;
+        var pushesTo = folderShown && folderProblem is null ? await GitTools.PushesElsewhereAsync(folder!, project.RepoUrl) : null;
         if (folderExists && check.IsDenied) _database.ForgetFolderSharesRepo(folder!);
 
         // Asked before the latest copy of the project is read below, as this can take a while.
@@ -1242,8 +1241,7 @@ public partial class MainWindow
             }
             if (FindProject(projectId) is not { } latest) return;
 
-            _database.ReleaseFolder(folder);
-            held = false;
+            _database.TransferFolderHold(folder, latest);
             var exact = Path.TrimEndingDirectorySeparator(folder);
             await CloneProjectAsync(latest, Path.GetDirectoryName(exact)!, exact);
         }
