@@ -773,13 +773,15 @@ public static partial class GitTools
     // Another repo reached the way one of a remote's own addresses reaches its repo, login and all.
     private static string KeepingWayIn(string address, string url) => WithLoginFrom(address, SameWayTo(WithoutCredentials(address), url));
 
+    private static string GitHubHost(string host) => host.Equals("www.github.com", StringComparison.OrdinalIgnoreCase) ? "github.com" : host;
+
     // Only on the same host, as a login is never sent somewhere it wasn't meant for. Elsewhere,
     // access is just asked again.
     private static string WithLoginFrom(string? withLogin, string address)
     {
         if (withLogin is null
             || !Uri.TryCreate(withLogin, UriKind.Absolute, out var from) || from.Scheme != Uri.UriSchemeHttps || from.UserInfo.Length == 0
-            || !Uri.TryCreate(address, UriKind.Absolute, out var to) || to.Scheme != Uri.UriSchemeHttps || !string.Equals(from.Host, to.Host, StringComparison.OrdinalIgnoreCase))
+            || !Uri.TryCreate(address, UriKind.Absolute, out var to) || to.Scheme != Uri.UriSchemeHttps || !string.Equals(GitHubHost(from.Host), GitHubHost(to.Host), StringComparison.OrdinalIgnoreCase))
         {
             return address;
         }
@@ -2147,6 +2149,7 @@ public static partial class GitTools
             }
 
             var where = folder ?? scratch!;
+            if (folder is not null && remote.Contains(':') && remote.Contains('=')) return PushAnswer.CantTell;
             // An address rather than a remote's name has no mirror setting to turn off, and goes there
             // rather than wherever the folder's own settings rewrite it to. A folder rule for that exact
             // address would still win, as Git takes the first of two equal matches and reads the

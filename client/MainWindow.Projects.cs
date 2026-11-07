@@ -55,6 +55,7 @@ public partial class MainWindow
     private string? _settingsProjectId;
     private FolderGitSettings? _settingsToAllow;
     private readonly HashSet<string> _recheckAfterBusy = [];
+    private int _busyJob; // Goes up each time a job starts, and stays through its changes of text.
     private readonly Dictionary<string, int> _engineReads = [];
 
     // Only one long operation runs at a time. It keeps going if the person leaves the page.
@@ -1026,6 +1027,7 @@ public partial class MainWindow
 
     private void StartBusy(Project project, string text)
     {
+        if (_busyProjectId is null) _busyJob++;
         _busyProjectId = project.Id;
         _busyText = text;
         _busyCardText = null;
@@ -1093,17 +1095,19 @@ public partial class MainWindow
     }
 
     // The app carries on through a database error, as the database can be on a drive that's
-    // dropped. Whatever this page was busy with has stopped, and the page has to say so. The same
-    // goes for anything else unexpected, such as a drive dropping partway.
+    // dropped. Whatever this page was busy with has stopped, and the page has to say so. Anything
+    // else unexpected closes the app, so its busy state ending first only matters for the moment
+    // that's being reported. Only the job this work started is ended, not one started after it.
     private async Task EndBusyIfDatabaseFailsAsync(string projectId, Func<Task> work)
     {
+        var before = _busyJob;
         try
         {
             await work();
         }
         catch (Exception)
         {
-            if (_busyProjectId == projectId) EndBusy();
+            if (_busyProjectId == projectId && _busyJob == before + 1) EndBusy();
             throw;
         }
     }
@@ -1196,10 +1200,11 @@ public partial class MainWindow
 
         // Busy until the project has its new repo, or it's given up on, so it can't be asked for a
         // second time meanwhile, and nothing looks at the page in between. It ends just before
-        // whatever that comes to is shown.
+        // whatever that comes to is shown, and only this job, not one started after it.
+        var job = _busyJob;
         void Done()
         {
-            if (_busyProjectId == project.Id) EndBusy();
+            if (_busyProjectId == project.Id && _busyJob == job) EndBusy();
         }
 
         try
@@ -1356,9 +1361,11 @@ public partial class MainWindow
         if (_busyProjectId is not null) return;
         var destination = exactFolder ?? GitTools.CloneDestination(project.RepoUrl, parentFolder);
         var isHeld = false;
+        var job = 0;
         try
         {
             StartBusy(project, "Checking that folder…");
+            job = _busyJob;
             var owner = destination is null ? null : await _database.ClaimFolderAsync(destination, project);
             isHeld = destination is not null && owner is null;
             if (owner is not null)
@@ -1372,8 +1379,8 @@ public partial class MainWindow
         }
         catch (Exception)
         {
-            // Something unexpected, and the page can't be left waiting forever.
-            if (_busyProjectId == project.Id)
+            // Something unexpected, and the page can't be left waiting forever. Only this clone, though.
+            if (_busyProjectId == project.Id && _busyJob == job)
             {
                 _cloneCancel = null;
                 EndBusy();
