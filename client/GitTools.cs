@@ -766,7 +766,8 @@ public static partial class GitTools
         return $"https://github.com/{path}.git";
     }
 
-    // The same, keeping the login in a folder's HTTPS address, as an SSH alias is kept.
+    // The same, keeping the login in a folder's HTTPS address, as an SSH alias is kept. Only on the
+    // same host, as a login is never sent somewhere it wasn't meant for. Elsewhere, access is just asked again.
     private static string SameWayTo(FolderRepo state, string url)
     {
         var address = SameWayTo(state.Origin!, url);

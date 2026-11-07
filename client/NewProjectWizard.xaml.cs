@@ -473,9 +473,9 @@ public partial class NewProjectWizard : UserControl
             // which decides whether this clones or connects, so it's asked again.
             case RepoAccess.Allowed or RepoAccess.Offline:
                 break;
-            case RepoAccess.GitCantReach or RepoAccess.GitReadOnly when !useFolderSettings && runnable is { CanBeApproved: false }:
+            case RepoAccess.GitCantReach or RepoAccess.GitReadOnly or RepoAccess.GitOffline when !useFolderSettings && runnable is { CanBeApproved: false }:
                 return ("", false, "Git can't reach this repo without this folder's own Git settings, and there are too many of them to show here for you to check. Cut them down, or choose another copy.");
-            case RepoAccess.GitCantReach or RepoAccess.GitReadOnly when !useFolderSettings && runnable is { IsEmpty: false }:
+            case RepoAccess.GitCantReach or RepoAccess.GitReadOnly or RepoAccess.GitOffline when !useFolderSettings && runnable is { IsEmpty: false }:
                 _offeringFolderSettings = true;
                 _shownFolderSettings = runnable.Fingerprint;
                 return ("", false, $"Git can't reach this repo without this folder's own Git settings, which can run programs or send your login somewhere else:\n{runnable.Shown}\nOnly use them if you trust where this folder came from.");

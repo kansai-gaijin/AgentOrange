@@ -404,6 +404,19 @@ public partial class MainWindow
 
     private async Task CheckAndShowProjectAsync(Project project)
     {
+        // Its long job is working in its folder, and checking that folder can change its remote.
+        // So it's checked once the job is done, and the page meanwhile shows what's running.
+        if (_busyProjectId == project.Id)
+        {
+            _recheckAfterBusy = project.Id;
+            if (_openProject?.Id == project.Id)
+            {
+                _openProject = project;
+                RenderProject(project);
+                return;
+            }
+        }
+
         var navigation = ++_navigation;
         _lastAccessCheck = DateTimeOffset.UtcNow;
         _openProject = project;
@@ -421,6 +434,7 @@ public partial class MainWindow
         ProjectSelectView.Visibility = Visibility.Collapsed;
         ProjectView.Visibility = Visibility.Visible;
         RenderProject(project);
+        if (_busyProjectId == project.Id) return;
 
         var folder = _database.GetProjectFolder(project.Id);
         var runnable = folder is null ? FolderGitSettings.None : await GitTools.FolderRunnableSettingsAsync(folder);
@@ -658,7 +672,7 @@ public partial class MainWindow
 
         if (_projectCheck is not { } check)
         {
-            body.Children.Add(CenteredNote("Checking the repo…"));
+            body.Children.Add(CenteredNote(_busyProjectId == project.Id ? "The repo is checked once this finishes." : "Checking the repo…"));
             AddOwnBusy(body, project);
             AddPageProblem(body);
             return;
@@ -920,7 +934,7 @@ public partial class MainWindow
         body.Children.Add(buttons);
 
         // A copy on this PC may reach the repo in a way the URL alone doesn't, such as its own SSH setup.
-        if (check.Access is RepoAccess.GitCantReach or RepoAccess.GitReadOnly)
+        if (check.Access is RepoAccess.GitCantReach or RepoAccess.GitReadOnly or RepoAccess.GitOffline)
         {
             var rows = new List<FrameworkElement>();
             var linked = _database.GetProjectFolder(project.Id);
