@@ -1295,15 +1295,20 @@ public partial class MainWindow
             return;
         }
 
-        var finishing = await GitTools.FolderFinishSettingsAsync(folder);
+        var finishing = await GitTools.LookBeforeFinishingAsync(folder);
         if (finishing is null)
         {
             ShowPageProblem(project.Id, "Couldn't read this folder's own Git settings, so nothing was run in it. Check that Git works in that folder, then try again.");
             return;
         }
-        if (!GitTools.AreAllowed(GitTools.FinishApprovalKey(folder), finishing))
+        if (finishing.Refused is { } refused)
         {
-            _finishSettingsToAllow = finishing;
+            ShowPageProblem(project.Id, refused);
+            return;
+        }
+        if (!GitTools.AreAllowed(GitTools.FinishApprovalKey(folder), finishing.Settings))
+        {
+            _finishSettingsToAllow = finishing.Settings;
             if (_openProject?.Id == project.Id) RenderProject(_openProject);
             return;
         }

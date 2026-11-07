@@ -6,6 +6,14 @@ status=0
 
 . "$(dirname "$0")/private-text"
 
+# Who's committing goes public with the commit.
+for ident in GIT_AUTHOR_IDENT GIT_COMMITTER_IDENT; do
+    if ! git var "$ident" | is_public_safe; then
+        echo "Blocked: that's about who's committing. Use GitHub's no-reply address." >&2
+        status=1
+    fi
+done
+
 while IFS= read -r file; do
     # A commit that only deletes or rewords has no files to check.
     [ -n "$file" ] || continue

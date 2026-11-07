@@ -179,8 +179,19 @@ internal static partial class GitFolderSafety
         {
             if (AlternateProblem(chosen, Path.Combine(module, "objects"), 0) is { } alternate) return alternate;
             if (await SettingsProblemAsync(chosen, Path.Combine(module, "config"), 0, readSettingsFile) is { } settings) return settings;
+            if (await SettingsProblemAsync(chosen, Path.Combine(module, "config.worktree"), 0, readSettingsFile) is { } worktreeSettings) return worktreeSettings;
         }
         return null;
+    }
+
+    /// <summary>The same look as a repo's own Git data gets, for one a submodule keeps somewhere of its own.</summary>
+    public static async Task<string?> SubmoduleDataProblemAsync(string chosen, string place, Func<string, Task<string?>> readSettingsFile)
+    {
+        var found = LinkInside(place) is { } link ? $"{link} is a link"
+            : AlternateProblem(chosen, Path.Combine(place, "objects"), 0)
+            ?? await SettingsProblemAsync(chosen, Path.Combine(place, "config"), 0, readSettingsFile)
+            ?? await SettingsProblemAsync(chosen, Path.Combine(place, "config.worktree"), 0, readSettingsFile);
+        return found is null ? null : Refusal(found);
     }
 
     /// <summary>Where a repo keeps its submodules' Git data, including submodules inside those. A submodule's name can have slashes in it.</summary>

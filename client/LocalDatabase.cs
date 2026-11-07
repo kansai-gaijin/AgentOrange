@@ -451,6 +451,11 @@ public sealed class LocalDatabase
 
     public void SetDownloadUnfinished(string folder, bool unfinished) => SetSetting(UnfinishedDownloadKey(folder), unfinished ? "1" : "");
 
+    /// <summary>What only a clone from this PC has in its folder, so it can be recognised after being moved.</summary>
+    public bool IsUnfinishedNoteFromHere(string token) => GetSetting($"download_note:{token}") == "1";
+
+    public void RememberUnfinishedNote(string token, bool unfinished) => SetSetting($"download_note:{token}", unfinished ? "1" : "");
+
     private static string UnfinishedDownloadKey(string folder) => $"download_unfinished:{Path.TrimEndingDirectorySeparator(folder).ToLowerInvariant()}";
 
     /// <summary>Whether this folder has been seen to share a commit with this repo, which stands until it's disconnected.</summary>

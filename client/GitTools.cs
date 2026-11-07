@@ -62,6 +62,9 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
 }
 
 /// <summary>A folder's own Git settings that matter. The fingerprint says whether they've changed, without keeping them.</summary>
+/// <summary>What finishing a download in a folder would use, and why it can't be allowed if it can't.</summary>
+public sealed record FinishLook(FolderGitSettings Settings, string? Refused);
+
 public sealed record FolderGitSettings(string Shown, string Fingerprint, bool CanBeApproved = true)
 {
     public static readonly FolderGitSettings None = new("", "");
@@ -336,60 +339,66 @@ public static partial class GitTools
         ReadFolderSettingsAsync(folder, FolderSettingsThatMatter, null);
 
     /// <summary>
-    /// Finishing a download checks out files and fetches submodules, and settings for those can run
-    /// programs too. A folder usually has none, as what Git LFS and submodules set up for themselves
-    /// doesn't count. Approved apart from the ones for reaching a remote.
+    /// Finishing a download checks out files and works inside each submodule, using that one's own
+    /// settings and hooks, and there are too many ways for those to run a program to list them all.
+    /// So anything that isn't known to be safe needs allowing, including what a settings file
+    /// includes. What a clone, Git LFS and submodules set up for themselves doesn't come up. Refused
+    /// says it can't be allowed at all, and null means this couldn't be read.
     /// </summary>
-    public static async Task<FolderGitSettings?> FolderFinishSettingsAsync(string folder)
+    public static async Task<FinishLook?> LookBeforeFinishingAsync(string folder)
     {
-        var own = await ReadSettingLinesAsync(folder, SettingsThatRunWhileFinishing, setting => HarmlessWhileFinishing().IsMatch(setting));
-        var inSubmodules = await SubmoduleSettingLinesAsync(folder);
-        return own is null || inSubmodules is null ? null : SummedUp([.. own, .. inSubmodules]);
+        var own = await ReadSettingLinesAsync(folder, ".", setting => SafeWhileFinishing().IsMatch(setting));
+        var inSubmodules = await LookThroughSubmodulesAsync(folder);
+        if (own is null || inSubmodules is null) return null;
+        return new FinishLook(SummedUp([.. own, .. inSubmodules.Lines]), inSubmodules.Refused);
     }
 
-    // Git works inside each submodule while finishing, and uses that one's own settings and hooks.
-    private static async Task<List<string>?> SubmoduleSettingLinesAsync(string folder)
+    private const int MaxSubmoduleDepth = 8;
+    private const int MaxHookBytes = 1_000_000;
+
+    private sealed record SubmoduleLook(List<string> Lines, string? Refused);
+
+    private static async Task<SubmoduleLook?> LookThroughSubmodulesAsync(string folder)
     {
         var lines = new List<string>();
         try
         {
             var gitDirectory = Path.Combine(folder, ".git");
-            if (!await Task.Run(() => Directory.Exists(gitDirectory))) return lines;
-            var places = await Task.Run(() => GitFolderSafety.ModuleDirectories(gitDirectory));
+            if (!await Task.Run(() => Directory.Exists(gitDirectory))) return new SubmoduleLook(lines, null);
+            var places = new HashSet<string>(await Task.Run(() => GitFolderSafety.ModuleDirectories(gitDirectory)), StringComparer.OrdinalIgnoreCase);
 
-            // A submodule's folder can keep its Git data itself, or say that it's somewhere else.
-            var declared = Path.Combine(folder, ".gitmodules");
-            if (await Task.Run(() => File.Exists(declared)))
+            // A submodule's folder can also keep its Git data itself, or say it's somewhere else.
+            var waiting = new Stack<(string Folder, int Depth)>();
+            waiting.Push((folder, 0));
+            while (waiting.TryPop(out var worktree))
             {
-                if (await Task.Run(() => SshConfigFile.IsLink(declared))) lines.Add(".gitmodules is a link");
-                else if (await ReadSettingsFileAsync(declared) is not { } submodules) return null;
-                else
+                if (await DeclaredSubmodulePathsAsync(worktree.Folder) is not { } paths) return null;
+                foreach (var path in paths)
                 {
-                    foreach (var setting in submodules.Split('\0', StringSplitOptions.RemoveEmptyEntries).Select(entry => entry.Split('\n', 2)).Where(parts => parts.Length == 2 && SubmodulePathSetting().IsMatch(parts[0])))
-                    {
-                        var (linksTo, keeps) = await Task.Run(() => WhereSubmoduleKeepsData(folder, gitDirectory, setting[1]));
-                        if (linksTo is not null) lines.Add($"{setting[1]}: {linksTo}");
-                        if (keeps is not null) places.Add(keeps);
-                    }
+                    var (problem, keeps, carriesOn) = await Task.Run(() => WhereSubmoduleKeepsData(folder, gitDirectory, worktree.Folder, path));
+                    if (problem is not null) lines.Add($"{path}: {problem}");
+                    if (keeps is not null) places.Add(keeps);
+                    if (carriesOn is null) continue;
+                    if (worktree.Depth >= MaxSubmoduleDepth) lines.Add($"{path}: is too many submodules deep to check");
+                    else waiting.Push((carriesOn, worktree.Depth + 1));
                 }
             }
 
             foreach (var place in places)
             {
+                if (await GitFolderSafety.SubmoduleDataProblemAsync(folder, place, ReadSettingsFileAsync) is { } refused) return new SubmoduleLook(lines, refused);
+
                 var name = Path.GetRelativePath(folder, place);
-                var config = Path.Combine(place, "config");
-                if (await Task.Run(() => File.Exists(config)))
+                foreach (var file in new[] { "config", "config.worktree" })
                 {
-                    if (await ReadSettingsFileAsync(config) is not { } settings) return null;
-                    foreach (var setting in settings.Split('\0', StringSplitOptions.RemoveEmptyEntries))
-                    {
-                        var key = setting.Split('\n', 2)[0];
-                        if (SubmoduleSettingThatMatters().IsMatch(key) && !HarmlessWhileFinishing().IsMatch(setting)) lines.Add($"{name}: {setting}");
-                    }
+                    var settingsFile = Path.Combine(place, file);
+                    if (!await Task.Run(() => File.Exists(settingsFile))) continue;
+                    if (await ReadSettingsFileAsync(settingsFile) is not { } settings) return null;
+                    lines.AddRange(settings.Split('\0', StringSplitOptions.RemoveEmptyEntries).Where(setting => !SafeWhileFinishing().IsMatch(setting)).Select(setting => $"{name}: {setting}"));
                 }
                 lines.AddRange(await Task.Run(() => SubmoduleHooks(place, name)));
             }
-            return lines;
+            return new SubmoduleLook(lines, null);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -398,21 +407,46 @@ public static partial class GitTools
         }
     }
 
-    private static (string? Problem, string? Keeps) WhereSubmoduleKeepsData(string folder, string gitDirectory, string path)
+    // Both copies, as Git falls back on the committed one if the one in the folder is gone.
+    private static async Task<List<string>?> DeclaredSubmodulePathsAsync(string worktree)
     {
-        var entry = Path.GetFullPath(Path.Combine(folder, path, ".git"));
-        if (!entry.StartsWith(Path.TrimEndingDirectorySeparator(folder) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) return ("is outside this folder", null);
-        if (!File.Exists(entry) && !Directory.Exists(entry)) return (null, null);
-        if (SshConfigFile.IsLink(entry)) return ("its .git is a link", null);
-        if (File.GetAttributes(entry).HasFlag(FileAttributes.Directory)) return (null, entry);
+        var paths = new List<string>();
+        var declared = Path.Combine(worktree, ".gitmodules");
+        if (await Task.Run(() => File.Exists(declared) && !SshConfigFile.IsLink(declared)))
+        {
+            if (await ReadSettingsFileAsync(declared) is not { } inFolder) return null;
+            paths.AddRange(SubmodulePathsIn(inFolder));
+        }
 
+        var committed = await RunAsync("git", worktree, "config", "--blob", "HEAD:.gitmodules", "-z", "--list");
+        if (committed is null or { ExitCode: < 0 }) return null;
+        if (committed.ExitCode == 0) paths.AddRange(SubmodulePathsIn(committed.Output));
+        return paths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static IEnumerable<string> SubmodulePathsIn(string settings) =>
+        settings.Split('\0', StringSplitOptions.RemoveEmptyEntries).Select(entry => entry.Split('\n', 2)).Where(parts => parts.Length == 2 && SubmodulePathSetting().IsMatch(parts[0])).Select(parts => parts[1]);
+
+    // Nothing here gets followed. A link on the way to one could lead onto a network share.
+    private static (string? Problem, string? Keeps, string? CarriesOn) WhereSubmoduleKeepsData(string folder, string gitDirectory, string worktree, string path)
+    {
+        var submodule = Path.GetFullPath(Path.Combine(worktree, path));
+        if (!submodule.StartsWith(Path.TrimEndingDirectorySeparator(folder) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) return ("is outside this folder", null, null);
+        if (SshConfigFile.HasLinkBelowChosenPath(folder, submodule)) return ("is reached through a link", null, null);
+
+        var entry = Path.Combine(submodule, ".git");
+        if (!File.Exists(entry) && !Directory.Exists(entry)) return (null, null, null);
+        if (SshConfigFile.IsLink(entry)) return ("its .git is a link", null, null);
+        if (File.GetAttributes(entry).HasFlag(FileAttributes.Directory)) return (null, entry, submodule);
+
+        if (new FileInfo(entry).Length > MaxHookBytes) return ("its .git file is too big to check", null, null);
         var line = File.ReadLines(entry).FirstOrDefault(text => text.StartsWith("gitdir:", StringComparison.OrdinalIgnoreCase));
-        if (line is null) return (null, null);
+        if (line is null) return (null, null, submodule);
         var target = line["gitdir:".Length..].Trim();
-        var resolved = Path.GetFullPath(target, Path.GetDirectoryName(entry)!);
+        var resolved = Path.GetFullPath(target, submodule);
         return resolved.StartsWith(Path.Combine(gitDirectory, "modules") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-            ? (null, null) // One of the ones already being looked at.
-            : ($"keeps its Git data at {target}", null);
+            ? (null, null, submodule) // One of the ones already being looked at.
+            : ($"keeps its Git data at {target}", null, submodule);
     }
 
     // Anything that isn't one of Git's samples, or a hook Git LFS added for itself.
@@ -423,6 +457,11 @@ public static partial class GitTools
         if (!hooks.Exists) return found;
         foreach (var hook in hooks.EnumerateFiles().Where(file => !file.Name.EndsWith(".sample", StringComparison.OrdinalIgnoreCase)))
         {
+            if (hook.Length > MaxHookBytes)
+            {
+                found.Add($"{name}: the hook {hook.Name} ({hook.Length} bytes)");
+                continue;
+            }
             var bytes = File.ReadAllBytes(hook.FullName);
             if (!StandardLfsHook().IsMatch(Encoding.UTF8.GetString(bytes))) found.Add($"{name}: the hook {hook.Name} ({Convert.ToHexString(SHA256.HashData(bytes))[..12]})");
         }
@@ -526,9 +565,6 @@ public static partial class GitTools
     private const int MaxSettingsShown = 20;
     private const int MaxSettingShown = 600;
     private const int MaxSettingsInDialog = 1000;
-
-    private const string SettingsThatRunWhileFinishing =
-        @"^(core\.(fsmonitor|hookspath)|submodule\..*\.update|filter\..*|lfs\.(customtransfer|extension)\..*|lfs\.url|remote\..*\.lfsurl)$";
 
     private const string FolderSettingsThatMatter =
         @"^(core\.(sshcommand|askpass|gitproxy)|credential\..*|http\..*|url\..*|remote\..*\.(uploadpack|receivepack|vcs|proxy))$";
@@ -1263,25 +1299,45 @@ public static partial class GitTools
 
     private const string UnfinishedNoteFile = "agent-orange-unfinished";
 
-    // Also kept with the clone itself, as a folder that gets moved leaves what's remembered by its path behind.
-    private static Task NoteUnfinishedInFolderAsync(string folder, bool unfinished) => Task.Run(() =>
+    private const int MaxUnfinishedNoteBytes = 100;
+
+    /// <summary>Set up when the app starts. Says which notes this PC wrote, and remembers or forgets one.</summary>
+    public static Func<string, bool> IsUnfinishedNoteFromHere { get; set; } = _ => false;
+
+    public static Action<string, bool> RememberUnfinishedNote { get; set; } = (_, _) => { };
+
+    // Also kept with the clone itself, as a folder that gets moved leaves what's remembered by its
+    // path behind. It holds something only this PC knows, as a folder can come from anyone, and
+    // it shouldn't be able to bring a button that runs Git in it.
+    private static async Task NoteUnfinishedInFolderAsync(string folder, bool unfinished)
     {
+        var note = Path.Combine(folder, ".git", UnfinishedNoteFile);
         try
         {
-            var note = Path.Combine(folder, ".git", UnfinishedNoteFile);
-            if (unfinished) File.WriteAllText(note, "");
-            else File.Delete(note);
+            if (unfinished)
+            {
+                var token = Guid.NewGuid().ToString("N");
+                TryNoting(() => RememberUnfinishedNote(token, true));
+                await File.WriteAllTextAsync(note, token);
+                return;
+            }
+
+            if (await ReadUnfinishedNoteAsync(note) is { } written) TryNoting(() => RememberUnfinishedNote(written, false));
+            await Task.Run(() => File.Delete(note));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             AppLog.Write($"Couldn't note a clone's unfinished download in its folder: {error.Message}");
         }
-    });
+    }
 
-    /// <summary>A clone chosen after being moved still has what it had when it was left unfinished.</summary>
+    private static Task<string?> ReadUnfinishedNoteAsync(string note) => Task.Run(() =>
+        File.Exists(note) && !SshConfigFile.IsLink(note) && new FileInfo(note).Length <= MaxUnfinishedNoteBytes ? File.ReadAllText(note).Trim() : null);
+
+    /// <summary>A clone from this PC, chosen after being moved, still has what it had when it was left unfinished.</summary>
     public static async Task PickUpUnfinishedNoteAsync(string folder)
     {
-        if (await Task.Run(() => File.Exists(Path.Combine(folder, ".git", UnfinishedNoteFile)))) RememberUnfinishedDownload(folder, true);
+        if (await ReadUnfinishedNoteAsync(Path.Combine(folder, ".git", UnfinishedNoteFile)) is { } written && IsUnfinishedNoteFromHere(written)) RememberUnfinishedDownload(folder, true);
     }
 
     // What GitHub answered, as a number that doesn't change the way the wording of a message can.
@@ -1353,11 +1409,14 @@ public static partial class GitTools
 
     // After the clone is safely in place, because a submodule that can't be fetched, such as a
     // private one, shouldn't cost everything else. Git's allowed protocols apply to these too.
-    private static async Task<string?> FetchSubmodulesAsync(string folder, CancellationToken cancel, Action<string>? progress)
+    private static async Task<string?> FetchSubmodulesAsync(string folder, CancellationToken cancel, Action<string>? progress, int depth = 0)
     {
-        var declared = await RunAsync("git", folder, "cat-file", "-e", "HEAD:.gitmodules");
-        if (declared is null or { ExitCode: < 0 }) return "Git didn't answer when asked whether this repo has submodules, so that can't be called finished yet. Try again.";
-        if (declared.ExitCode != 0) return null;
+        if (depth > MaxSubmoduleDepth) return $"The clone finished, but its submodules go too many levels deep, so the rest weren't fetched. Run git submodule update --init --recursive in {folder} if you trust them.";
+
+        // Only 1 says it's not there. Anything else is Git not being able to answer.
+        var declared = await RunAsync("git", folder, "rev-parse", "--verify", "-q", "HEAD:.gitmodules");
+        if (declared is { ExitCode: 1 }) return null;
+        if (declared is not { ExitCode: 0 }) return "Git didn't answer when asked whether this repo has submodules, so that can't be called finished yet. Try again.";
 
         // Git can look at a path before its list of allowed protocols applies, and one on a network
         // share would send the person's Windows login there. Both copies count, as Git reads the file.
@@ -1370,11 +1429,23 @@ public static partial class GitTools
         }
 
         progress?.Invoke("Fetching submodules");
-        var result = await RunAsync("git", folder, null, ["-c", "core.longpaths=true", "submodule", "update", "--init", "--recursive"], cancel, await SshSettingsAsync(folder));
-        if (result is { ExitCode: 0 }) return null;
+        // One level at a time, so each one's list of addresses is checked before Git acts on it.
+        var result = await RunAsync("git", folder, null, ["-c", "core.longpaths=true", "submodule", "update", "--init"], cancel, await SshSettingsAsync(folder));
+        if (result is not { ExitCode: 0 })
+        {
+            var reason = cancel.IsCancellationRequested ? "That was cancelled." : GitFailureReason(result?.Errors ?? "");
+            return $"The clone finished, but its submodules didn't. {AsSentence(reason)} Finish the download to try again.";
+        }
 
-        var reason = cancel.IsCancellationRequested ? "That was cancelled." : GitFailureReason(result?.Errors ?? "");
-        return $"The clone finished, but its submodules didn't. {AsSentence(reason)} Run git submodule update --init --recursive in it to try again.";
+        foreach (var path in SubmodulePathsIn(committed.Output).Concat(SubmodulePathsIn(inFolder)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (cancel.IsCancellationRequested) return null; // Whoever asked for this to stop gets told.
+            var submodule = Path.GetFullPath(Path.Combine(folder, path));
+            if (!submodule.StartsWith(Path.TrimEndingDirectorySeparator(folder) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!await Task.Run(() => File.Exists(Path.Combine(submodule, ".git")) || Directory.Exists(Path.Combine(submodule, ".git")))) continue;
+            if (await FetchSubmodulesAsync(submodule, cancel, progress, depth + 1) is { } further) return further;
+        }
+        return null;
     }
 
     // Git LFS keeps a repo's big files apart. Without it set up, a repo that uses it clones fine,
@@ -1395,6 +1466,14 @@ public static partial class GitTools
         if (!isInstalled || !isSetUp)
         {
             return "This repo uses Git LFS, which isn't set up on this PC, so its big files are only small placeholders. Install it from git-lfs.com, run git lfs install, then run git lfs pull in the folder.";
+        }
+
+        // A repo can name where its large files come from, and this runs by itself after a clone.
+        var lfsConfig = await RunAsync("git", folder, "config", "--blob", "HEAD:.lfsconfig", "-z", "--list");
+        var lfsConfigHere = await Task.Run(() => File.Exists(Path.Combine(folder, ".lfsconfig"))) ? await ReadSettingsFileAsync(Path.Combine(folder, ".lfsconfig")) : "";
+        foreach (var setting in ((lfsConfig is { ExitCode: 0 } ? lfsConfig.Output : "") + lfsConfigHere).Split('\0', StringSplitOptions.RemoveEmptyEntries).Select(entry => entry.Split('\n', 2)).Where(parts => parts.Length == 2 && LargeFileUrlSetting().IsMatch(parts[0])))
+        {
+            if (!AllowedLargeFileUrl().IsMatch(setting[1])) return $"The clone finished, but its large files weren't fetched, because the repo says they're at {HideLogins(OneLine(setting[1]))}, which isn't an address on a server. Fix that in .lfsconfig, then try again.";
         }
 
         progress?.Invoke("Downloading large files");
@@ -2003,9 +2082,6 @@ public static partial class GitTools
     [GeneratedRegex(@"https://github\.com/[\w.-]+/[\w.-]+")]
     private static partial Regex CreatedRepoUrl();
 
-    [GeneratedRegex(@"^(core\.(fsmonitor|hookspath|sshcommand|askpass|gitproxy)|submodule\..*\.update|filter\..*|lfs\.(customtransfer|extension)\..*|lfs\.url|remote\..*\.(lfsurl|uploadpack|receivepack|vcs|proxy)|credential\..*|http\..*|url\..*)$", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
-    private static partial Regex SubmoduleSettingThatMatters();
-
     [GeneratedRegex(@"^submodule\..*\.path$", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
     private static partial Regex SubmodulePathSetting();
 
@@ -2018,8 +2094,16 @@ public static partial class GitTools
     [GeneratedRegex(@"\A#!/bin/sh\r?\ncommand -v git-lfs >/dev/null 2>&1 \|\| \{ printf >&2 ""\\n%s\\n\\n"" ""[^""$`]*""; exit 2; \}\r?\ngit lfs (pre-push|post-checkout|post-commit|post-merge) ""\$@""\s*\z")]
     private static partial Regex StandardLfsHook();
 
-    [GeneratedRegex(@"^(filter\.lfs\.(clean|smudge|process)\ngit-lfs [^&|;<>`$\r\n]*\z|filter\.lfs\.required\n(true|false)\z|core\.fsmonitor\nfalse\z|core\.hookspath\n/dev/null\z|submodule\.[^\r\n]*\.update\n(checkout|rebase|merge|none)\z)", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
-    private static partial Regex HarmlessWhileFinishing();
+    // A key and its value, as Git lists them. What a clone, Git LFS and submodules set up for
+    // themselves, and nothing that can name a program, a hook or another settings file.
+    [GeneratedRegex(@"\A((core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks|longpaths|autocrlf|eol|safecrlf|worktree)|remote\.[^\r\n]*\.(url|fetch|pushurl|tagopt|prune|promisor|partialclonefilter)|branch\.[^\r\n]*\.(remote|merge)|submodule\.[^\r\n]*\.(url|active|branch|ignore)|lfs\.repositoryformatversion|user\.(name|email))\n[^\r\n]*\z|filter\.lfs\.(clean|smudge|process)\ngit-lfs [^&|;<>`$\r\n]*\z|filter\.lfs\.required\n(true|false)\z|core\.fsmonitor\nfalse\z|core\.hookspath\n/dev/null\z|submodule\.[^\r\n]*\.update\n(checkout|none)\z)", RegexOptions.IgnoreCase)]
+    private static partial Regex SafeWhileFinishing();
+
+    [GeneratedRegex(@"^(https://|ssh://|git@)")]
+    private static partial Regex AllowedLargeFileUrl();
+
+    [GeneratedRegex(@"^(lfs\.url|lfs\.pushurl|remote\..*\.(lfsurl|lfspushurl))$", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex LargeFileUrlSetting();
 
     // What ssh itself says went wrong, which Git only follows with "Could not read from remote repository".
     [GeneratedRegex(@"(Permission denied|Host key verification failed|Connection (timed out|refused|closed|reset)|Could not resolve hostname|^ssh: |^kex_exchange)", RegexOptions.IgnoreCase)]

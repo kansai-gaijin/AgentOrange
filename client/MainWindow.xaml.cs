@@ -64,6 +64,8 @@ public partial class MainWindow : Window
         GitTools.AllowedFolderSettings = _database.AllowedFolderSettings;
         GitTools.RememberAllowedFolderSettings = _database.AllowFolderSettings;
         GitTools.RememberUnfinishedDownload = _database.SetDownloadUnfinished;
+        GitTools.IsUnfinishedNoteFromHere = _database.IsUnfinishedNoteFromHere;
+        GitTools.RememberUnfinishedNote = _database.RememberUnfinishedNote;
         ProjectSettings.ProjectIsBusy = projectId => _busyProjectId == projectId;
 
         // A delete interrupted last time can leave parts of a project behind.
