@@ -319,10 +319,11 @@ public static partial class GitTools
             // The project can be on an old name too, and it moves on when it's next opened, and the folder with it.
             else
             {
-                var (current, answered) = await CurrentRepoUrlAsync(repoUrl);
-                if (!SameRepo(current, state.OriginToCompare!) && !(answered && originAnswered && SameRepo(current, originNow)))
+                var projectRepo = await CurrentRepoUrlAsync(repoUrl);
+                if (!SameRepo(projectRepo.Current, state.OriginToCompare!) && !(projectRepo.Answered && originAnswered && SameRepo(projectRepo.Current, originNow)))
                 {
-                    return answered && originAnswered
+                    // Only certain if this repo was really found. GitHub would then have led the folder's name to it, if it were one.
+                    return projectRepo.Found && originAnswered
                         ? $"That folder uses a different repo: {state.Origin}"
                         : $"{MayUseDifferentRepo}{state.Origin}. {NoAnswerAboutOlderName}";
                 }
@@ -347,7 +348,7 @@ public static partial class GitTools
     }
 
     /// <summary>Said when a folder may be on an old name of the repo, and GitHub didn't say.</summary>
-    public const string NoAnswerAboutOlderName = "GitHub didn't answer, so it can't be checked whether that's this repo under an older name.";
+    public const string NoAnswerAboutOlderName = "GitHub didn't say, so it can't be checked whether that's this repo under an older name.";
 
     /// <summary>
     /// Settings in a folder that make Git run a program or send a login somewhere else when it
@@ -750,15 +751,19 @@ public static partial class GitTools
             return (null, null);
         }
 
-        if ((user.Length > 0 && user != "git") || !GitHubRepoPath().IsMatch($"/{path}") || !SafeSshHost().IsMatch(host)) return (null, null);
-        if (user == "git" && IsGitHubSshHost(host)) return ($"git@github.com:{path}", null);
+        if ((user.Length > 0 && !IsGitHubSshUser(user)) || !GitHubRepoPath().IsMatch($"/{path}") || !SafeSshHost().IsMatch(host)) return (null, null);
+        if (IsGitHubSshUser(user) && IsGitHubSshHost(host)) return ($"git@github.com:{path}", null);
 
         var settings = await ReadSshSettingsAsync(host, folder);
         if (settings is not var (realHost, realUser)) return (null, $"{CantTellSshSettings} {host} is GitHub from the SSH settings in use. Check that they work, or use a remote that says github.com.");
 
         var effectiveUser = user.Length > 0 ? user : realUser;
-        return (effectiveUser == "git" && realHost is not null && IsGitHubSshHost(realHost) ? $"git@github.com:{path}" : null, null);
+        return (effectiveUser is not null && IsGitHubSshUser(effectiveUser) && realHost is not null && IsGitHubSshHost(realHost) ? $"git@github.com:{path}" : null, null);
     }
+
+    // How GitHub's SSH certificates name the person, for organisations that require them. Moving a
+    // remote keeps whichever it was.
+    private static bool IsGitHubSshUser(string user) => user == "git" || CertificateUser().IsMatch(user);
 
     private static bool IsScpStyle(string remote) => ScpStyleRepo().IsMatch(remote) || BareScpRepo().IsMatch(remote);
 
@@ -1272,6 +1277,7 @@ public static partial class GitTools
             var address = WithoutCredentials(remote);
             return remote == "origin" || SameRepo(address, repoUrl) ? null : address;
         }
+        (string Current, bool Answered)? projectNow = null;
         foreach (var line in addresses.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var address = WithoutCredentials(line);
@@ -1281,8 +1287,8 @@ public static partial class GitTools
             if (SameRepo(form, repoUrl)) continue;
 
             var (pushesNow, pushAnswered) = await RecentRepoUrlAsync(form);
-            var (projectNow, projectAnswered) = await RecentRepoUrlAsync(repoUrl);
-            if (!(pushAnswered && projectAnswered && SameRepo(pushesNow, projectNow))) return address;
+            projectNow ??= await RecentRepoUrlAsync(repoUrl);
+            if (!(pushAnswered && projectNow.Value.Answered && SameRepo(pushesNow, projectNow.Value.Current))) return address;
         }
         return null;
     }
@@ -1768,26 +1774,33 @@ public static partial class GitTools
 
         var answer = await CurrentRepoUrlAsync(url);
         if (answer.Answered) RecentRepoNames[url] = (answer.Current, DateTimeOffset.UtcNow);
-        return answer;
+        return (answer.Current, answer.Answered);
     }
 
     // The address itself if it hasn't moved, or that can't be told. Answered says GitHub really
     // answered, with a name or by saying the repo's gone, and anything else isn't kept or relied on.
-    private static async Task<(string Current, bool Answered)> CurrentRepoUrlAsync(string url)
+    // Found says GitHub gave a name, which a repo that's gone, or one this account can't see, doesn't get.
+    private readonly record struct RepoAnswer(string Current, bool Answered, bool Found)
     {
-        if (RepoUrlProblem(url) is not null) return (url, true);
+        public void Deconstruct(out string current, out bool answered) => (current, answered) = (Current, Answered);
+    }
+
+    private static async Task<RepoAnswer> CurrentRepoUrlAsync(string url)
+    {
+        if (RepoUrlProblem(url) is not null) return new(url, true, false);
 
         var parts = RepoIdentity(url).Split('/');
         var slug = $"{parts[1]}/{parts[2]}";
         var view = await RunAsync("gh", Path.GetTempPath(), "repo", "view", slug, "--json", "nameWithOwner", "--jq", ".nameWithOwner");
-        if (view is null or { ExitCode: < 0 }) return (url, false);
-        if (view.ExitCode != 0) return (url, SaysRepoMissing(view.Errors) || view.Errors.Contains("HTTP 404", StringComparison.Ordinal));
+        if (view is null or { ExitCode: < 0 }) return new(url, false, false);
+        if (view.ExitCode != 0) return new(url, SaysRepoMissing(view.Errors) || view.Errors.Contains("HTTP 404", StringComparison.Ordinal), false);
 
         var current = view.Output.Trim();
-        if (current.Length == 0 || current.Equals(slug, StringComparison.OrdinalIgnoreCase)) return (url, true);
+        if (current.Length == 0) return new(url, true, false);
+        if (current.Equals(slug, StringComparison.OrdinalIgnoreCase)) return new(url, true, true);
 
         var renamed = $"https://github.com/{current}.git";
-        return (RepoUrlProblem(renamed) is null ? renamed : url, true);
+        return new(RepoUrlProblem(renamed) is null ? renamed : url, true, true);
     }
 
     private static string AsSentence(string reason) => reason.Length == 0 ? "" : $"{reason.TrimEnd('.')}.";
@@ -2327,6 +2340,9 @@ public static partial class GitTools
     // The short form Git uses for SSH, like git@github.com:you/game.git.
     [GeneratedRegex(@"^[\w.-]+@[\w.-]+:[\w./-]+\z")]
     private static partial Regex ScpStyleRepo();
+
+    [GeneratedRegex(@"^org-\d+\z")]
+    private static partial Regex CertificateUser();
 
     [GeneratedRegex(@"^git@github\.com:[A-Za-z0-9][A-Za-z0-9_-]*/(?!(\.{1,2}|\.git)/?\z)[A-Za-z0-9._-]+/?\z", RegexOptions.IgnoreCase)]
     private static partial Regex GitHubScpRepo();

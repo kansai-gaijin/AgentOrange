@@ -508,7 +508,8 @@ public partial class MainWindow
             else
             {
                 if (check.Access == RepoAccess.Allowed || wasVerified) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(renamed!));
-                if (wasCreatedHere) _database.SetSetting(CreatedHereSetting(project.Id), GitTools.RepoKey(renamed!));
+                if (check.Access == RepoAccess.Allowed) _database.SetSetting(CreatedHereSetting(project.Id), "");
+                else if (wasCreatedHere) _database.SetSetting(CreatedHereSetting(project.Id), GitTools.RepoKey(renamed!));
             }
 
             // Checking it against the new name moves it there if it's on any older name, and leaves one on any other repo as it is.
@@ -1607,11 +1608,10 @@ public partial class MainWindow
             {
                 StartBusy(project, "Checking that folder…");
                 allowedJustNow = await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
-                folderProblem = await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
-                if (folderProblem is null && await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other)
-                {
-                    folderProblem = $"{other.Name} already uses that folder, or one that overlaps it. Project folders can't overlap.";
-                }
+                // Who has it comes first, as checking it can move its remote to the repo's current name.
+                folderProblem = await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other
+                    ? $"{other.Name} already uses that folder, or one that overlaps it. Project folders can't overlap."
+                    : await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
                 if (allowedJustNow && folderProblem is not null) GitTools.ForgetAllowedFolderSettings(chosen);
             }
             finally

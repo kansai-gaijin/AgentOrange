@@ -444,18 +444,6 @@ public partial class NewProjectWizard : UserControl
         if (await ClaimRepo(url, project.Name) is { } repoTaken) return ("", false, repoTaken);
         _heldRepo = url;
 
-        if (state.Origin is not null && !GitTools.SameRepo(state.OriginToCompare!, url))
-        {
-            var (moved, moveProblem, _, _) = await GitTools.MoveIfRepoRenamedAsync(project.Folder, state, url);
-            if (moveProblem is not null) return ("", false, moveProblem);
-            if (moved)
-            {
-                state = await GitTools.InspectFolderAsync(project.Folder);
-                if (state is null) return ("", false, "Git wasn't found on this PC.");
-                if (state.Problem is not null) return ("", false, state.Problem);
-            }
-        }
-
         // The same check as selecting a folder for an existing project.
         if (state.Origin is not null && await GitTools.FolderProblemAsync(project.Folder, url) is { } folderProblem)
         {

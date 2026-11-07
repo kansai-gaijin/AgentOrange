@@ -424,10 +424,23 @@ public partial class ProjectSettingsModal : UserControl
             if (Find(projectId) is not { } current) return;
 
             var allowedJustNow = await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
-            var problem = await GitTools.FolderProblemAsync(chosen, current.RepoUrl);
-            if (problem is null && await _database.ClaimFolderAsync(chosen, current) is { } other)
+            string? problem;
+            if (await _database.ClaimFolderAsync(chosen, current) is { } other)
             {
                 problem = LocalDatabase.RefusalFor(other, $"{other.Name} already uses that folder, or one that overlaps it. Project folders can't overlap.");
+            }
+            else
+            {
+                try
+                {
+                    problem = await GitTools.FolderProblemAsync(chosen, current.RepoUrl);
+                }
+                catch
+                {
+                    _database.ReleaseFolder(chosen);
+                    throw;
+                }
+                if (problem is not null) _database.ReleaseFolder(chosen);
             }
             if (allowedJustNow && problem is not null) GitTools.ForgetAllowedFolderSettings(chosen);
             if (problem is not null)
