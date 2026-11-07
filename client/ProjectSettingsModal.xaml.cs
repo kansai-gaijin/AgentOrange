@@ -279,6 +279,12 @@ public partial class ProjectSettingsModal : UserControl
             // Queued, so a slow save can't bring the project back afterward.
             QueueWork(() =>
             {
+                if (ProjectIsBusy(projectId))
+                {
+                    delete.IsEnabled = true;
+                    ReportProblem("This project is busy. Delete it when that finishes.");
+                    return Task.CompletedTask;
+                }
                 try
                 {
                     _database.DeleteProject(projectId);
@@ -410,6 +416,7 @@ public partial class ProjectSettingsModal : UserControl
         if (await _database.ClaimRepoAsync(currentUrl, project) is { } other) return LocalDatabase.RefusalFor(other, $"{other.Name} already uses that repo. A repo can only be one project.");
         try
         {
+            if (ProjectIsBusy(projectId)) return "This project is busy. Change its repo when that finishes, or put the old one back.";
             Update(projectId, current => current with { RepoUrl = currentUrl });
         }
         finally
@@ -471,6 +478,12 @@ public partial class ProjectSettingsModal : UserControl
                 {
                     if (allowedJustNow) GitTools.ForgetAllowedFolderSettings(chosen);
                     if (latest is not null && session == _session) ReportProblem("This project's repo changed while that folder was being checked, so it wasn't linked.");
+                    return;
+                }
+                if (ProjectIsBusy(projectId))
+                {
+                    if (allowedJustNow) GitTools.ForgetAllowedFolderSettings(chosen);
+                    if (session == _session) ReportProblem("This project is busy. Change its folder when that finishes.");
                     return;
                 }
 

@@ -578,6 +578,12 @@ public partial class MainWindow
     // folder that's really some other repo has nothing to say about this project.
     private async Task ReadEngineVersionAsync(string projectId)
     {
+        // Its long job is working in its folder, so it's read once that's done.
+        if (_busyProjectId == projectId)
+        {
+            _recheckAfterBusy.Add(projectId);
+            return;
+        }
         if (FindProject(projectId) is not { } project || _database.GetProjectFolder(projectId) is not { } folder) return;
         var repoKey = GitTools.RepoKey(project.RepoUrl);
         if (_database.GetSetting(VerifiedSetting(projectId)) != repoKey && _database.GetSetting(CreatedHereSetting(projectId)) != repoKey) return;
@@ -1364,8 +1370,8 @@ public partial class MainWindow
         var job = 0;
         try
         {
+            job = _busyJob + 1; // Nothing's busy here, so this is the number starting it gives it.
             StartBusy(project, "Checking that folder…");
-            job = _busyJob;
             var owner = destination is null ? null : await _database.ClaimFolderAsync(destination, project);
             isHeld = destination is not null && owner is null;
             if (owner is not null)

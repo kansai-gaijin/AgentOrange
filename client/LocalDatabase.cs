@@ -80,7 +80,8 @@ public sealed class LocalDatabase
     public LocalDatabase(string databasePath)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
-        _connectionString = new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString();
+        // Another window can have the database for a moment, so a command waits up to this long for its turn.
+        _connectionString = new SqliteConnectionStringBuilder { DataSource = databasePath, DefaultTimeout = 30 }.ToString();
         _claimTurnName = $@"Local\AgentOrangeClaims-{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(databasePath).ToLowerInvariant())))[..32]}";
 
         using var connection = Open();
