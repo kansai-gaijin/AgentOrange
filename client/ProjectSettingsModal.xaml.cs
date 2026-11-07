@@ -381,31 +381,25 @@ public partial class ProjectSettingsModal : UserControl
         if (url.Length == 0) return "A project needs a repo.";
         if (GitTools.RepoUrlProblem(url) is { } problem) return problem;
 
-        Project? TakenBy(string address) => _database.ListProjects().FirstOrDefault(other => other.Id != projectId && GitTools.SameRepo(other.RepoUrl, address));
-        if (TakenBy(url) is { } taken) return $"{taken.Name} already uses that repo. A repo can only be one project.";
-
-        // GitHub still answers to a repo's old name, so that isn't enough to tell them apart.
-        if (await GitTools.RenamedRepoUrlAsync(url) is { } renamed && TakenBy(renamed) is { } holder)
+        // GitHub still answers to a repo's old names, so the address isn't enough to tell them apart.
+        var (currentUrl, holder, underAnotherName) = await GitTools.WhoHasRepoAsync(url, projectId);
+        if (holder is not null)
         {
-            return $"{holder.Name} already uses that repo, which GitHub now calls {renamed}. A repo can only be one project.";
-        }
-
-        // And the other way around, with this being the new name.
-        if (await GitTools.ProjectUnderOldNameAsync(url, projectId) is { } older)
-        {
-            return $"{older} already uses that repo, under the name it had before GitHub renamed it. A repo can only be one project.";
+            return underAnotherName
+                ? $"{holder} already uses that repo, under another name it's had on GitHub. A repo can only be one project."
+                : $"{holder} already uses that repo. A repo can only be one project.";
         }
 
         // Another window can have got to it during all of that.
         if (Find(projectId) is not { } project) return null;
-        if (await _database.ClaimRepoAsync(url, project) is { } other) return $"{other.Name} already uses that repo. A repo can only be one project.";
+        if (await _database.ClaimRepoAsync(currentUrl, project) is { } other) return $"{other.Name} already uses that repo. A repo can only be one project.";
         try
         {
-            Update(projectId, current => current with { RepoUrl = url });
+            Update(projectId, current => current with { RepoUrl = currentUrl });
         }
         finally
         {
-            _database.ReleaseRepo(url);
+            _database.ReleaseRepo(currentUrl);
         }
         return null;
     }

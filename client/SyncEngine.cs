@@ -155,7 +155,12 @@ public sealed class SyncEngine
             // has it, and without it would send its whole copy over everyone's newer changes.
             var cursorSetting = CursorSetting(epoch);
             var stored = _database.GetSetting(cursorSetting) ?? _database.GetSetting($"sync_cursor:{address}");
-            if (stored is null) _database.QueueAllRecords();
+            if (stored is null)
+            {
+                // Only ever once for a server, as what it then refuses gets set aside.
+                _database.QueueAllRecords();
+                _database.SetSetting(cursorSetting, "0");
+            }
             var cursor = stored is null ? 0 : long.Parse(stored);
 
             while (_server.Address == address && !IsPaused())

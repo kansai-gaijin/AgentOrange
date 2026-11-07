@@ -12,6 +12,8 @@ public static partial class EngineVersions
 {
     private const string CustomBuild = "custom build";
     private const int MaxProjectFileBytes = 1_000_000;
+    private const string UnitySettingsFolder = "ProjectSettings";
+    private const string UnityVersionFile = "ProjectVersion.txt";
 
     private static readonly EnumerationOptions Everything = new() { AttributesToSkip = 0 };
 
@@ -22,22 +24,23 @@ public static partial class EngineVersions
     };
 
     /// <summary>Whether this engine's projects say what version they are.</summary>
-    public static bool CanRead(string engine) => engine is "Unreal Engine" or "Godot";
+    public static bool CanRead(string engine) => engine is "Unreal Engine" or "Godot" or "Unity";
 
     /// <summary>Which engine a folder's own project file is for, if it has one.</summary>
     public static Task<string?> DetectAsync(string folder) => Task.Run(() =>
-        Find(folder, "*.uproject", _ => "Unreal Engine") ?? Find(folder, "project.godot", _ => "Godot"));
+        Find(folder, "*.uproject", _ => "Unreal Engine") ?? Find(folder, "project.godot", _ => "Godot") ?? Find(folder, UnityVersionFile, _ => "Unity", UnitySettingsFolder));
 
     public static Task<string?> FindAsync(string engine, string folder) => engine switch
     {
         "Unreal Engine" => Task.Run(() => Find(folder, "*.uproject", FromUnrealProject)),
         "Godot" => Task.Run(() => Find(folder, "project.godot", FromGodotProject)),
+        "Unity" => Task.Run(() => Find(folder, UnityVersionFile, FromUnityProject, UnitySettingsFolder)),
         _ => Task.FromResult<string?>(null),
     };
 
     // A repo often keeps the game one folder down, next to its docs or tools. One folder that
     // can't be read doesn't stop the others being looked at.
-    private static string? Find(string folder, string pattern, Func<string, string?> parse)
+    private static string? Find(string folder, string pattern, Func<string, string?> parse, string? inside = null)
     {
         if (!Directory.Exists(folder)) return null;
 
@@ -58,7 +61,9 @@ public static partial class EngineVersions
             {
                 // Links aren't read, because opening one could reach a network share and send
                 // the person's Windows login to whoever runs it.
-                var file = Directory.EnumerateFiles(place, pattern, Everything).FirstOrDefault(path => !SshConfigFile.IsLink(path));
+                var within = inside is null ? place : Path.Combine(place, inside);
+                if (inside is not null && (!Directory.Exists(within) || SshConfigFile.IsLink(within))) continue;
+                var file = Directory.EnumerateFiles(within, pattern, Everything).FirstOrDefault(path => !SshConfigFile.IsLink(path));
                 if (file is null) continue;
                 return new FileInfo(file).Length > MaxProjectFileBytes ? null : parse(File.ReadAllText(file));
             }
@@ -94,6 +99,8 @@ public static partial class EngineVersions
         }
     }
 
+    private static string? FromUnityProject(string text) => UnityVersion().Match(text) is { Success: true } version ? version.Groups[1].Value : null;
+
     // Godot 4 lists its version among the project's features. Godot 3 doesn't, but it has
     // its own number for the file's format.
     private static string? FromGodotProject(string text)
@@ -112,6 +119,9 @@ public static partial class EngineVersions
             _ => null,
         };
     }
+
+    [GeneratedRegex(@"^m_EditorVersion:\s*(\d+\.\d+(?:\.\d+)?(?:[abfp]\d+)?)\s*$", RegexOptions.Multiline)]
+    private static partial Regex UnityVersion();
 
     [GeneratedRegex(@"^\d+(\.\d+){0,3}$")]
     private static partial Regex VersionNumber();

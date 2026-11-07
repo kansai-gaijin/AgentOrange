@@ -472,24 +472,38 @@ public partial class MainWindow
         // Renamed or moved on GitHub, which follows that for a while but won't forever. This is
         // the same repo, so the project and its folder just move to the new address.
         var renamedHeldBy = renamed is null ? null : GitTools.ProjectUsingRepo(renamed);
-        if (renamed is not null && renamedHeldBy is null) renamedHeldBy = (await _database.ClaimRepoAsync(renamed, latest))?.Name;
+        var holdingRenamed = false;
         if (renamed is not null && renamedHeldBy is null)
+        {
+            renamedHeldBy = (await _database.ClaimRepoAsync(renamed, latest))?.Name;
+            holdingRenamed = renamedHeldBy is null;
+        }
+        if (holdingRenamed && (navigation != _navigation || FindProject(project.Id) is not { } stillOnIt || !GitTools.SameRepo(stillOnIt.RepoUrl, project.RepoUrl)))
+        {
+            _database.ReleaseRepo(renamed!);
+            if (navigation != _navigation) return;
+            if (FindProject(project.Id) is { } changed) await OpenProjectAsync(changed);
+            else BackToProjects();
+            return;
+        }
+        if (navigation != _navigation) return;
+        if (holdingRenamed)
         {
             var wasVerified = _database.GetSetting(VerifiedSetting(project.Id)) == GitTools.RepoKey(latest.RepoUrl);
             var wasCreatedHere = _database.GetSetting(CreatedHereSetting(project.Id)) == GitTools.RepoKey(latest.RepoUrl);
             try
             {
-                _database.UpdateProject(project.Id, current => current with { RepoUrl = renamed });
+                _database.UpdateProject(project.Id, current => GitTools.SameRepo(current.RepoUrl, project.RepoUrl) ? current with { RepoUrl = renamed! } : current);
             }
             finally
             {
-                _database.ReleaseRepo(renamed);
+                _database.ReleaseRepo(renamed!);
             }
-            if (check.Access == RepoAccess.Allowed || wasVerified) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(renamed));
-            if (wasCreatedHere) _database.SetSetting(CreatedHereSetting(project.Id), GitTools.RepoKey(renamed));
+            if (check.Access == RepoAccess.Allowed || wasVerified) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(renamed!));
+            if (wasCreatedHere) _database.SetSetting(CreatedHereSetting(project.Id), GitTools.RepoKey(renamed!));
 
             // Asked again, as the check above skips the folder for some answers, and one on any other repo stays as it is.
-            if (folderExists && await GitTools.FolderProblemAsync(folder!, project.RepoUrl) is null) await GitTools.PointFolderAtRepoAsync(folder!, renamed);
+            if (folderExists && await GitTools.FolderProblemAsync(folder!, project.RepoUrl) is null) await GitTools.PointFolderAtRepoAsync(folder!, renamed!);
             _ = _sync.SyncNowAsync();
             KeepProblemThroughReopen(project.Id);
             if (navigation == _navigation && FindProject(project.Id) is { } moved) await OpenProjectAsync(moved);
@@ -1092,27 +1106,49 @@ public partial class MainWindow
         }
 
         // Held until it's linked, so settings can't give it to another project meanwhile.
-        var linkedBefore = _database.GetProjectFolder(project.Id);
-        GitResult result;
         try
         {
-            result = await GitTools.CreatePrivateRepoAsync(project.Name, folder!, project.RepoUrl, _replacementRepoName ?? "");
+            await ReplaceRepoHoldingFolderAsync(project, folder!);
         }
         finally
         {
             _database.ReleaseFolder(folder!);
         }
-        EndBusy();
+    }
 
-        if (!result.Worked)
+    private async Task ReplaceRepoHoldingFolderAsync(Project project, string folder)
+    {
+        var linkedBefore = _database.GetProjectFolder(project.Id);
+        var result = await GitTools.CreatePrivateRepoAsync(project.Name, folder, project.RepoUrl, _replacementRepoName ?? "");
+
+        // It exists on GitHub now, and this is the only place that says where.
+        void SayAddressNotSaved(SqliteException error)
         {
-            ShowPageProblem(project.Id, result.Value);
+            AppLog.Write($"Couldn't save a new repo's address: {error.Message}");
+            Dialogs.Notify($"The repo was created at {result.Value}, but the app's database can't be reached, so {project.Name} wasn't changed. Once it's back, enter that address in its project settings.");
+        }
+
+        Project? latest;
+        try
+        {
+            EndBusy();
+
+            if (!result.Worked)
+            {
+                ShowPageProblem(project.Id, result.Value);
+                return;
+            }
+            latest = FindProject(project.Id);
+        }
+        catch (SqliteException error) when (result.Worked)
+        {
+            SayAddressNotSaved(error);
             return;
         }
 
         // Saved even if they've left the page, because the repo now exists. A URL changed
         // in the meantime was chosen more recently, so it stays.
-        if (FindProject(project.Id) is not { } latest || GitTools.RepoUrlProblem(result.Value) is not null)
+        if (latest is null || GitTools.RepoUrlProblem(result.Value) is not null)
         {
             ShowPageProblem(project.Id, $"The repo was created at {result.Value}, but the project couldn't be updated.");
             return;
@@ -1130,13 +1166,11 @@ public partial class MainWindow
             _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(result.Value)); // This PC just made it.
 
             // A folder chosen in settings while this ran is more recent, so it stays.
-            if (_database.GetProjectFolder(project.Id) == linkedBefore) _database.SetProjectFolder(project.Id, folder!);
+            if (_database.GetProjectFolder(project.Id) == linkedBefore) _database.SetProjectFolder(project.Id, folder);
         }
         catch (SqliteException error)
         {
-            // It exists on GitHub now, and this is the only place that says where.
-            AppLog.Write($"Couldn't save a new repo's address: {error.Message}");
-            Dialogs.Notify($"The repo was created at {result.Value}, but the app's database can't be reached, so {project.Name} wasn't changed. Once it's back, enter that address in its project settings.");
+            SayAddressNotSaved(error);
             return;
         }
         _ = _sync.SyncNowAsync();

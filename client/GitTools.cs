@@ -576,26 +576,30 @@ public static partial class GitTools
 
     public static Func<IReadOnlyList<Project>> AllProjects { get; set; } = () => [];
 
+    private const int RepoNamesAskedAtOnce = 4;
+
     /// <summary>
-    /// A project that hasn't been opened since GitHub renamed its repo still has the old name, and
-    /// only GitHub can say that's this one. Null if none does, or that can't be told.
+    /// Which project has this repo, if any, and the name GitHub uses for it now. A project that
+    /// hasn't been opened since a rename still has an old name, and only GitHub can say that's
+    /// the same repo. It stops asking at the first sign of no connection, so this can't hold up a
+    /// save for as long as there are projects, and then only goes by what it knows.
     /// </summary>
-    public static async Task<string?> ProjectUnderOldNameAsync(string url, string? exceptProjectId = null)
+    public static async Task<(string Current, string? Holder, bool UnderAnotherName)> WhoHasRepoAsync(string url, string? exceptProjectId = null)
     {
-        using var turns = new SemaphoreSlim(4);
-        var answers = await Task.WhenAll(AllProjects().Where(project => project.Id != exceptProjectId && !SameRepo(project.RepoUrl, url)).Select(async project =>
+        var others = AllProjects().Where(project => project.Id != exceptProjectId).ToList();
+        if (others.FirstOrDefault(project => SameRepo(project.RepoUrl, url)) is { } exact) return (url, exact.Name, false);
+
+        var (current, answered) = await CurrentRepoUrlAsync(url);
+        if (others.FirstOrDefault(project => SameRepo(project.RepoUrl, current)) is { } holder) return (current, holder.Name, true);
+        if (!answered) return (current, null, false);
+
+        foreach (var group in others.Chunk(RepoNamesAskedAtOnce))
         {
-            await turns.WaitAsync();
-            try
-            {
-                return await RenamedRepoUrlAsync(project.RepoUrl) is { } current && SameRepo(current, url) ? project.Name : null;
-            }
-            finally
-            {
-                turns.Release();
-            }
-        }));
-        return answers.FirstOrDefault(name => name is not null);
+            var answers = await Task.WhenAll(group.Select(project => CurrentRepoUrlAsync(project.RepoUrl)));
+            if (group.Zip(answers).FirstOrDefault(pair => SameRepo(pair.Second.Current, current)).First is { } older) return (current, older.Name, true);
+            if (answers.Any(answer => !answer.Answered)) break;
+        }
+        return (current, null, false);
     }
 
     public static bool AreAllowed(string folder, FolderGitSettings settings) =>
@@ -1327,6 +1331,10 @@ public static partial class GitTools
         {
             checkoutProblem ??= "The clone finished, but this app couldn't write to its Git data, so its large files and submodules weren't fetched. If it uses them, run git submodule update --init --recursive and git lfs pull in the folder.";
         }
+
+        // Already marked is some other clone's, which this one not getting there says nothing about.
+        var alreadyMarked = false;
+        TryNoting(() => alreadyMarked = HasUnfinishedDownload(destination));
         TryNoting(() => RememberUnfinishedDownload(destination, true));
         try
         {
@@ -1335,7 +1343,7 @@ public static partial class GitTools
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             AppLog.Write($"Couldn't name a finished clone: {error.Message}");
-            TryNoting(() => RememberUnfinishedDownload(destination, false));
+            if (!alreadyMarked) TryNoting(() => RememberUnfinishedDownload(destination, false));
             return new GitResult(false, $"The clone finished, but it couldn't be named {destination}. It's kept at {await KeepVisibleAsync(working, destination)}. You can rename it and select it. If it uses large files or submodules, get them with git lfs pull and git submodule update --init --recursive.");
         }
         return new GitResult(true, destination, checkoutProblem);
@@ -1414,6 +1422,8 @@ public static partial class GitTools
     public static Func<string, bool> IsUnfinishedNoteFromHere { get; set; } = _ => false;
 
     public static Action<string, bool> RememberUnfinishedNote { get; set; } = (_, _) => { };
+
+    public static Func<string, bool> HasUnfinishedDownload { get; set; } = _ => false;
 
     // Also kept with the clone itself, as a folder that gets moved leaves what's remembered by its
     // path behind. It holds something only this PC knows, as a folder can come from anyone, and
@@ -1673,16 +1683,26 @@ public static partial class GitTools
     /// </summary>
     public static async Task<string?> RenamedRepoUrlAsync(string url)
     {
-        if (RepoUrlProblem(url) is not null) return null;
+        var (current, _) = await CurrentRepoUrlAsync(url);
+        return SameRepo(current, url) ? null : current;
+    }
+
+    // The address itself if it hasn't moved, or that can't be told. Answered says GitHub could be
+    // asked at all, as a repo that's gone is still an answer.
+    private static async Task<(string Current, bool Answered)> CurrentRepoUrlAsync(string url)
+    {
+        if (RepoUrlProblem(url) is not null) return (url, true);
 
         var parts = RepoIdentity(url).Split('/');
         var slug = $"{parts[1]}/{parts[2]}";
         var view = await RunAsync("gh", Path.GetTempPath(), "repo", "view", slug, "--json", "nameWithOwner", "--jq", ".nameWithOwner");
-        var current = view is { ExitCode: 0 } ? view.Output.Trim() : "";
-        if (current.Length == 0 || current.Equals(slug, StringComparison.OrdinalIgnoreCase)) return null;
+        if (view is null or { ExitCode: < 0 } || (view.ExitCode != 0 && LooksLikeNetworkFailure(view.Errors))) return (url, false);
+
+        var current = view.ExitCode == 0 ? view.Output.Trim() : "";
+        if (current.Length == 0 || current.Equals(slug, StringComparison.OrdinalIgnoreCase)) return (url, true);
 
         var renamed = $"https://github.com/{current}.git";
-        return RepoUrlProblem(renamed) is null ? renamed : null;
+        return (RepoUrlProblem(renamed) is null ? renamed : url, true);
     }
 
     private static string AsSentence(string reason) => reason.Length == 0 ? "" : $"{reason.TrimEnd('.')}.";

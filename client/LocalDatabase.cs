@@ -3,6 +3,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 
 namespace AgentOrange;
@@ -271,11 +272,26 @@ public sealed class LocalDatabase
     private static bool IsNewerVersion(string version, string than)
     {
         if (than.Length == 0) return version.Length > 0;
-        if (!Version.TryParse(version.Contains('.') ? version : $"{version}.0", out var a)) return false;
+        if (ReadVersion(version) is not { } a) return false;
 
         // A project that's moved off a custom build to a real version shouldn't stay stuck on it.
-        return !Version.TryParse(than.Contains('.') ? than : $"{than}.0", out var b) || a > b;
+        return ReadVersion(than) is not { } b || a.CompareTo(b) > 0;
     }
+
+    private static (Version Numbers, int Stage, int Release)? ReadVersion(string text)
+    {
+        var parts = VersionParts.Match(text);
+        if (!parts.Success) return null;
+
+        var numbers = parts.Groups[1].Value;
+        if (!Version.TryParse(numbers.Contains('.') ? numbers : $"{numbers}.0", out var version)) return null;
+
+        var release = 0;
+        if (parts.Groups[3].Success && !int.TryParse(parts.Groups[3].Value, out release)) return null;
+        return (version, parts.Groups[2].Value switch { "a" => 0, "b" => 1, "p" => 3, _ => 2 }, release);
+    }
+
+    private static readonly Regex VersionParts = new(@"^(\d+(?:\.\d+){0,3})(?:([abfp])(\d+))?$", RegexOptions.CultureInvariant);
 
     private static Dictionary<string, EngineRecord> ReadEnginesHere(SqliteConnection connection)
     {
@@ -382,7 +398,7 @@ public sealed class LocalDatabase
             .Where(project => project.Id != exceptProjectId)
             .Select(project => (Project: project, Folder: GetProjectFolder(project.Id)))
             .Where(link => link.Folder is not null)
-            .Concat(LiveHolds(FolderHold, exceptProjectId).Select(hold => (Project: hold.Holder, Folder: (string?)hold.Target)))
+            .Concat(LiveHolds(FolderHold, exceptProjectId, true).Select(hold => (Project: hold.Holder, Folder: (string?)hold.Target)))
             .ToList();
 
         return linked.FirstOrDefault(link => FolderIdentity.Overlap(folder, link.Folder!)).Project;
@@ -390,40 +406,48 @@ public sealed class LocalDatabase
 
     private Project? RepoOwner(string url, string? exceptProjectId) =>
         ListProjects().FirstOrDefault(project => project.Id != exceptProjectId && GitTools.SameRepo(project.RepoUrl, url))
-        ?? LiveHolds(RepoHold, exceptProjectId).FirstOrDefault(hold => GitTools.SameRepo(hold.Target, url)).Holder;
+        ?? LiveHolds(RepoHold, exceptProjectId, false).FirstOrDefault(hold => GitTools.SameRepo(hold.Target, url)).Holder;
 
     private Task<Project?> ClaimAsync(string kind, string target, Project claimant, Func<Project?> findOwner) => Task.Run(() =>
     {
         using var turn = TakeClaimTurn();
+        if (turn is null) return AnotherWindow;
+
         var owner = findOwner();
         if (owner is null) Hold(kind, target, claimant);
         return owner;
     });
 
-    // Null if it can't be had, which is a window running as administrator or one that's stuck. Going
-    // ahead then is the lesser problem, as the worst of it is a project page saying two share a repo.
+    private static readonly Project AnotherWindow = new("", "Another window of the app", "", "", "", "", DateTimeOffset.MinValue);
+
+    // Null if it can't be had in that time, and then the claim is refused, as two windows could
+    // otherwise both find the same place free.
     private ClaimTurn? TakeClaimTurn()
     {
-        Mutex turn;
-        try
+        var giveUpAt = DateTimeOffset.UtcNow + LongestClaimWait;
+        while (true)
         {
-            turn = new Mutex(false, _claimTurnName);
+            try
+            {
+                var turn = new Mutex(false, _claimTurnName);
+                try
+                {
+                    if (turn.WaitOne(LongestClaimWait)) return new ClaimTurn(turn);
+                }
+                catch (AbandonedMutexException)
+                {
+                    return new ClaimTurn(turn); // A window closed partway through, and it's this one's now.
+                }
+                turn.Dispose();
+                return null;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // A window running as administrator is taking its turn, which only lasts a moment.
+                if (DateTimeOffset.UtcNow > giveUpAt) return null;
+                Thread.Sleep(200);
+            }
         }
-        catch (UnauthorizedAccessException)
-        {
-            return null;
-        }
-
-        try
-        {
-            if (turn.WaitOne(LongestClaimWait)) return new ClaimTurn(turn);
-        }
-        catch (AbandonedMutexException)
-        {
-            return new ClaimTurn(turn); // A window closed partway through, and it's this one's now.
-        }
-        turn.Dispose();
-        return null;
     }
 
     private sealed class ClaimTurn(Mutex turn) : IDisposable
@@ -485,7 +509,9 @@ public sealed class LocalDatabase
         command.ExecuteNonQuery();
     }
 
-    private List<(string Target, Project Holder)> LiveHolds(string kind, string? exceptProjectId)
+    // A window's own holds for that project never count. Its other windows' do if asked, as two
+    // windows saving one repo to one project is harmless, and two cloning into one folder isn't.
+    private List<(string Target, Project Holder)> LiveHolds(string kind, string? exceptProjectId, bool otherWindowsCount)
     {
         var found = new List<(string Token, string Target, string Id, string Name)>();
         using (var connection = Open())
@@ -506,8 +532,14 @@ public sealed class LocalDatabase
                 continue;
             }
             if (hold.Id != exceptProjectId) live.Add((hold.Target, new Project(hold.Id, hold.Name, "", "", "", "", DateTimeOffset.UtcNow)));
+            else if (otherWindowsCount && !IsThisWindows(hold.Token)) live.Add((hold.Target, AnotherWindow));
         }
         return live;
+    }
+
+    private bool IsThisWindows(string token)
+    {
+        lock (_holds) return _holds.Values.Any(held => held.Token == token);
     }
 
     private static bool HoldIsAlive(string token)

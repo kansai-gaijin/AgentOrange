@@ -18,7 +18,7 @@ public sealed record NewProject(string Name, string Engine, string GameType, str
 
 public static class ProjectChoices
 {
-    public static readonly string[] Engines = ["Unreal Engine", "Godot", "Web", "Other"];
+    public static readonly string[] Engines = ["Unreal Engine", "Godot", "Unity", "Web", "Other"];
     public static readonly string[] GameTypes = ["3D", "2D", "2.5D", "Other"];
     public const int MaxNameLength = 100;
 }
@@ -106,7 +106,7 @@ public partial class NewProjectWizard : UserControl
             Next();
         };
 
-        var engines = TileChoice("Engine", ProjectChoices.Engines, _engine, 4, engine => _engine = engine);
+        var engines = TileChoice("Engine", ProjectChoices.Engines, _engine, 5, engine => _engine = engine);
         var types = TileChoice("Game type", ProjectChoices.GameTypes, _gameType, 4, type => _gameType = type);
 
         var body = new StackPanel
@@ -266,6 +266,7 @@ public partial class NewProjectWizard : UserControl
             bool confirmed;
             var claimed = false;
             var repoHeld = false;
+            string? madeRepo = null; // It's on GitHub from then on, and this may be all that says where.
             try
             {
                 if (!await GitTools.FolderExistsAsync(path))
@@ -320,6 +321,7 @@ public partial class NewProjectWizard : UserControl
                 // Another window can have got to this repo during all of that.
                 if (failure is null)
                 {
+                    if (IsCreatingRepo) madeRepo = url;
                     if (await ClaimRepo(url, _name) is { } repoHolder) (url, confirmed, failure) = ("", false, $"{repoHolder} already uses that repo. A repo can only be one project.");
                     else repoHeld = true;
                 }
@@ -333,7 +335,9 @@ public partial class NewProjectWizard : UserControl
             catch (SqliteException error)
             {
                 AppLog.Write($"Couldn't check a new project: {error.Message}");
-                (url, confirmed, failure) = ("", false, "The app's database can't be reached, so nothing was saved. Try again once it's back.");
+                (url, confirmed, failure) = ("", false, madeRepo is null
+                    ? "The app's database can't be reached, so nothing was saved. Try again once it's back."
+                    : $"The repo was created at {madeRepo}, but the app's database can't be reached, so the project wasn't saved. Once it's back, enter that address here and try again.");
             }
             finally
             {
@@ -359,7 +363,9 @@ public partial class NewProjectWizard : UserControl
             {
                 AppLog.Write($"Couldn't save a new project: {error.Message}");
                 ReleaseFolder(path);
-                ShowProblem(problem, "The app's database can't be reached, so the project may not have been saved. Once it's back, check your projects before trying again.");
+                ShowProblem(problem, madeRepo is null
+                    ? "The app's database can't be reached, so the project may not have been saved. Once it's back, check your projects before trying again."
+                    : $"The repo was created at {madeRepo}, but the app's database can't be reached, so the project may not have been saved. Once it's back, check your projects, and use that address if it isn't there.");
                 return;
             }
             finally
@@ -422,20 +428,17 @@ public partial class NewProjectWizard : UserControl
         }
 
         if (GitTools.RepoUrlProblem(url) is { } urlProblem) return ("", false, urlProblem);
-        if (GitTools.ProjectUsingRepo(url) is { } otherProject) return ("", false, $"{otherProject} already uses that repo. A repo can only be one project.");
 
-        // GitHub still answers to a repo's old name, so that isn't enough to tell them apart.
-        var renamed = await GitTools.RenamedRepoUrlAsync(url);
-        if (renamed is not null && GitTools.ProjectUsingRepo(renamed) is { } holder)
+        // GitHub still answers to a repo's old names, so the address isn't enough to tell them apart.
+        var (current, holder, underAnotherName) = await GitTools.WhoHasRepoAsync(url);
+        if (holder is not null)
         {
-            return ("", false, $"{holder} already uses that repo, which GitHub now calls {renamed}. A repo can only be one project.");
+            return ("", false, underAnotherName
+                ? $"{holder} already uses that repo, under another name it's had on GitHub. A repo can only be one project."
+                : $"{holder} already uses that repo. A repo can only be one project.");
         }
-
-        // And the other way around, with this being the new name.
-        if (await GitTools.ProjectUnderOldNameAsync(url) is { } older)
-        {
-            return ("", false, $"{older} already uses that repo, under the name it had before GitHub renamed it. A repo can only be one project.");
-        }
+        var renamed = GitTools.SameRepo(current, url) ? null : current;
+        url = current;
         if (state.Origin is not null && !GitTools.SameRepo(state.OriginToCompare!, url))
         {
             if (await GitTools.MoveIfRepoRenamedAsync(project.Folder, state, url))
