@@ -767,12 +767,17 @@ public static partial class GitTools
         return $"https://github.com/{path}.git";
     }
 
-    // The same, keeping the login in a folder's HTTPS address, as an SSH alias is kept. Only on the
-    // same host, as a login is never sent somewhere it wasn't meant for. Elsewhere, access is just asked again.
-    private static string SameWayTo(FolderRepo state, string url)
+    // The same, keeping the login in a folder's HTTPS address, as an SSH alias is kept.
+    private static string SameWayTo(FolderRepo state, string url) => WithLoginFrom(state.OriginWithLogin, SameWayTo(state.Origin!, url));
+
+    // Another repo reached the way one of a remote's own addresses reaches its repo, login and all.
+    private static string KeepingWayIn(string address, string url) => WithLoginFrom(address, SameWayTo(WithoutCredentials(address), url));
+
+    // Only on the same host, as a login is never sent somewhere it wasn't meant for. Elsewhere,
+    // access is just asked again.
+    private static string WithLoginFrom(string? withLogin, string address)
     {
-        var address = SameWayTo(state.Origin!, url);
-        if (state.OriginWithLogin is not { } withLogin
+        if (withLogin is null
             || !Uri.TryCreate(withLogin, UriKind.Absolute, out var from) || from.Scheme != Uri.UriSchemeHttps || from.UserInfo.Length == 0
             || !Uri.TryCreate(address, UriKind.Absolute, out var to) || to.Scheme != Uri.UriSchemeHttps || !string.Equals(from.Host, to.Host, StringComparison.OrdinalIgnoreCase))
         {
@@ -952,18 +957,20 @@ public static partial class GitTools
 
         var oldRepo = await RepoOfAsync(urls[0]);
         if (!SameRepo(oldRepo, onlyIfOnRepo)) return RemoteChangedMeanwhile;
-        async Task<string[]> MovedAsync(string[] addresses)
+        async Task<string[]> MovedAsync(string[] addresses, bool fetchAddresses)
         {
             var moved = new List<string>();
-            foreach (var address in addresses)
+            for (var i = 0; i < addresses.Length; i++)
             {
-                moved.Add(SameRepo(await RepoOfAsync(address), oldRepo) ? remote : address);
+                var address = addresses[i];
+                if (!SameRepo(await RepoOfAsync(address), oldRepo)) moved.Add(address);
+                else moved.Add(fetchAddresses && i == 0 ? remote : KeepingWayIn(address, remote));
             }
             return moved.Distinct().ToArray();
         }
 
-        var movedUrls = await MovedAsync(urls);
-        var movedPushUrls = await MovedAsync(pushUrls);
+        var movedUrls = await MovedAsync(urls, true);
+        var movedPushUrls = await MovedAsync(pushUrls, false);
         if (movedUrls.SequenceEqual(urls) && movedPushUrls.SequenceEqual(pushUrls)) return null; // Already there.
 
         var urlsMoved = await SetAddressesAsync(folder, "remote.origin.url", movedUrls);
@@ -2140,8 +2147,10 @@ public static partial class GitTools
             }
 
             var where = folder ?? scratch!;
-            // An address rather than a remote's name has no mirror setting to turn off, and goes
-            // exactly there, whatever the folder's own settings would rewrite it to.
+            // An address rather than a remote's name has no mirror setting to turn off, and goes there
+            // rather than wherever the folder's own settings rewrite it to. A folder rule for that exact
+            // address would still win, as Git takes the first of two equal matches and reads the
+            // folder's first, but those settings only run once the person has allowed them.
             List<string> push = folder is null ? ["-c", "push.gpgSign=false"]
                 : remote.Contains(':') ? ["-c", $"url.{remote}.pushInsteadOf={remote}", "-c", "push.gpgSign=false"]
                 : ["-c", $"remote.{remote}.mirror=false", "-c", "push.gpgSign=false"];

@@ -1058,14 +1058,14 @@ public partial class MainWindow
     {
         if (!_recheckAfterBusy.Contains(projectId) || _busyProjectId is not null) return;
         _recheckAfterBusy.Remove(projectId);
+        // Closing settings looks at the page, or reads the folder of the project they're for, anyway.
+        var settingsOpen = ProjectSettings.Visibility == Visibility.Visible;
         if (_openProject?.Id != projectId)
         {
-            _ = TellIfDatabaseFailsAsync(ReadEngineVersionAsync(projectId));
+            if (!(settingsOpen && _settingsProjectId == projectId)) _ = TellIfDatabaseFailsAsync(ReadEngineVersionAsync(projectId));
             return;
         }
-
-        // Closing settings looks at the page again anyway.
-        if (ProjectSettings.Visibility == Visibility.Visible) return;
+        if (settingsOpen) return;
 
         // What the job just said about itself stays through that look.
         KeepProblemThroughReopen(projectId);
@@ -1093,14 +1093,15 @@ public partial class MainWindow
     }
 
     // The app carries on through a database error, as the database can be on a drive that's
-    // dropped. Whatever this page was busy with has stopped, and the page has to say so.
+    // dropped. Whatever this page was busy with has stopped, and the page has to say so. The same
+    // goes for anything else unexpected, such as a drive dropping partway.
     private async Task EndBusyIfDatabaseFailsAsync(string projectId, Func<Task> work)
     {
         try
         {
             await work();
         }
-        catch (SqliteException)
+        catch (Exception)
         {
             if (_busyProjectId == projectId) EndBusy();
             throw;
@@ -1193,72 +1194,93 @@ public partial class MainWindow
             Dialogs.Notify($"The repo was created at {result.Value}, but the app's database can't be reached, so {project.Name} wasn't changed. Once it's back, enter that address in its project settings.");
         }
 
-        Project? latest;
-        try
+        // Busy until the project has its new repo, or it's given up on, so it can't be asked for a
+        // second time meanwhile, and nothing looks at the page in between. It ends just before
+        // whatever that comes to is shown.
+        void Done()
         {
-            EndBusy();
-
-            if (!result.Worked)
-            {
-                ShowPageProblem(project.Id, result.Value);
-                return;
-            }
-            latest = FindProject(project.Id);
-        }
-        catch (SqliteException error) when (result.Worked)
-        {
-            SayAddressNotSaved(error);
-            return;
-        }
-
-        // Saved even if they've left the page, because the repo now exists. A URL changed
-        // in the meantime was chosen more recently, so it stays.
-        if (latest is null || GitTools.RepoUrlProblem(result.Value) is not null)
-        {
-            ShowPageProblem(project.Id, $"The repo was created at {result.Value}, but the project couldn't be updated.");
-            return;
-        }
-        if (!GitTools.SameRepo(latest.RepoUrl, project.RepoUrl))
-        {
-            _confirmingNewRepo = false;
-            await RecheckThenShowAsync(project.Id, $"The repo was created at {result.Value}, but this project moved to a different repo in the meantime, so it wasn't changed.");
-            return;
+            if (_busyProjectId == project.Id) EndBusy();
         }
 
         try
         {
-            // Another window can have given this new repo to another project while it was being made.
-            if (await _database.ClaimRepoAsync(result.Value, latest) is { } repoOwner)
+            Project? latest;
+            try
             {
-                ShowPageProblem(project.Id, LocalDatabase.RefusalFor(repoOwner, $"The repo was created at {result.Value}, but {repoOwner.Name} uses it now, so this project wasn't changed.") + (LocalDatabase.MeansNoTurn(repoOwner) ? $" The repo is at {result.Value}, so enter that in project settings." : ""));
+                if (!result.Worked)
+                {
+                    Done();
+                    ShowPageProblem(project.Id, result.Value);
+                    return;
+                }
+                latest = FindProject(project.Id);
+            }
+            catch (SqliteException error) when (result.Worked)
+            {
+                Done();
+                SayAddressNotSaved(error);
                 return;
             }
 
-            if (FindProject(project.Id) is not { } stillOnOld || !GitTools.SameRepo(stillOnOld.RepoUrl, project.RepoUrl))
+            // Saved even if they've left the page, because the repo now exists. A URL changed
+            // in the meantime was chosen more recently, so it stays.
+            if (latest is null || GitTools.RepoUrlProblem(result.Value) is not null)
             {
+                Done();
+                ShowPageProblem(project.Id, $"The repo was created at {result.Value}, but the project couldn't be updated.");
+                return;
+            }
+            if (!GitTools.SameRepo(latest.RepoUrl, project.RepoUrl))
+            {
+                Done();
                 _confirmingNewRepo = false;
                 await RecheckThenShowAsync(project.Id, $"The repo was created at {result.Value}, but this project moved to a different repo in the meantime, so it wasn't changed.");
                 return;
             }
 
-            _database.UpdateProject(project.Id, current => GitTools.SameRepo(current.RepoUrl, project.RepoUrl) ? current with { RepoUrl = result.Value } : current);
-            _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(result.Value)); // This PC just made it.
+            try
+            {
+                // Another window can have given this new repo to another project while it was being made.
+                if (await _database.ClaimRepoAsync(result.Value, latest) is { } repoOwner)
+                {
+                    Done();
+                    ShowPageProblem(project.Id, LocalDatabase.RefusalFor(repoOwner, $"The repo was created at {result.Value}, but {repoOwner.Name} uses it now, so this project wasn't changed.") + (LocalDatabase.MeansNoTurn(repoOwner) ? $" The repo is at {result.Value}, so enter that in project settings." : ""));
+                    return;
+                }
 
-            // A folder chosen in settings while this ran is more recent, so it stays.
-            if (_database.GetProjectFolder(project.Id) == linkedBefore) _database.SetProjectFolder(project.Id, folder);
-        }
-        catch (SqliteException error)
-        {
-            SayAddressNotSaved(error);
-            return;
+                if (FindProject(project.Id) is not { } stillOnOld || !GitTools.SameRepo(stillOnOld.RepoUrl, project.RepoUrl))
+                {
+                    Done();
+                    _confirmingNewRepo = false;
+                    await RecheckThenShowAsync(project.Id, $"The repo was created at {result.Value}, but this project moved to a different repo in the meantime, so it wasn't changed.");
+                    return;
+                }
+
+                _database.UpdateProject(project.Id, current => GitTools.SameRepo(current.RepoUrl, project.RepoUrl) ? current with { RepoUrl = result.Value } : current);
+                _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(result.Value)); // This PC just made it.
+
+                // A folder chosen in settings while this ran is more recent, so it stays.
+                if (_database.GetProjectFolder(project.Id) == linkedBefore) _database.SetProjectFolder(project.Id, folder);
+            }
+            catch (SqliteException error)
+            {
+                Done();
+                SayAddressNotSaved(error);
+                return;
+            }
+            finally
+            {
+                _database.ReleaseRepo(result.Value);
+            }
+            Done();
+            _ = _sync.SyncNowAsync();
+            _confirmingNewRepo = false;
+            await RefreshThenRecheckAsync(project.Id);
         }
         finally
         {
-            _database.ReleaseRepo(result.Value);
+            Done();
         }
-        _ = _sync.SyncNowAsync();
-        _confirmingNewRepo = false;
-        await RefreshThenRecheckAsync(project.Id);
     }
 
     // For a result that the page has to be up to date to make sense of.
