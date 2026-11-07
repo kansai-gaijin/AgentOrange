@@ -54,7 +54,7 @@ public partial class MainWindow
     private readonly Dictionary<string, string> _heldProblems = [];
     private string? _settingsProjectId;
     private FolderGitSettings? _settingsToAllow;
-    private string? _recheckAfterBusy;
+    private readonly HashSet<string> _recheckAfterBusy = [];
     private readonly Dictionary<string, int> _engineReads = [];
 
     // Only one long operation runs at a time. It keeps going if the person leaves the page.
@@ -408,7 +408,7 @@ public partial class MainWindow
         // So it's checked once the job is done, and the page meanwhile shows what's running.
         if (_busyProjectId == project.Id)
         {
-            _recheckAfterBusy = project.Id;
+            _recheckAfterBusy.Add(project.Id);
             if (_openProject?.Id == project.Id && GitTools.SameRepo(project.RepoUrl, _openProject.RepoUrl))
             {
                 _openProject = project;
@@ -418,7 +418,7 @@ public partial class MainWindow
         }
 
         // This is the look that was waiting.
-        else if (_recheckAfterBusy == project.Id) _recheckAfterBusy = null;
+        else _recheckAfterBusy.Remove(project.Id);
 
         var navigation = ++_navigation;
         _lastAccessCheck = DateTimeOffset.UtcNow;
@@ -1042,7 +1042,7 @@ public partial class MainWindow
         _busyCardText = null;
         _downloadIsInPlace = false;
         if (UpdateOverlay.IsVisible && !_downloading) ShowUpdateMessage();
-        if (_recheckAfterBusy is { } waiting) _ = Dispatcher.InvokeAsync(() => LookAgainAfterBusy(waiting), System.Windows.Threading.DispatcherPriority.Background);
+        foreach (var waiting in _recheckAfterBusy) _ = Dispatcher.InvokeAsync(() => LookAgainAfterBusy(waiting), System.Windows.Threading.DispatcherPriority.Background);
         if (_openProject is null)
         {
             RefreshProjects();
@@ -1056,9 +1056,20 @@ public partial class MainWindow
     // ended the job often looks again itself, or starts the next job, whose end is then soon enough.
     private void LookAgainAfterBusy(string projectId)
     {
-        if (_recheckAfterBusy != projectId || _busyProjectId is not null) return;
-        _recheckAfterBusy = null;
-        _ = TellIfDatabaseFailsAsync(_openProject?.Id == projectId ? RecheckIfStillOpenAsync(projectId) : ReadEngineVersionAsync(projectId));
+        if (!_recheckAfterBusy.Contains(projectId) || _busyProjectId is not null) return;
+        _recheckAfterBusy.Remove(projectId);
+        if (_openProject?.Id != projectId)
+        {
+            _ = TellIfDatabaseFailsAsync(ReadEngineVersionAsync(projectId));
+            return;
+        }
+
+        // Closing settings looks at the page again anyway.
+        if (ProjectSettings.Visibility == Visibility.Visible) return;
+
+        // What the job just said about itself stays through that look.
+        KeepProblemThroughReopen(projectId);
+        _ = TellIfDatabaseFailsAsync(RecheckIfStillOpenAsync(projectId));
     }
 
     // Shows the result if the person is still looking at this project.
@@ -1872,7 +1883,7 @@ public partial class MainWindow
         // that's done, so the read can't change its remote while the job works in its folder.
         if (_settingsProjectId is { } changedProject && changedProject != _openProject?.Id)
         {
-            if (_busyProjectId == changedProject) _recheckAfterBusy = changedProject;
+            if (_busyProjectId == changedProject) _recheckAfterBusy.Add(changedProject);
             else _ = TellIfDatabaseFailsAsync(ReadEngineVersionAsync(changedProject));
         }
 
@@ -1886,7 +1897,7 @@ public partial class MainWindow
         // The repo or folder may have changed. Work already running gets to finish first.
         if (_busyProjectId == openId)
         {
-            _recheckAfterBusy = openId;
+            _recheckAfterBusy.Add(openId);
             RefreshProjects();
             return;
         }

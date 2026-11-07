@@ -2140,8 +2140,11 @@ public static partial class GitTools
             }
 
             var where = folder ?? scratch!;
-            // An address rather than a remote's name has no mirror setting to turn off.
-            List<string> push = folder is null || remote.Contains(':') ? ["-c", "push.gpgSign=false"] : ["-c", $"remote.{remote}.mirror=false", "-c", "push.gpgSign=false"];
+            // An address rather than a remote's name has no mirror setting to turn off, and goes
+            // exactly there, whatever the folder's own settings would rewrite it to.
+            List<string> push = folder is null ? ["-c", "push.gpgSign=false"]
+                : remote.Contains(':') ? ["-c", $"url.{remote}.pushInsteadOf={remote}", "-c", "push.gpgSign=false"]
+                : ["-c", $"remote.{remote}.mirror=false", "-c", "push.gpgSign=false"];
             push.AddRange(["push", "--dry-run", "--no-verify", "--", remote, $":refs/heads/agent-orange-check-{Guid.NewGuid():N}"]);
             var result = await RunAsync("git", where, null, push.ToArray(), cancel, await SshSettingsAsync(where));
             if (result is null or { ExitCode: < 0 }) return PushAnswer.CantTell;
@@ -2457,7 +2460,7 @@ public static partial class GitTools
     private static partial Regex PushRefusal();
 
     // Settings that change how Git gets to a server: the SSH program, a proxy, or another address.
-    [GeneratedRegex(@"^(core\.(sshcommand|gitproxy)|ssh\.|http\.|url\..*\.(insteadof|pushinsteadof)$|remote\..*\.proxy$)", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^(core\.(sshcommand|gitproxy)|http\.|url\..*\.(insteadof|pushinsteadof)$|remote\..*\.(proxy|vcs)$)", RegexOptions.IgnoreCase)]
     private static partial Regex ConnectionSetting();
 
     [GeneratedRegex(@"://[^/@\s]+@")]

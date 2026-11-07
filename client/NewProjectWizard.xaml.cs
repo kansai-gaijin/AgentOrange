@@ -39,6 +39,7 @@ public partial class NewProjectWizard : UserControl
     private bool _working;
     private string? _replacingUrl;
     private bool _offeringFolderSettings;
+    private bool _offerIsOptional; // Offered as a way that might help, so trying again doesn't take it.
     private string _shownFolderSettings = "";
     private RepoCheck? _replacementOfferedFor;
     private bool _cloneIntoFolder;
@@ -165,6 +166,7 @@ public partial class NewProjectWizard : UserControl
     {
         _replacingUrl = null;
         _offeringFolderSettings = false;
+        _offerIsOptional = false;
         var folder = Field(_folder);
         folder.Width = 300;
         var repo = Field(_repoUrl);
@@ -211,12 +213,24 @@ public partial class NewProjectWizard : UserControl
 
         var back = ControlButton("Back", ShowProjectStep);
         var create = PrimaryButton("Create project", () => { });
+        var useSettings = ActionButton("Use its Git settings");
+        useSettings.Visibility = Visibility.Collapsed;
+        useSettings.HorizontalAlignment = HorizontalAlignment.Left;
+        useSettings.Margin = new Thickness(16, 8, 0, 0);
+        var takeOptionalOffer = false;
+        useSettings.Click += (_, _) =>
+        {
+            takeOptionalOffer = true;
+            create.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        };
 
         // Offered once a folder's repo turns out to be gone, and only for what's on screen.
         void ForgetOffer()
         {
             _replacingUrl = null;
             _offeringFolderSettings = false;
+            _offerIsOptional = false;
+            useSettings.Visibility = Visibility.Collapsed;
             create.Content = "Create project";
             ShowRepoNameFor(repo.Text);
         }
@@ -241,6 +255,12 @@ public partial class NewProjectWizard : UserControl
         {
             if (_working) return;
             problem.Visibility = Visibility.Collapsed;
+
+            // Settings offered as something that might help are only used when that's what was asked for.
+            if (_offerIsOptional && !takeOptionalOffer) _offeringFolderSettings = false;
+            _offerIsOptional = false;
+            takeOptionalOffer = false;
+            useSettings.Visibility = Visibility.Collapsed;
 
             var path = folder.Text.Trim();
             if (path.Length == 0)
@@ -351,7 +371,8 @@ public partial class NewProjectWizard : UserControl
                 ShowProblem(problem, failure);
                 create.Focus(); // Being disabled took it away, and Esc needs it to be inside the wizard.
                 _ = Dispatcher.InvokeAsync(problem.BringIntoView, System.Windows.Threading.DispatcherPriority.Loaded);
-                create.Content = _replacingUrl is not null ? "Create a new repo" : _offeringFolderSettings ? "Use its Git settings" : "Create project";
+                create.Content = _replacingUrl is not null ? "Create a new repo" : _offeringFolderSettings && !_offerIsOptional ? "Use its Git settings" : _offerIsOptional ? "Try again" : "Create project";
+                useSettings.Visibility = _offerIsOptional ? Visibility.Visible : Visibility.Collapsed;
                 return;
             }
 
@@ -387,6 +408,7 @@ public partial class NewProjectWizard : UserControl
                 Row("Repo name", "For a new repo. Leave blank to use the project's name. GitHub needs Latin letters and numbers.", repoName),
                 progress,
                 problem,
+                useSettings,
             },
         };
 
@@ -479,6 +501,7 @@ public partial class NewProjectWizard : UserControl
                 return ("", false, "Git on this PC couldn't connect to GitHub. This folder has its own settings for how Git connects, but there are too many of them to show here for you to check. Check this PC's network and try again, or cut them down.");
             case RepoAccess.GitOffline when !useFolderSettings && runnable is { ChangesConnection: true }:
                 _offeringFolderSettings = true;
+                _offerIsOptional = true;
                 _shownFolderSettings = runnable.Fingerprint;
                 return ("", false, $"Git on this PC couldn't connect to GitHub. This folder has its own Git settings, and if they're how it connects, you can use them. They can run programs or send your login somewhere else:\n{runnable.Shown}\nOnly use them if you trust where this folder came from. Otherwise check this PC's network and try again.");
             case RepoAccess.GitCantReach or RepoAccess.GitReadOnly when !useFolderSettings && runnable is { CanBeApproved: false }:
