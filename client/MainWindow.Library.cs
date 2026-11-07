@@ -48,7 +48,7 @@ public partial class MainWindow
         NoProjects.Visibility = projects.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
         // No one can reach a clone's Cancel button once its project is gone.
-        if (_busyProjectId is not null && projects.All(project => project.Id != _busyProjectId)) _cloneCancel?.Cancel();
+        if (_job is { } job && projects.All(project => project.Id != job.ProjectId)) job.Cancel?.Cancel();
 
         ProjectSettings.ProjectsChanged();
         if (_openProject is null) return;
@@ -132,12 +132,13 @@ public partial class MainWindow
         content.Children.Add(notHere);
 
         // Long operations carry on after leaving the page, so the card says how it's going.
-        var cardStatus = _busyProjectId == project.Id ? _busyCardText ?? _busyText : _heldProblems.ContainsKey(project.Id) ? "Open it to see what happened" : null;
+        var ownJob = IsBusyWith(project.Id) ? _job : null;
+        var cardStatus = ownJob is not null ? ownJob.CardText ?? ownJob.Text : _heldProblems.ContainsKey(project.Id) ? "Open it to see what happened" : null;
         if (cardStatus is not null)
         {
             var statusLabel = new TextBlock { Text = cardStatus, Foreground = (Brush)FindResource("Accent"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = cardStatus };
             content.Children.Add(statusLabel);
-            if (_busyProjectId == project.Id) _busyCardLabel = statusLabel;
+            if (ownJob is not null) _busyCardLabel = statusLabel;
         }
 
         var card = new Button { Style = (Style)FindResource("ProjectCard"), Content = content, Tag = project.Id, AllowDrop = true };

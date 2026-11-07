@@ -14,17 +14,16 @@ public partial class MainWindow
     private async Task CreateReplacementRepoAsync(Project project, RepoCheck shownCheck)
     {
         // Busy from the first click, so a second one can't create a second repo.
-        if (_busyProjectId is not null) return;
-        StartBusy(project, "Checking the repo again…");
+        using var job = StartJob(project, "Checking the repo again…");
+        if (job is null) return;
 
         // The page may have been open a while. Access may have come back, or a different
         // account be active, and what they agreed to named the account it would go under.
         var latestCheck = await GitTools.CheckRepoAccessAsync(project.RepoUrl, _database.GetProjectFolder(project.Id));
         if (latestCheck != shownCheck)
         {
-            EndBusy();
             _confirmingNewRepo = false;
-            await RecheckIfStillOpenAsync(project.Id);
+            await job.EndThenLookAgainAsync();
             return;
         }
 
@@ -36,48 +35,41 @@ public partial class MainWindow
         // forgets what they agreed to.
         if (!folderIsUsable)
         {
-            StartBusy(project, "Choosing a folder…");
+            job.Say("Choosing a folder…");
             folder = Dialogs.PickFolder($"Choose the folder for {project.Name}");
-            if (folder is null)
-            {
-                EndBusy();
-                return;
-            }
+            if (folder is null) return;
 
             // The dialog can stay open a long time, and what they agreed to named an account.
-            StartBusy(project, "Checking the repo again…");
+            job.Say("Checking the repo again…");
             if (await GitTools.CheckRepoAccessAsync(project.RepoUrl, _database.GetProjectFolder(project.Id)) != shownCheck)
             {
-                EndBusy();
                 _confirmingNewRepo = false;
-                await RecheckIfStillOpenAsync(project.Id);
+                await job.EndThenLookAgainAsync();
                 return;
             }
         }
 
-        StartBusy(project, CreatingRepoText);
+        job.Say(CreatingRepoText);
 
         // The folder dialog can stay open a long time, and sync keeps running behind it.
         if (FindProject(project.Id) is not { } stillThere || !GitTools.SameRepo(stillThere.RepoUrl, project.RepoUrl))
         {
-            EndBusy();
             _confirmingNewRepo = false;
-            await RecheckIfStillOpenAsync(project.Id);
+            await job.EndThenLookAgainAsync();
             return;
         }
 
         // Another project may have a copy of the repo that's being replaced, on a PC where the two synced together.
         if (await _database.ClaimFolderAsync(folder!, project) is { } owner)
         {
-            EndBusy();
-            ShowPageProblem(project.Id, LocalDatabase.RefusalFor(owner, $"{owner.Name} already uses that folder, or one that overlaps it. Project folders can't overlap."));
+            job.EndThenShow(LocalDatabase.RefusalFor(owner, $"{owner.Name} already uses that folder, or one that overlaps it. Project folders can't overlap."));
             return;
         }
 
         // Held until it's linked, so settings can't give it to another project meanwhile.
         try
         {
-            await ReplaceRepoHoldingFolderAsync(project, folder!);
+            await ReplaceRepoHoldingFolderAsync(job, project, folder!);
         }
         finally
         {
@@ -85,7 +77,7 @@ public partial class MainWindow
         }
     }
 
-    private async Task ReplaceRepoHoldingFolderAsync(Project project, string folder)
+    private async Task ReplaceRepoHoldingFolderAsync(ProjectJob job, Project project, string folder)
     {
         var linkedBefore = _database.GetProjectFolder(project.Id);
         var result = await GitTools.CreatePrivateRepoAsync(project.Name, folder, project.RepoUrl, _replacementRepoName ?? "");
@@ -98,93 +90,73 @@ public partial class MainWindow
         }
 
         // Busy until the project has its new repo, or it's given up on, so it can't be asked for a
-        // second time meanwhile, and nothing looks at the page in between. It ends just before
-        // whatever that comes to is shown, and only this job, not one started after it.
-        var job = _busyJob;
-        void Done()
+        // second time meanwhile, and nothing looks at the page in between.
+        Project? latest;
+        try
         {
-            if (_busyProjectId == project.Id && _busyJob == job) EndBusy();
+            if (!result.Worked)
+            {
+                job.EndThenShow(result.Value);
+                return;
+            }
+            latest = FindProject(project.Id);
+        }
+        catch (SqliteException error) when (result.Worked)
+        {
+            job.EndWithoutDatabase();
+            SayAddressNotSaved(error);
+            return;
+        }
+
+        // Saved even if they've left the page, because the repo now exists. A URL changed
+        // in the meantime was chosen more recently, so it stays.
+        if (latest is null || GitTools.RepoUrlProblem(result.Value) is not null)
+        {
+            job.EndThenShow($"The repo was created at {result.Value}, but the project couldn't be updated.");
+            return;
+        }
+        if (!GitTools.SameRepo(latest.RepoUrl, project.RepoUrl))
+        {
+            _confirmingNewRepo = false;
+            await job.EndThenLookAgainAsync($"The repo was created at {result.Value}, but this project moved to a different repo in the meantime, so it wasn't changed.");
+            return;
         }
 
         try
         {
-            Project? latest;
-            try
+            // Another window can have given this new repo to another project while it was being made.
+            if (await _database.ClaimRepoAsync(result.Value, latest) is { } repoOwner)
             {
-                if (!result.Worked)
-                {
-                    Done();
-                    ShowPageProblem(project.Id, result.Value);
-                    return;
-                }
-                latest = FindProject(project.Id);
-            }
-            catch (SqliteException error) when (result.Worked)
-            {
-                Done();
-                SayAddressNotSaved(error);
+                job.EndThenShow(LocalDatabase.RefusalFor(repoOwner, $"The repo was created at {result.Value}, but {repoOwner.Name} uses it now, so this project wasn't changed.") + (LocalDatabase.MeansNoTurn(repoOwner) ? $" The repo is at {result.Value}, so enter that in project settings." : ""));
                 return;
             }
 
-            // Saved even if they've left the page, because the repo now exists. A URL changed
-            // in the meantime was chosen more recently, so it stays.
-            if (latest is null || GitTools.RepoUrlProblem(result.Value) is not null)
+            if (FindProject(project.Id) is not { } stillOnOld || !GitTools.SameRepo(stillOnOld.RepoUrl, project.RepoUrl))
             {
-                Done();
-                ShowPageProblem(project.Id, $"The repo was created at {result.Value}, but the project couldn't be updated.");
-                return;
-            }
-            if (!GitTools.SameRepo(latest.RepoUrl, project.RepoUrl))
-            {
-                Done();
                 _confirmingNewRepo = false;
-                await RecheckThenShowAsync(project.Id, $"The repo was created at {result.Value}, but this project moved to a different repo in the meantime, so it wasn't changed.");
+                await job.EndThenLookAgainAsync($"The repo was created at {result.Value}, but this project moved to a different repo in the meantime, so it wasn't changed.");
                 return;
             }
 
-            try
-            {
-                // Another window can have given this new repo to another project while it was being made.
-                if (await _database.ClaimRepoAsync(result.Value, latest) is { } repoOwner)
-                {
-                    Done();
-                    ShowPageProblem(project.Id, LocalDatabase.RefusalFor(repoOwner, $"The repo was created at {result.Value}, but {repoOwner.Name} uses it now, so this project wasn't changed.") + (LocalDatabase.MeansNoTurn(repoOwner) ? $" The repo is at {result.Value}, so enter that in project settings." : ""));
-                    return;
-                }
+            _database.UpdateProject(project.Id, current => GitTools.SameRepo(current.RepoUrl, project.RepoUrl) ? current with { RepoUrl = result.Value } : current);
+            _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(result.Value)); // This PC just made it.
 
-                if (FindProject(project.Id) is not { } stillOnOld || !GitTools.SameRepo(stillOnOld.RepoUrl, project.RepoUrl))
-                {
-                    Done();
-                    _confirmingNewRepo = false;
-                    await RecheckThenShowAsync(project.Id, $"The repo was created at {result.Value}, but this project moved to a different repo in the meantime, so it wasn't changed.");
-                    return;
-                }
-
-                _database.UpdateProject(project.Id, current => GitTools.SameRepo(current.RepoUrl, project.RepoUrl) ? current with { RepoUrl = result.Value } : current);
-                _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(result.Value)); // This PC just made it.
-
-                // A folder chosen in settings while this ran is more recent, so it stays.
-                if (_database.GetProjectFolder(project.Id) == linkedBefore) _database.SetProjectFolder(project.Id, folder);
-            }
-            catch (SqliteException error)
-            {
-                Done();
-                SayAddressNotSaved(error);
-                return;
-            }
-            finally
-            {
-                _database.ReleaseRepo(result.Value);
-            }
-            Done();
-            _ = _sync.SyncNowAsync();
-            _confirmingNewRepo = false;
-            await RefreshThenRecheckAsync(project.Id);
+            // A folder chosen in settings while this ran is more recent, so it stays.
+            if (_database.GetProjectFolder(project.Id) == linkedBefore) _database.SetProjectFolder(project.Id, folder);
+        }
+        catch (SqliteException error)
+        {
+            job.EndWithoutDatabase();
+            SayAddressNotSaved(error);
+            return;
         }
         finally
         {
-            Done();
+            _database.ReleaseRepo(result.Value);
         }
+        _ = _sync.SyncNowAsync();
+        _confirmingNewRepo = false;
+        await job.EndThenRefreshAsync();
     }
 
     // A new project whose repo already has files, and an empty folder for them. Running as an
@@ -198,7 +170,7 @@ public partial class MainWindow
             if (FindProject(projectId) is not { } project) return;
             _database.TransferFolderHold(folder, project);
             await OpenProjectAsync(project);
-            if (_busyProjectId is not null)
+            if (IsBusy)
             {
                 ShowPageProblem(projectId, $"Something else is running. When that finishes, choose Clone and pick {folder} again.");
                 return;
@@ -214,7 +186,7 @@ public partial class MainWindow
                 RefreshProjects();
                 return;
             }
-            if (_projectCheck is not { } check)
+            if (_pageCheck?.Repo is not { } check)
             {
                 ShowPageProblem(projectId, $"The clone into {folder} didn't start, because this project's repo was still being checked. Choose Clone and pick {folder} again.");
                 return;
@@ -238,34 +210,22 @@ public partial class MainWindow
     // choosing that folder meanwhile would only find out when it finished.
     private async Task CloneProjectAsync(Project project, string parentFolder, string? exactFolder = null)
     {
-        if (_busyProjectId is not null) return;
         var destination = exactFolder ?? GitTools.CloneDestination(project.RepoUrl, parentFolder);
+        using var job = StartJob(project, "Checking that folder…");
+        if (job is null) return;
+
         var isHeld = false;
-        var job = 0;
         try
         {
-            job = _busyJob + 1; // Nothing's busy here, so this is the number starting it gives it.
-            StartBusy(project, "Checking that folder…");
             var owner = destination is null ? null : await _database.ClaimFolderAsync(destination, project);
             isHeld = destination is not null && owner is null;
             if (owner is not null)
             {
-                EndBusy();
-                ShowPageProblem(project.Id, LocalDatabase.RefusalFor(owner, $"{owner.Name} already uses a folder that overlaps where this would clone to. Project folders can't overlap."));
+                job.EndThenShow(LocalDatabase.RefusalFor(owner, $"{owner.Name} already uses a folder that overlaps where this would clone to. Project folders can't overlap."));
                 return;
             }
 
-            await RunCloneAsync(project, parentFolder, exactFolder);
-        }
-        catch (Exception)
-        {
-            // Something unexpected, and the page can't be left waiting forever. Only this clone, though.
-            if (_busyProjectId == project.Id && _busyJob == job)
-            {
-                _cloneCancel = null;
-                EndBusy();
-            }
-            throw;
+            await RunCloneAsync(job, project, parentFolder, exactFolder);
         }
         finally
         {
@@ -273,13 +233,12 @@ public partial class MainWindow
         }
     }
 
-    private async Task RunCloneAsync(Project project, string parentFolder, string? exactFolder)
+    private async Task RunCloneAsync(ProjectJob job, Project project, string parentFolder, string? exactFolder)
     {
         var folderBefore = _database.GetProjectFolder(project.Id);
 
         using var cancel = new CancellationTokenSource();
-        _cloneCancel = cancel;
-        StartBusy(project, "Cloning…");
+        job.Say("Cloning…", cancel);
         string? cloneRecord = null;
         string? workingFolder = null;
         var result = await GitTools.CloneAsync(project.RepoUrl, parentFolder, cancel.Token, working =>
@@ -295,11 +254,11 @@ public partial class MainWindow
             }
             cloneRecord = CloneRecord(working);
             ChangeCloneRecords(records => records.Append(cloneRecord));
-        }, exactFolder, stage => ShowBusyStage("Cloning…", stage));
+        }, exactFolder, stage => job.SayStage("Cloning…", stage));
 
         try
         {
-            await AfterCloneAsync(project, result, cancel, folderBefore, async () =>
+            await AfterCloneAsync(job, project, result, cancel, folderBefore, async () =>
             {
                 // One that couldn't be fully removed stays on the list, to be tried again next start.
                 if (cloneRecord is not null && (workingFolder is null || !await GitTools.FolderExistsAsync(workingFolder)))
@@ -312,34 +271,22 @@ public partial class MainWindow
         {
             // Hours of download are sitting there, and nothing's going to say so otherwise.
             AppLog.Write($"Couldn't link a finished clone: {error.Message}");
-            _cloneCancel = null;
-            _databaseWasLost = true;
-            try
-            {
-                if (_busyProjectId == project.Id) EndBusy();
-            }
-            catch (SqliteException)
-            {
-                // Drawing the page needs the database, and that happens again once it's back.
-            }
+            job.EndWithoutDatabase();
             Dialogs.Notify($"{project.Name} finished cloning to {result.Value}, but the app's database can't be reached, so it may not be linked. Once it's back, select that folder. If it uses large files or submodules, get them with git lfs pull and git submodule update --init --recursive.");
         }
     }
 
-    private async Task AfterCloneAsync(Project project, GitResult result, CancellationTokenSource cancel, string? folderBefore, Func<Task> forgetCloneRecord)
+    private async Task AfterCloneAsync(ProjectJob job, Project project, GitResult result, CancellationTokenSource cancel, string? folderBefore, Func<Task> forgetCloneRecord)
     {
         await forgetCloneRecord();
 
         if (!result.Worked)
         {
-            _cloneCancel = null;
-            EndBusy();
-            ShowPageProblem(project.Id, result.Value);
+            job.EndThenShow(result.Value);
         }
         else if (FindProject(project.Id) is null)
         {
-            _cloneCancel = null;
-            EndBusy();
+            job.End();
             Dialogs.Notify($"{project.Name} was deleted while it was cloning, so the clone wasn't linked to anything. It's still at {result.Value}.");
         }
         else if (FindProject(project.Id) is { } latest
@@ -347,15 +294,13 @@ public partial class MainWindow
                 || (!GitTools.SameRepo(latest.RepoUrl, project.RepoUrl) && !GitTools.SameRepo(await GitTools.RenamedRepoUrlAsync(project.RepoUrl) ?? "", latest.RepoUrl))))
         {
             // Changed through sync or in another window while this ran, and that's more recent.
-            _cloneCancel = null;
-            EndBusy();
-            await RecheckThenShowAsync(project.Id, $"Cloned to {result.Value}, but this project changed while that ran, so it wasn't linked. The clone is still there.");
+            await job.EndThenLookAgainAsync($"Cloned to {result.Value}, but this project changed while that ran, so it wasn't linked. The clone is still there.");
         }
         else
         {
             // Linked first, so an app closing during what comes next leaves a project that knows
             // about this folder, and says what's still missing from it.
-            _downloadIsInPlace = true;
+            job.DownloadIsInPlace = true;
             string? missing = null;
             using (var hold = GitTools.TryTakeDownload(result.Value))
             {
@@ -369,21 +314,19 @@ public partial class MainWindow
                     if (look?.Refused is { } refused) missing = refused;
                     else if (look is not null && GitTools.AreAllowed(GitTools.FinishApprovalKey(result.Value), look.Settings))
                     {
-                        missing = await GitTools.FinishDownloadAsync(result.Value, cancel.Token, stage => ShowBusyStage("Cloning…", stage));
+                        missing = await GitTools.FinishDownloadAsync(result.Value, cancel.Token, stage => job.SayStage("Cloning…", stage));
                     }
                 }
             }
-            _cloneCancel = null;
-            EndBusy();
-
             var notes = new[] { result.Note, missing }.OfType<string>().ToList();
-            if (notes.Count > 0) ShowPageProblem(project.Id, string.Join(' ', notes));
+            if (notes.Count > 0) job.EndThenShow(string.Join(' ', notes));
+            else job.End();
         }
     }
 
     private async Task FinishDownloadAsync(Project project, string folder)
     {
-        if (_busyProjectId is not null) return;
+        if (IsBusy) return;
 
         // These run in the folder, and it can have picked up settings since it was last looked at.
         var runnable = await GitTools.FolderRunnableSettingsAsync(folder);
@@ -415,7 +358,7 @@ public partial class MainWindow
             if (_openProject?.Id == project.Id) RenderProject(_openProject);
             return;
         }
-        if (_busyProjectId is not null) return;
+        if (IsBusy) return;
 
         // Two of these at once would run into each other's locks.
         if (GitTools.TryTakeDownload(folder) is not { } hold)
@@ -425,19 +368,20 @@ public partial class MainWindow
         }
 
         using var cancel = new CancellationTokenSource();
-        _cloneCancel = cancel;
+        ProjectJob? job = null;
         string? missing;
         try
         {
-            StartBusy(project, "Finishing the download…");
-            _downloadIsInPlace = true;
-            missing = await GitTools.FinishDownloadAsync(folder, cancel.Token, stage => ShowBusyStage("Finishing the download…", stage));
+            job = StartJob(project, "Finishing the download…", cancel);
+            if (job is null) return;
+            job.DownloadIsInPlace = true;
+            missing = await GitTools.FinishDownloadAsync(folder, cancel.Token, stage => job.SayStage("Finishing the download…", stage));
         }
         finally
         {
+            // The hold first, or the page drawn as this ends would say another window has the folder.
             hold.Dispose();
-            _cloneCancel = null;
-            EndBusy();
+            job?.End();
         }
         if (missing is not null) ShowPageProblem(project.Id, missing);
     }
@@ -445,17 +389,17 @@ public partial class MainWindow
     private Button SelectFolderButton(Project project)
     {
         var select = ActionButton("Select folder");
-        select.IsEnabled = _busyProjectId is null;
+        select.IsEnabled = !IsBusy;
         select.Click += async (_, _) =>
         {
-            if (Dialogs.PickFolder($"Find the folder for {project.Name}") is not { } chosen || _busyProjectId is not null) return;
+            if (Dialogs.PickFolder($"Find the folder for {project.Name}") is not { } chosen) return;
 
             var folderBefore = _database.GetProjectFolder(project.Id);
             string? folderProblem;
             var allowedJustNow = false;
-            try
+            if (StartJob(project, "Checking that folder…") is not { } job) return;
+            using (job)
             {
-                StartBusy(project, "Checking that folder…");
                 // Who has it comes first, as asking about it and checking it can both act on it.
                 if (await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other)
                 {
@@ -476,10 +420,6 @@ public partial class MainWindow
                 }
                 if (allowedJustNow && folderProblem is not null) GitTools.ForgetAllowedFolderSettings(chosen);
             }
-            finally
-            {
-                EndBusy();
-            }
 
             if (folderProblem is not null) ShowPageProblem(project.Id, folderProblem);
             else if (!await UseFolderAsync(project, chosen, folderBefore) && allowedJustNow) GitTools.ForgetAllowedFolderSettings(chosen);
@@ -489,19 +429,15 @@ public partial class MainWindow
 
     private async Task RepairRemoteAsync(Project project, string folder)
     {
-        if (_busyProjectId is not null) return;
-        StartBusy(project, "Trying HTTPS and SSH…");
-        var result = await GitTools.RepairRemoteAsync(folder, project.RepoUrl);
-        EndBusy();
-
-        if (result.Worked) await RefreshThenRecheckAsync(project.Id);
-        else ShowPageProblem(project.Id, result.Value);
+        using var job = StartJob(project, "Trying HTTPS and SSH…");
+        if (job is null) return;
+        await job.EndWithResultAsync(await GitTools.RepairRemoteAsync(folder, project.RepoUrl));
     }
 
     private async Task PointFolderAtRepoAsync(Project project, string folder)
     {
-        if (_busyProjectId is not null) return;
-        StartBusy(project, "Connecting the folder…");
+        using var job = StartJob(project, "Connecting the folder…");
+        if (job is null) return;
 
         // The URL may be a typo, and the next push would send this folder's history there.
         var history = await GitTools.CompareFolderHistoryAsync(folder, project.RepoUrl);
@@ -511,25 +447,16 @@ public partial class MainWindow
             FolderHistory.CantTell when await GitTools.FolderHasNoCommitsAsync(folder) != true => $"Couldn't compare this folder's commits with {project.RepoUrl}, so they may not be the same project.",
             _ => null,
         };
-        if (why is not null && !Dialogs.Confirm($"{why}\n\nConnecting them changes no files and pushes nothing, but the next push could send this folder's history there. Connect them anyway?"))
-        {
-            EndBusy();
-            return;
-        }
+        if (why is not null && !Dialogs.Confirm($"{why}\n\nConnecting them changes no files and pushes nothing, but the next push could send this folder's history there. Connect them anyway?")) return;
 
         // That can stay open a long time, and sync keeps running behind it.
         if (FindProject(project.Id) is not { } latest || !GitTools.SameRepo(latest.RepoUrl, project.RepoUrl))
         {
-            EndBusy();
-            await RecheckIfStillOpenAsync(project.Id);
+            await job.EndThenLookAgainAsync();
             return;
         }
 
-        var result = await GitTools.PointFolderAtRepoAsync(folder, project.RepoUrl);
-        EndBusy();
-
-        if (result.Worked) await RefreshThenRecheckAsync(project.Id);
-        else ShowPageProblem(project.Id, result.Value);
+        await job.EndWithResultAsync(await GitTools.PointFolderAtRepoAsync(folder, project.RepoUrl));
     }
 
     // Says who's cloning as well as where, so another window of the app can tell it isn't abandoned.

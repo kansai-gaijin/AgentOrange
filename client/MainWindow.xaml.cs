@@ -76,7 +76,7 @@ public partial class MainWindow : Window
         GitTools.IsUnfinishedNoteFromHere = _database.IsUnfinishedNoteFromHere;
         GitTools.RememberUnfinishedNote = _database.RememberUnfinishedNote;
         GitTools.HasUnfinishedDownload = _database.DownloadIsUnfinished;
-        ProjectSettings.ProjectIsBusy = projectId => _busyProjectId == projectId;
+        ProjectSettings.ProjectIsBusy = IsBusyWith;
 
         // A delete interrupted last time can leave parts of a project behind.
         _database.CleanUpDeletedProjects();
@@ -128,18 +128,18 @@ public partial class MainWindow : Window
 
                 // Folders don't sync, and a clone there can finish at any time. A page that lost
                 // the database partway through its check has nothing else that will finish it.
-                if (_openProject is { } open && _busyProjectId is null && ProjectSettings.Visibility != Visibility.Visible)
+                if (_openProject is { } open && !IsBusy && ProjectSettings.Visibility != Visibility.Visible)
                 {
                     var folder = _database.GetProjectFolder(open.Id);
-                    if (_openPageNeedsCheck || (_projectCheck is not null && folder != _checkedFolder))
+                    if (_openPageNeedsCheck || (_pageCheck is not null && folder != _pageCheck.Folder))
                     {
                         _openPageNeedsCheck = false;
                         _ = RecheckIfStillOpenAsync(open.Id);
                     }
-                    else if (_projectCheck is not null && DownloadStateOf(folder) != _shownDownloadState)
+                    else if (_pageCheck is not null && DownloadStateOf(folder) != _shownDownloadState)
                     {
                         // A remote move waited for another window's download, which has now finished.
-                        if (_folderProblem == GitTools.WaitingForDownload) _ = RecheckIfStillOpenAsync(open.Id);
+                        if (_pageCheck.FolderProblem == GitTools.WaitingForDownload) _ = RecheckIfStillOpenAsync(open.Id);
                         else RenderProjectKeepingFocus(open);
                     }
                 }
@@ -436,10 +436,10 @@ public partial class MainWindow : Window
 
     private string? CloningProjectName()
     {
-        if (_cloneCancel is null) return null;
+        if (_job is not { Cancel: not null } job) return null;
         try
         {
-            return (_busyProjectId is { } id ? FindProject(id)?.Name : null) ?? "A project";
+            return FindProject(job.ProjectId)?.Name ?? "A project";
         }
         catch (SqliteException)
         {
@@ -453,7 +453,7 @@ public partial class MainWindow : Window
 #if DEBUG
         if (Headless.Active) return true;
 #endif
-        if (_downloadIsInPlace && CloningProjectName() is { } finishing)
+        if (_job?.DownloadIsInPlace == true && CloningProjectName() is { } finishing)
         {
             return Dialogs.Confirm($"{finishing} is still downloading its large files and submodules. {action} stops that. What's arrived is kept, and its page will offer to finish the rest. Do it anyway?");
         }
@@ -461,7 +461,7 @@ public partial class MainWindow : Window
         {
             return Dialogs.Confirm($"{name} is still cloning. {action} stops that, and what's been downloaded so far is thrown away. Do it anyway?");
         }
-        if (ProjectWizard.IsCreatingRepo || _busyText == CreatingRepoText)
+        if (ProjectWizard.IsCreatingRepo || _job?.Text == CreatingRepoText)
         {
             return Dialogs.Confirm($"A repo is being created on GitHub. {action} could leave it there with no project pointing at it. Do it anyway?");
         }

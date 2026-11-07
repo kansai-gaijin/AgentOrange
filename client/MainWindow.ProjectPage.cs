@@ -4,27 +4,22 @@ using System.Windows.Media.Effects;
 
 namespace AgentOrange;
 
-/// <summary>Each project's page and what it knows. Checks and clones finish whenever they finish, so everything that continues after one re-reads the project and compares _navigation first, in case the person has moved on or the project changed.</summary>
+/// <summary>
+/// Each project's page and what it knows. Checks and clones finish whenever they finish, so
+/// everything that continues after one re-reads the project and compares _navigation first, in
+/// case the person has moved on or the project changed.
+/// </summary>
 public partial class MainWindow
 {
     private Project? _openProject;
-    private RepoCheck? _projectCheck;
-    private string? _folderProblem;
+    private PageCheck? _pageCheck; // Null until its check is done.
     private static readonly TimeSpan AccessCheckInterval = TimeSpan.FromMinutes(5);
     private DateTimeOffset _lastAccessCheck;
-    private bool _folderExists;
-    private string? _renamedRepoHeldBy;
-    private string? _folderEngine;
-    private string? _folderPushesTo;
-    private string? _checkedFolder;
-    private bool _downloadIsInPlace;
     private (bool Unfinished, bool Held) _shownDownloadState;
     private bool _databaseWasLost;
     private bool _openPageNeedsCheck; // Kept until nothing's busy, as a long clone can be running.
     private FolderGitSettings? _finishSettingsToAllow;
     private (string? Folder, string? RepoUrl) _settingsOpenedWith;
-    private bool _folderLacksFiles;
-    private bool _folderMayNotMatch;
     private string? _scrolledToProblem;
     private string? _pageProblem;
     private bool _confirmingNewRepo;
@@ -34,7 +29,6 @@ public partial class MainWindow
     // A long operation can finish after they've left its project, and what happened still has to reach them.
     private readonly Dictionary<string, string> _heldProblems = [];
     private string? _settingsProjectId;
-    private FolderGitSettings? _settingsToAllow;
     private readonly Dictionary<string, int> _engineReads = [];
 
     // A project's page. Opening one first checks this PC is allowed to work on its repo.
@@ -60,9 +54,8 @@ public partial class MainWindow
     {
         // Its long job is working in its folder, and checking that folder can change its remote.
         // So it's checked once the job is done, and the page meanwhile shows what's running.
-        if (_busyProjectId == project.Id)
+        if (LookOnceJobEnds(project.Id))
         {
-            _recheckAfterBusy.Add(project.Id);
             if (_openProject?.Id == project.Id && GitTools.SameRepo(project.RepoUrl, _openProject.RepoUrl))
             {
                 _openProject = project;
@@ -72,26 +65,19 @@ public partial class MainWindow
         }
 
         // This is the look that was waiting.
-        else _recheckAfterBusy.Remove(project.Id);
+        else _looksAfterJob.Remove(project.Id);
 
         var navigation = ++_navigation;
         _lastAccessCheck = DateTimeOffset.UtcNow;
         _openProject = project;
-        _projectCheck = null;
-        _folderProblem = null;
-        _folderExists = false;
-        _renamedRepoHeldBy = null;
-        _folderEngine = null;
-        _folderPushesTo = null;
+        _pageCheck = null;
         _finishSettingsToAllow = null;
-        _folderLacksFiles = false;
-        _folderMayNotMatch = false;
         _pageProblem = _heldProblems.Remove(project.Id, out var held) ? held : null;
         _confirmingNewRepo = false;
         ProjectSelectView.Visibility = Visibility.Collapsed;
         ProjectView.Visibility = Visibility.Visible;
         RenderProject(project);
-        if (_busyProjectId == project.Id) return;
+        if (IsBusyWith(project.Id)) return;
 
         var folder = _database.GetProjectFolder(project.Id);
         var runnable = folder is null ? FolderGitSettings.None : await GitTools.FolderRunnableSettingsAsync(folder);
@@ -203,16 +189,17 @@ public partial class MainWindow
             _database.SetSetting(CreatedHereSetting(project.Id), "");
         }
 
-        _projectCheck = check;
-        _checkedFolder = folder;
-        _settingsToAllow = useFolderSettings || runnable is null or { IsEmpty: true } ? null : runnable;
-        _folderExists = folderExists;
-        _folderProblem = folderProblem;
-        _folderLacksFiles = lacksFiles;
-        _folderMayNotMatch = mayNotMatch;
-        _folderEngine = folderEngine;
-        _renamedRepoHeldBy = renamedHeldBy;
-        _folderPushesTo = pushesTo;
+        _pageCheck = new PageCheck(
+            check,
+            folder,
+            useFolderSettings || runnable is null or { IsEmpty: true } ? null : runnable,
+            folderExists,
+            folderProblem,
+            lacksFiles,
+            mayNotMatch,
+            folderEngine,
+            renamedHeldBy,
+            pushesTo);
         RenderProject(latest);
         if (folderShown && usable) await ReadEngineVersionAsync(latest.Id, new FolderAnswer(folder!, project.RepoUrl, folderProblem));
     }
@@ -232,11 +219,7 @@ public partial class MainWindow
     private async Task ReadEngineVersionAsync(string projectId, FolderAnswer? pageAnswer = null)
     {
         // Its long job is working in its folder, so it's read once that's done.
-        if (_busyProjectId == projectId)
-        {
-            _recheckAfterBusy.Add(projectId);
-            return;
-        }
+        if (LookOnceJobEnds(projectId)) return;
         if (FindProject(projectId) is not { } project || _database.GetProjectFolder(projectId) is not { } folder) return;
         var repoKey = GitTools.RepoKey(project.RepoUrl);
         if (_database.GetSetting(VerifiedSetting(projectId)) != repoKey && _database.GetSetting(CreatedHereSetting(projectId)) != repoKey) return;
@@ -272,6 +255,19 @@ public partial class MainWindow
 
     private sealed record FolderAnswer(string Folder, string RepoUrl, string? Problem);
 
+    // What a page's check found, all from one look.
+    private sealed record PageCheck(
+        RepoCheck Repo,
+        string? Folder,
+        FolderGitSettings? SettingsToAllow,
+        bool FolderExists,
+        string? FolderProblem,
+        bool FolderLacksFiles,
+        bool FolderMayNotMatch,
+        string? FolderEngine,
+        string? RenamedRepoHeldBy,
+        string? FolderPushesTo);
+
     private Project? FindProject(string id) => _database.ListProjects().FirstOrDefault(project => project.Id == id);
 
     // Allowed, or no clear answer on a PC that's been let in before or made the project here. Anything
@@ -292,7 +288,7 @@ public partial class MainWindow
     // action belongs here too, once agents work inside projects.
     private async Task RecheckAccessOnReturnAsync()
     {
-        if (_openProject is not { } project || _projectCheck is not { } shown || _busyProjectId is not null) return;
+        if (_openProject is not { } project || _pageCheck is not { } shown || IsBusy) return;
         if (DateTimeOffset.UtcNow - _lastAccessCheck < AccessCheckInterval) return;
         _lastAccessCheck = DateTimeOffset.UtcNow;
 
@@ -306,8 +302,8 @@ public partial class MainWindow
         var folderProblem = folderExists && latest.ShowsFolder
             ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl)
             : null;
-        var changed = latest != shown || folder != _checkedFolder || folderExists != _folderExists || folderProblem != _folderProblem;
-        if (changed && _openProject?.Id == project.Id && _busyProjectId is null) await RecheckIfStillOpenAsync(project.Id);
+        var changed = latest != shown.Repo || folder != shown.Folder || folderExists != shown.FolderExists || folderProblem != shown.FolderProblem;
+        if (changed && _openProject?.Id == project.Id && !IsBusy) await RecheckIfStillOpenAsync(project.Id);
     }
 
     private void KeepProblemThroughReopen(string projectId)
@@ -386,8 +382,7 @@ public partial class MainWindow
         // that's done, so the read can't change its remote while the job works in its folder.
         if (_settingsProjectId is { } changedProject && changedProject != _openProject?.Id)
         {
-            if (_busyProjectId == changedProject) _recheckAfterBusy.Add(changedProject);
-            else _ = TellIfDatabaseFailsAsync(ReadEngineVersionAsync(changedProject));
+            if (!LookOnceJobEnds(changedProject)) _ = TellIfDatabaseFailsAsync(ReadEngineVersionAsync(changedProject));
         }
 
         var openId = _openProject?.Id;
@@ -398,9 +393,8 @@ public partial class MainWindow
         }
 
         // The repo or folder may have changed. Work already running gets to finish first.
-        if (_busyProjectId == openId)
+        if (LookOnceJobEnds(openId))
         {
-            _recheckAfterBusy.Add(openId);
             RefreshProjects();
             return;
         }
@@ -426,7 +420,7 @@ public partial class MainWindow
         _navigation++;
         _openPageNeedsCheck = false;
         _openProject = null;
-        _projectCheck = null;
+        _pageCheck = null;
         _pageProblem = null;
         ProjectView.Visibility = Visibility.Collapsed;
         ProjectSelectView.Visibility = Visibility.Visible;

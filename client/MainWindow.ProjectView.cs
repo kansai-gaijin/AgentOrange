@@ -44,24 +44,25 @@ public partial class MainWindow
         {
             body.Children.Add(new TextBlock { Text = $"{twin.Name} uses this repo too, and a repo can only be one project. This can happen when two PCs add it before syncing. Delete the extra one in its project settings.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
         }
-        if (_renamedRepoHeldBy is { } holder)
+        if (_pageCheck?.RenamedRepoHeldBy is { } holder)
         {
             body.Children.Add(new TextBlock { Text = $"GitHub says this repo has been renamed, and {holder} already uses it under its new name. A repo can only be one project, so delete the extra one in its project settings.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
         }
         ProjectPage.Children.Add(body);
 
-        if (_projectCheck is not { } check)
+        if (_pageCheck is not { } found)
         {
-            body.Children.Add(CenteredNote(_busyProjectId == project.Id ? "The repo is checked once this finishes." : "Checking the repo…"));
+            body.Children.Add(CenteredNote(IsBusyWith(project.Id) ? "The repo is checked once this finishes." : "Checking the repo…"));
             AddOwnBusy(body, project);
             AddPageProblem(body);
             return;
         }
 
         // Getting no answer doesn't mean access was lost, so a PC that's reached this exact repo before can keep working.
+        var check = found.Repo;
         if (!CanWorkIn(project, check))
         {
-            AddRepoProblem(body, project, check);
+            AddRepoProblem(body, project, found);
             return;
         }
 
@@ -79,33 +80,33 @@ public partial class MainWindow
         }
 
         var folder = _database.GetProjectFolder(project.Id);
-        if (_folderExists && _folderProblem is null && !_folderLacksFiles)
+        if (found.FolderExists && found.FolderProblem is null && !found.FolderLacksFiles)
         {
             body.Children.Add(new TextBlock { Text = folder, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = folder });
-            if (_folderPushesTo is { } pushesTo)
+            if (found.FolderPushesTo is { } pushesTo)
             {
                 body.Children.Add(new TextBlock { Text = $"This folder pushes to {pushesTo}, not this project's repo. That's normal for a fork, but check that it's what you want.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
             }
-            if (_folderEngine is { } found && found != project.Engine)
+            if (found.FolderEngine is { } engine && engine != project.Engine)
             {
-                body.Children.Add(new TextBlock { Text = $"This folder looks like a {found} project, but this project is set to {project.Engine}. You can change that in project settings.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
+                body.Children.Add(new TextBlock { Text = $"This folder looks like a {engine} project, but this project is set to {project.Engine}. You can change that in project settings.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
             }
-            if (_folderMayNotMatch)
+            if (found.FolderMayNotMatch)
             {
                 body.Children.Add(new TextBlock { Text = "This folder doesn't have the repo's latest commits. It may just be behind, but it may not be the same project, so check before pushing.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
             }
-            if (_busyProjectId != project.Id && _shownDownloadState.Held)
+            if (!IsBusyWith(project.Id) && _shownDownloadState.Held)
             {
                 body.Children.Add(new TextBlock { Text = "Another window of the app is finishing this folder's download.", Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
             }
-            else if (_busyProjectId != project.Id && _shownDownloadState.Unfinished)
+            else if (!IsBusyWith(project.Id) && _shownDownloadState.Unfinished)
             {
                 body.Children.Add(new TextBlock { Text = "This folder's download never finished, so some of its files or submodules may be missing, or be small placeholders. Finishing picks up where it left off.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
-                if (_settingsToAllow is not null || _finishSettingsToAllow is not null)
+                if (found.SettingsToAllow is not null || _finishSettingsToAllow is not null)
                 {
                     // Finishing runs Git in the folder, so these have to be looked at first.
                     var rows = new List<FrameworkElement>();
-                    AddFolderSettingsRow(rows, project, folder!);
+                    AddFolderSettingsRow(rows, project, folder!, found);
                     AddFinishSettingsRow(rows, project, folder!);
                     var allow = Card(rows.ToArray());
                     allow.Margin = new Thickness(0, 8, 0, 0);
@@ -116,10 +117,10 @@ public partial class MainWindow
                     var finish = ActionButton("Finish the download");
                     finish.HorizontalAlignment = HorizontalAlignment.Left;
                     finish.Margin = new Thickness(0, 8, 0, 0);
-                    finish.IsEnabled = _busyProjectId is null;
+                    finish.IsEnabled = !IsBusy;
                     finish.Click += async (_, _) => await FinishDownloadAsync(project, folder!);
                     body.Children.Add(finish);
-                    if (_busyProjectId is { } busyId)
+                    if (_job?.ProjectId is { } busyId)
                     {
                         body.Children.Add(new TextBlock { Text = $"{FindProject(busyId)?.Name ?? "Another project"} is busy. This will be available when it finishes.", FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
                     }
@@ -135,7 +136,7 @@ public partial class MainWindow
                 });
                 sorted.HorizontalAlignment = HorizontalAlignment.Left;
                 sorted.Margin = new Thickness(0, 8, 0, 0);
-                sorted.IsEnabled = _busyProjectId is null;
+                sorted.IsEnabled = !IsBusy;
                 body.Children.Add(sorted);
             }
             body.Children.Add(CenteredNote("Nothing here yet."));
@@ -144,7 +145,7 @@ public partial class MainWindow
             return;
         }
 
-        AddGetProjectOptions(body, project, folder);
+        AddGetProjectOptions(body, project, folder, found);
     }
 
     private TextBlock CenteredNote(string text) => new()
@@ -211,11 +212,12 @@ public partial class MainWindow
         return button;
     }
 
-    private void AddRepoProblem(StackPanel body, Project project, RepoCheck check)
+    private void AddRepoProblem(StackPanel body, Project project, PageCheck found)
     {
+        var check = found.Repo;
         var actions = new List<FrameworkElement>();
         var (heading, description) = check.Describe();
-        var busy = _busyProjectId is not null;
+        var busy = IsBusy;
 
         if (check.Access == RepoAccess.SignedOut)
         {
@@ -268,7 +270,7 @@ public partial class MainWindow
         if (canReplace && _confirmingNewRepo)
         {
             var confirm = new Button { Style = (Style)FindResource("PrimaryButton"), Content = "Yes, create it", IsEnabled = !busy };
-            confirm.Click += async (_, _) => await EndBusyIfDatabaseFailsAsync(project.Id, () => CreateReplacementRepoAsync(project, check));
+            confirm.Click += async (_, _) => await CreateReplacementRepoAsync(project, check);
             var cancel = ActionButton("Cancel");
             cancel.IsEnabled = !busy;
             cancel.Click += (_, _) =>
@@ -314,22 +316,22 @@ public partial class MainWindow
         body.Children.Add(buttons);
 
         // A copy on this PC may reach the repo in a way the URL alone doesn't, such as its own SSH setup.
-        if (check.Access is RepoAccess.GitCantReach or RepoAccess.GitReadOnly || check.Access == RepoAccess.GitOffline && _settingsToAllow is { ChangesConnection: true })
+        if (check.Access is RepoAccess.GitCantReach or RepoAccess.GitReadOnly || check.Access == RepoAccess.GitOffline && found.SettingsToAllow is { ChangesConnection: true })
         {
             var rows = new List<FrameworkElement>();
             var linked = _database.GetProjectFolder(project.Id);
-            if (linked is not null) AddFolderSettingsRow(rows, project, linked);
+            if (linked is not null) AddFolderSettingsRow(rows, project, linked, found);
 
-            if (linked is not null && _folderExists && _folderProblem is not null && GitTools.ConnectingCanFix(_folderProblem))
+            if (linked is not null && found.FolderExists && found.FolderProblem is not null && GitTools.ConnectingCanFix(found.FolderProblem))
             {
                 // The project moved repos elsewhere, and this PC may only get in the way this folder does.
-                var connect = TwoClickAction("Connect it", () => EndBusyIfDatabaseFailsAsync(project.Id, () => PointFolderAtRepoAsync(project, linked)));
+                var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linked));
                 connect.IsEnabled = !busy;
                 rows.Add(Row("Keep using this folder", "If the project moved repos, this points the folder's remote at the new one, the same way it connects now. Its files don't change.", connect));
             }
-            else if (linked is not null && _folderExists)
+            else if (linked is not null && found.FolderExists)
             {
-                var repair = TwoClickAction("Repair it", () => EndBusyIfDatabaseFailsAsync(project.Id, () => RepairRemoteAsync(project, linked)));
+                var repair = TwoClickAction("Repair it", () => RepairRemoteAsync(project, linked));
                 repair.IsEnabled = !busy;
                 rows.Add(Row("Repair this folder's connection", "Switches it between HTTPS and SSH, whichever works from this PC.", repair));
             }
@@ -344,9 +346,9 @@ public partial class MainWindow
 
     private void AddBusyAndProblem(StackPanel body, Project project)
     {
-        if (_busyProjectId is not null && _busyProjectId != project.Id)
+        if (_job is { } job && job.ProjectId != project.Id)
         {
-            var other = FindProject(_busyProjectId)?.Name ?? "Another project";
+            var other = FindProject(job.ProjectId)?.Name ?? "Another project";
             body.Children.Add(new TextBlock { Text = $"{other} is busy. These will be available when it finishes.", FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 10, 0, 0), TextWrapping = TextWrapping.Wrap });
         }
 
@@ -357,18 +359,18 @@ public partial class MainWindow
     // On every page state, because Cancel for a clone has to stay within reach.
     private void AddOwnBusy(StackPanel body, Project project)
     {
-        if (_busyProjectId != project.Id || _busyText is null) return;
+        if (_job is not { } job || job.ProjectId != project.Id) return;
 
-        _busyLabel = new TextBlock { Text = _busyText, FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 10, 0, 0) };
+        _busyLabel = new TextBlock { Text = job.Text, FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(16, 10, 0, 0) };
         body.Children.Add(_busyLabel);
-        if (_cloneCancel is not { } clone) return;
+        if (job.Cancel is not { } clone) return;
 
         var stop = ActionButton("Cancel");
         stop.HorizontalAlignment = HorizontalAlignment.Left;
         stop.Margin = new Thickness(16, 8, 0, 0);
         stop.Click += (_, _) =>
         {
-            if (_cloneCancel == clone) clone.Cancel();
+            if (job.Cancel == clone) clone.Cancel();
         };
         body.Children.Add(stop);
     }
@@ -403,9 +405,9 @@ public partial class MainWindow
         return Row("Repo name", "GitHub needs Latin letters and numbers. Anything else becomes a dash.", name);
     }
 
-    private void AddFolderSettingsRow(List<FrameworkElement> rows, Project project, string folder)
+    private void AddFolderSettingsRow(List<FrameworkElement> rows, Project project, string folder, PageCheck found)
     {
-        if (_settingsToAllow is not { } settings) return;
+        if (found.SettingsToAllow is not { } settings) return;
         if (!settings.CanBeApproved)
         {
             rows.Add(Row("This folder's own Git settings can't be used", "There are too many of them to show here, and they can only be allowed once you've been able to read them all. Cut them down, or use another copy."));
@@ -413,7 +415,7 @@ public partial class MainWindow
         }
 
         var allow = TwoClickAction("Allow", () => AllowFolderSettingsAsync(project, folder, settings.Fingerprint));
-        allow.IsEnabled = _busyProjectId is null;
+        allow.IsEnabled = !IsBusy;
         rows.Add(Row("Use this folder's own Git settings", $"They can run programs or send your login somewhere else, so only allow them if you trust where this folder came from: {settings.Shown}", allow));
     }
 
@@ -432,13 +434,13 @@ public partial class MainWindow
             _finishSettingsToAllow = null;
             await FinishDownloadAsync(project, folder);
         });
-        allow.IsEnabled = _busyProjectId is null;
+        allow.IsEnabled = !IsBusy;
         rows.Add(Row("Finishing would use this folder's own Git settings", $"They can run programs, so only allow them if you trust where this folder came from: {settings.Shown}", allow));
     }
 
-    private void AddGetProjectOptions(StackPanel body, Project project, string? linkedFolder)
+    private void AddGetProjectOptions(StackPanel body, Project project, string? linkedFolder, PageCheck found)
     {
-        var busy = _busyProjectId is not null;
+        var busy = IsBusy;
         var select = SelectFolderButton(project);
         var clone = ActionButton("Clone");
         clone.IsEnabled = !busy;
@@ -456,26 +458,21 @@ public partial class MainWindow
 
             // An empty folder is where the project goes, not a place to put another folder in.
             // Busy while that's looked at, because a slow drive leaves time for a second click.
-            if (_busyProjectId is not null) return;
             var chosen = Path.TrimEndingDirectorySeparator(parentFolder);
             var aboveIt = Path.GetDirectoryName(chosen);
+            if (StartJob(latest, "Checking that folder…") is not { } job) return;
             bool intoIt;
-            try
+            using (job)
             {
-                StartBusy(latest, "Checking that folder…");
                 intoIt = aboveIt is not null && await GitTools.FolderIsEmptyAsync(chosen) && !await GitTools.FolderIsLinkAsync(chosen);
-            }
-            finally
-            {
-                EndBusy();
             }
             await (intoIt ? CloneProjectAsync(latest, aboveIt!, chosen) : CloneProjectAsync(latest, parentFolder));
         };
 
-        var (heading, description) = (linkedFolder, _folderProblem, _folderExists) switch
+        var (heading, description) = (linkedFolder, found.FolderProblem, found.FolderExists) switch
         {
-            _ when _folderLacksFiles => ("This folder doesn't have the repo's files yet", $"It's at {linkedFolder} and connected to the repo, but it has no commits, and the repo does. Pull them yourself and try again, or clone a fresh copy."),
-            (_, not null, _) => ("This project's folder doesn't match its repo", $"It's at {linkedFolder}. {_folderProblem}"),
+            _ when found.FolderLacksFiles => ("This folder doesn't have the repo's files yet", $"It's at {linkedFolder} and connected to the repo, but it has no commits, and the repo does. Pull them yourself and try again, or clone a fresh copy."),
+            (_, not null, _) => ("This project's folder doesn't match its repo", $"It's at {linkedFolder}. {found.FolderProblem}"),
             (null, _, _) => ("This project isn't on this PC yet", "Get a copy from its repo, or point to one you already have."),
             _ => ("This project's folder is missing", $"It was at {linkedFolder}."),
         };
@@ -485,15 +482,15 @@ public partial class MainWindow
         var rows = new List<FrameworkElement>();
 
         // Its SSH settings have to run before it can be told whether this is even the right repo.
-        if (linkedFolder is not null && _folderProblem?.StartsWith(GitTools.CantTellSshSettings, StringComparison.Ordinal) == true)
+        if (linkedFolder is not null && found.FolderProblem?.StartsWith(GitTools.CantTellSshSettings, StringComparison.Ordinal) == true)
         {
-            AddFolderSettingsRow(rows, project, linkedFolder);
+            AddFolderSettingsRow(rows, project, linkedFolder, found);
         }
 
-        if (linkedFolder is not null && _folderExists && _folderProblem is not null && GitTools.ConnectingCanFix(_folderProblem))
+        if (linkedFolder is not null && found.FolderExists && found.FolderProblem is not null && GitTools.ConnectingCanFix(found.FolderProblem))
         {
             // The project may have moved to a new repo on another PC, with this copy's work unpushed.
-            var connect = TwoClickAction("Connect it", () => EndBusyIfDatabaseFailsAsync(project.Id, () => PointFolderAtRepoAsync(project, linkedFolder)));
+            var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linkedFolder));
             connect.IsEnabled = !busy;
             rows.Add(Row("Keep using this folder", "If the project moved repos, this points the folder's remote at the new one. Its files don't change.", connect));
         }
