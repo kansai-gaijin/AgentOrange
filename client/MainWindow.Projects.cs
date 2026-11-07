@@ -561,7 +561,7 @@ public partial class MainWindow
         _renamedRepoHeldBy = renamedHeldBy;
         _folderPushesTo = pushesTo;
         RenderProject(latest);
-        if (folderShown && usable) await ReadEngineVersionAsync(latest.Id);
+        if (folderShown && usable) await ReadEngineVersionAsync(latest.Id, new FolderAnswer(folder!, project.RepoUrl, folderProblem));
     }
 
     // A project on this PC may have moved to a newer engine since it was last opened. This never
@@ -576,7 +576,7 @@ public partial class MainWindow
     // The version comes from the project's own files, and syncs so that PCs without a copy
     // can show it too. A project whose files don't say keeps what was last found, and a
     // folder that's really some other repo has nothing to say about this project.
-    private async Task ReadEngineVersionAsync(string projectId)
+    private async Task ReadEngineVersionAsync(string projectId, FolderAnswer? pageAnswer = null)
     {
         // Its long job is working in its folder, so it's read once that's done.
         if (_busyProjectId == projectId)
@@ -591,7 +591,12 @@ public partial class MainWindow
         // A slow read of the old folder mustn't land on top of a newer one's answer.
         var read = _engineReads[projectId] = _engineReads.GetValueOrDefault(projectId) + 1;
 
-        if (await GitTools.FolderProblemAsync(folder, project.RepoUrl) is { } problem)
+        // A page's check has just asked this, which can take a few calls to GitHub. It only speaks for
+        // the folder and repo it asked about, which can have changed since.
+        var problem = pageAnswer is { } answer && answer.Folder == folder && GitTools.SameRepo(answer.RepoUrl, project.RepoUrl)
+            ? answer.Problem
+            : await GitTools.FolderProblemAsync(folder, project.RepoUrl);
+        if (problem is not null)
         {
             // Seen to be on another repo, so what it found earlier can't speak for this project now.
             // Anything else, such as an unplugged drive, says nothing about that.
@@ -611,6 +616,8 @@ public partial class MainWindow
         _ = _sync.SyncNowAsync();
         RefreshProjects();
     }
+
+    private sealed record FolderAnswer(string Folder, string RepoUrl, string? Problem);
 
     private Project? FindProject(string id) => _database.ListProjects().FirstOrDefault(project => project.Id == id);
 
