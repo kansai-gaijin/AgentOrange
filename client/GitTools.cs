@@ -303,7 +303,7 @@ public static partial class GitTools
         if (state.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
         if (!SameRepo(state.OriginToCompare!, repoUrl))
         {
-            var (renamed, moveProblem, originAnswered) = await MoveIfRepoRenamedAsync(folder, state, repoUrl);
+            var (renamed, moveProblem, originAnswered, originNow) = await MoveIfRepoRenamedAsync(folder, state, repoUrl);
             if (moveProblem is not null) return moveProblem;
             if (renamed)
             {
@@ -312,15 +312,15 @@ public static partial class GitTools
                 if (state?.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
             }
 
-            // The project can be the one with the old name, and it moves on when it's next opened.
+            // The project can be on an old name too, and it moves on when it's next opened, and the folder with it.
             else
             {
                 var (current, answered) = await CurrentRepoUrlAsync(repoUrl);
-                if (!SameRepo(current, state.OriginToCompare!))
+                if (!SameRepo(current, state.OriginToCompare!) && !(answered && originAnswered && SameRepo(current, originNow)))
                 {
                     return answered && originAnswered
                         ? $"That folder uses a different repo: {state.Origin}"
-                        : $"{MayUseDifferentRepo}{state.Origin}. GitHub can't be reached to check whether that's this repo under an older name.";
+                        : $"{MayUseDifferentRepo}{state.Origin}. {NoAnswerAboutOlderName}";
                 }
             }
         }
@@ -334,14 +334,17 @@ public static partial class GitTools
     /// running anything from the folder, so its remote just moves to the new name, the way it
     /// connects now. Moved is false if it isn't the same repo, and Problem says why one that is couldn't be moved.
     /// </summary>
-    public static async Task<(bool Moved, string? Problem, bool OriginAnswered)> MoveIfRepoRenamedAsync(string folder, FolderRepo state, string repoUrl)
+    public static async Task<(bool Moved, string? Problem, bool OriginAnswered, string OriginNow)> MoveIfRepoRenamedAsync(string folder, FolderRepo state, string repoUrl)
     {
-        if (state.Origin is null) return (false, null, true);
+        if (state.Origin is null) return (false, null, true, "");
         var (current, answered) = await CurrentRepoUrlAsync(state.OriginToCompare!);
-        if (!answered || SameRepo(current, state.OriginToCompare!) || !SameRepo(current, repoUrl)) return (false, null, answered);
+        if (!answered || SameRepo(current, state.OriginToCompare!) || !SameRepo(current, repoUrl)) return (false, null, answered, current);
         var problem = await MoveOriginAsync(folder, SameWayTo(state.Origin, repoUrl), state.OriginToCompare!);
-        return (problem is null, problem, true);
+        return (problem is null, problem, true, current);
     }
+
+    /// <summary>Said when a folder may be on an old name of the repo, and GitHub didn't say.</summary>
+    public const string NoAnswerAboutOlderName = "GitHub didn't answer, so it can't be checked whether that's this repo under an older name.";
 
     /// <summary>
     /// Settings in a folder that make Git run a program or send a login somewhere else when it

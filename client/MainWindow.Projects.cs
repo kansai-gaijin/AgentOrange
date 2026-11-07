@@ -500,7 +500,7 @@ public partial class MainWindow
             {
                 _database.ReleaseRepo(renamed!);
             }
-            if (check.Access == RepoAccess.Allowed || wasVerified) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(renamed!));
+            if (check.Access == RepoAccess.Allowed || (wasVerified && !check.IsDenied)) _database.SetSetting(VerifiedSetting(project.Id), GitTools.RepoKey(renamed!));
             if (wasCreatedHere) _database.SetSetting(CreatedHereSetting(project.Id), GitTools.RepoKey(renamed!));
 
             // Asked again, as the check above skips the folder for some answers, and one on any other repo stays as it is.

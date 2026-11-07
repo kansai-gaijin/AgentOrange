@@ -446,7 +446,7 @@ public partial class NewProjectWizard : UserControl
 
         if (state.Origin is not null && !GitTools.SameRepo(state.OriginToCompare!, url))
         {
-            var (moved, moveProblem, _) = await GitTools.MoveIfRepoRenamedAsync(project.Folder, state, url);
+            var (moved, moveProblem, originAnswered, _) = await GitTools.MoveIfRepoRenamedAsync(project.Folder, state, url);
             if (moveProblem is not null) return ("", false, moveProblem);
             if (moved)
             {
@@ -457,7 +457,9 @@ public partial class NewProjectWizard : UserControl
 
             else
             {
-                return ("", false, "That folder is connected to a different repo than that URL.");
+                return ("", false, originAnswered
+                    ? "That folder is connected to a different repo than that URL."
+                    : $"That folder may be connected to a different repo than that URL. {GitTools.NoAnswerAboutOlderName}");
             }
         }
 
