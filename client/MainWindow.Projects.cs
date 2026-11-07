@@ -1848,8 +1848,13 @@ public partial class MainWindow
         MainContent.Effect = null;
         MainContent.IsEnabled = UpdateOverlay.Visibility != Visibility.Visible;
 
-        // The engine or folder may have changed.
-        if (_settingsProjectId is { } changedProject && changedProject != _openProject?.Id) _ = ReadEngineVersionAsync(changedProject);
+        // The engine or folder may have changed. A project whose long job is running is read once
+        // that's done, so the read can't change its remote while the job works in its folder.
+        if (_settingsProjectId is { } changedProject && changedProject != _openProject?.Id)
+        {
+            if (_busyProjectId == changedProject) _recheckAfterBusy = changedProject;
+            else _ = TellIfDatabaseFailsAsync(ReadEngineVersionAsync(changedProject));
+        }
 
         var openId = _openProject?.Id;
         if (openId is null)

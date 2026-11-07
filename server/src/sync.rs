@@ -89,12 +89,14 @@ fn client_is_out_of_date(headers: &HeaderMap) -> bool {
     let parts = |version: &str| -> Option<Vec<u64>> {
         version.split('.').map(|part| part.parse().ok()).collect()
     };
-    headers
-        .get("x-agent-orange-version")
-        .and_then(|value| value.to_str().ok())
-        .and_then(parts)
-        .zip(parts(VERSION))
-        .is_some_and(|(client, server)| client != server)
+    // Dev builds send no version. One that's sent but can't be read isn't this server's.
+    let Some(sent) = headers.get("x-agent-orange-version") else {
+        return false;
+    };
+    let Some(server) = parts(VERSION) else {
+        return false;
+    };
+    sent.to_str().ok().and_then(parts) != Some(server)
 }
 
 /// Saves this device's changes, then returns everything newer than its cursor. The newest edit of

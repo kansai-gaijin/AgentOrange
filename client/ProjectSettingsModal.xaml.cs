@@ -154,6 +154,11 @@ public partial class ProjectSettingsModal : UserControl
         folder.TextChanged += (_, _) => disconnect.Visibility = folder.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         disconnect.Click += (_, _) => QueueWork(() =>
         {
+            if (ProjectIsBusy(projectId))
+            {
+                ReportProblem("This project is busy. Change its folder when that finishes.");
+                return Task.CompletedTask;
+            }
             _database.SetProjectFolder(projectId, "");
             folder.Text = "";
             folder.ToolTip = null;
@@ -389,6 +394,7 @@ public partial class ProjectSettingsModal : UserControl
         var url = GitTools.AsProjectUrl(typed);
         if (url.Length == 0) return "A project needs a repo.";
         if (GitTools.RepoUrlProblem(url) is { } problem) return problem;
+        if (ProjectIsBusy(projectId)) return "This project is busy. Change its repo when that finishes.";
 
         // GitHub still answers to a repo's old names, so the address isn't enough to tell them apart.
         var (currentUrl, holder, underAnotherName) = await GitTools.WhoHasRepoAsync(url, projectId);
@@ -415,6 +421,11 @@ public partial class ProjectSettingsModal : UserControl
 
     private async Task ChooseFolderAsync(string projectId, TextBox field)
     {
+        if (ProjectIsBusy(projectId))
+        {
+            ReportProblem("This project is busy. Change its folder when that finishes.");
+            return;
+        }
         var session = _session;
         var previous = field.Text;
         var startIn = await GitTools.FolderExistsAsync(previous) ? previous : null;

@@ -240,7 +240,7 @@ public static partial class GitTools
 
         // GitHub only blocks a login from something that's there, so this one exists too.
         if (otherIsBlocked is not null) return new RepoCheck(RepoAccess.Restricted, otherIsBlocked);
-        if (inconclusive is not null) return new RepoCheck(LooksLikeNetworkFailure(inconclusive) ? RepoAccess.Offline : RepoAccess.CheckFailed);
+        if (inconclusive is not null) return new RepoCheck(RepoAccess.CheckFailed);
 
         var ownerIsYours = accounts.Contains(parts[1], StringComparer.OrdinalIgnoreCase);
         return new RepoCheck(ownerIsYours ? RepoAccess.NotFound : RepoAccess.NotFoundOrNoAccess, await ActiveAccountAsync());
@@ -2048,8 +2048,10 @@ public static partial class GitTools
             if (viaFolder is { ExitCode: 0 })
             {
                 // A folder that pushes somewhere else gets reported as that, without contacting it.
-                if (await FolderProblemAsync(folder!, url) is not null || await PushAddressElsewhereAsync(folder!, "origin", url) is not null) return new RepoCheck(await TryFormsAsync(url));
-                return new RepoCheck(await GitPushAnswerAsync("origin", folder!) switch
+                // Its access to this repo is still asked, at the repo's own address, reached the way
+                // the folder fetches, as a URL doesn't go by the folder's push addresses.
+                var pushesElsewhere = await FolderProblemAsync(folder!, url) is not null || await PushAddressElsewhereAsync(folder!, "origin", url) is not null;
+                return new RepoCheck(await GitPushAnswerAsync(pushesElsewhere ? SameWayTo(state.Origin!, url) : "origin", folder!) switch
                 {
                     PushAnswer.CanPush => RepoAccess.Allowed,
                     PushAnswer.Refused => RepoAccess.GitReadOnly,
@@ -2117,7 +2119,8 @@ public static partial class GitTools
             }
 
             var where = folder ?? scratch!;
-            List<string> push = folder is null ? ["-c", "push.gpgSign=false"] : ["-c", $"remote.{remote}.mirror=false", "-c", "push.gpgSign=false"];
+            // An address rather than a remote's name has no mirror setting to turn off.
+            List<string> push = folder is null || remote.Contains(':') ? ["-c", "push.gpgSign=false"] : ["-c", $"remote.{remote}.mirror=false", "-c", "push.gpgSign=false"];
             push.AddRange(["push", "--dry-run", "--no-verify", "--", remote, $":refs/heads/agent-orange-check-{Guid.NewGuid():N}"]);
             var result = await RunAsync("git", where, null, push.ToArray(), cancel, await SshSettingsAsync(where));
             if (result is null or { ExitCode: < 0 }) return PushAnswer.CantTell;
