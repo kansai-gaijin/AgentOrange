@@ -1607,11 +1607,16 @@ public partial class MainWindow
             try
             {
                 StartBusy(project, "Checking that folder…");
-                allowedJustNow = await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
-                // Who has it comes first, as checking it can move its remote to the repo's current name.
-                folderProblem = await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other
-                    ? $"{other.Name} already uses that folder, or one that overlaps it. Project folders can't overlap."
-                    : await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
+                // Who has it comes first, as asking about it and checking it can both act on it.
+                if (await _database.ProjectUsingFolderAsync(chosen, project.Id) is { } other)
+                {
+                    folderProblem = $"{other.Name} already uses that folder, or one that overlaps it. Project folders can't overlap.";
+                }
+                else
+                {
+                    allowedJustNow = await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
+                    folderProblem = await GitTools.FolderProblemAsync(chosen, project.RepoUrl);
+                }
                 if (allowedJustNow && folderProblem is not null) GitTools.ForgetAllowedFolderSettings(chosen);
             }
             finally

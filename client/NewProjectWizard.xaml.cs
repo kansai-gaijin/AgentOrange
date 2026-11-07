@@ -257,7 +257,7 @@ public partial class NewProjectWizard : UserControl
             path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)) is { Length: > 3 } tidied ? tidied : Path.GetFullPath(path);
 
             // What was entered is fixed here, and the wizard can't close until this finishes.
-            var typedUrl = repo.Text.Trim();
+            var typedUrl = GitTools.AsProjectUrl(repo.Text);
             var submission = new NewProject(_name, _engine, _gameType, path, typedUrl);
 
             SetWorking(true, "Checking…");

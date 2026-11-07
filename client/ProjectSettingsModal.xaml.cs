@@ -384,8 +384,9 @@ public partial class ProjectSettingsModal : UserControl
 
     // A folder left on the old repo stays linked. Opening the project then offers to connect
     // it, because it may hold work that isn't pushed.
-    private async Task<string?> SaveRepo(string projectId, string url)
+    private async Task<string?> SaveRepo(string projectId, string typed)
     {
+        var url = GitTools.AsProjectUrl(typed);
         if (url.Length == 0) return "A project needs a repo.";
         if (GitTools.RepoUrlProblem(url) is { } problem) return problem;
 
@@ -423,7 +424,7 @@ public partial class ProjectSettingsModal : UserControl
         {
             if (Find(projectId) is not { } current) return;
 
-            var allowedJustNow = await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
+            var allowedJustNow = false;
             string? problem;
             if (await _database.ClaimFolderAsync(chosen, current) is { } other)
             {
@@ -433,6 +434,7 @@ public partial class ProjectSettingsModal : UserControl
             {
                 try
                 {
+                    allowedJustNow = await GitTools.AskAboutUnreadableSshSettingsAsync(chosen);
                     problem = await GitTools.FolderProblemAsync(chosen, current.RepoUrl);
                 }
                 catch

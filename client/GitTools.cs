@@ -124,6 +124,13 @@ public static partial class GitTools
     }
 
     /// <summary>
+    /// GitHub's SSH certificate form, as an organisation that requires it gives its members, says how
+    /// to reach a repo on one PC. What's saved and synced is which repo, so it becomes that.
+    /// </summary>
+    public static string AsProjectUrl(string typed) =>
+        CertificateAddress().Match(typed.Trim()) is { Success: true } certificate ? $"https://github.com/{certificate.Groups[1].Value}" : typed.Trim();
+
+    /// <summary>
     /// Compares repos by host and path, so HTTPS and SSH forms of one repo match. A folder's
     /// remote can be anywhere, but a project's can't, so case only ever matters to a remote
     /// that wasn't going to match anyway.
@@ -341,7 +348,8 @@ public static partial class GitTools
     public static async Task<(bool Moved, string? Problem, bool OriginAnswered, string OriginNow)> MoveIfRepoRenamedAsync(string folder, FolderRepo state, string repoUrl)
     {
         if (state.Origin is null) return (false, null, true, "");
-        var (current, answered) = await CurrentRepoUrlAsync(state.OriginToCompare!);
+        var originName = await CurrentRepoUrlAsync(state.OriginToCompare!);
+        var (current, answered) = (originName.Current, originName.Answered);
         if (!answered || SameRepo(current, state.OriginToCompare!) || !SameRepo(current, repoUrl)) return (false, null, answered, current);
         var problem = await MoveOriginAsync(folder, SameWayTo(state.Origin, repoUrl), state.OriginToCompare!);
         return (problem is null, problem, true, current);
@@ -610,7 +618,8 @@ public static partial class GitTools
         var others = AllProjects().Where(project => project.Id != exceptProjectId).ToList();
         if (others.FirstOrDefault(project => SameRepo(project.RepoUrl, url)) is { } exact) return (url, exact.Name, false);
 
-        var (current, answered) = await CurrentRepoUrlAsync(url);
+        var asked = await CurrentRepoUrlAsync(url);
+        var (current, answered) = (asked.Current, asked.Answered);
         if (others.FirstOrDefault(project => SameRepo(project.RepoUrl, current)) is { } holder) return (current, holder.Name, true);
         if (!answered) return (current, null, false);
 
@@ -1287,7 +1296,11 @@ public static partial class GitTools
             if (SameRepo(form, repoUrl)) continue;
 
             var (pushesNow, pushAnswered) = await RecentRepoUrlAsync(form);
-            projectNow ??= await RecentRepoUrlAsync(repoUrl);
+            if (projectNow is null)
+            {
+                var projectName = await CurrentRepoUrlAsync(repoUrl);
+                projectNow = (projectName.Current, projectName.Answered);
+            }
             if (!(pushAnswered && projectNow.Value.Answered && SameRepo(pushesNow, projectNow.Value.Current))) return address;
         }
         return null;
@@ -1760,14 +1773,15 @@ public static partial class GitTools
     /// </summary>
     public static async Task<string?> RenamedRepoUrlAsync(string url)
     {
-        var (current, _) = await CurrentRepoUrlAsync(url);
+        var current = (await CurrentRepoUrlAsync(url)).Current;
         return SameRepo(current, url) ? null : current;
     }
 
     private static readonly TimeSpan RepoNamesKeptFor = TimeSpan.FromMinutes(10);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Current, DateTimeOffset Asked)> RecentRepoNames = new(StringComparer.OrdinalIgnoreCase);
 
-    // Only for looking through every project, as these have to be worth asking about all at once.
+    // For asking about many at once, every other project or a folder's push addresses, where an
+    // answer a few minutes old will do.
     private static async Task<(string Current, bool Answered)> RecentRepoUrlAsync(string url)
     {
         if (RecentRepoNames.TryGetValue(url, out var known) && DateTimeOffset.UtcNow - known.Asked < RepoNamesKeptFor) return (known.Current, true);
@@ -1780,10 +1794,7 @@ public static partial class GitTools
     // The address itself if it hasn't moved, or that can't be told. Answered says GitHub really
     // answered, with a name or by saying the repo's gone, and anything else isn't kept or relied on.
     // Found says GitHub gave a name, which a repo that's gone, or one this account can't see, doesn't get.
-    private readonly record struct RepoAnswer(string Current, bool Answered, bool Found)
-    {
-        public void Deconstruct(out string current, out bool answered) => (current, answered) = (Current, Answered);
-    }
+    private readonly record struct RepoAnswer(string Current, bool Answered, bool Found);
 
     private static async Task<RepoAnswer> CurrentRepoUrlAsync(string url)
     {
@@ -2343,6 +2354,9 @@ public static partial class GitTools
 
     [GeneratedRegex(@"^org-\d+\z")]
     private static partial Regex CertificateUser();
+
+    [GeneratedRegex(@"^(?:ssh://)?org-\d+@(?:ssh\.)?github\.com(?::\d+)?[:/]([A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9._-]+?)/?\z", RegexOptions.IgnoreCase)]
+    private static partial Regex CertificateAddress();
 
     [GeneratedRegex(@"^git@github\.com:[A-Za-z0-9][A-Za-z0-9_-]*/(?!(\.{1,2}|\.git)/?\z)[A-Za-z0-9._-]+/?\z", RegexOptions.IgnoreCase)]
     private static partial Regex GitHubScpRepo();

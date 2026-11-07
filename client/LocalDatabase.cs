@@ -288,10 +288,10 @@ public sealed class LocalDatabase
 
         var release = 0;
         if (parts.Groups[3].Success && !int.TryParse(parts.Groups[3].Value, out release)) return null;
-        return (version, parts.Groups[2].Value switch { "a" => 0, "b" => 1, "p" => 3, _ => 2 }, release);
+        return (version, parts.Groups[2].Value switch { "x" => -1, "a" => 0, "b" => 1, "p" => 3, _ => 2 }, release);
     }
 
-    private static readonly Regex VersionParts = new(@"^(\d+(?:\.\d+){0,3})(?:([abfp])(\d+)(?:c\d+)?)?$", RegexOptions.CultureInvariant);
+    private static readonly Regex VersionParts = new(@"^(\d+(?:\.\d+){0,3})(?:([xabfp])(\d+)(?:c\d+)?)?$", RegexOptions.CultureInvariant);
 
     private static Dictionary<string, EngineRecord> ReadEnginesHere(SqliteConnection connection)
     {

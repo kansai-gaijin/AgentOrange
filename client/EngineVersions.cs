@@ -120,7 +120,7 @@ public static partial class EngineVersions
         };
     }
 
-    [GeneratedRegex(@"^m_EditorVersion:\s*(\d+\.\d+(?:\.\d+)?(?:[abfp]\d+(?:c\d+)?)?)\s*$", RegexOptions.Multiline)]
+    [GeneratedRegex(@"^m_EditorVersion:\s*(\d+\.\d+(?:\.\d+)?(?:[xabfp]\d+(?:c\d+)?)?)\s*$", RegexOptions.Multiline)]
     private static partial Regex UnityVersion();
 
     [GeneratedRegex(@"^\d+(\.\d+){0,3}$")]
