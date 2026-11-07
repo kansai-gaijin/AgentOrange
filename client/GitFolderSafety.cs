@@ -399,9 +399,10 @@ internal static partial class GitFolderSafety
         path.Length >= 2 && path[0] is '\\' or '/' && path[1] is '\\' or '/';
 
     // Most settings aren't paths at all, and "Z: Team" isn't one just because there's a Z drive.
+    // A value shaped like a share that this can't read is still refused.
     private static bool NamesAnotherShare(string chosen, string value)
     {
-        if (!StartsLikeShare(value) && !DrivePath().IsMatch(value)) return false;
+        if (!ShareShape().IsMatch(value) && !DrivePath().IsMatch(value)) return false;
         try
         {
             return OnAnotherShare(chosen, value);
@@ -418,6 +419,10 @@ internal static partial class GitFolderSafety
         var root = Path.GetPathRoot(path);
         return !string.IsNullOrEmpty(root) && new DriveInfo(root).DriveType == DriveType.Network;
     }
+
+    // What "//" alone isn't, as a comment character or the start of a description can be just that.
+    [GeneratedRegex(@"^[\\/]{2}[^\\/\s]+[\\/][^\\/\s]")]
+    private static partial Regex ShareShape();
 
     [GeneratedRegex(@"^/([A-Za-z])/(.*)$", RegexOptions.Singleline)]
     private static partial Regex BashDrivePath();

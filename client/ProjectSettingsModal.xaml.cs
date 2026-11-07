@@ -527,6 +527,10 @@ public partial class ProjectSettingsModal : UserControl
                 if (value == _saved[field])
                 {
                     if (_invalidFields.Remove(field)) ClearGeneralProblem();
+                    if (Current() is { } latest)
+                    {
+                        foreach (var refresh in _refreshes) refresh(latest);
+                    }
                     return;
                 }
 

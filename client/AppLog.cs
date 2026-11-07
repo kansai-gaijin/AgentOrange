@@ -1,4 +1,5 @@
 using System.IO;
+using System.Security.AccessControl;
 using System.Text;
 
 namespace AgentOrange;
@@ -39,7 +40,7 @@ public static class AppLog
         if (_file is null) return;
         try
         {
-            using var log = new FileStream(_file, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+            using var log = new FileInfo(_file).Create(FileMode.Append, FileSystemRights.AppendData, FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.None, null);
             log.Write(Encoding.UTF8.GetBytes($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss} {message}{Environment.NewLine}"));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)

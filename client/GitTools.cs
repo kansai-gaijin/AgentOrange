@@ -107,7 +107,7 @@ public static partial class GitTools
         if (GitHubScpRepo().IsMatch(url)) return null;
 
         const string notGitHub = "Enter a GitHub repo URL, like https://github.com/you/game.git.";
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
+        if (url.Contains('\\') || !Uri.TryCreate(url, UriKind.Absolute, out var uri)
             || uri.Scheme is not ("https" or "ssh")
             || !uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
             || !uri.IsDefaultPort
@@ -308,6 +308,7 @@ public static partial class GitTools
             if (renamed)
             {
                 state = await InspectFolderAsync(folder);
+                if (state?.Problem is { } unreadable) return unreadable;
                 if (state?.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
             }
 
@@ -2083,6 +2084,7 @@ public static partial class GitTools
         EnvironmentVariableTarget[] targets = [EnvironmentVariableTarget.Process, EnvironmentVariableTarget.Machine, EnvironmentVariableTarget.User];
         var folders = targets
             .SelectMany(target => (Environment.GetEnvironmentVariable("PATH", target) ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            .Select(folder => folder.Trim().Trim('"')) // A terminal copes with these, so they count here too.
             .Where(Path.IsPathFullyQualified) // Others mean whatever folder something runs in.
             .Distinct(StringComparer.OrdinalIgnoreCase);
         return string.Join(Path.PathSeparator, folders);
@@ -2095,9 +2097,7 @@ public static partial class GitTools
         var fileName = $"{program}.exe";
         foreach (var folder in CurrentPath().Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
         {
-            var trimmed = folder.Trim().Trim('"');
-            if (!Path.IsPathFullyQualified(trimmed)) continue;
-            var candidate = Path.Combine(trimmed, fileName);
+            var candidate = Path.Combine(folder, fileName);
             if (File.Exists(candidate)) return candidate;
         }
         return null;
