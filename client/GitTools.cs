@@ -1479,9 +1479,14 @@ public static partial class GitTools
     {
         try
         {
-            var hold = new Mutex(false, DownloadHoldName(folder), out var isFirst);
-            if (isFirst) return hold;
-            hold.Dispose();
+            // Another window's look at it lasts a moment, and a real hold doesn't.
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                if (attempt > 0) Thread.Sleep(100);
+                var hold = new Mutex(false, DownloadHoldName(folder), out var isFirst);
+                if (isFirst) return hold;
+                hold.Dispose();
+            }
             return null;
         }
         catch (UnauthorizedAccessException)

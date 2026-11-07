@@ -108,6 +108,7 @@ public partial class MainWindow : Window
             {
                 // Another window can pair or sign out at the same address, which changes nothing here otherwise.
                 ShowServerState();
+                if (Settings.Visibility == Visibility.Visible) Settings.RefreshServerPage();
 
                 var latest = _database.RecordsSignature();
                 if (latest != knownRecords || wasLost)
@@ -228,6 +229,7 @@ public partial class MainWindow : Window
     {
         MainContent.IsEnabled = false;
         MainContent.Effect = new BlurEffect { Radius = 8 };
+        Settings.RefreshServerPage();
         Settings.Visibility = Visibility.Visible;
         Settings.Focus();
     }

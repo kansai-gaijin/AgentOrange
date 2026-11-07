@@ -42,11 +42,11 @@ public static class ProjectImages
                 if (fit < 1) decodeWidth = (int)Math.Ceiling(frame.PixelWidth * fit);
             }
 
+            using var picture = File.OpenRead(path);
             var source = new BitmapImage();
             source.BeginInit();
             source.CacheOption = BitmapCacheOption.OnLoad;
-            source.CreateOptions = BitmapCreateOptions.IgnoreImageCache; // The same file may have been edited since it was last chosen.
-            source.UriSource = new Uri(path);
+            source.StreamSource = picture;
             source.DecodePixelWidth = decodeWidth;
             source.EndInit();
             source.Freeze();

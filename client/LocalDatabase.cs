@@ -67,7 +67,7 @@ public sealed class LocalDatabase
         SqliteConnection.ClearAllPools(); // The failed attempt can still be holding the file.
         var kept = $"{databasePath}.damaged-{DateTimeOffset.Now:yyyyMMdd-HHmmss}";
         File.Move(databasePath, kept);
-        foreach (var part in new[] { "-wal", "-shm" })
+        foreach (var part in new[] { "-journal", "-wal", "-shm" })
         {
             if (File.Exists(databasePath + part)) File.Move(databasePath + part, kept + part);
         }

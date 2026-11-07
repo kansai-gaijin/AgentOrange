@@ -141,6 +141,9 @@ public partial class SettingsModal : UserControl
         }
     }
 
+    /// <summary>The server page's counts can change without anything here hearing about it, such as from another window.</summary>
+    public void RefreshServerPage() => _refreshServerPage?.Invoke();
+
     /// <summary>Shows the first page. Call once everything the pages need has been set.</summary>
     public void Start() => _navItems["General"].IsChecked = true;
 
