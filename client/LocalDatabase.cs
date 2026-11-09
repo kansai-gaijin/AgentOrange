@@ -46,7 +46,7 @@ public sealed class LocalDatabase
     private const string ProjectOrderRecord = "project_order";
     private const string UnknownChoice = "Other";
 
-    private sealed record ProjectData(string Name, DateTimeOffset CreatedAt, string? Engine = null, string? RepoUrl = null, string? EngineVersion = null, string? GameType = null);
+    private sealed record ProjectData(string Name, DateTimeOffset CreatedAt, string? Engine = null, string? RepoUrl = null, string? GameType = null);
 
     // Its own record, because PCs read this by themselves, with no one editing anything. If it
     // were part of the project, a PC with an old copy would republish all of it. It names its
@@ -126,7 +126,6 @@ public sealed class LocalDatabase
             CREATE TRIGGER IF NOT EXISTS records_changed AFTER UPDATE ON records BEGIN UPDATE revisions SET value = value + 1 WHERE name = 'records'; END;
             CREATE TRIGGER IF NOT EXISTS records_removed AFTER DELETE ON records BEGIN UPDATE revisions SET value = value + 1 WHERE name = 'records'; END;
             """);
-        MoveOldProjectsTable(connection);
         MoveFolderKeys(connection);
     }
 
@@ -195,8 +194,8 @@ public sealed class LocalDatabase
 
             // What this PC's own copy says comes first, as other PCs can be on other branches.
             var version = enginesHere.TryGetValue(id, out var here) && here.Engine == engine ? here.Version
-                : engines.TryGetValue(id, out var found) ? (found.Engine == engine ? found.Version : "")
-                : data.EngineVersion ?? "";
+                : engines.TryGetValue(id, out var found) && found.Engine == engine ? found.Version
+                : "";
 
             projects.Add(new Project(
                 id,
@@ -219,7 +218,7 @@ public sealed class LocalDatabase
     public string CreateProject(string name, string engine, string gameType, string repoUrl)
     {
         var id = Guid.NewGuid().ToString();
-        var data = new ProjectData(name, DateTimeOffset.UtcNow, engine, repoUrl, null, gameType);
+        var data = new ProjectData(name, DateTimeOffset.UtcNow, engine, repoUrl, gameType);
         SaveRecord(ProjectsCollection, id, JsonSerializer.Serialize(data, JsonOptions));
         return id;
     }
@@ -1121,28 +1120,6 @@ public sealed class LocalDatabase
         command.Parameters.AddWithValue("$key", key);
         command.Parameters.AddWithValue("$value", value);
         command.ExecuteNonQuery();
-    }
-
-    // Projects used to have a table of their own.
-    private static void MoveOldProjectsTable(SqliteConnection connection)
-    {
-        using var check = connection.CreateCommand();
-        check.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'projects'";
-        if (check.ExecuteScalar() is null) return;
-
-        using var transaction = connection.BeginTransaction();
-        using (var read = connection.CreateCommand())
-        {
-            read.CommandText = "SELECT id, name, created_at FROM projects";
-            using var reader = read.ExecuteReader();
-            while (reader.Read())
-            {
-                var data = new ProjectData(reader.GetString(1), DateTimeOffset.Parse(reader.GetString(2)));
-                Upsert(connection, "records", new SyncChange(ProjectsCollection, reader.GetString(0), JsonSerializer.Serialize(data, JsonOptions), false));
-            }
-        }
-        Execute(connection, "DROP TABLE projects");
-        transaction.Commit();
     }
 
     private static void Upsert(SqliteConnection connection, string table, SyncChange change)

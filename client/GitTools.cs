@@ -495,7 +495,7 @@ public static partial class GitTools
     [GeneratedRegex(@"SAML|not accessible by|IP allow|allow list|is not permitted", RegexOptions.IgnoreCase)]
     private static partial Regex AccessBlocked();
 
-    [GeneratedRegex(@"^\.(ao-[0-9a-f]{8}|.+\.cloning-[0-9a-f]{32})\z")]
+    [GeneratedRegex(@"^\.ao-[0-9a-f]{8}\z")]
     private static partial Regex CloneWorkingFolderName();
 
     [GeneratedRegex(@"HTTP 401|gh auth login|not logged in", RegexOptions.IgnoreCase)]
