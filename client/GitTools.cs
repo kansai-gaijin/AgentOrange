@@ -267,8 +267,31 @@ public static partial class GitTools
     private static Task<CommandResult?> RunAsync(string program, string folder, params string[] arguments) =>
         RunAsync(program, folder, null, arguments);
 
-    // Checks have a time limit. A clone can take as long as it needs, and stops only when cancelled.
+    // Set once the person's own Git login has failed on GitHub and the GitHub CLI's has worked, so
+    // the rest of this run goes straight to the one that works.
+    private static bool _gitHubCliLoginNeeded;
+
+    // Projects need the GitHub CLI anyway, so its login backs up whatever Git has of its own. The
+    // person's own helpers go first. Only if they fail is Git run again with the GitHub CLI's as
+    // its only helper, because Git asks every helper to save a login that worked, and theirs would
+    // otherwise keep a copy of the CLI's, which could then outlive switching account.
     private static async Task<CommandResult?> RunAsync(string program, string folder, string? gitHubToken, string[] arguments, CancellationToken cancel = default, Dictionary<string, string>? extraSettings = null, Action<string>? statusLine = null)
+    {
+        var useCliLogin = program == "git" && _gitHubCliLoginNeeded && !arguments.Any(CarriesLogin);
+        var result = await RunOnceAsync(program, folder, gitHubToken, arguments, cancel, extraSettings, statusLine, useCliLogin);
+        if (program != "git" || useCliLogin || arguments.Any(CarriesLogin) || result is not { ExitCode: not 0 } failed || !HttpsLoginFailed().IsMatch(failed.Errors) || cancel.IsCancellationRequested) return result;
+
+        var again = await RunOnceAsync(program, folder, gitHubToken, arguments, cancel, extraSettings, statusLine, useCliLogin: true);
+        if (again is { ExitCode: 0 }) _gitHubCliLoginNeeded = true;
+        return again ?? result;
+    }
+
+    // An address with a login in it, a name and token before the host.
+    private static bool CarriesLogin(string argument) =>
+        Uri.TryCreate(argument, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http" && uri.UserInfo.Length > 0;
+
+    // Checks have a time limit. A clone can take as long as it needs, and stops only when cancelled.
+    private static async Task<CommandResult?> RunOnceAsync(string program, string folder, string? gitHubToken, string[] arguments, CancellationToken cancel, Dictionary<string, string>? extraSettings, Action<string>? statusLine, bool useCliLogin)
     {
 #if DEBUG
         // Trying something out must never leave a real repo on someone's account.
@@ -307,12 +330,25 @@ public static partial class GitTools
             info.ArgumentList.Add("http.emptyAuth=false");
         }
 
-        // Projects need the GitHub CLI anyway, so its login backs up whatever Git has of its own.
-        // Helpers given here come after the person's own, so theirs still goes first.
-        if (program == "git" && await Task.Run(() => FindOnPath("gh")) is { } gitHubCli)
+        // A login in the address is used as it is, with no helpers, as they'd otherwise each be asked
+        // to keep a copy of it once it worked.
+        if (program == "git" && arguments.Any(CarriesLogin))
         {
-            info.ArgumentList.Add("-c");
-            info.ArgumentList.Add($"credential.https://github.com.helper=!'{gitHubCli.Replace('\\', '/').Replace("'", "'\\''")}' auth git-credential");
+            foreach (var setting in new[] { "credential.helper=", "credential.https://github.com.helper=" })
+            {
+                info.ArgumentList.Add("-c");
+                info.ArgumentList.Add(setting);
+            }
+        }
+
+        // Empty first, as that clears every helper set before it, wherever it was set.
+        else if (useCliLogin && await Task.Run(() => FindOnPath("gh")) is { } gitHubCli)
+        {
+            foreach (var setting in new[] { "credential.helper=", "credential.https://github.com.helper=", $"credential.https://github.com.helper=!'{gitHubCli.Replace('\\', '/').Replace("'", "'\\''")}' auth git-credential" })
+            {
+                info.ArgumentList.Add("-c");
+                info.ArgumentList.Add(setting);
+            }
         }
         foreach (var argument in arguments) info.ArgumentList.Add(argument);
         info.Environment["PATH"] = CurrentPath(); // gh runs git itself.
@@ -532,6 +568,11 @@ public static partial class GitTools
 
     [GeneratedRegex(@"^\.ao-[0-9a-f]{8}\z")]
     private static partial Regex CloneWorkingFolderName();
+
+    // Git over HTTPS turned away for its login, or for having none. GitHub says a private repo isn't
+    // found rather than saying it needs a login.
+    [GeneratedRegex(@"terminal prompts disabled|could not read (Username|Password)|Authentication failed|Invalid username or password|returned error: 40[13]|Repository not found|Permission to \S+ denied", RegexOptions.IgnoreCase)]
+    private static partial Regex HttpsLoginFailed();
 
     [GeneratedRegex(@"HTTP 401|gh auth login|not logged in", RegexOptions.IgnoreCase)]
     private static partial Regex SignedOutMessage();
