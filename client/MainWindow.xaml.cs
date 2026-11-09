@@ -337,12 +337,26 @@ public partial class MainWindow : Window
     private async Task<string> CheckForUpdatesFromSettingsAsync()
     {
         if (!_updates.IsInstalled) return "Dev builds don't update";
-        return await CheckForUpdateAsync() switch
+        var found = await CheckForUpdateAsync();
+        if (found == false && _updateWaitsForServer is { } waiting) return $"v{waiting} is out, and this PC takes it once the server has it";
+        return found switch
         {
             true => "Update found",
             false => "Up to date",
             null => "Couldn't check",
         };
+    }
+
+    // The release this PC is waiting for the server to install before taking it.
+    private string? _updateWaitsForServer;
+
+    // The server installs each release a few minutes after it's out, and passes over one that won't
+    // come up, so a PC that took it first would only sit with sync paused. Only a server that answers
+    // can say, so with none this PC takes it, as it always has.
+    private async Task<bool> ServerIsBehindAsync(SemanticVersion version)
+    {
+        if (!_devices.IsPaired) return false;
+        return SemanticVersion.TryParse(await _devices.ServerVersionAsync() ?? "", out var server) && server < version;
     }
 
     // Keeps running while the overlay waits, because only the newest release can be downloaded.
@@ -370,9 +384,19 @@ public partial class MainWindow : Window
 
         if (update is null)
         {
+            _updateWaitsForServer = null;
             StopRequiringUpdate();
             return false;
         }
+        if (_downloading) return true;
+
+        if (await ServerIsBehindAsync(update.TargetFullRelease.Version))
+        {
+            _updateWaitsForServer = update.TargetFullRelease.Version.ToString();
+            if (!_downloading) StopRequiringUpdate();
+            return false;
+        }
+        _updateWaitsForServer = null;
         if (_downloading) return true;
 
         var version = update.TargetFullRelease.Version.ToString();
