@@ -20,6 +20,20 @@ is_public_safe() {
 }
 
 checks_out() {
+    # Images and documents carry text too, such as paths and names in their metadata. Their
+    # readable runs are checked, plain and with UTF-16's zero bytes taken out.
+    if [ -s "$1" ] && ! grep -Iq . "$1"; then
+        readable="$(mktemp)"
+        { LC_ALL=C tr -c '[:print:]' '\n' < "$1"; LC_ALL=C tr -d '\000' < "$1" | LC_ALL=C tr -c '[:print:]' '\n'; } | grep -aE '.{4,}' > "$readable"
+        checks_text "$readable"
+        answer=$?
+        rm -f "$readable"
+        return $answer
+    fi
+    checks_text "$1"
+}
+
+checks_text() {
     if grep -IqE '[A-Za-z]:[\\/]+Users[\\/]+[A-Za-z0-9]|/(Users|home)/[A-Za-z0-9]|[[:alnum:]-]+\.ts\.net|\b100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]+\.[0-9]+\b|\b192\.168\.[0-9]+\.[0-9]+\b|\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+\b|\b10\.[0-9]+\.[0-9]+\.[0-9]+\b' "$1"; then
         echo "Blocked: this seems to hold a personal path or a private address." >&2
         return 1
