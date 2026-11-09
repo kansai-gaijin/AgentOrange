@@ -50,3 +50,38 @@ checks_text() {
     fi
     return 0
 }
+
+# Checks one file's name and what's in it. The second argument is where Git has its content, such
+# as :path for what's staged, or commit:path. Says why, and fails, if it shouldn't go public.
+check_file() {
+    if ! printf '%s
+' "$1" | is_public_safe; then
+        echo "Blocked: that's about the name of $1." >&2
+        return 1
+    fi
+
+    hook=no
+    case "$1" in
+        .githooks/private-text) hook=yes ;; # It names the very patterns it looks for, so only that check is skipped.
+        *.db | *.db-* | *.sqlite | *.sqlite-* | *.sqlite3 | *.sqlite3-*)
+            echo "Blocked: $1 looks like a database." >&2
+            return 1
+            ;;
+    esac
+
+    # What can't be read can't be checked, so it doesn't get through.
+    if ! git cat-file -e "$2" 2>/dev/null; then
+        echo "Blocked: couldn't read $1 to check it." >&2
+        return 1
+    elif [ "$(git show "$2" | head -c 15)" = "SQLite format 3" ]; then
+        echo "Blocked: $1 is a database, whatever its name says." >&2
+        return 1
+    elif [ "$hook" = no ] && git show "$2" | grep -aqE 'BEGIN [A-Z ]*PRIVATE KEY|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|TunnelSecret|postgres(ql)?://[^:$[:space:]]+:[^@$[:space:]]+@|AGENT_ORANGE_PAIRING_KEY=[^$[:space:]]'; then
+        echo "Blocked: $1 seems to hold a private key or token." >&2
+        return 1
+    elif ! git show "$2" | is_public_safe; then
+        echo "Blocked: that's about $1." >&2
+        return 1
+    fi
+    return 0
+}

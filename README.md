@@ -8,6 +8,8 @@ After cloning, turn on the check that keeps databases and keys out of this publi
 git config core.hooksPath .githooks
 ```
 
+The same checks run on GitHub for every push, as the Private text workflow, for clones where the hooks weren't turned on. Only the list of private words in `.git/private-words` can't be checked there.
+
 ## Restoring the server's database
 
 After restoring a backup, run this against the database, so every PC sends what it has again and the newest copy of each record wins:

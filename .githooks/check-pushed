@@ -1,0 +1,35 @@
+#!/bin/sh
+# Runs this folder's checks over commits that have reached GitHub, for clones where the hooks
+# were never turned on. The private word list only exists on PCs, so that check is skipped here.
+#
+#   .githooks/check-pushed <commit before them, or nothing for all> <newest commit>
+
+. "$(dirname "$0")/private-text"
+
+before="$1"
+newest="$2"
+range="$newest"
+if [ -n "$before" ] && ! printf '%s' "$before" | grep -qE '^0+$' && git cat-file -e "$before^{commit}" 2>/dev/null; then
+    range="$before..$newest"
+fi
+
+status=0
+for commit in $(git rev-list "$range"); do
+    short="$(git rev-parse --short "$commit")"
+    if ! git log -1 --format='%an <%ae>%n%cn <%ce>' "$commit" | is_public_safe; then
+        echo "$short: that's about who made it." >&2
+        status=1
+    fi
+    if ! git log -1 --format=%B "$commit" | is_public_safe; then
+        echo "$short: that's about its message." >&2
+        status=1
+    fi
+    while IFS= read -r file; do
+        [ -n "$file" ] || continue
+        check_file "$file" "$commit:$file" || { echo "$short: that's in $file." >&2; status=1; }
+    done <<EOF
+$(git -c core.quotePath=off diff-tree --root --no-commit-id --name-only -r --diff-filter=ACMRT "$commit")
+EOF
+done
+
+exit $status
