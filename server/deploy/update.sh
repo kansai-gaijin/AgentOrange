@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Installs the latest published server release, and goes back to the previous
 # one if the new one doesn't come up healthy. Runs from a systemd timer.
+#
+# Each release carries its own copy of this script, and the copy the installed
+# release carries is the one that runs, so changes here arrive with releases.
+# The copy install.sh puts in /usr/local/libexec only starts that, or does the
+# first install.
 set -euo pipefail
 
 : "${AO_ROOT:=/opt/agent-orange}"
@@ -9,6 +14,13 @@ set -euo pipefail
 
 BINARY=agent-orange-server
 ASSET=agent-orange-server-linux-x64
+UPDATER=agent-orange-update
+
+# A copy that doesn't even parse would otherwise stop every update after it, so that one is passed over.
+carried="$AO_ROOT/current/$UPDATER"
+if [[ -z "${AO_UPDATER_STARTED:-}" && -f "$carried" && "$(realpath "$0")" != "$(realpath "$carried")" ]] && bash -n "$carried" 2>/dev/null; then
+    AO_UPDATER_STARTED=1 exec bash "$carried" "$@"
+fi
 
 fetch() { curl --fail --silent --show-error --location --max-time 300 "$@"; }
 
@@ -30,6 +42,26 @@ point_current_at() {
     mv -T "$AO_ROOT/current.new" "$AO_ROOT/current"
 }
 
+# Only the installed release is kept. Updates are required, so nothing goes back to an older one,
+# and a release is only removed once the next one has proved healthy. Only touches this updater's
+# own entries in its own folder.
+remove_old_releases() {
+    local keep="$1" entry name
+    for entry in "$AO_ROOT/releases"/* "$AO_ROOT/releases"/.stage.*; do
+        [[ -e "$entry" ]] || continue
+        name="$(basename "$entry")"
+        [[ "$name" == "$keep" ]] && continue
+        if [[ "$name" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            rm -rf -- "$entry"
+        elif [[ "$name" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.failed$ || "$name" =~ ^\.stage\.[A-Za-z0-9]+$ ]]; then
+            # A stage folder still in use belongs to an updater running right now, which can't
+            # happen under systemd, but one left a day is certainly from one that was stopped.
+            [[ "$name" == .stage.* && -z "$(find "$entry" -maxdepth 0 -mmin +1440)" ]] && continue
+            rm -rf -- "$entry"
+        fi
+    done
+}
+
 latest="$(fetch "$AO_RELEASES/latest/download/server-version.txt")"
 if [[ ! "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "Refusing to install: unexpected version text from the latest release." >&2
@@ -38,6 +70,7 @@ fi
 
 previous="$(readlink "$AO_ROOT/current" 2>/dev/null || true)"
 if [[ "$previous" == "releases/$latest" ]]; then
+    remove_old_releases "$latest"
     exit 0
 fi
 
@@ -48,10 +81,24 @@ if [[ -n "$installed" && "$(printf '%s\n%s\n' "$latest" "$installed" | sort -V |
     exit 0
 fi
 
+# A release that wasn't healthy is tried again a few times, further apart each time, as the cause
+# can pass, such as the database restarting. Clients wait for the server to have a release before
+# they require it, so a release that never comes up only holds everyone on the one before.
+ATTEMPTS=4
 failed_marker="$AO_ROOT/releases/$latest.failed"
+failures=0
 if [[ -e "$failed_marker" ]]; then
-    echo "Skipping $latest: it failed its health check before." >&2
-    exit 0
+    failures="$(head -c 8 "$failed_marker" | tr -cd '0-9')"
+    failures="${failures:-$ATTEMPTS}" # An old marker, written before retries, has nothing in it.
+    if ((failures >= ATTEMPTS)); then
+        echo "Skipping $latest: it failed its health check $failures times." >&2
+        exit 0
+    fi
+    wait_minutes=$((15 * (1 << (failures - 1)))) # 15, 30, then 60 minutes.
+    if [[ -z "$(find "$failed_marker" -mmin "+$wait_minutes")" ]]; then
+        echo "Waiting to try $latest again: it failed its health check $failures time(s)." >&2
+        exit 0
+    fi
 fi
 
 destination="$AO_ROOT/releases/$latest"
@@ -63,7 +110,11 @@ if [[ ! -d "$destination" ]]; then
     (cd "$stage" && sha256sum --check --quiet "$ASSET.sha256")
     mv "$stage/$ASSET" "$stage/$BINARY"
     rm "$stage/$ASSET.sha256"
-    chmod 755 "$stage" "$stage/$BINARY"
+    fetch --output "$stage/$UPDATER" "$AO_RELEASES/download/v$latest/$UPDATER"
+    fetch --output "$stage/$UPDATER.sha256" "$AO_RELEASES/download/v$latest/$UPDATER.sha256"
+    (cd "$stage" && sha256sum --check --quiet "$UPDATER.sha256")
+    rm "$stage/$UPDATER.sha256"
+    chmod 755 "$stage" "$stage/$BINARY" "$stage/$UPDATER"
     mv -T "$stage" "$destination"
     trap - EXIT
 fi
@@ -74,11 +125,13 @@ point_current_at "releases/$latest"
 # If it couldn't restart, the old release is what would answer the health check.
 if restart_server && is_healthy; then
     echo "$latest is healthy."
+    remove_old_releases "$latest"
     exit 0
 fi
 
-echo "$latest did not become healthy." >&2
-touch "$failed_marker"
+failures=$((failures + 1))
+echo "$latest did not become healthy (attempt $failures of $ATTEMPTS)." >&2
+echo "$failures" > "$failed_marker"
 if [[ -n "$previous" && "$previous" != "releases/$latest" ]]; then
     point_current_at "$previous"
     restart_server

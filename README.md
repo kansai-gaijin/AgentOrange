@@ -28,4 +28,12 @@ The server only listens on its own machine, and the client only uses HTTPS, exce
   sudo tailscale serve --bg --https=8443 http://127.0.0.1:47100
   ```
 
-  The client's address is then `https://<machine>.<tailnet>.ts.net:8443`.
+  The client's address is then `https://<machine>.<tailnet>.ts.net:8443`. If Tailscale runs in user-space mode with its own socket, add `--socket=<path>` to both commands.
+
+## Server updates
+
+The server installs each release by itself, a few minutes after it's published, and keeps only the one it's running. GitHub keeps only the newest release too, as updates are required and nothing goes back.
+
+A release that doesn't come up healthy is put back to the one before and tried again up to three more times, 15, 30 and 60 minutes apart. PCs wait for the server to be on a release before they require it, so a release the server never takes leaves everyone on the one before.
+
+Each release carries the updater, so after the first install, `sudo ./install.sh` on its own is only needed to change the service files.

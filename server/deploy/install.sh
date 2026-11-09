@@ -3,6 +3,9 @@
 #
 #   sudo ./install.sh <public-hostname> <tunnel-credentials.json>
 #
+# Once installed, `sudo ./install.sh` on its own refreshes the service files and
+# the updater, and leaves the public route as it is.
+#
 # It only adds things named agent-orange / agentorange, and refuses to run if
 # any of them already exist from something else. It never edits or restarts
 # anything that belongs to another service: the public route is its own tunnel,
@@ -15,13 +18,6 @@ if [[ $EUID -ne 0 ]]; then
     echo "Run this with sudo." >&2
     exit 1
 fi
-if [[ $# -ne 2 ]]; then
-    echo "Usage: sudo $0 <public-hostname> <tunnel-credentials.json>" >&2
-    exit 1
-fi
-
-HOSTNAME_PUBLIC="$1"
-TUNNEL_CREDENTIALS="$2"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACCOUNT=agentorange
 DATABASE=agentorange
@@ -30,13 +26,24 @@ ROOT=/opt/agent-orange
 CONFIG=/etc/agent-orange
 MARKER="$CONFIG/.installed-by-agent-orange"
 
-if [[ ! "$HOSTNAME_PUBLIC" =~ ^[a-z0-9.-]+$ ]]; then
-    echo "That doesn't look like a hostname: $HOSTNAME_PUBLIC" >&2
+REFRESH_ONLY=
+if [[ $# -eq 0 && -e "$MARKER" ]]; then
+    REFRESH_ONLY=1
+elif [[ $# -ne 2 ]]; then
+    echo "Usage: sudo $0 <public-hostname> <tunnel-credentials.json>" >&2
+    echo "Once installed, sudo $0 on its own refreshes it." >&2
     exit 1
-fi
-if [[ ! -f "$TUNNEL_CREDENTIALS" ]]; then
-    echo "Tunnel credentials not found: $TUNNEL_CREDENTIALS" >&2
-    exit 1
+else
+    HOSTNAME_PUBLIC="$1"
+    TUNNEL_CREDENTIALS="$2"
+    if [[ ! "$HOSTNAME_PUBLIC" =~ ^[a-z0-9.-]+$ ]]; then
+        echo "That doesn't look like a hostname: $HOSTNAME_PUBLIC" >&2
+        exit 1
+    fi
+    if [[ ! -f "$TUNNEL_CREDENTIALS" ]]; then
+        echo "Tunnel credentials not found: $TUNNEL_CREDENTIALS" >&2
+        exit 1
+    fi
 fi
 
 pg() { sudo -u postgres psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 "$@"; }
@@ -112,6 +119,12 @@ echo "== First install of the latest release"
 systemctl start agent-orange-update.service
 systemctl enable --now agent-orange-update.timer >/dev/null
 echo "Server says: $(curl --fail --silent --show-error "http://127.0.0.1:$PORT/v1/health")"
+
+if [[ -n "$REFRESH_ONLY" ]]; then
+    echo
+    echo "Done. The services and updater are refreshed, and the public route is as it was."
+    exit 0
+fi
 
 echo "== Public route"
 install -o root -g "$ACCOUNT" -m 640 "$TUNNEL_CREDENTIALS" "$CONFIG/tunnel.json"

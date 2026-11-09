@@ -41,6 +41,10 @@ jobs:
           mkdir dist
           cp server/target/release/agent-orange-server dist/agent-orange-server-linux-x64
           (cd dist && sha256sum agent-orange-server-linux-x64 > agent-orange-server-linux-x64.sha256)
+          # The server runs the updater its installed release carries, so one that doesn't parse is never published.
+          bash -n server/deploy/update.sh
+          cp server/deploy/update.sh dist/agent-orange-update
+          (cd dist && sha256sum agent-orange-update > agent-orange-update.sha256)
           printf '%s\n' "$AGENT_ORANGE_VERSION" > dist/server-version.txt # How the updater spots a new release.
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -104,3 +108,15 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "$AGENT_ORANGE_VERSION" \
             --notes "Built from $GITHUB_SHA"
+
+      # Updates are required and nothing goes back, so only the newest release is kept. The server
+      # and installed PCs only ever ask for the latest one.
+      - name: Remove older releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName --jq '.[].tagName' |
+            { grep -vxF "v$AGENT_ORANGE_VERSION" || true; } |
+            while read -r tag; do
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            done
