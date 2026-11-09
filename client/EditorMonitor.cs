@@ -39,6 +39,7 @@ public sealed partial class EditorMonitor
     [
         new("unreal", "Unreal Engine", true, McpKind.Http, "http://localhost:8666/uemcp"),
         new("godot", "Godot", true, McpKind.Http, "http://127.0.0.1:8645/mcp"),
+        new("unity", "Unity", true, McpKind.Http, "http://127.0.0.1:8080/mcp"), // MCP for Unity's own default.
         new("blender", "Blender", false, McpKind.Port, "127.0.0.1:9876"),
         new("aseprite", "Aseprite", false, McpKind.Http, "http://127.0.0.1:8650/mcp"),
     ];
@@ -63,6 +64,13 @@ public sealed partial class EditorMonitor
     public event Action? Changed;
 
     public EditorStatus? StatusOf(string id) => _statuses.GetValueOrDefault(id);
+
+    /// <summary>
+    /// Found where it usually installs, or set up by hand. Nobody needs every engine and tool, so
+    /// the rest aren't checked, as their default address may belong to something else entirely.
+    /// </summary>
+    public bool IsSetUp(EditorDefinition editor) =>
+        !string.IsNullOrEmpty(_database.GetSetting(SettingKey(editor))) || SettingsOf(editor).ProgramPath.Length > 0;
 
     public EditorSettings SettingsOf(EditorDefinition editor)
     {
@@ -141,7 +149,7 @@ public sealed partial class EditorMonitor
 
         try
         {
-            var settings = Definitions.ToDictionary(editor => editor.Id, SettingsOf);
+            var settings = Definitions.Where(IsSetUp).ToDictionary(editor => editor.Id, SettingsOf);
             var known = new Dictionary<string, Handshake>(_handshakes);
             var (statuses, handshakes) = await Task.Run(() => CheckAllAsync(settings, known));
 
@@ -175,7 +183,11 @@ public sealed partial class EditorMonitor
 
         foreach (var editor in Definitions)
         {
-            var current = settings[editor.Id];
+            if (!settings.TryGetValue(editor.Id, out var current))
+            {
+                statuses[editor.Id] = new EditorStatus(false, [], McpState.NotSet, null);
+                continue;
+            }
             var port = PortOf(current.Kind, current.Address);
             var owner = port > 0 && listeners.TryGetValue(port, out var id) ? id : -1;
 
@@ -316,6 +328,8 @@ public sealed partial class EditorMonitor
         {
             "unreal" => NewestChild(Path.Combine(programFiles, "Epic Games"), "UE_*", Path.Combine("Engine", "Binaries", "Win64", "UnrealEditor.exe")),
             "godot" => FirstExisting(Path.Combine(steam, "Godot Engine", "godot.windows.opt.tools.64.exe")),
+            "unity" => NewestChild(Path.Combine(programFiles, "Unity", "Hub", "Editor"), "*", Path.Combine("Editor", "Unity.exe"))
+                ?? FirstExisting(Path.Combine(programFiles, "Unity", "Editor", "Unity.exe")),
             "blender" => NewestChild(Path.Combine(programFiles, "Blender Foundation"), "Blender*", "blender.exe")
                 ?? FirstExisting(Path.Combine(steam, "Blender", "blender.exe")),
             "aseprite" => FirstExisting(Path.Combine(programFiles, "Aseprite", "aseprite.exe"), Path.Combine(steam, "Aseprite", "aseprite.exe")),

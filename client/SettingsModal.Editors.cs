@@ -35,7 +35,26 @@ public partial class SettingsModal
         return elements.ToArray();
     }
 
+    // One that isn't on this PC is just a line, as most people only use some of them.
     private UIElement[] EditorSection(EditorDefinition editor, List<Action> refreshers)
+    {
+        if (Editors.IsSetUp(editor)) return FullEditorSection(editor, refreshers);
+
+        var host = new StackPanel();
+        var setUp = ActionButton("Set up");
+        setUp.Click += (_, _) =>
+        {
+            host.Children.Clear();
+            var refreshAt = refreshers.Count;
+            foreach (var element in FullEditorSection(editor, refreshers)) host.Children.Add(element);
+            foreach (var refresh in refreshers.Skip(refreshAt)) refresh();
+        };
+        host.Children.Add(Section(editor.Name));
+        host.Children.Add(Card(Row("Not set up", $"Only needed if you use {editor.Name} on this PC.", setUp)));
+        return [host];
+    }
+
+    private UIElement[] FullEditorSection(EditorDefinition editor, List<Action> refreshers)
     {
         var settings = Editors.SettingsOf(editor);
         var problem = ProblemText();
