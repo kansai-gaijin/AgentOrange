@@ -74,7 +74,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     {
         try
         {
-            using var response = await _http.PostAsJsonAsync($"{address}/v1/pair", new { key, name, install = database.InstallId() });
+            using var response = await _http.PostAsJsonAsync($"{address}/v1/pair", new { key, name, install = database.InstallId(), address });
             switch (response.StatusCode)
             {
                 case HttpStatusCode.Unauthorized: return PairResult.WrongKey;

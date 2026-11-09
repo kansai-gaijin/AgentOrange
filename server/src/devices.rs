@@ -63,7 +63,8 @@ pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
-        ALTER TABLE devices ADD COLUMN IF NOT EXISTS install_hash TEXT;",
+        ALTER TABLE devices ADD COLUMN IF NOT EXISTS install_hash TEXT;
+        ALTER TABLE devices ADD COLUMN IF NOT EXISTS login_slot TEXT;",
     )
     .await
 }
@@ -75,6 +76,10 @@ pub struct PairRequest {
     /// Says this is the same PC as an earlier pairing at another of this server's addresses.
     #[serde(default)]
     install: Option<String>,
+    /// The address this PC paired at. With the install, it says which earlier login this one
+    /// replaces, as a PC can have one at each of this server's addresses.
+    #[serde(default)]
+    address: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -116,11 +121,23 @@ pub async fn pair(
     let id = random_hex::<16>();
     let token = random_hex::<32>();
     let install_hash = request.install.as_deref().map(sha256);
+    let login_slot = request
+        .install
+        .as_deref()
+        .zip(request.address.as_deref())
+        .map(|(install, address)| sha256(&format!("{install}
+{address}")));
+
+    // Pairing again from the same PC at the same address ends the login it had there, which it
+    // may no longer be able to read, rather than leaving that one working too. One statement, so
+    // a failure leaves the old login as it was.
     state
         .db
         .execute(
-            "INSERT INTO devices (id, name, token_hash, install_hash) VALUES ($1, $2, $3, $4)",
-            &[&id, &name, &sha256(&token), &install_hash],
+            "WITH replaced AS (DELETE FROM devices WHERE login_slot = $5)
+             INSERT INTO devices (id, name, token_hash, install_hash, login_slot)
+             VALUES ($1, $2, $3, $4, $5)",
+            &[&id, &name, &sha256(&token), &install_hash, &login_slot],
         )
         .await
         .map_err(internal_error)?;
