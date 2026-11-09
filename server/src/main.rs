@@ -25,6 +25,7 @@ pub struct AppState {
     pub db: Client,
     /// Only syncs use this one, one at a time, as each is a transaction.
     pub sync_db: tokio::sync::Mutex<Client>,
+    pub high_water: sync::HighWater,
     /// None turns pairing off, for a server that hasn't been given a key yet.
     pub pairing_key: Option<String>,
     pub pairing_limit: Mutex<devices::PairingLimit>,
@@ -53,6 +54,7 @@ async fn main() {
     let state = Arc::new(AppState {
         db,
         sync_db: tokio::sync::Mutex::new(sync_db),
+        high_water: sync::HighWater::load(),
         pairing_key,
         pairing_limit: Mutex::new(devices::PairingLimit::default()),
     });

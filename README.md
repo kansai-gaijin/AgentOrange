@@ -12,7 +12,7 @@ The same checks run on GitHub for every push, as the Private text workflow, for 
 
 ## Restoring the server's database
 
-After restoring a backup, run this against the database, so every PC sends what it has again and the newest copy of each record wins:
+The server notices a restored backup by itself. It notes how far its data has got in `/var/lib/agent-orange`, and when the data has gone back, every PC sends what it has again and the newest copy of each record wins. If that folder was lost or restored too, run this against the database to do the same:
 
 ```
 UPDATE sync_meta SET epoch = md5(random()::text || clock_timestamp()::text);

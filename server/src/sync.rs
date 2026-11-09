@@ -3,7 +3,8 @@
 //! without changes here.
 
 use std::{
-    sync::Arc,
+    path::PathBuf,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -28,6 +29,65 @@ const PAGE_SIZE: i64 = 500;
 const MAX_RESPONSE_BYTES: usize = 1_500_000;
 const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const DAY_MILLISECONDS: i64 = 24 * 60 * 60 * 1000;
+
+/// How far this server's data has got, kept outside the database, so a backup restored over it
+/// can be told apart from data that only ever got that far. Without somewhere to keep it, which
+/// systemd gives the service, only a device being ahead can tell.
+pub struct HighWater {
+    file: Option<PathBuf>,
+    last: Mutex<Option<(String, i64)>>,
+}
+
+impl HighWater {
+    pub fn load() -> Self {
+        let file = std::env::var_os("STATE_DIRECTORY")
+            .and_then(|folders| std::env::split_paths(&folders).next())
+            .map(|folder| folder.join("sync-high-water"));
+        let last = file
+            .as_ref()
+            .and_then(|file| std::fs::read_to_string(file).ok())
+            .and_then(|text| {
+                let (epoch, seq) = text.trim().split_once(' ')?;
+                Some((epoch.to_string(), seq.parse().ok()?))
+            });
+        Self {
+            file,
+            last: Mutex::new(last),
+        }
+    }
+
+    /// The data says it's this epoch, and the sequence has only reached this, which is less than
+    /// it had already handed out.
+    fn went_back(&self, epoch: &str, issued: i64) -> bool {
+        self.last
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|(last_epoch, last_issued)| last_epoch == epoch && issued < *last_issued)
+    }
+
+    fn reached(&self, epoch: String, issued: i64) {
+        let mut last = self.last.lock().unwrap();
+        if last.as_ref() == Some(&(epoch.clone(), issued)) {
+            return;
+        }
+        if let Some(file) = &self.file {
+            let written = file.with_extension("new");
+            if let Err(error) = std::fs::write(
+                &written,
+                format!(
+                    "{epoch} {issued}
+"
+                ),
+            )
+            .and_then(|()| std::fs::rename(&written, file))
+            {
+                eprintln!("Couldn't note how far the data has got: {error}");
+            }
+        }
+        *last = Some((epoch, issued));
+    }
+}
 
 pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
     db.batch_execute(
@@ -140,27 +200,35 @@ pub async fn sync(
     let mut db = state.sync_db.lock().await;
     let db = db.transaction().await.map_err(internal_error)?;
 
-    // A device ahead of everything here, on what it thinks is this same data, means this
-    // database was restored from a backup. It would otherwise miss changes without any sign
-    // until the numbers caught up, so this counts as new data and devices send theirs again.
-    if let Some(device_epoch) = &request.epoch {
-        let current = db
-            .query_one(
-                "SELECT epoch, (SELECT COALESCE(MAX(seq), 0) FROM sync_records) FROM sync_meta",
-                &[],
-            )
-            .await
-            .map_err(internal_error)?;
-        let current_epoch: String = current.get(0);
-        let latest: i64 = current.get(1);
-        if *device_epoch == current_epoch && request.cursor > latest {
-            db.execute(
-                "UPDATE sync_meta SET epoch = md5(random()::text || clock_timestamp()::text)",
-                &[],
-            )
-            .await
-            .map_err(internal_error)?;
-        }
+    // Data that's gone back, on what's still the same epoch, means this database was restored
+    // from a backup. Devices would otherwise miss changes without any sign until the numbers
+    // caught up, so this counts as new data and devices send theirs again. Either this server
+    // noted getting further, or a device is ahead of everything here.
+    let current = db
+        .query_one(
+            "SELECT epoch, (SELECT COALESCE(MAX(seq), 0) FROM sync_records), (SELECT last_value FROM sync_seq)
+             FROM sync_meta",
+            &[],
+        )
+        .await
+        .map_err(internal_error)?;
+    let current_epoch: String = current.get(0);
+    let latest: i64 = current.get(1);
+    let issued: i64 = current.get(2);
+    let device_is_ahead = request
+        .epoch
+        .as_ref()
+        .is_some_and(|device_epoch| *device_epoch == current_epoch && request.cursor > latest);
+    if device_is_ahead || state.high_water.went_back(&current_epoch, issued) {
+        println!(
+            "The data has gone back, as from a restored backup, so every device sends what it has again."
+        );
+        db.execute(
+            "UPDATE sync_meta SET epoch = md5(random()::text || clock_timestamp()::text)",
+            &[],
+        )
+        .await
+        .map_err(internal_error)?;
     }
 
     // A time far from now can only be a broken device, and would then win over every real edit.
@@ -275,13 +343,17 @@ pub async fn sync(
         });
     }
 
-    let epoch = db
-        .query_one("SELECT epoch FROM sync_meta", &[])
+    let reached = db
+        .query_one(
+            "SELECT epoch, (SELECT last_value FROM sync_seq) FROM sync_meta",
+            &[],
+        )
         .await
-        .map_err(internal_error)?
-        .get(0);
+        .map_err(internal_error)?;
+    let epoch: String = reached.get(0);
 
     db.commit().await.map_err(internal_error)?;
+    state.high_water.reached(epoch.clone(), reached.get(1));
 
     Ok(Json(SyncResponse {
         cursor,

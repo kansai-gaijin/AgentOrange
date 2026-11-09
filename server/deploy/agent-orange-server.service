@@ -16,6 +16,8 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+# Where it notes how far its data has got, to spot a backup restored over it.
+StateDirectory=agent-orange
 
 [Install]
 WantedBy=multi-user.target
