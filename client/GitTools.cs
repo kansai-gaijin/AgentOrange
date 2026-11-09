@@ -278,7 +278,8 @@ public static partial class GitTools
         if (!await FolderExistsAsync(folder)) return new CommandResult(-1, "", "That folder can't be reached.");
 
         // Before Git runs at all, because Git follows these just by starting up in the folder.
-        if (program == "git" && folder != Path.GetTempPath() && await GitFolderSafety.NetworkPathProblemAsync(folder, ReadSettingsFileAsync) is { } networkProblem)
+        var startsGitInFolder = program == "git" || arguments.Contains("--source");
+        if (startsGitInFolder && folder != Path.GetTempPath() && await GitFolderSafety.NetworkPathProblemAsync(folder, ReadSettingsFileAsync) is { } networkProblem)
         {
             return new CommandResult(128, "", networkProblem);
         }
@@ -323,6 +324,40 @@ public static partial class GitTools
         foreach (var inherited in new[] { "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX" })
         {
             info.Environment.Remove(inherited);
+        }
+
+        // Settings from a `git -c` or a hook that started this app would otherwise reach everything
+        // it runs. Headless checks set them on purpose, to stand in for a broken connection.
+        var keepsGivenSettings = false;
+#if DEBUG
+        keepsGivenSettings = Headless.Active;
+#endif
+        if (!keepsGivenSettings)
+        {
+            foreach (var key in info.Environment.Keys.Where(key => key is "GIT_CONFIG_PARAMETERS" or "GIT_CONFIG_COUNT" || key.StartsWith("GIT_CONFIG_KEY_", StringComparison.Ordinal) || key.StartsWith("GIT_CONFIG_VALUE_", StringComparison.Ordinal)).ToList())
+            {
+                info.Environment.Remove(key);
+            }
+        }
+        // Git looks for a repo upward from where it starts, and above Temp can be a home folder kept
+        // as a repo, whose settings would then apply. Temp itself is only ever the app's own.
+        if (folder == Path.GetTempPath() && Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(folder)) is { } aboveTemp)
+        {
+            info.Environment["GIT_CEILING_DIRECTORIES"] = aboveTemp;
+        }
+
+        // gh runs Git itself, such as in the folder for repo create --source, so it gets the same
+        // settings given to Git above, in the form Git reads from its environment.
+        if (program == "gh")
+        {
+            var given = info.Environment.TryGetValue("GIT_CONFIG_COUNT", out var countText) && int.TryParse(countText, out var count) ? count : 0;
+            foreach (var (key, value) in new[] { ("safe.bareRepository", "explicit"), ("http.emptyAuth", "false") })
+            {
+                info.Environment[$"GIT_CONFIG_KEY_{given}"] = key;
+                info.Environment[$"GIT_CONFIG_VALUE_{given}"] = value;
+                given++;
+            }
+            info.Environment["GIT_CONFIG_COUNT"] = given.ToString();
         }
         info.Environment["GIT_ALLOW_PROTOCOL"] = "https:ssh";
         if (gitHubToken is not null) info.Environment["GH_TOKEN"] = gitHubToken;

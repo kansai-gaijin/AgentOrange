@@ -23,6 +23,8 @@ const VERSION: &str = match option_env!("AGENT_ORANGE_VERSION") {
 
 pub struct AppState {
     pub db: Client,
+    /// Only syncs use this one, one at a time, as each is a transaction.
+    pub sync_db: tokio::sync::Mutex<Client>,
     /// None turns pairing off, for a server that hasn't been given a key yet.
     pub pairing_key: Option<String>,
     pub pairing_limit: Mutex<devices::PairingLimit>,
@@ -39,16 +41,8 @@ async fn main() {
         println!("No pairing key is set, so new devices can't pair.");
     }
 
-    let (db, connection) = tokio_postgres::connect(&database_url, NoTls)
-        .await
-        .expect("could not connect to the database");
-    tokio::spawn(async move {
-        // Without its database the server is no use, so exit and let systemd restart it.
-        if let Err(error) = connection.await {
-            eprintln!("Lost the database connection: {error}");
-            std::process::exit(1);
-        }
-    });
+    let db = connect(&database_url).await;
+    let sync_db = connect(&database_url).await;
     devices::create_tables(&db)
         .await
         .expect("could not set up the database");
@@ -58,6 +52,7 @@ async fn main() {
 
     let state = Arc::new(AppState {
         db,
+        sync_db: tokio::sync::Mutex::new(sync_db),
         pairing_key,
         pairing_limit: Mutex::new(devices::PairingLimit::default()),
     });
@@ -84,6 +79,20 @@ async fn main() {
         .with_graceful_shutdown(shutdown_requested())
         .await
         .expect("server stopped unexpectedly");
+}
+
+async fn connect(database_url: &str) -> Client {
+    let (db, connection) = tokio_postgres::connect(database_url, NoTls)
+        .await
+        .expect("could not connect to the database");
+    tokio::spawn(async move {
+        // Without its database the server is no use, so exit and let systemd restart it.
+        if let Err(error) = connection.await {
+            eprintln!("Lost the database connection: {error}");
+            std::process::exit(1);
+        }
+    });
+    db
 }
 
 /// systemd stops a service with SIGTERM, so a restart finishes the requests under way.

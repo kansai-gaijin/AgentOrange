@@ -104,9 +104,9 @@ fn client_is_out_of_date(headers: &HeaderMap) -> bool {
 /// others did while it was away. A device drops a queued edit that's older than a copy it gets from
 /// here, so it can't end up holding on to one that was refused.
 ///
-/// The server has one database connection, so writes run one at a time and
-/// sequence numbers become visible in order. A cursor can't skip past a change
-/// that's still being written. More connections would need this rethinking.
+/// Syncs take turns on a connection of their own, each in one transaction, so sequence numbers
+/// become visible in order, a cursor can't skip past a change that's still being written, and a
+/// batch that fails partway leaves nothing of itself behind.
 pub async fn sync(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -137,12 +137,14 @@ pub async fn sync(
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
 
+    let mut db = state.sync_db.lock().await;
+    let db = db.transaction().await.map_err(internal_error)?;
+
     // A device ahead of everything here, on what it thinks is this same data, means this
     // database was restored from a backup. It would otherwise miss changes without any sign
     // until the numbers caught up, so this counts as new data and devices send theirs again.
     if let Some(device_epoch) = &request.epoch {
-        let current = state
-            .db
+        let current = db
             .query_one(
                 "SELECT epoch, (SELECT COALESCE(MAX(seq), 0) FROM sync_records) FROM sync_meta",
                 &[],
@@ -152,8 +154,7 @@ pub async fn sync(
         let current_epoch: String = current.get(0);
         let latest: i64 = current.get(1);
         if *device_epoch == current_epoch && request.cursor > latest {
-            state
-                .db
+            db
                 .execute(
                     "UPDATE sync_meta SET epoch = md5(random()::text || clock_timestamp()::text)",
                     &[],
@@ -185,8 +186,7 @@ pub async fn sync(
     }
 
     for change in &request.changes {
-        let stored = state
-            .db
+        let stored = db
             .execute(
                 "INSERT INTO sync_records (collection, id, data, deleted, seq, updated_by, changed_at)
                  VALUES ($1, $2, $3, $4, nextval('sync_seq'), $5, $6)
@@ -216,8 +216,7 @@ pub async fn sync(
         // It lost to something newer, which this device's cursor may already be past. Without this
         // it would keep its own value, with no sign of that.
         if stored == 0 {
-            state
-                .db
+            db
                 .execute(
                     "UPDATE sync_records SET seq = nextval('sync_seq')
                      WHERE collection = $1 AND id = $2 AND (data <> $3 OR deleted <> $4)",
@@ -236,8 +235,7 @@ pub async fn sync(
     // Images make records large, so rows past the limit are left out here instead of
     // being loaded and thrown away. pg_column_size reads a value's stored size without
     // fetching the value. It's the compressed size, so the loop below has the final say.
-    let rows = state
-        .db
+    let rows = db
         .query(
             "SELECT collection, id, data, deleted, seq, page_rows, changed_at FROM (
                 SELECT collection, id, data, deleted, seq, changed_at,
@@ -279,12 +277,13 @@ pub async fn sync(
         });
     }
 
-    let epoch = state
-        .db
+    let epoch = db
         .query_one("SELECT epoch FROM sync_meta", &[])
         .await
         .map_err(internal_error)?
         .get(0);
+
+    db.commit().await.map_err(internal_error)?;
 
     Ok(Json(SyncResponse {
         cursor,
