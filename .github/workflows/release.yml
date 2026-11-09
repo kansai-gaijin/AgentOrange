@@ -16,18 +16,36 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  AGENT_ORANGE_VERSION: 0.1.${{ github.run_number }}
-
 jobs:
-  server:
+  # The run number, unless that isn't above the latest release. It starts again from 1 if this
+  # workflow is ever recreated, and installed copies only go forward.
+  version:
     if: github.ref == 'refs/heads/main' # Started by hand, this could otherwise publish any branch.
+    runs-on: ubuntu-24.04
+    outputs:
+      number: ${{ steps.pick.outputs.number }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)"
+          patch="${latest##*.}"
+          [[ "$patch" =~ ^[0-9]+$ ]] || patch=0
+          number=$(( GITHUB_RUN_NUMBER > patch ? GITHUB_RUN_NUMBER : patch + 1 ))
+          echo "number=0.1.$number" >> "$GITHUB_OUTPUT"
+
+  server:
+    needs: version
     runs-on: ubuntu-24.04 # Same Ubuntu as the server, so the binary's system libraries match.
+    env:
+      AGENT_ORANGE_VERSION: ${{ needs.version.outputs.number }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # The toolchain is pinned in server/rust-toolchain.toml, which rustup installs from here.
       - name: Test
         working-directory: server
         run: cargo test --locked
@@ -53,8 +71,10 @@ jobs:
           path: dist/
 
   client:
-    if: github.ref == 'refs/heads/main'
+    needs: version
     runs-on: windows-2025
+    env:
+      AGENT_ORANGE_VERSION: ${{ needs.version.outputs.number }}
     defaults:
       run:
         shell: bash
@@ -69,12 +89,18 @@ jobs:
             8.0.x
             10.0.x
 
+      # Packages come from client/packages.lock.json exactly, so they can't drift between releases.
       - name: Build
-        run: dotnet publish client/AgentOrange.csproj -c Release -r win-x64 --self-contained -p:Version="$AGENT_ORANGE_VERSION" -o publish
+        run: dotnet publish client/AgentOrange.csproj -c Release -r win-x64 --self-contained -p:Version="$AGENT_ORANGE_VERSION" -p:RestoreLockedMode=true -o publish
 
       - name: Package installer and update
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           dotnet tool install --tool-path .tools vpk --version 1.2.161
+          # With the latest release beside it, packing also makes an update that only carries what changed.
+          .tools/vpk download github --repoUrl "https://github.com/$GITHUB_REPOSITORY" --token "$GH_TOKEN" --outputDir dist ||
+            echo "No earlier release to make a smaller update from."
           .tools/vpk pack \
             --packId AgentOrange \
             --packTitle "Agent Orange" \
@@ -83,6 +109,7 @@ jobs:
             --mainExe AgentOrange.exe \
             --outputDir dist
           rm dist/*-Portable.zip # Portable copies can't update themselves, and updates are mandatory.
+          find dist -name 'AgentOrange-*-full.nupkg' ! -name "AgentOrange-$AGENT_ORANGE_VERSION-full.nupkg" -delete # Already published.
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -90,11 +117,24 @@ jobs:
           path: dist/
 
   publish:
-    needs: [server, client] # Nothing is published unless both sides built.
+    needs: [version, server, client] # Nothing is published unless both sides built.
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    env:
+      AGENT_ORANGE_VERSION: ${{ needs.version.outputs.number }}
     steps:
+      # Re-running an older run would otherwise publish its old build as the newest.
+      - name: Check this is still the newest commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo "Not publishing: main has moved on to $head since this was built." >&2
+            exit 1
+          fi
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts

@@ -8,6 +8,10 @@
     <UseWPF>true</UseWPF>
     <StartupObject>AgentOrange.Program</StartupObject>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- Releases restore exactly what's locked here, so a package can't change between them. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
   </PropertyGroup>
 
   <ItemGroup>

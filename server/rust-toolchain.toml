@@ -1,0 +1,4 @@
+# Releases build with exactly this, so a new toolchain on the runner can't change the server.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
