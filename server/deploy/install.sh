@@ -22,6 +22,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACCOUNT=agentorange
 DATABASE=agentorange
 PORT=47100
+PUBLIC_PORT=47101 # Only the Cloudflare tunnel uses this, so only there is its caller header trusted.
 ROOT=/opt/agent-orange
 CONFIG=/etc/agent-orange
 MARKER="$CONFIG/.installed-by-agent-orange"
@@ -58,6 +59,7 @@ if [[ ! -e "$MARKER" ]]; then
     role_exists && problems+=("Postgres role $ACCOUNT")
     database_exists && problems+=("Postgres database $DATABASE")
     ss -tln | grep -q ":$PORT " && problems+=("something listening on port $PORT")
+    ss -tln | grep -q ":$PUBLIC_PORT " && problems+=("something listening on port $PUBLIC_PORT")
     for unit in agent-orange-server.service agent-orange-update.service agent-orange-update.timer agent-orange-tunnel.service; do
         [[ -e "/etc/systemd/system/$unit" ]] && problems+=("/etc/systemd/system/$unit")
     done
@@ -80,11 +82,16 @@ if [[ ! -e "$CONFIG/server.env" ]]; then
     umask 027
     {
         echo "AGENT_ORANGE_BIND=127.0.0.1:$PORT"
+        echo "AGENT_ORANGE_PUBLIC_BIND=127.0.0.1:$PUBLIC_PORT"
         echo "DATABASE_URL=postgres://$ACCOUNT:$password@127.0.0.1:5432/$DATABASE"
     } > "$CONFIG/server.env"
     umask 022
     chown root:"$ACCOUNT" "$CONFIG/server.env"
     chmod 640 "$CONFIG/server.env"
+fi
+# Installs from before the public route had its own address.
+if ! grep -q '^AGENT_ORANGE_PUBLIC_BIND=' "$CONFIG/server.env"; then
+    echo "AGENT_ORANGE_PUBLIC_BIND=127.0.0.1:$PUBLIC_PORT" >> "$CONFIG/server.env"
 fi
 password="$(sed -n "s|^DATABASE_URL=postgres://$ACCOUNT:\([0-9a-f]*\)@.*|\1|p" "$CONFIG/server.env")"
 
@@ -118,11 +125,24 @@ systemctl enable agent-orange-server.service >/dev/null
 echo "== First install of the latest release"
 systemctl start agent-orange-update.service
 systemctl enable --now agent-orange-update.timer >/dev/null
-echo "Server says: $(curl --fail --silent --show-error "http://127.0.0.1:$PORT/v1/health")"
+systemctl restart agent-orange-server.service
+sleep 2
+echo "Server says: $(curl --fail --silent --show-error --retry 5 --retry-connrefused "http://127.0.0.1:$PORT/v1/health")"
 
 if [[ -n "$REFRESH_ONLY" ]]; then
+    # Moves an existing public route onto its own address, once the running release listens there.
+    if grep -q "service: http://127.0.0.1:$PORT\$" "$CONFIG/tunnel.yml" 2>/dev/null; then
+        if curl --fail --silent --retry 5 --retry-connrefused "http://127.0.0.1:$PUBLIC_PORT/v1/health" >/dev/null; then
+            sed -i "s|service: http://127.0.0.1:$PORT\$|service: http://127.0.0.1:$PUBLIC_PORT|" "$CONFIG/tunnel.yml"
+            /usr/local/bin/cloudflared --config "$CONFIG/tunnel.yml" tunnel ingress validate
+            systemctl restart agent-orange-tunnel.service
+            echo "The public route now has its own address."
+        else
+            echo "The public route stays where it is, as this release doesn't listen on port $PUBLIC_PORT yet. Run this again after the next update." >&2
+        fi
+    fi
     echo
-    echo "Done. The services and updater are refreshed, and the public route is as it was."
+    echo "Done. The services and updater are refreshed."
     exit 0
 fi
 
@@ -138,7 +158,7 @@ tunnel: $tunnel_id
 credentials-file: $CONFIG/tunnel.json
 ingress:
   - hostname: $HOSTNAME_PUBLIC
-    service: http://127.0.0.1:$PORT
+    service: http://127.0.0.1:$PUBLIC_PORT
   - service: http_status:404
 EOF
 chown root:"$ACCOUNT" "$CONFIG/tunnel.yml"

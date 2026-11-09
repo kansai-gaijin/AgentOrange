@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode, header::AUTHORIZATION},
 };
@@ -23,11 +23,19 @@ const MAX_FAILED_PAIRINGS: u32 = 5;
 const MAX_FAILED_PAIRINGS_IN_ALL: u32 = 100;
 const FAILED_PAIRING_WINDOW: Duration = Duration::from_secs(60);
 
+/// Which of the server's addresses a request came in on.
+#[derive(Clone, Copy)]
+pub enum Route {
+    /// Cloudflare's tunnel, which says who's calling and overwrites anything a caller claims.
+    Public,
+    /// Everything else, such as Tailscale, where a caller can send any header it likes.
+    Local,
+}
+
 /// Counts wrong pairing keys per caller, so one caller guessing can't keep everyone else from
 /// pairing, with a much higher limit overall against guessing from many addresses at once.
-/// Requests all arrive through a local route. Cloudflare says who's calling and overwrites
-/// anything a caller claims, and requests with no such header can only have come over Tailscale,
-/// from machines already on the owner's tailnet, so those share one count.
+/// Only the public route can say who's calling. Requests on the other can only come from this
+/// machine or the owner's tailnet, so those share one count.
 #[derive(Default)]
 pub struct PairingLimit {
     window_started: Option<Instant>,
@@ -90,6 +98,7 @@ pub struct PairResponse {
 
 pub async fn pair(
     State(state): State<Arc<AppState>>,
+    Extension(route): Extension<Route>,
     headers: HeaderMap,
     Json(request): Json<PairRequest>,
 ) -> Result<Json<PairResponse>, StatusCode> {
@@ -98,10 +107,13 @@ pub async fn pair(
         .as_deref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let name = clean_name(&request.name)?;
-    let caller = headers
-        .get("cf-connecting-ip")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("no-proxy");
+    let caller = match route {
+        Route::Public => headers
+            .get("cf-connecting-ip")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("public"),
+        Route::Local => "local",
+    };
 
     {
         let mut limit = state.pairing_limit.lock().unwrap();
@@ -125,8 +137,12 @@ pub async fn pair(
         .install
         .as_deref()
         .zip(request.address.as_deref())
-        .map(|(install, address)| sha256(&format!("{install}
-{address}")));
+        .map(|(install, address)| {
+            sha256(&format!(
+                "{install}
+{address}"
+            ))
+        });
 
     // Pairing again from the same PC at the same address ends the login it had there, which it
     // may no longer be able to read, rather than leaving that one working too. One statement, so

@@ -4,7 +4,7 @@ mod sync;
 use std::sync::{Arc, Mutex};
 
 use axum::{
-    Router,
+    Extension, Router,
     extract::State,
     http::{HeaderMap, HeaderValue, StatusCode},
     middleware::map_response,
@@ -57,28 +57,45 @@ async fn main() {
         pairing_limit: Mutex::new(devices::PairingLimit::default()),
     });
 
-    let app = Router::new()
-        .route("/v1/health", get(health))
-        .route("/v1/pair", post(devices::pair))
-        .route("/v1/version", get(version))
-        .route("/v1/sync", post(sync::sync))
-        .route("/v1/devices", get(devices::list))
-        .route(
-            "/v1/devices/{id}",
-            patch(devices::rename).delete(devices::remove),
-        )
-        .layer(map_response(mark_as_ours))
-        .with_state(state);
+    let app = |route: devices::Route| {
+        Router::new()
+            .route("/v1/health", get(health))
+            .route("/v1/pair", post(devices::pair))
+            .route("/v1/version", get(version))
+            .route("/v1/sync", post(sync::sync))
+            .route("/v1/devices", get(devices::list))
+            .route(
+                "/v1/devices/{id}",
+                patch(devices::rename).delete(devices::remove),
+            )
+            .layer(map_response(mark_as_ours))
+            .layer(Extension(route))
+            .with_state(state.clone())
+    };
 
-    let listener = tokio::net::TcpListener::bind(&bind)
+    // The public route gets its own address, as only there does Cloudflare say who's calling.
+    // On the other, anyone on the tailnet could claim to be anyone.
+    let local = serve(&bind, app(devices::Route::Local));
+    match std::env::var("AGENT_ORANGE_PUBLIC_BIND")
+        .ok()
+        .filter(|bind| !bind.is_empty())
+    {
+        Some(public_bind) => {
+            let public = serve(&public_bind, app(devices::Route::Public));
+            tokio::try_join!(local, public).expect("server stopped unexpectedly");
+        }
+        None => local.await.expect("server stopped unexpectedly"),
+    }
+}
+
+async fn serve(bind: &str, app: Router) -> std::io::Result<()> {
+    let listener = tokio::net::TcpListener::bind(bind)
         .await
         .unwrap_or_else(|error| panic!("could not listen on {bind}: {error}"));
     println!("Agent Orange server listening on {bind}");
-
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_requested())
         .await
-        .expect("server stopped unexpectedly");
 }
 
 async fn connect(database_url: &str) -> Client {

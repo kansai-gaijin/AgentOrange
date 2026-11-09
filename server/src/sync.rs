@@ -154,13 +154,12 @@ pub async fn sync(
         let current_epoch: String = current.get(0);
         let latest: i64 = current.get(1);
         if *device_epoch == current_epoch && request.cursor > latest {
-            db
-                .execute(
-                    "UPDATE sync_meta SET epoch = md5(random()::text || clock_timestamp()::text)",
-                    &[],
-                )
-                .await
-                .map_err(internal_error)?;
+            db.execute(
+                "UPDATE sync_meta SET epoch = md5(random()::text || clock_timestamp()::text)",
+                &[],
+            )
+            .await
+            .map_err(internal_error)?;
         }
     }
 
@@ -216,19 +215,18 @@ pub async fn sync(
         // It lost to something newer, which this device's cursor may already be past. Without this
         // it would keep its own value, with no sign of that.
         if stored == 0 {
-            db
-                .execute(
-                    "UPDATE sync_records SET seq = nextval('sync_seq')
+            db.execute(
+                "UPDATE sync_records SET seq = nextval('sync_seq')
                      WHERE collection = $1 AND id = $2 AND (data <> $3 OR deleted <> $4)",
-                    &[
-                        &change.collection,
-                        &change.id,
-                        &change.data,
-                        &change.deleted,
-                    ],
-                )
-                .await
-                .map_err(internal_error)?;
+                &[
+                    &change.collection,
+                    &change.id,
+                    &change.data,
+                    &change.deleted,
+                ],
+            )
+            .await
+            .map_err(internal_error)?;
         }
     }
 
