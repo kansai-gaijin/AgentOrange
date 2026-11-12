@@ -42,7 +42,16 @@ public sealed class LocalDatabase
     private const string EngineField = "engine";
     private const string GameTypeField = "gameType";
     private const string RepoUrlField = "repoUrl";
-    private static readonly string[] ProjectFields = [NameField, EngineField, GameTypeField, RepoUrlField];
+    private const string StageField = "stage";
+    private static readonly string[] ProjectFields = [NameField, EngineField, GameTypeField, RepoUrlField, StageField];
+
+    public static readonly string[] Stages = ["Alpha", "Beta", "Demo", "Production"];
+
+    /// <summary>How far along the game is. One that's never been set is at the first.</summary>
+    public string ProjectStage(string projectId) =>
+        GetRecord(FieldsCollection, FieldId(projectId, StageField)) is { } stage && Stages.Contains(stage) ? stage : Stages[0];
+
+    public void SetProjectStage(string projectId, string stage) => SaveRecord(FieldsCollection, FieldId(projectId, StageField), stage);
     private const string ProjectOrderRecord = "project_order";
     private const string UnknownChoice = "Other";
 

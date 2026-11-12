@@ -422,6 +422,7 @@ public partial class MainWindow
     {
         _navigation++;
         _openPageNeedsCheck = false;
+        _openSection = null;
         _openProject = null;
         _pageCheck = null;
         _pageProblem = null;

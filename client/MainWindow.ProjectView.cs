@@ -139,7 +139,7 @@ public partial class MainWindow
                 sorted.IsEnabled = !IsBusy;
                 body.Children.Add(sorted);
             }
-            AddAgent(body, project, folder!, found);
+            AddOverview(body, project);
             AddOwnBusy(body, project);
             AddPageProblem(body);
             return;
