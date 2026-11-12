@@ -239,18 +239,43 @@ internal static partial class GitFolderSafety
 
     // Git opens what it finds among a repo's own files, such as following a branch that's a link.
     // Git LFS keeps its big files in lfs, and moving them onto another drive with a link is normal.
+    // Each directory looked through with no link in it, with when it last changed and what
+    // directories it holds. Adding, removing or renaming anything in a directory changes that
+    // time, so one that hasn't changed only needs those looked at again. A big repo's loose
+    // objects are most of the work otherwise: about 0.2 seconds for 100,000 of them, each time.
+    private static readonly ConcurrentDictionary<string, (DateTime Changed, string[] Directories)> LookedThrough = new(StringComparer.OrdinalIgnoreCase);
+    private const int MaxLookedThrough = 20_000;
+
     private static string? LinkInside(string gitDirectory)
     {
-        var waiting = new Stack<string>();
-        waiting.Push(gitDirectory);
-        while (waiting.TryPop(out var directory))
+        if (LookedThrough.Count > MaxLookedThrough) LookedThrough.Clear();
+        var waiting = new Stack<(string Path, DateTime Changed)>();
+        waiting.Push((gitDirectory, Directory.GetLastWriteTimeUtc(gitDirectory)));
+        while (waiting.TryPop(out var current))
         {
+            var directory = current.Path;
+            if (LookedThrough.TryGetValue(directory, out var seen) && seen.Changed == current.Changed)
+            {
+                foreach (var inside in seen.Directories)
+                {
+                    var info = new DirectoryInfo(inside);
+                    if (!info.Exists) continue;
+                    if (info.Attributes.HasFlag(FileAttributes.ReparsePoint) && info.LinkTarget is not null) return info.FullName;
+                    waiting.Push((inside, info.LastWriteTimeUtc));
+                }
+                continue;
+            }
+
+            var directories = new List<string>();
             foreach (var entry in new DirectoryInfo(directory).EnumerateFileSystemInfos())
             {
                 if (entry.Name == "lfs" && (directory == gitDirectory || IsSubmoduleData(gitDirectory, directory))) continue;
                 if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint) && entry.LinkTarget is not null) return entry.FullName;
-                if (entry.Attributes.HasFlag(FileAttributes.Directory)) waiting.Push(entry.FullName);
+                if (!entry.Attributes.HasFlag(FileAttributes.Directory)) continue;
+                directories.Add(entry.FullName);
+                waiting.Push((entry.FullName, entry.LastWriteTimeUtc));
             }
+            LookedThrough[directory] = (current.Changed, directories.ToArray());
         }
         return null;
     }
