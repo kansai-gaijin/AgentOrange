@@ -508,6 +508,10 @@ public partial class MainWindow : Window
         {
             return Dialogs.Confirm($"A repo is being created on GitHub. {action} could leave it there with no project pointing at it. Do it anyway?");
         }
+        if (AnAgentIsWorking)
+        {
+            return Dialogs.Confirm($"An agent is still working. {action} stops it partway through. Its conversation so far is kept. Do it anyway?");
+        }
         return true;
     }
 

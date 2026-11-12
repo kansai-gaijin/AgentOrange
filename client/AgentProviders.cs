@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -187,6 +188,18 @@ public sealed partial class AgentProviders(LocalDatabase database, string agentF
         {
             process?.Dispose();
         }
+    }
+
+    /// <summary>For a conversation in a project's folder, with each message sent on the program's input.</summary>
+    public static ProcessStartInfo SessionStartInfo(AgentProvider provider, string arguments, string folder)
+    {
+        var info = StartInfo(provider, arguments, hidden: true);
+        info.WorkingDirectory = folder;
+        info.RedirectStandardInput = true;
+        info.StandardInputEncoding = new UTF8Encoding(false);
+        info.StandardOutputEncoding = Encoding.UTF8;
+        info.StandardErrorEncoding = Encoding.UTF8;
+        return info;
     }
 
     // Goes through cmd because npm installs these programs as .cmd files.
