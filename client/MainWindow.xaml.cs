@@ -136,6 +136,7 @@ public partial class MainWindow : Window
                 {
                     knownRecords = latest;
                     RefreshProjects();
+                    if (Settings.Visibility == Visibility.Visible) Settings.RefreshIfApprovalsChanged();
                 }
 
                 // Folders don't sync, and a clone there can finish at any time. A page that lost

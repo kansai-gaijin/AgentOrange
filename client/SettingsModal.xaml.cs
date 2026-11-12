@@ -77,10 +77,7 @@ public partial class SettingsModal : UserControl
             _sync.StatusChanged += () => _refreshServerPage?.Invoke();
 
             // Another PC changed the approvals, so show them.
-            _sync.RecordsChanged += _ =>
-            {
-                if (_currentPage.Name == "Approvals") ShowPage(_currentPage);
-            };
+            _sync.RecordsChanged += _ => RefreshIfApprovalsChanged();
         }
     }
 
@@ -236,31 +233,67 @@ public partial class SettingsModal : UserControl
     private static readonly string[] ApprovalChoices = ["Ask", "Allow", "Block"];
     private static readonly JsonSerializerOptions ApprovalJson = new(JsonSerializerDefaults.Web);
 
+    // What the approvals page shows, so it's only drawn again when they've changed.
+    private ApprovalSettings? _shownApprovals;
+
+    // Each approval is a record of its own, so two PCs changing different ones keep both. They
+    // were all one record before, which still counts for any that haven't been changed since.
+    private const string OldApprovalsRecord = "approvals";
+
+    private static string ApprovalRecord(string name) => $"approvals.{name}";
+
     private ApprovalSettings LoadApprovals()
     {
-        var stored = Database.GetRecord("settings", "approvals");
-        if (string.IsNullOrEmpty(stored)) return DefaultApprovals;
-        try
+        var old = DefaultApprovals;
+        if (Database.GetRecord("settings", OldApprovalsRecord) is { Length: > 0 } stored)
         {
-            return JsonSerializer.Deserialize<ApprovalSettings>(stored, ApprovalJson) ?? DefaultApprovals;
+            try
+            {
+                old = JsonSerializer.Deserialize<ApprovalSettings>(stored, ApprovalJson) ?? DefaultApprovals;
+            }
+            catch (JsonException error)
+            {
+                AppLog.Write($"Skipped unreadable approval settings: {error.Message}");
+            }
         }
-        catch (JsonException error)
-        {
-            AppLog.Write($"Skipped unreadable approval settings: {error.Message}");
-            return DefaultApprovals;
-        }
+
+        string Read(string name, string fallback) => Database.GetRecord("settings", ApprovalRecord(name)) is { Length: > 0 } value ? value : fallback;
+        return new ApprovalSettings(
+            Read(nameof(ApprovalSettings.DefaultMode), old.DefaultMode),
+            Read(nameof(ApprovalSettings.FileEdits), old.FileEdits),
+            Read(nameof(ApprovalSettings.ShellCommands), old.ShellCommands),
+            Read(nameof(ApprovalSettings.WebAccess), old.WebAccess),
+            Read(nameof(ApprovalSettings.AgentsCanStartEditors), old.AgentsCanStartEditors ? "1" : "0") == "1");
     }
 
-    // Approvals sync, because they're how agents should behave on every PC.
+    // Approvals sync, because they're how agents should behave on every PC. Only the ones that
+    // changed are saved, so another PC's change to the rest isn't undone.
     private void SaveApprovals(ApprovalSettings approvals)
     {
-        Database.SaveRecord("settings", "approvals", JsonSerializer.Serialize(approvals, ApprovalJson));
+        var current = LoadApprovals();
+        void Save(string name, string value, string was)
+        {
+            if (value != was) Database.SaveRecord("settings", ApprovalRecord(name), value);
+        }
+        Save(nameof(ApprovalSettings.DefaultMode), approvals.DefaultMode, current.DefaultMode);
+        Save(nameof(ApprovalSettings.FileEdits), approvals.FileEdits, current.FileEdits);
+        Save(nameof(ApprovalSettings.ShellCommands), approvals.ShellCommands, current.ShellCommands);
+        Save(nameof(ApprovalSettings.WebAccess), approvals.WebAccess, current.WebAccess);
+        Save(nameof(ApprovalSettings.AgentsCanStartEditors), approvals.AgentsCanStartEditors ? "1" : "0", current.AgentsCanStartEditors ? "1" : "0");
+        _shownApprovals = LoadApprovals();
         _ = Sync.SyncNowAsync();
+    }
+
+    /// <summary>Another PC, or the window that syncs, may have changed the approvals being shown.</summary>
+    public void RefreshIfApprovalsChanged()
+    {
+        if (_currentPage.Name == "Approvals" && LoadApprovals() != _shownApprovals) ShowPage(_currentPage);
     }
 
     private UIElement[] ApprovalsPage()
     {
         var approvals = LoadApprovals();
+        _shownApprovals = approvals;
         var startEditors = Toggle(approvals.AgentsCanStartEditors);
         startEditors.Checked += (_, _) => SaveApprovals(LoadApprovals() with { AgentsCanStartEditors = true });
         startEditors.Unchecked += (_, _) => SaveApprovals(LoadApprovals() with { AgentsCanStartEditors = false });
