@@ -80,6 +80,90 @@ public static class ProjectImages
         }
     }
 
+    // A picture on a board is kept whole, and only made smaller: this is its longest side at most.
+    private const int BoardLongestSide = 1600;
+    private const int BoardShortestTry = 200;
+
+    /// <summary>Makes a picture file small enough to sync, in its own shape. Null if it isn't a usable image.</summary>
+    public static byte[]? PrepareForBoard(string path)
+    {
+        try
+        {
+            var decodeWidth = 0;
+            int orientation;
+            using (var file = File.OpenRead(path))
+            {
+                var frame = BitmapDecoder.Create(file, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None).Frames[0];
+                orientation = ReadOrientation(frame);
+                var longest = Math.Max(frame.PixelWidth, frame.PixelHeight);
+                if (longest > BoardLongestSide) decodeWidth = (int)Math.Ceiling(frame.PixelWidth * (double)BoardLongestSide / longest);
+            }
+
+            using var picture = File.OpenRead(path);
+            var source = new BitmapImage();
+            source.BeginInit();
+            source.CacheOption = BitmapCacheOption.OnLoad;
+            source.StreamSource = picture;
+            source.DecodePixelWidth = decodeWidth;
+            source.EndInit();
+            source.Freeze();
+
+            return PrepareForBoard(orientation > 1 ? new TransformedBitmap(source, UprightTransform(orientation)) : source, keepSeeThrough: true);
+        }
+        catch (Exception error) when (IsImageFailure(error))
+        {
+            AppLog.Write($"Couldn't use that image: {error.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>The same for a picture already open, such as one that was copied.</summary>
+    public static byte[]? PrepareForBoard(BitmapSource source, bool keepSeeThrough)
+    {
+        try
+        {
+            var longest = Math.Max(source.PixelWidth, source.PixelHeight);
+            if (longest == 0) return null;
+
+            // Smaller each time round, until it fits.
+            for (var side = Math.Min(longest, BoardLongestSide); side >= Math.Min(longest, BoardShortestTry); side = side * 2 / 3)
+            {
+                var scale = (double)side / longest;
+                var sized = side < longest ? new TransformedBitmap(source, new ScaleTransform(scale, scale)) : source;
+
+                if (keepSeeThrough && HasSeeThrough(sized))
+                {
+                    var png = new PngBitmapEncoder();
+                    png.Frames.Add(BitmapFrame.Create(sized));
+                    using var stream = new MemoryStream();
+                    png.Save(stream);
+                    if (stream.Length <= MaxImageBytes) return stream.ToArray();
+                }
+
+                BitmapSource flat = keepSeeThrough ? OverBackground(sized) : new FormatConvertedBitmap(sized, PixelFormats.Bgr24, null, 0);
+                foreach (var quality in JpegQualities)
+                {
+                    var encoder = new JpegBitmapEncoder { QualityLevel = quality };
+                    encoder.Frames.Add(BitmapFrame.Create(flat));
+                    using var stream = new MemoryStream();
+                    encoder.Save(stream);
+                    if (stream.Length <= MaxImageBytes) return stream.ToArray();
+                }
+            }
+
+            AppLog.Write("That image was too detailed to fit, even small and at low quality.");
+            return null;
+        }
+        catch (Exception error) when (IsImageFailure(error))
+        {
+            AppLog.Write($"Couldn't use that image: {error.Message}");
+            return null;
+        }
+    }
+
+    private static bool HasSeeThrough(BitmapSource image) =>
+        image.Format == PixelFormats.Bgra32 || image.Format == PixelFormats.Pbgra32 || image.Format == PixelFormats.Rgba64 || image.Format == PixelFormats.Prgba64;
+
     private static bool IsImageFailure(Exception error) =>
         error is NotSupportedException or FileFormatException or IOException or ArgumentException or UriFormatException or InvalidOperationException or UnauthorizedAccessException or OutOfMemoryException or System.Runtime.InteropServices.ExternalException;
 

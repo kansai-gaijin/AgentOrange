@@ -34,7 +34,7 @@ internal sealed partial class NodeCanvas : Border
     private const string TextKind = "text";
 
     // Every kind there is, in the order the list shows them.
-    private static readonly (string Kind, string Name)[] Kinds = [(TitleKind, "Title"), (TextKind, "Rich Text")];
+    private static readonly (string Kind, string Name)[] Kinds = [(TitleKind, "Title"), (TextKind, "Rich Text"), (ImageKind, "Image")];
     private const string TopPin = "top";
     private const string BottomPin = "bottom";
     private const string ResizePart = "resize";
@@ -50,8 +50,9 @@ internal sealed partial class NodeCanvas : Border
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     // Text is a Rich Text node's words, as the XAML of a document. Width is how wide it was dragged
-    // to be, and Height how tall at least, as it's never shorter than its words.
-    private sealed record NodeData(string Board, double X, double Y, string Title, string? Kind = null, double? Width = null, string? Text = null, double? Height = null);
+    // to be, and Height how tall at least, as it's never shorter than its words. Aspect is an Image
+    // node's shape, its height over its width, so it's the right size before its picture arrives.
+    private sealed record NodeData(string Board, double X, double Y, string Title, string? Kind = null, double? Width = null, string? Text = null, double? Height = null, double? Aspect = null);
 
     // A link saved before nodes had a pin on top joins the bottom ones.
     private sealed record LinkData(string Board, string From, string To, string? FromPin = null, string? ToPin = null);
@@ -66,6 +67,7 @@ internal sealed partial class NodeCanvas : Border
         public TextBlock? Title { get; set; } // A Title node's words.
         public RichTextBox? Rich { get; set; } // A Rich Text node's words.
         public TextBlock? Empty { get; set; } // What a Rich Text node shows while it has none.
+        public Image? Picture { get; set; } // An Image node's picture.
     }
 
     private sealed class LinkView
@@ -153,6 +155,9 @@ internal sealed partial class NodeCanvas : Border
         LostMouseCapture += (_, _) => EndGesture(null);
         PreviewMouseWheel += Zoomed;
         KeyDown += KeyPressed;
+        AllowDrop = true;
+        DragOver += FilesDraggedOver;
+        Drop += FilesDropped;
     }
 
     /// <summary>In the middle of something that drawing the page again would cut short.</summary>
@@ -166,6 +171,7 @@ internal sealed partial class NodeCanvas : Border
         _world.Children.Clear();
         _nodes.Clear();
         _links.Clear();
+        ReadPictures();
 
         foreach (var (id, text) in _database.ListProjectRecords(LocalDatabase.NodesCollection, _projectId))
         {
@@ -202,7 +208,8 @@ internal sealed partial class NodeCanvas : Border
     private NodeView AddNodeView(string id, NodeData data)
     {
         var isText = data.Kind == TextKind;
-        var inside = new Border { Padding = new Thickness(10, isText ? 12 : 6, 10, 12) };
+        var isImage = data.Kind == ImageKind;
+        var inside = new Border { Padding = isImage ? new Thickness(0) : new Thickness(10, isText ? 12 : 6, 10, 12) };
         var parts = new Grid { Children = { inside } };
         var box = new Border
         {
@@ -214,12 +221,16 @@ internal sealed partial class NodeCanvas : Border
             CornerRadius = new CornerRadius(8),
             Child = parts,
         };
-        var view = new NodeView { Id = id, Data = data, Box = box, Inside = inside, Pins = isText ? [TopPin, BottomPin] : [BottomPin] };
+        var view = new NodeView { Id = id, Data = data, Box = box, Inside = inside, Pins = isText || isImage ? [TopPin, BottomPin] : [BottomPin] };
         box.Tag = view;
 
         if (isText)
         {
             AddTextParts(view, parts);
+        }
+        else if (isImage)
+        {
+            AddImageParts(view, parts);
         }
         else
         {
@@ -331,6 +342,11 @@ internal sealed partial class NodeCanvas : Border
             if (_editing == view && !IsInToolbar(lost.NewFocus)) StopEditing(keep: true);
         };
 
+        AddGrips(parts);
+    }
+
+    private static void AddGrips(Grid parts)
+    {
         // The right edge, the bottom edge and the corner between them, dragged to resize it.
         parts.Children.Add(new Border
         {
@@ -400,6 +416,12 @@ internal sealed partial class NodeCanvas : Border
 
     private void AddNodeAt(Point where, string kind)
     {
+        if (kind == ImageKind)
+        {
+            AddImageFromFile(where);
+            return;
+        }
+
         var node = AddNodeView(NewId(), new NodeData(_board, Math.Round(where.X - 80), Math.Round(where.Y - 27), "", kind, kind == TextKind ? TextWidth : null));
         _hint.Visibility = Visibility.Collapsed;
         SaveNode(node);
@@ -409,6 +431,12 @@ internal sealed partial class NodeCanvas : Border
 
     private void StartEditing(NodeView node)
     {
+        if (node.Picture is not null)
+        {
+            ReplaceImage(node);
+            return;
+        }
+
         if (node.Rich is { } rich)
         {
             _editing = node;
@@ -609,6 +637,7 @@ internal sealed partial class NodeCanvas : Border
             {
                 _world.Children.Remove(node.Box);
                 _database.SaveRecord(LocalDatabase.NodesCollection, id, "", deleted: true);
+                if (node.Picture is not null) ForgetPicture(id);
                 foreach (var link in _links.Values.Where(link => link.Data.From == id || link.Data.To == id).ToList()) RemoveLink(link);
             }
         }
@@ -734,7 +763,7 @@ internal sealed partial class NodeCanvas : Border
             Select(node.Id);
             _gesture = Gesture.Resize;
             _heldEdge = part;
-            _heldFrom = new Point(node.Box.ActualWidth, node.Box.ActualHeight);
+            _heldFrom = node.Picture is null ? new Point(node.Box.ActualWidth, node.Box.ActualHeight) : new Point(node.Inside.ActualWidth, node.Inside.ActualHeight);
         }
         else if (node is not null && press.OriginalSource is Ellipse { Tag: string pin })
         {
@@ -837,6 +866,9 @@ internal sealed partial class NodeCanvas : Border
                     PlaceLinksOf(moved);
                 }
                 break;
+            case Gesture.Resize when _held is { Picture: not null } pictured:
+                ResizeImage(pictured, inWorld);
+                break;
             case Gesture.Resize when _held is { } resized:
                 if (_heldEdge != ResizePart + "-h")
                 {
@@ -930,6 +962,10 @@ internal sealed partial class NodeCanvas : Border
         {
             OpenAddList();
             pressed.Handled = true;
+        }
+        else if (pressed.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            pressed.Handled = PasteImage();
         }
         else if (pressed.Key == Key.Delete)
         {

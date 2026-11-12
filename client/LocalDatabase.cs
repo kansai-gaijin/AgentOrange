@@ -45,7 +45,9 @@ public sealed class LocalDatabase
     // A project's boards. Each node and link is named after its project, then a colon, like its fields and images.
     public const string NodesCollection = "nodes";
     public const string NodeLinksCollection = "node_links";
-    private static readonly string[] BoardCollections = [NodesCollection, NodeLinksCollection];
+    // An Image node's picture, named as its node is, and kept apart so moving the node doesn't send it again.
+    public const string NodeImagesCollection = "node_images";
+    private static readonly string[] BoardCollections = [NodesCollection, NodeLinksCollection, NodeImagesCollection];
 
     /// <summary>Everything in a collection that belongs to one project, deleted ones left out.</summary>
     public List<(string Id, string Data)> ListProjectRecords(string collection, string projectId)
@@ -743,7 +745,7 @@ public sealed class LocalDatabase
     private static string? ProjectIdOf(SyncChange change) => change.Collection switch
     {
         ProjectsCollection or EnginesCollection => change.Id,
-        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection => change.Id.Split(':')[0],
+        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection => change.Id.Split(':')[0],
         _ => null,
     };
 
