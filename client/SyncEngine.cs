@@ -26,6 +26,10 @@ public sealed class SyncEngine
     private int _batchLimit = BatchSize;
     private int _batchBytes = MaxBatchBytes;
 
+    // A dev build refused by a server on a release keeps its changes queued until it restarts,
+    // as setting them aside would leave them for good over what may only be a format difference.
+    private bool _holdingChanges;
+
     public SyncEngine(LocalDatabase database, ServerConnection server, DeviceSession devices, string databasePath)
     {
         // Several windows can share a database, and only one of them needs to do this at a time.
@@ -176,7 +180,7 @@ public sealed class SyncEngine
                 // this just asks again. Sending queued images would be thrown away every time.
                 // The database work runs off the window's thread, as batches can be large.
                 var (limit, bytes) = (_batchLimit, _batchBytes);
-                var batch = _devices.VersionsDiffer || onlyReceive ? [] : await Task.Run(() => _database.ReadOutbox(limit, bytes));
+                var batch = _devices.VersionsDiffer || onlyReceive || _holdingChanges ? [] : await Task.Run(() => _database.ReadOutbox(limit, bytes));
                 onlyReceive = false;
                 var response = await _devices.SyncAsync(cursor, batch, epoch);
                 if (response is null)
@@ -191,6 +195,13 @@ public sealed class SyncEngine
                         return;
                     }
                     if (!_devices.LastSyncRefused || batch.Count == 0) return;
+                    if (_devices.LastRefusalMayBeFormat)
+                    {
+                        AppLog.Write("A server on a release refused this dev build's changes, so they stay queued until the app restarts.");
+                        _holdingChanges = true;
+                        onlyReceive = true;
+                        continue;
+                    }
 
                     // Working through what it refuses shouldn't hold up what other PCs have sent.
                     NarrowDownRefused(batch);
@@ -253,7 +264,7 @@ public sealed class SyncEngine
                 LastSynced = DateTimeOffset.UtcNow;
 
                 if (!response.HasMore) _database.RemoveSetting(refetchSetting);
-                if (!response.HasMore && _database.CountOutbox() == 0) break;
+                if (!response.HasMore && (_holdingChanges || _database.CountOutbox() == 0)) break;
             }
         }
         finally

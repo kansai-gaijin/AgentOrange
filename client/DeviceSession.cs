@@ -43,6 +43,12 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     /// <summary>The server's last answer was that it won't take what it was sent, so sending it again won't help.</summary>
     public bool LastSyncRefused { get; private set; }
 
+    /// <summary>
+    /// This is a dev build, which sends no version, and a server on a release refused what it sent.
+    /// That can just be the two reading changes differently, so it says nothing about the changes.
+    /// </summary>
+    public bool LastRefusalMayBeFormat { get; private set; }
+
     /// <summary>The last sync ran out of time, which sending less may not.</summary>
     public bool LastSyncTimedOut { get; private set; }
 
@@ -124,6 +130,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     {
         // Only an answer to this request counts. A timeout says nothing about what was sent.
         LastSyncRefused = false;
+        LastRefusalMayBeFormat = false;
         LastSyncTimedOut = false;
         try
         {
@@ -136,6 +143,8 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
             // change. Anything else is just a sync that didn't go through, and everything stays queued.
             LastSyncRefused = response is { StatusCode: HttpStatusCode.BadRequest or HttpStatusCode.RequestEntityTooLarge or HttpStatusCode.UnprocessableEntity }
                 && response.Headers.Contains("X-Agent-Orange");
+            LastRefusalMayBeFormat = LastSyncRefused && ClientVersion is null
+                && !(response!.Headers.TryGetValues("X-Agent-Orange", out var mark) && mark.Contains("dev"));
             bool? versionsDiffer = response is null || !response.Headers.Contains("X-Agent-Orange") ? null
                 : response.StatusCode == HttpStatusCode.UpgradeRequired ? true
                 : response.IsSuccessStatusCode ? false

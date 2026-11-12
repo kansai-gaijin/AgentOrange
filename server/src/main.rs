@@ -135,10 +135,17 @@ async fn shutdown_requested() {
 }
 
 /// Clients only give up a login when told to by this server, and not by a proxy on the way to it.
+/// A local build says so, as a dev build of the app can only trust its refusals. Releases say no
+/// more than they always have.
 async fn mark_as_ours(mut response: Response) -> Response {
+    let mark = if option_env!("AGENT_ORANGE_VERSION").is_some() {
+        "1"
+    } else {
+        "dev"
+    };
     response
         .headers_mut()
-        .insert("x-agent-orange", HeaderValue::from_static("1"));
+        .insert("x-agent-orange", HeaderValue::from_static(mark));
     response
 }
 
