@@ -3,10 +3,14 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 
 namespace AgentOrange;
+
+/// <summary>One of a project's stages, such as Alpha. Its id never changes, so it can be renamed.</summary>
+public sealed record Stage(string Id, string Name, double Order);
 
 public sealed record Project(string Id, string Name, string Engine, string EngineVersion, string GameType, string RepoUrl, DateTimeOffset CreatedAt)
 {
@@ -47,7 +51,10 @@ public sealed class LocalDatabase
     public const string NodeLinksCollection = "node_links";
     // An Image node's picture, named as its node is, and kept apart so moving the node doesn't send it again.
     public const string NodeImagesCollection = "node_images";
-    private static readonly string[] BoardCollections = [NodesCollection, NodeLinksCollection, NodeImagesCollection];
+    // A project's stages, each a record of its own named after the project, then a colon.
+    private const string StagesCollection = "project_stages";
+    // All that's deleted with a project.
+    private static readonly string[] BoardCollections = [NodesCollection, NodeLinksCollection, NodeImagesCollection, StagesCollection];
 
     /// <summary>Everything in a collection that belongs to one project, deleted ones left out.</summary>
     public List<(string Id, string Data)> ListProjectRecords(string collection, string projectId)
@@ -76,13 +83,188 @@ public sealed class LocalDatabase
     private const string StageField = "stage";
     private static readonly string[] ProjectFields = [NameField, EngineField, GameTypeField, RepoUrlField, StageField];
 
-    public static readonly string[] Stages = ["Alpha", "Beta", "Demo", "Production"];
+    // What a project has until its stages are changed.
+    private static readonly string[] FirstStages = ["Alpha", "Beta", "Demo", "Production"];
+    public const int LongestStageName = 24;
 
-    /// <summary>How far along the game is. One that's never been set is at the first.</summary>
-    public string ProjectStage(string projectId) =>
-        GetRecord(FieldsCollection, FieldId(projectId, StageField)) is { } stage && Stages.Contains(stage) ? stage : Stages[0];
+    private sealed record StageData(string Name, double Order);
 
-    public void SetProjectStage(string projectId, string stage) => SaveRecord(FieldsCollection, FieldId(projectId, StageField), stage);
+    /// <summary>
+    /// A project's stages, in order. They work like branches that live only here: everything on a
+    /// project's boards belongs to one stage, and one stage can be copied over another.
+    /// </summary>
+    public List<Stage> ProjectStages(string projectId)
+    {
+        var stages = new List<Stage>();
+        foreach (var (id, data) in ListProjectRecords(StagesCollection, projectId))
+        {
+            try
+            {
+                if (JsonSerializer.Deserialize<StageData>(data, JsonOptions) is { Name.Length: > 0 } saved) stages.Add(new Stage(id[(projectId.Length + 1)..], saved.Name, saved.Order));
+            }
+            catch (JsonException)
+            {
+                // It arrived from another PC and can't be read, so it's left out.
+            }
+        }
+        if (stages.Count == 0) return [.. FirstStages.Select((name, at) => new Stage(name.ToLowerInvariant(), name, at))];
+        return [.. stages.OrderBy(stage => stage.Order).ThenBy(stage => stage.Id, StringComparer.Ordinal)];
+    }
+
+    private void SaveStage(string projectId, Stage stage) =>
+        SaveRecord(StagesCollection, $"{projectId}:{stage.Id}", JsonSerializer.Serialize(new StageData(stage.Name, stage.Order), JsonOptions));
+
+    // The first ones aren't saved until something about them changes. Two PCs doing this at once save the same.
+    private void KeepFirstStages(string projectId)
+    {
+        if (ListProjectRecords(StagesCollection, projectId).Count > 0) return;
+        foreach (var stage in ProjectStages(projectId)) SaveStage(projectId, stage);
+    }
+
+    /// <summary>The id of the stage a project is at. One that's never been set is at the first.</summary>
+    public string ProjectStage(string projectId)
+    {
+        var stages = ProjectStages(projectId);
+        var saved = GetRecord(FieldsCollection, FieldId(projectId, StageField));
+        // Before stages had ids, its name was saved.
+        return (stages.FirstOrDefault(stage => stage.Id == saved) ?? stages.FirstOrDefault(stage => string.Equals(stage.Name, saved, StringComparison.OrdinalIgnoreCase)) ?? stages[0]).Id;
+    }
+
+    public void SetProjectStage(string projectId, string stageId) => SaveRecord(FieldsCollection, FieldId(projectId, StageField), stageId);
+
+    /// <summary>What's wrong with a name for a stage, or null when it can be used.</summary>
+    public string? StageNameProblem(string projectId, string name, string? renaming = null) =>
+        name.Length == 0 ? "Give it a name."
+        : name.Length > LongestStageName ? $"Keep the name to {LongestStageName} letters."
+        : ProjectStages(projectId).Any(stage => stage.Id != renaming && string.Equals(stage.Name, name, StringComparison.OrdinalIgnoreCase)) ? "There's already a stage with that name."
+        : null;
+
+    /// <summary>Adds a stage after the others, empty or as a copy of another, and returns its id.</summary>
+    public string AddStage(string projectId, string name, string? copyOf = null)
+    {
+        KeepFirstStages(projectId);
+        var id = Guid.NewGuid().ToString("N")[..8];
+        SaveStage(projectId, new Stage(id, name, ProjectStages(projectId).Max(stage => stage.Order) + 1));
+        if (copyOf is not null) CopyStage(projectId, copyOf, id);
+        return id;
+    }
+
+    public void RenameStage(string projectId, string stageId, string name)
+    {
+        KeepFirstStages(projectId);
+        if (ProjectStages(projectId).FirstOrDefault(stage => stage.Id == stageId) is { } stage) SaveStage(projectId, stage with { Name = name });
+    }
+
+    /// <summary>Removes a stage and everything in it. The last one can't be removed.</summary>
+    public void DeleteStage(string projectId, string stageId)
+    {
+        KeepFirstStages(projectId);
+        var current = ProjectStage(projectId);
+        var left = ProjectStages(projectId).Where(stage => stage.Id != stageId).ToList();
+        if (left.Count == 0) return;
+
+        DeleteStageContents(projectId, stageId);
+        SaveRecord(StagesCollection, $"{projectId}:{stageId}", "", deleted: true);
+        if (current == stageId) SetProjectStage(projectId, left[0].Id);
+    }
+
+    /// <summary>What a board is called in its records: its stage, then the part of the project it's for.</summary>
+    public static string BoardKey(string stageId, string part) => $"{stageId}/{part}";
+
+    // A node's or link's record with its board changed from one stage to another, or null when it isn't in the first.
+    private static JsonObject? Restaged(string data, string from, string to)
+    {
+        try
+        {
+            if (JsonNode.Parse(data) is JsonObject record && record["board"]?.GetValue<string>() is { } board && board.StartsWith(from, StringComparison.Ordinal))
+            {
+                record["board"] = to + board[from.Length..];
+                return record;
+            }
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException or FormatException)
+        {
+            // It arrived from another PC and can't be read.
+        }
+        return null;
+    }
+
+    private void DeleteStageContents(string projectId, string stageId)
+    {
+        var stage = stageId + "/";
+        foreach (var (id, data) in ListProjectRecords(NodesCollection, projectId))
+        {
+            if (Restaged(data, stage, stage) is null) continue;
+            SaveRecord(NodesCollection, id, "", deleted: true);
+            if (!string.IsNullOrEmpty(GetRecord(NodeImagesCollection, id))) SaveRecord(NodeImagesCollection, id, "", deleted: true);
+        }
+        foreach (var (id, data) in ListProjectRecords(NodeLinksCollection, projectId))
+        {
+            if (Restaged(data, stage, stage) is not null) SaveRecord(NodeLinksCollection, id, "", deleted: true);
+        }
+    }
+
+    /// <summary>Makes one stage a copy of another. What was in it is deleted, and the other is left as it was.</summary>
+    public void CopyStage(string projectId, string fromId, string toId)
+    {
+        if (fromId == toId) return;
+        DeleteStageContents(projectId, toId);
+
+        // Every copy is a record of its own, so changing one stage afterwards never changes the other.
+        var (from, to) = (fromId + "/", toId + "/");
+        var copies = new Dictionary<string, string>();
+        foreach (var (id, data) in ListProjectRecords(NodesCollection, projectId))
+        {
+            if (Restaged(data, from, to) is not { } copy) continue;
+            var copyId = $"{projectId}:{Guid.NewGuid():N}";
+            copies[id] = copyId;
+            SaveRecord(NodesCollection, copyId, copy.ToJsonString());
+            if (GetRecord(NodeImagesCollection, id) is { Length: > 0 } picture) SaveRecord(NodeImagesCollection, copyId, picture);
+        }
+        foreach (var (_, data) in ListProjectRecords(NodeLinksCollection, projectId))
+        {
+            if (Restaged(data, from, to) is not { } copy) continue;
+            try
+            {
+                if (copy["from"]?.GetValue<string>() is not { } start || copy["to"]?.GetValue<string>() is not { } end) continue;
+                if (!copies.TryGetValue(start, out var copiedStart) || !copies.TryGetValue(end, out var copiedEnd)) continue;
+                copy["from"] = copiedStart;
+                copy["to"] = copiedEnd;
+                SaveRecord(NodeLinksCollection, $"{projectId}:{Guid.NewGuid():N}", copy.ToJsonString());
+            }
+            catch (Exception error) when (error is InvalidOperationException or FormatException)
+            {
+                // Not a link that can be read.
+            }
+        }
+    }
+
+    /// <summary>
+    /// Boards made before stages were kept apart say only which part of the project they're for.
+    /// They become the boards of the stage the project is at, which is where they were being seen.
+    /// </summary>
+    public void GiveBoardsAStage(string projectId)
+    {
+        string? stage = null;
+        foreach (var collection in new[] { NodesCollection, NodeLinksCollection })
+        {
+            foreach (var (id, data) in ListProjectRecords(collection, projectId))
+            {
+                try
+                {
+                    if (JsonNode.Parse(data) is not JsonObject record || record["board"]?.GetValue<string>() is not { } board || board.Contains('/')) continue;
+                    stage ??= ProjectStage(projectId);
+                    record["board"] = BoardKey(stage, board);
+                    SaveRecord(collection, id, record.ToJsonString());
+                }
+                catch (Exception error) when (error is JsonException or InvalidOperationException or FormatException)
+                {
+                    // It arrived from another PC and can't be read.
+                }
+            }
+        }
+    }
+
     private const string ProjectOrderRecord = "project_order";
     private const string UnknownChoice = "Other";
 
@@ -745,7 +927,7 @@ public sealed class LocalDatabase
     private static string? ProjectIdOf(SyncChange change) => change.Collection switch
     {
         ProjectsCollection or EnginesCollection => change.Id,
-        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection => change.Id.Split(':')[0],
+        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection => change.Id.Split(':')[0],
         _ => null,
     };
 

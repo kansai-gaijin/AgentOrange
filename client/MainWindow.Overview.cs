@@ -1,6 +1,8 @@
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media;
 using static AgentOrange.Ui;
 
@@ -31,7 +33,7 @@ public partial class MainWindow
     }
 
     private NodeCanvas? OpenBoard(Project project) =>
-        _openSection is { } open && open.ProjectId == project.Id ? _boards.GetValueOrDefault($"{project.Id}|{open.Name}") : null;
+        _openSection is { } open && open.ProjectId == project.Id ? _boards.GetValueOrDefault($"{project.Id}|{_database.ProjectStage(project.Id)}|{open.Name}") : null;
 
     private void AddBoard(StackPanel body, Project project, string name)
     {
@@ -39,8 +41,11 @@ public partial class MainWindow
         body.MaxWidth = double.PositiveInfinity;
         body.Margin = new Thickness(0);
 
-        var key = $"{project.Id}|{name}";
-        if (!_boards.TryGetValue(key, out var board)) board = _boards[key] = new NodeCanvas(_database, project.Id, name.ToLowerInvariant(), () => _ = _sync.SyncNowAsync());
+        // Each stage has a board of its own for this part of the project.
+        _database.GiveBoardsAStage(project.Id);
+        var stage = _database.ProjectStage(project.Id);
+        var key = $"{project.Id}|{stage}|{name}";
+        if (!_boards.TryGetValue(key, out var board)) board = _boards[key] = new NodeCanvas(_database, project.Id, LocalDatabase.BoardKey(stage, name.ToLowerInvariant()), () => _ = _sync.SyncNowAsync());
         var hadFocus = board.IsKeyboardFocusWithin;
         (board.Parent as Panel)?.Children.Remove(board);
 
@@ -98,21 +103,153 @@ public partial class MainWindow
     {
         var current = _database.ProjectStage(project.Id);
         var toggle = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(14, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-        foreach (var stage in LocalDatabase.Stages)
+        foreach (var stage in _database.ProjectStages(project.Id))
         {
             // In the header, so the ones not chosen look like its other buttons.
-            var choice = new Button { Style = (Style)FindResource(stage == current ? "PrimaryButton" : "OverlayButton"), Content = stage, Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
-            AutomationProperties.SetName(choice, stage == current ? $"{stage}, the current stage" : stage);
+            var choice = new Button { Style = (Style)FindResource(stage.Id == current ? "PrimaryButton" : "OverlayButton"), Content = stage.Name, Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
+            AutomationProperties.SetName(choice, stage.Id == current ? $"{stage.Name}, the current stage" : stage.Name);
             choice.Click += (_, _) =>
             {
-                if (stage == current) return;
-                _database.SetProjectStage(project.Id, stage);
+                if (stage.Id == current) return;
+                _database.SetProjectStage(project.Id, stage.Id);
                 _ = _sync.SyncNowAsync();
                 if (_openProject?.Id == project.Id) RenderProjectKeepingFocus(_openProject);
             };
             toggle.Children.Add(choice);
         }
+
+        var manage = new Button { Style = (Style)FindResource("OverlayButton"), Content = "⋯", VerticalAlignment = VerticalAlignment.Center, ToolTip = "Add, rename, copy or delete stages" };
+        AutomationProperties.SetName(manage, "Manage stages");
+        manage.Click += (_, _) => OpenStageMenu(manage, project);
+        toggle.Children.Add(manage);
         return toggle;
+    }
+
+    // Stages work like branches kept in the project: add one, copy one over another, rename or delete.
+    private void OpenStageMenu(Button under, Project project)
+    {
+        var stages = _database.ProjectStages(project.Id);
+        var currentId = _database.ProjectStage(project.Id);
+        var current = stages.First(stage => stage.Id == currentId);
+
+        var rows = new StackPanel { Width = 320 };
+        var menu = new Popup
+        {
+            PlacementTarget = under,
+            Placement = PlacementMode.Bottom,
+            VerticalOffset = 6,
+            StaysOpen = false,
+            AllowsTransparency = true,
+            Child = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x27, 0x32)),
+                BorderBrush = (Brush)FindResource("ModalBorder"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(14),
+                Child = rows,
+            },
+        };
+
+        void Done()
+        {
+            menu.IsOpen = false;
+            _ = _sync.SyncNowAsync();
+            if (_openProject?.Id == project.Id) RenderProject(_openProject);
+        }
+
+        TextBlock Label(string text, double above = 0) => new() { Text = text, FontSize = 12, FontWeight = FontWeights.Medium, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(0, above, 0, 6), TextWrapping = TextWrapping.Wrap };
+        WrapPanel Buttons(params Button[] buttons)
+        {
+            var row = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
+            foreach (var button in buttons)
+            {
+                button.Margin = new Thickness(0, 0, 6, 6);
+                row.Children.Add(button);
+            }
+            return row;
+        }
+
+        // A new stage, empty or starting as a copy of the one the project is at, the way a branch does.
+        var problem = ProblemText();
+        problem.Margin = new Thickness(0, 6, 0, 0);
+        var newName = Field("");
+        AutomationProperties.SetName(newName, "Name of the new stage");
+        void Add(bool asCopy)
+        {
+            var name = newName.Text.Trim();
+            if (_database.StageNameProblem(project.Id, name) is { } wrong)
+            {
+                ShowProblem(problem, wrong);
+                return;
+            }
+            _database.SetProjectStage(project.Id, _database.AddStage(project.Id, name, asCopy ? current.Id : null));
+            Done();
+        }
+        rows.Children.Add(Label("New stage"));
+        rows.Children.Add(newName);
+        rows.Children.Add(Buttons(ControlButton($"Add as a copy of {current.Name}", () => Add(asCopy: true)), ControlButton("Add empty", () => Add(asCopy: false))));
+        rows.Children.Add(problem);
+
+        var line = Divider();
+        line.Margin = new Thickness(0, 10, 0, 12);
+        rows.Children.Add(line);
+
+        // The stage the project is at.
+        var renameProblem = ProblemText();
+        renameProblem.Margin = new Thickness(0, 6, 0, 0);
+        var rename = Field(current.Name);
+        AutomationProperties.SetName(rename, $"Name of {current.Name}");
+        void Rename()
+        {
+            var name = rename.Text.Trim();
+            if (name == current.Name)
+            {
+                menu.IsOpen = false;
+                return;
+            }
+            if (_database.StageNameProblem(project.Id, name, renaming: current.Id) is { } wrong)
+            {
+                ShowProblem(renameProblem, wrong);
+                return;
+            }
+            _database.RenameStage(project.Id, current.Id, name);
+            Done();
+        }
+        rename.KeyDown += (_, pressed) =>
+        {
+            if (pressed.Key != Key.Enter) return;
+            pressed.Handled = true;
+            Rename();
+        };
+        rows.Children.Add(Label($"Rename {current.Name}"));
+        rows.Children.Add(rename);
+        rows.Children.Add(Buttons(ControlButton("Rename", Rename)));
+        rows.Children.Add(renameProblem);
+
+        var others = stages.Where(stage => stage.Id != current.Id).ToList();
+        if (others.Count > 0)
+        {
+            rows.Children.Add(Label($"Copy {current.Name} over another stage", above: 10));
+            rows.Children.Add(Buttons([.. others.Select(other => ControlButton(other.Name, () =>
+            {
+                menu.IsOpen = false;
+                if (!Dialogs.Confirm($"Make {other.Name} a copy of {current.Name}?\n\nEverything in {other.Name} now is deleted and replaced. {current.Name} stays as it is.")) return;
+                _database.CopyStage(project.Id, current.Id, other.Id);
+                Done();
+            }))]));
+
+            rows.Children.Add(Buttons(Clickable("DangerButton", $"Delete {current.Name}", () =>
+            {
+                menu.IsOpen = false;
+                if (!Dialogs.Confirm($"Delete {current.Name} and everything in it?\n\nThis can't be undone. The other stages stay as they are.")) return;
+                _database.DeleteStage(project.Id, current.Id);
+                Done();
+            })));
+        }
+
+        menu.Opened += (_, _) => newName.Focus();
+        menu.IsOpen = true;
     }
 
     private Border ProgressTile(string label, int count) => new()

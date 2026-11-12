@@ -211,13 +211,23 @@ internal static partial class Headless
     private static IEnumerable<T> Visible<T>(DependencyObject root) where T : FrameworkElement =>
         Descendants(root).OfType<T>().Where(element => element.IsVisible);
 
-    private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
+    // A menu that opens over the window, such as the list of nodes to add, isn't inside it: it's a
+    // small window of its own. Looking through the window looks through those too.
+    private static IEnumerable<DependencyObject> Descendants(DependencyObject root) =>
+        root is Window
+            ? Below(root).Concat(PresentationSource.CurrentSources.OfType<HwndSource>()
+                .Select(source => source.RootVisual)
+                .Where(over => over is not null and not Window)
+                .SelectMany(over => Below(over!)))
+            : Below(root);
+
+    private static IEnumerable<DependencyObject> Below(DependencyObject root)
     {
         for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
         {
             var child = VisualTreeHelper.GetChild(root, i);
             yield return child;
-            foreach (var deeper in Descendants(child)) yield return deeper;
+            foreach (var deeper in Below(child)) yield return deeper;
         }
     }
 

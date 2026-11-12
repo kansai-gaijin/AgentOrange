@@ -201,7 +201,7 @@ public partial class MainWindow
             BackToProjects();
             RefreshProjects(); // Cards say how long operations are going, and that may have changed.
         });
-        // Inside one of its parts, the header is only the way back out to the project.
+        // Inside one of its parts, the header is the way back out to the project, and the stage.
         if (_openSection is { } section && section.ProjectId == project.Id)
         {
             var toProject = OverlayButton($"← {project.Name}", () =>
@@ -209,10 +209,15 @@ public partial class MainWindow
                 _openSection = null;
                 if (_openProject?.Id == project.Id) RenderProject(_openProject);
             });
-            toProject.HorizontalAlignment = HorizontalAlignment.Left;
-            toProject.VerticalAlignment = VerticalAlignment.Top;
-            toProject.Margin = new Thickness(26, 18, 0, 0);
-            hero.Children.Add(toProject);
+            // And which stage's it is, as each stage has its own.
+            hero.Children.Add(new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(26, 18, 0, 0),
+                Children = { toProject, StageToggle(project) },
+            });
             return hero;
         }
 
