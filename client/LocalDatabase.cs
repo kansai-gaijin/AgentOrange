@@ -57,7 +57,9 @@ public sealed class LocalDatabase
 
     private readonly string _connectionString;
     private readonly string _claimTurnName;
-    private readonly Dictionary<string, (string Token, Mutex Alive, string ProjectId)> _holds = new(StringComparer.OrdinalIgnoreCase);
+    // Count is how many of this window's operations hold it, as two can claim one target for the
+    // same project, and the first to finish mustn't let it go under the other.
+    private readonly Dictionary<string, (string Token, Mutex Alive, string ProjectId, int Count)> _holds = new(StringComparer.OrdinalIgnoreCase);
 
     private const int DamagedErrorCode = 11;
     private const int NotADatabaseErrorCode = 26;
@@ -277,6 +279,16 @@ public sealed class LocalDatabase
         }
     }
 
+    /// <summary>
+    /// The project moved to a different repo, whose engine version can be lower, and the synced one
+    /// only ever goes up. A rename is the same repo, and keeps it.
+    /// </summary>
+    public void StartEngineVersionOver(string projectId)
+    {
+        if (GetRecord(EnginesCollection, projectId) is not null) SaveRecord(EnginesCollection, projectId, "", deleted: true);
+        ForgetEngineVersionHere(projectId);
+    }
+
     /// <summary>True if there was one to forget.</summary>
     public bool ForgetEngineVersionHere(string projectId)
     {
@@ -422,7 +434,7 @@ public sealed class LocalDatabase
         lock (_holds)
         {
             if (!_holds.TryGetValue(HoldKey(FolderHold, folder), out var held)) return;
-            _holds[HoldKey(FolderHold, folder)] = (held.Token, held.Alive, to.Id);
+            _holds[HoldKey(FolderHold, folder)] = held with { ProjectId = to.Id };
             token = held.Token;
         }
 
@@ -534,7 +546,16 @@ public sealed class LocalDatabase
     // can be told apart, and doesn't hold anything up.
     private void Hold(string kind, string target, Project claimant)
     {
-        Release(kind, target);
+        // A claim only gets here if nothing else has it, so one this window has is for this project.
+        lock (_holds)
+        {
+            if (_holds.TryGetValue(HoldKey(kind, target), out var already) && already.ProjectId == claimant.Id)
+            {
+                _holds[HoldKey(kind, target)] = already with { Count = already.Count + 1 };
+                return;
+            }
+        }
+        Release(kind, target, all: true);
 
         var token = Guid.NewGuid().ToString("N");
         var alive = new Mutex(false, HoldHandleName(token));
@@ -547,15 +568,21 @@ public sealed class LocalDatabase
         command.Parameters.AddWithValue("$id", claimant.Id);
         command.Parameters.AddWithValue("$name", claimant.Name);
         command.ExecuteNonQuery();
-        lock (_holds) _holds[HoldKey(kind, target)] = (token, alive, claimant.Id);
+        lock (_holds) _holds[HoldKey(kind, target)] = (token, alive, claimant.Id, 1);
     }
 
-    private void Release(string kind, string target)
+    private void Release(string kind, string target, bool all = false)
     {
-        (string Token, Mutex Alive, string ProjectId) held;
+        (string Token, Mutex Alive, string ProjectId, int Count) held;
         lock (_holds)
         {
-            if (!_holds.Remove(HoldKey(kind, target), out held)) return;
+            if (!_holds.TryGetValue(HoldKey(kind, target), out held)) return;
+            if (!all && held.Count > 1)
+            {
+                _holds[HoldKey(kind, target)] = held with { Count = held.Count - 1 };
+                return;
+            }
+            _holds.Remove(HoldKey(kind, target));
         }
         held.Alive.Dispose();
 

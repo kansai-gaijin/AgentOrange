@@ -29,7 +29,8 @@ public static partial class GitTools
         if (view.ExitCode == 0 && WritePermission().IsMatch(view.Output))
         {
             var viaGit = await CheckGitCanReachAsync(url, folder, useFolderSettings);
-            return viaGit.Access == RepoAccess.Offline ? new RepoCheck(RepoAccess.GitOffline) : viaGit;
+            var id = RepoIdField().Match(view.Output) is { Success: true } found ? found.Groups[1].Value : null;
+            return (viaGit.Access == RepoAccess.Offline ? new RepoCheck(RepoAccess.GitOffline) : viaGit) with { RepoId = id };
         }
 
         var readOnly = view.ExitCode == 0;
@@ -146,7 +147,7 @@ public static partial class GitTools
         headCheck is { ExitCode: 1 } || (headCheck is { ExitCode: 128 } && headCheck.Errors.Contains("not a git repository", StringComparison.OrdinalIgnoreCase));
 
     private static Task<CommandResult?> ViewRepoAsync(string slug, string? token) =>
-        RunAsync("gh", Path.GetTempPath(), token, ["repo", "view", slug, "--json", "viewerPermission,isArchived"]);
+        RunAsync("gh", Path.GetTempPath(), token, ["repo", "view", slug, "--json", "viewerPermission,isArchived,id"]);
 
     private static async Task<List<string>> SignedInAccountsAsync()
     {
@@ -231,6 +232,42 @@ public static partial class GitTools
     }
 
     private enum PushAnswer { CanPush, Refused, CantTell }
+
+    /// <summary>
+    /// The push check's scratch folder is removed when it's done, but not if the app crashes during
+    /// it. One left from a day ago can't be in use by another window. Only an empty git init is
+    /// taken to be one, so a clone working in Temp under the same kind of name is left alone.
+    /// </summary>
+    public static void RemoveLeftoverPushChecks()
+    {
+        IEnumerable<string> folders;
+        try
+        {
+            folders = Directory.EnumerateDirectories(Path.GetTempPath(), ".ao-*").ToList();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+        foreach (var folder in folders)
+        {
+            try
+            {
+                if (!CloneWorkingFolderName().IsMatch(Path.GetFileName(folder))) continue;
+                if (DateTime.UtcNow - Directory.GetCreationTimeUtc(folder) < TimeSpan.FromDays(1)) continue;
+                var git = Path.Combine(folder, ".git");
+                var onlyGit = Directory.EnumerateFileSystemEntries(folder).All(entry => Path.GetFileName(entry) == ".git");
+                if (!onlyGit || !Directory.Exists(git) || SshConfigFile.IsLink(folder) || SshConfigFile.IsLink(git)) continue;
+                var objects = Path.Combine(git, "objects");
+                if (Directory.Exists(objects) && Directory.EnumerateFiles(objects, "*", SearchOption.AllDirectories).Any()) continue;
+                Directory.Delete(folder, recursive: true);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                AppLog.Write($"Couldn't remove a push check left in Temp: {error.Message}");
+            }
+        }
+    }
 
     // Reading works with a read-only deploy key too, so this asks whether Git could push. It's a
     // dry run of deleting a branch that doesn't exist, which GitHub has to authorize the same way

@@ -411,13 +411,19 @@ public partial class ProjectSettingsModal : UserControl
                 : $"{holder} already uses that repo. A repo can only be one project.";
         }
 
+        // The old repo's engine version can be higher, and would stay. Unknown keeps it, as it was.
+        var before = Find(projectId)?.RepoUrl ?? "";
+        var anotherRepo = before.Length > 0 && await GitTools.IsAnotherRepoAsync(before, currentUrl) == true;
+
         // Another window can have got to it during all of that.
         if (Find(projectId) is not { } project) return null;
         if (await _database.ClaimRepoAsync(currentUrl, project) is { } other) return LocalDatabase.RefusalFor(other, $"{other.Name} already uses that repo. A repo can only be one project.");
         try
         {
             if (ProjectIsBusy(projectId)) return "This project is busy. Change its repo when that finishes, or put the old one back.";
+            var moving = anotherRepo && GitTools.SameRepo(project.RepoUrl, before);
             Update(projectId, current => current with { RepoUrl = currentUrl });
+            if (moving) _database.StartEngineVersionOver(projectId);
         }
         finally
         {

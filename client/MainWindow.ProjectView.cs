@@ -322,10 +322,10 @@ public partial class MainWindow
             var linked = _database.GetProjectFolder(project.Id);
             if (linked is not null) AddFolderSettingsRow(rows, project, linked, found);
 
-            if (linked is not null && found.FolderExists && found.FolderProblem is not null && GitTools.ConnectingCanFix(found.FolderProblem))
+            if (linked is not null && found.FolderExists && found.FolderProblem is { ConnectingCanFix: true } shown)
             {
                 // The project moved repos elsewhere, and this PC may only get in the way this folder does.
-                var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linked));
+                var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linked, shown));
                 connect.IsEnabled = !busy;
                 rows.Add(Row("Keep using this folder", "If the project moved repos, this points the folder's remote at the new one, the same way it connects now. Its files don't change.", connect));
             }
@@ -482,15 +482,15 @@ public partial class MainWindow
         var rows = new List<FrameworkElement>();
 
         // Its SSH settings have to run before it can be told whether this is even the right repo.
-        if (linkedFolder is not null && found.FolderProblem?.StartsWith(GitTools.CantTellSshSettings, StringComparison.Ordinal) == true)
+        if (linkedFolder is not null && found.FolderProblem?.Kind == FolderProblemKind.NeedsSettingsApproval)
         {
             AddFolderSettingsRow(rows, project, linkedFolder, found);
         }
 
-        if (linkedFolder is not null && found.FolderExists && found.FolderProblem is not null && GitTools.ConnectingCanFix(found.FolderProblem))
+        if (linkedFolder is not null && found.FolderExists && found.FolderProblem is { ConnectingCanFix: true } shown)
         {
             // The project may have moved to a new repo on another PC, with this copy's work unpushed.
-            var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linkedFolder));
+            var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linkedFolder, shown));
             connect.IsEnabled = !busy;
             rows.Add(Row("Keep using this folder", "If the project moved repos, this points the folder's remote at the new one. Its files don't change.", connect));
         }

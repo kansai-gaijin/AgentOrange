@@ -87,7 +87,7 @@ public partial class MainWindow
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
         var folderShown = folderExists && check.ShowsFolder;
         var usable = CanWorkIn(project, check);
-        var folderProblem = folderShown ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl) : null;
+        var folderProblem = folderShown ? await GitTools.FolderProblemDetailAsync(folder!, project.RepoUrl) : null;
 
         // It may have been connected while offline, when nothing could say the repo had files.
         var askAboutRepo = usable && check.GitHubSeesRepo;
@@ -96,8 +96,9 @@ public partial class MainWindow
 
         // A folder with its own commits may not be this project at all, however it was connected.
         // This keeps saying so until the two share a commit, which is then remembered for that
-        // folder and repo, as this asks GitHub each time until it does.
-        var repoKey = GitTools.RepoKey(project.RepoUrl);
+        // folder and repo, as this asks GitHub each time until it does. Along with GitHub's ID for the
+        // repo, as one deleted and made again under the same name is a different repo.
+        var repoKey = check.RepoId is { } repoId ? $"{GitTools.RepoKey(project.RepoUrl)}|{repoId}" : GitTools.RepoKey(project.RepoUrl);
         var history = askAboutRepo && folderExists && folderProblem is null && !lacksFiles && !_database.FolderSharesRepo(folder!, repoKey)
             ? await GitTools.CompareFolderHistoryAsync(folder!, project.RepoUrl)
             : FolderHistory.CantTell;
@@ -231,12 +232,12 @@ public partial class MainWindow
         // the folder and repo it asked about, which can have changed since.
         var problem = pageAnswer is { } answer && answer.Folder == folder && GitTools.SameRepo(answer.RepoUrl, project.RepoUrl)
             ? answer.Problem
-            : await GitTools.FolderProblemAsync(folder, project.RepoUrl);
+            : await GitTools.FolderProblemDetailAsync(folder, project.RepoUrl);
         if (problem is not null)
         {
             // Seen to be on another repo, so what it found earlier can't speak for this project now.
             // Anything else, such as an unplugged drive, says nothing about that.
-            if (GitTools.SeenOnAnotherRepo(problem) && _engineReads[projectId] == read && _database.GetProjectFolder(projectId) == folder && _database.ForgetEngineVersionHere(projectId)) RefreshProjects();
+            if (problem.SeenOnAnotherRepo && _engineReads[projectId] == read && _database.GetProjectFolder(projectId) == folder && _database.ForgetEngineVersionHere(projectId)) RefreshProjects();
             return;
         }
 
@@ -253,7 +254,7 @@ public partial class MainWindow
         RefreshProjects();
     }
 
-    private sealed record FolderAnswer(string Folder, string RepoUrl, string? Problem);
+    private sealed record FolderAnswer(string Folder, string RepoUrl, FolderProblem? Problem);
 
     // What a page's check found, all from one look.
     private sealed record PageCheck(
@@ -261,7 +262,7 @@ public partial class MainWindow
         string? Folder,
         FolderGitSettings? SettingsToAllow,
         bool FolderExists,
-        string? FolderProblem,
+        FolderProblem? FolderProblem,
         bool FolderLacksFiles,
         bool FolderMayNotMatch,
         string? FolderEngine,
@@ -300,7 +301,7 @@ public partial class MainWindow
         // The folder may have changed too, as anything can happen to it while no one's looking.
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
         var folderProblem = folderExists && latest.ShowsFolder
-            ? await GitTools.FolderProblemAsync(folder!, project.RepoUrl)
+            ? await GitTools.FolderProblemDetailAsync(folder!, project.RepoUrl)
             : null;
         var changed = latest != shown.Repo || folder != shown.Folder || folderExists != shown.FolderExists || folderProblem != shown.FolderProblem;
         if (changed && _openProject?.Id == project.Id && !IsBusy) await RecheckIfStillOpenAsync(project.Id);

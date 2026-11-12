@@ -39,6 +39,9 @@ public enum RepoAccess
 /// <summary>Account is the signed-in GitHub account this applies to, when there is one.</summary>
 public sealed record RepoCheck(RepoAccess Access, string? Account = null)
 {
+    /// <summary>GitHub's own ID for the repo, which a new repo made under the same name doesn't share.</summary>
+    public string? RepoId { get; init; }
+
     /// <summary>The check got a clear answer that this PC can't use the repo, as opposed to not getting one.</summary>
     public bool IsDenied => Access is RepoAccess.ReadOnly or RepoAccess.Archived or RepoAccess.Restricted or RepoAccess.NotFound or RepoAccess.NotFoundOrNoAccess or RepoAccess.GitReadOnly or RepoAccess.BadUrl;
 
@@ -101,7 +104,24 @@ public sealed record FolderRepo(bool InsideRepo, bool IsRepoRoot, string? Origin
     public string? OriginToCompare => GitHubOrigin ?? Origin;
 
     /// <summary>The remote's SSH settings can't be understood until the person allows them to run.</summary>
-    public bool NeedsSettingsApproval => Problem?.StartsWith(GitTools.CantTellSshSettings, StringComparison.Ordinal) == true;
+    public bool NeedsSettingsApproval { get; init; }
+}
+
+public enum FolderProblemKind { Other, NeedsSettingsApproval, OnAnotherRepo, MayBeOnAnotherRepo, NotConnected }
+
+/// <summary>
+/// Why a folder isn't this project's, with what the app offers going by its kind, not its wording.
+/// Origin is the remote it was seen on, for comparing to, or empty if it had none.
+/// </summary>
+public sealed record FolderProblem(string Text, FolderProblemKind Kind = FolderProblemKind.Other, string? Origin = null)
+{
+    /// <summary>It's on another repo, or none, which is what moving it to this one fixes.</summary>
+    public bool ConnectingCanFix => Kind is FolderProblemKind.OnAnotherRepo or FolderProblemKind.MayBeOnAnotherRepo or FolderProblemKind.NotConnected;
+
+    /// <summary>Really seen not to be on this repo, and not just thought to be with no way to check.</summary>
+    public bool SeenOnAnotherRepo => Kind is FolderProblemKind.OnAnotherRepo or FolderProblemKind.NotConnected;
+
+    public override string ToString() => Text;
 }
 
 public enum LeftoverClone { Gone, TryAgain, KeptFinished }
@@ -547,6 +567,9 @@ public static partial class GitTools
 
     [GeneratedRegex(@"""isArchived""\s*:\s*true")]
     private static partial Regex ArchivedRepo();
+
+    [GeneratedRegex(@"""id""\s*:\s*""([^""]+)""")]
+    private static partial Regex RepoIdField();
 
     [GeneratedRegex(@"^user\s+(\S+)", RegexOptions.Multiline | RegexOptions.IgnoreCase)]
     private static partial Regex SshUser();

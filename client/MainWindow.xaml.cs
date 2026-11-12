@@ -93,6 +93,7 @@ public partial class MainWindow : Window
                 AppLog.Write($"Couldn't tidy up the settings kept for folders: {error.Message}");
             }
         });
+        _ = Task.Run(GitTools.RemoveLeftoverPushChecks);
         Settings.Folders = folders;
         Settings.Database = _database;
         Settings.Providers = new AgentProviders(_database, folders.AgentFolder);
@@ -152,7 +153,7 @@ public partial class MainWindow : Window
                     else if (_pageCheck is not null && DownloadStateOf(folder) != _shownDownloadState)
                     {
                         // A remote move waited for another window's download, which has now finished.
-                        if (_pageCheck.FolderProblem == GitTools.WaitingForDownload) _ = RecheckIfStillOpenAsync(open.Id);
+                        if (_pageCheck.FolderProblem?.Text == GitTools.WaitingForDownload) _ = RecheckIfStillOpenAsync(open.Id);
                         else RenderProjectKeepingFocus(open);
                     }
                 }

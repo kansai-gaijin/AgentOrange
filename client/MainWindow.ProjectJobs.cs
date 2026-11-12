@@ -434,7 +434,8 @@ public partial class MainWindow
         await job.EndWithResultAsync(await GitTools.RepairRemoteAsync(folder, project.RepoUrl));
     }
 
-    private async Task PointFolderAtRepoAsync(Project project, string folder)
+    // Only the remote the page showed is moved, as that's what the person saw and said yes to.
+    private async Task PointFolderAtRepoAsync(Project project, string folder, FolderProblem shown)
     {
         using var job = StartJob(project, "Connecting the folder…");
         if (job is null) return;
@@ -456,7 +457,7 @@ public partial class MainWindow
             return;
         }
 
-        await job.EndWithResultAsync(await GitTools.PointFolderAtRepoAsync(folder, project.RepoUrl));
+        await job.EndWithResultAsync(await GitTools.PointFolderAtRepoAsync(folder, project.RepoUrl, shown.Origin ?? ""));
     }
 
     // Says who's cloning as well as where, so another window of the app can tell it isn't abandoned.

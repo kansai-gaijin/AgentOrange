@@ -210,7 +210,10 @@ public static partial class GitTools
         return (name.Success ? name.Groups[1].Value.Trim() : null, user.Success ? user.Groups[1].Value.Trim() : null);
     }
 
-    /// <summary>Points a folder at a repo after the project moved, whatever remote it had. Its files don't change.</summary>
+    /// <summary>
+    /// Points a folder at a repo after the project moved. Its files don't change. Given the remote it was
+    /// seen on, or empty for none, it's left as it is if that's changed since.
+    /// </summary>
     public static async Task<GitResult> PointFolderAtRepoAsync(string folder, string repoUrl, string? onlyIfOnRepo = null)
     {
         if (RepoUrlProblem(repoUrl) is { } problem) return new GitResult(false, problem);
@@ -219,11 +222,13 @@ public static partial class GitTools
         if (state is null) return new GitResult(false, "Git wasn't found on this PC.");
         if (state.Problem is not null) return new GitResult(false, state.Problem);
         if (state.IsInsideAnotherRepo) return new GitResult(false, "That folder is inside another Git repo.");
-        if (state.Origin is null && onlyIfOnRepo is not null) return new GitResult(false, RemoteChangedMeanwhile);
+        // Empty means it was seen with no remote, and anything else is the remote it was seen on.
+        if (state.Origin is null && onlyIfOnRepo is { Length: > 0 }) return new GitResult(false, RemoteChangedMeanwhile);
+        if (state.Origin is not null && onlyIfOnRepo is { Length: 0 }) return new GitResult(false, RemoteChangedMeanwhile);
         if (state.Origin is null) return await ConnectFolderAsync(folder, await ReachableFormAsync(repoUrl) ?? repoUrl);
 
         var newRemote = state.GitHubOrigin is not null ? SameWayTo(state, repoUrl) : await ReachableFormAsync(repoUrl) ?? repoUrl;
-        return await MoveOriginAsync(folder, newRemote, onlyIfOnRepo ?? state.OriginToCompare!) is { } moveProblem
+        return await MoveOriginAsync(folder, newRemote, onlyIfOnRepo is { Length: > 0 } ? onlyIfOnRepo : state.OriginToCompare!) is { } moveProblem
             ? new GitResult(false, moveProblem)
             : new GitResult(true, repoUrl);
     }
@@ -569,6 +574,18 @@ public static partial class GitTools
     // answered, with a name or by saying the repo's gone, and anything else isn't kept or relied on.
     // Found says GitHub gave a name, which a repo that's gone, or one this account can't see, doesn't get.
     private readonly record struct RepoAnswer(string Current, bool Answered, bool Found);
+
+    /// <summary>
+    /// Whether a project going from one address to another is moving to a different repo, and not
+    /// to a new name of the same one. Null if GitHub didn't say.
+    /// </summary>
+    public static async Task<bool?> IsAnotherRepoAsync(string before, string after)
+    {
+        if (SameRepo(before, after)) return false;
+        var answers = await Task.WhenAll(CurrentRepoUrlAsync(before), CurrentRepoUrlAsync(after));
+        if (!answers[0].Answered || !answers[1].Answered) return null;
+        return !SameRepo(answers[0].Current, answers[1].Current);
+    }
 
     private static async Task<RepoAnswer> CurrentRepoUrlAsync(string url)
     {

@@ -37,7 +37,8 @@ public static partial class GitTools
         {
             var remote = WithoutCredentials(origin.Output.Trim());
             var (gitHubForm, aliasProblem) = await GitHubFormAsync(remote, folder);
-            return new FolderRepo(true, true, remote, aliasProblem, gitHubForm) { OriginWithLogin = origin.Output.Trim() };
+            // The only problem reading an alias has is SSH settings that haven't been allowed to run.
+            return new FolderRepo(true, true, remote, aliasProblem, gitHubForm) { OriginWithLogin = origin.Output.Trim(), NeedsSettingsApproval = aliasProblem is not null };
         }
 
         // Git documents exit code 2 for a remote that doesn't exist.
@@ -47,29 +48,33 @@ public static partial class GitTools
     }
 
     /// <summary>Checks a folder really holds this project's repo. Returns a problem to show, or null if it does.</summary>
-    public static async Task<string?> FolderProblemAsync(string folder, string repoUrl)
+    public static async Task<string?> FolderProblemAsync(string folder, string repoUrl) => (await FolderProblemDetailAsync(folder, repoUrl))?.Text;
+
+    /// <summary>The same check, with what kind of problem it is and the remote it saw, for deciding what to offer.</summary>
+    public static async Task<FolderProblem?> FolderProblemDetailAsync(string folder, string repoUrl)
     {
-        if (!await FolderExistsAsync(folder)) return "That folder doesn't exist.";
+        if (!await FolderExistsAsync(folder)) return new FolderProblem("That folder doesn't exist.");
         if (repoUrl.Length == 0) return null;
 
         var state = await InspectFolderAsync(folder);
-        if (state is null) return "Git wasn't found on this PC.";
-        if (state.Problem is not null) return state.Problem;
-        if (state.IsInsideAnotherRepo) return "That folder is inside a repo. Choose the repo's top folder.";
-        if (state.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
+        if (state is null) return new FolderProblem("Git wasn't found on this PC.");
+        if (state.Problem is not null) return new FolderProblem(state.Problem, state.NeedsSettingsApproval ? FolderProblemKind.NeedsSettingsApproval : FolderProblemKind.Other);
+        if (state.IsInsideAnotherRepo) return new FolderProblem("That folder is inside a repo. Choose the repo's top folder.");
+        if (state.Origin is null) return new FolderProblem("That folder isn't connected to a repo, so it can't be this project.", FolderProblemKind.NotConnected, "");
 
         // The same owner and name somewhere that isn't really GitHub, or in a way Git won't use.
-        if (RepoUrlProblem(state.OriginToCompare!) is not null) return $"That folder uses a different repo address, which isn't one GitHub uses: {state.Origin}";
+        // Connecting it points it at the real repo, after the same check of its history.
+        if (RepoUrlProblem(state.OriginToCompare!) is not null) return new FolderProblem($"That folder uses a different repo address, which isn't one GitHub uses: {state.Origin}", FolderProblemKind.OnAnotherRepo, state.OriginToCompare);
 
         if (!SameRepo(state.OriginToCompare!, repoUrl))
         {
             var (renamed, moveProblem, originAnswered, originNow) = await MoveIfRepoRenamedAsync(folder, state, repoUrl);
-            if (moveProblem is not null) return moveProblem;
+            if (moveProblem is not null) return new FolderProblem(moveProblem);
             if (renamed)
             {
                 state = await InspectFolderAsync(folder);
-                if (state?.Problem is { } unreadable) return unreadable;
-                if (state?.Origin is null) return "That folder isn't connected to a repo, so it can't be this project.";
+                if (state?.Problem is { } unreadable) return new FolderProblem(unreadable, state.NeedsSettingsApproval ? FolderProblemKind.NeedsSettingsApproval : FolderProblemKind.Other);
+                if (state?.Origin is null) return new FolderProblem("That folder isn't connected to a repo, so it can't be this project.", FolderProblemKind.NotConnected, "");
             }
 
             // The project can be on an old name too, and it moves on when it's next opened, and the folder with it.
@@ -79,10 +84,11 @@ public static partial class GitTools
                 if (!SameRepo(projectRepo.Current, state.OriginToCompare!) && !(projectRepo.Answered && originAnswered && SameRepo(projectRepo.Current, originNow)))
                 {
                     // Only certain if this repo was really found. GitHub would then have led the folder's name to it, if it were one.
-                    if (projectRepo.Found && originAnswered) return $"That folder uses a different repo: {state.Origin}";
-                    return projectRepo.Answered
-                        ? $"{MayUseDifferentRepo}{state.Origin}. GitHub can't find this project's repo, so it can't be told whether that folder is it under another name."
-                        : $"{MayUseDifferentRepo}{state.Origin}. {NoAnswerAboutOlderName}";
+                    if (projectRepo.Found && originAnswered) return new FolderProblem($"That folder uses a different repo: {state.Origin}", FolderProblemKind.OnAnotherRepo, state.OriginToCompare);
+                    var why = projectRepo.Answered
+                        ? "GitHub can't find this project's repo, so it can't be told whether that folder is it under another name."
+                        : NoAnswerAboutOlderName;
+                    return new FolderProblem($"That folder may use a different repo: {state.Origin}. {why}", FolderProblemKind.MayBeOnAnotherRepo, state.OriginToCompare);
                 }
             }
         }
@@ -164,23 +170,18 @@ public static partial class GitTools
         return FolderHistory.SharesNothing;
     }
 
-    /// <summary>Whether a problem with a folder is that it's on another repo, which is what moving it to this one fixes.</summary>
-    public static bool ConnectingCanFix(string folderProblem) =>
-        folderProblem.StartsWith("That folder uses a different repo", StringComparison.Ordinal)
-        || folderProblem.StartsWith(MayUseDifferentRepo, StringComparison.Ordinal)
-        || folderProblem.StartsWith("That folder isn't connected to a repo", StringComparison.Ordinal);
-
-    /// <summary>Whether a folder was really seen on another repo, and not just thought to be with no way to check.</summary>
-    public static bool SeenOnAnotherRepo(string folderProblem) =>
-        ConnectingCanFix(folderProblem) && !folderProblem.StartsWith(MayUseDifferentRepo, StringComparison.Ordinal);
-
-    private const string MayUseDifferentRepo = "That folder may use a different repo: ";
-
     /// <summary>Whether a repo has anything in it, or null if that couldn't be found out.</summary>
     public static async Task<bool?> RepoHasContentAsync(string url)
     {
         var form = await ReachableFormAsync(url) ?? url;
-        var refs = await RunAsync("git", Path.GetTempPath(), null, ["ls-remote", "--", form], default, await SshSettingsAsync(Path.GetTempPath()));
+        var settings = await SshSettingsAsync(Path.GetTempPath());
+
+        // Just its branches first, which GitHub picks out itself, as a repo can have so many refs
+        // that listing them all runs out of time. Only one with no branches needs the rest looked at.
+        var branches = await RunAsync("git", Path.GetTempPath(), null, ["ls-remote", "--heads", "--", form], default, settings);
+        if (branches is not { ExitCode: 0 }) return null;
+        if (branches.Output.Trim().Length > 0) return true;
+        var refs = await RunAsync("git", Path.GetTempPath(), null, ["ls-remote", "--", form], default, settings);
         return refs is { ExitCode: 0 } ? refs.Output.Trim().Length > 0 : null;
     }
 

@@ -406,6 +406,13 @@ public static partial class GitTools
             if (cancel.IsCancellationRequested) return null; // Whoever asked for this to stop gets told.
             var submodule = Path.GetFullPath(Path.Combine(folder, path));
             if (!await Task.Run(() => File.Exists(Path.Combine(submodule, ".git")) || Directory.Exists(Path.Combine(submodule, ".git")))) continue;
+
+            // Only passed for fetching it, which a submodule doesn't keep, and anything run in it
+            // later would then fail on its deep paths, git status included.
+            if (await RunAsync("git", submodule, "config", "core.longpaths", "true") is not { ExitCode: 0 })
+            {
+                return $"The clone finished, but long paths couldn't be turned on in its submodule {OneLine(path)}. Run git config core.longpaths true in that folder.";
+            }
             if (await FetchSubmodulesAsync(submodule, cancel, progress, depth + 1) is { } further) return further;
             if (cancel.IsCancellationRequested) return null;
             if (await FetchLargeFilesAsync(submodule, cancel, progress) is { } itsLargeFiles) return itsLargeFiles;
