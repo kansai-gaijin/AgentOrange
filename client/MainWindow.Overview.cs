@@ -24,17 +24,18 @@ public partial class MainWindow
             return;
         }
 
-        body.Children.Add(StageToggle(project));
-
-        body.Children.Add(Section("Progress"));
+        var progress = Section("Progress");
+        progress.Margin = new Thickness(0, 24, 0, 10);
+        progress.HorizontalAlignment = HorizontalAlignment.Center;
+        body.Children.Add(progress);
         body.Children.Add(new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Margin = new Thickness(16, 0, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Center,
             Children = { ProgressTile("Tasks done", 0), ProgressTile("Assets delivered", 0) },
         });
 
-        var sections = new WrapPanel { Margin = new Thickness(8, 28, 0, 24) };
+        var sections = new WrapPanel { Margin = new Thickness(0, 28, 0, 24), HorizontalAlignment = HorizontalAlignment.Center };
         foreach (var name in ProjectSections) sections.Children.Add(SectionCard(project, name));
         body.Children.Add(sections);
     }
@@ -42,10 +43,11 @@ public partial class MainWindow
     private StackPanel StageToggle(Project project)
     {
         var current = _database.ProjectStage(project.Id);
-        var toggle = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(16, 20, 0, 0) };
+        var toggle = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(14, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
         foreach (var stage in LocalDatabase.Stages)
         {
-            var choice = new Button { Style = (Style)FindResource(stage == current ? "PrimaryButton" : "ControlButton"), Content = stage, Margin = new Thickness(0, 0, 6, 0), MinWidth = 84, HorizontalContentAlignment = HorizontalAlignment.Center };
+            // In the header, so the ones not chosen look like its other buttons.
+            var choice = new Button { Style = (Style)FindResource(stage == current ? "PrimaryButton" : "OverlayButton"), Content = stage, Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
             AutomationProperties.SetName(choice, stage == current ? $"{stage}, the current stage" : stage);
             choice.Click += (_, _) =>
             {
@@ -108,8 +110,8 @@ public partial class MainWindow
     private void AddSectionPage(StackPanel body, Project project, string name)
     {
         var back = ActionButton("← Overview");
-        back.HorizontalAlignment = HorizontalAlignment.Left;
-        back.Margin = new Thickness(16, 20, 0, 0);
+        back.HorizontalAlignment = HorizontalAlignment.Center;
+        back.Margin = new Thickness(0, 20, 0, 0);
         back.Click += (_, _) =>
         {
             _openSection = null;
@@ -117,9 +119,10 @@ public partial class MainWindow
         };
         body.Children.Add(back);
 
-        body.Children.Add(new TextBlock { Text = name, FontSize = 24, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextStrong"), Margin = new Thickness(16, 16, 0, 0) });
+        body.Children.Add(new TextBlock { Text = name, FontSize = 24, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextStrong"), Margin = new Thickness(0, 16, 0, 0), HorizontalAlignment = HorizontalAlignment.Center });
         var note = CenteredNote("Nothing here yet.");
-        note.Margin = new Thickness(16, 40, 0, 40);
+        note.Margin = new Thickness(0, 40, 0, 40);
+        note.HorizontalAlignment = HorizontalAlignment.Center;
         body.Children.Add(note);
     }
 }

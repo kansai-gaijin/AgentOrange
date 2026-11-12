@@ -67,14 +67,23 @@
             </ScrollViewer>
 
             <Grid Grid.Row="1" Margin="0,12,0,0">
-                <TextBlock x:Name="ServerStatus"
-                           Text="Connecting to server…"
-                           Foreground="{StaticResource TextMuted}"
-                           FontSize="12" />
+                <StackPanel HorizontalAlignment="Left">
+                    <Button x:Name="OpenAgents"
+                            Content="Agents"
+                            Style="{StaticResource ControlButton}"
+                            HorizontalAlignment="Left"
+                            Margin="0,0,0,8"
+                            Click="OpenAgents_Click" />
+                    <TextBlock x:Name="ServerStatus"
+                               Text="Connecting to server…"
+                               Foreground="{StaticResource TextMuted}"
+                               FontSize="12" />
+                </StackPanel>
                 <TextBlock x:Name="VersionLabel"
                            Foreground="{StaticResource TextMuted}"
                            FontSize="12"
-                           HorizontalAlignment="Right" />
+                           HorizontalAlignment="Right"
+                           VerticalAlignment="Bottom" />
             </Grid>
         </Grid>
 

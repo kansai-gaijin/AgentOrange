@@ -30,6 +30,35 @@ public partial class MainWindow
         Closed += (_, _) => _tray?.Dispose();
     }
 
+    // Where agent chats will go. A window of its own, so it can stay beside whatever the main one shows.
+    private Window? _agentsWindow;
+
+    private void OpenAgents_Click(object sender, RoutedEventArgs e)
+    {
+        if (_agentsWindow is null)
+        {
+            _agentsWindow = new Window
+            {
+                Title = "Agents",
+                Width = 900,
+                Height = 640,
+                MinWidth = 480,
+                MinHeight = 360,
+                Background = (System.Windows.Media.Brush)FindResource("ContentBackground"),
+                Icon = Icon,
+            };
+            _agentsWindow.Closed += (_, _) => _agentsWindow = null;
+
+            // Or the app would stay running for it once the main window's gone.
+            Closed += (_, _) => _agentsWindow?.Close();
+            _agentsWindow.Show();
+            return;
+        }
+
+        if (_agentsWindow.WindowState == WindowState.Minimized) _agentsWindow.WindowState = WindowState.Normal;
+        _agentsWindow.Activate();
+    }
+
     private void TakeTrayIfFree() => _tray ??= Tray.TryCreate(ShowFromTray, QuitFromTray);
 
     // False means the window should close the way it usually does.

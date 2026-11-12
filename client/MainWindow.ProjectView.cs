@@ -35,9 +35,9 @@ public partial class MainWindow
         ProjectPage.Children.Clear();
         ProjectPage.Children.Add(ProjectHero(project));
 
-        var body = new StackPanel { Margin = new Thickness(40, 20, 40, 0), MaxWidth = 840, HorizontalAlignment = HorizontalAlignment.Left };
-        body.Children.Add(new TextBlock { Text = project.Summary, Foreground = (Brush)FindResource("TextNormal"), FontSize = 14 });
-        body.Children.Add(new TextBlock { Text = project.RepoUrl, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 4, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = project.RepoUrl });
+        // Stretched up to a limit, which puts it in the middle of a wide window.
+        var body = new StackPanel { Margin = new Thickness(40, 2, 40, 0), MaxWidth = 840 };
+        body.Children.Add(new TextBlock { Text = project.Summary, Foreground = (Brush)FindResource("TextNormal"), FontSize = 14, HorizontalAlignment = HorizontalAlignment.Center });
 
         // Two PCs can each add the same repo before they've synced, and only this can show that.
         if (project.RepoUrl.Length > 0 && _database.ListProjects().FirstOrDefault(other => other.Id != project.Id && GitTools.SameRepo(other.RepoUrl, project.RepoUrl)) is { } twin)
@@ -82,7 +82,6 @@ public partial class MainWindow
         var folder = _database.GetProjectFolder(project.Id);
         if (found.FolderExists && found.FolderProblem is null && !found.FolderLacksFiles)
         {
-            body.Children.Add(new TextBlock { Text = folder, Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = folder });
             if (found.FolderPushesTo is { } pushesTo)
             {
                 body.Children.Add(new TextBlock { Text = $"This folder pushes to {pushesTo}, not this project's repo. That's normal for a fork, but check that it's what you want.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
@@ -171,7 +170,8 @@ public partial class MainWindow
     private Grid ProjectHero(Project project)
     {
         var header = HeaderFor(project.Id);
-        var hero = new Grid { Height = 240 };
+        // Only as tall as a picture needs. Without one it's just room for the title under the buttons.
+        var hero = new Grid { Height = header is null ? 112 : 180 };
         hero.Children.Add(new Border { Background = header is null ? PlaceholderFor(project.Id) : new ImageBrush(header) { Stretch = Stretch.UniformToFill } });
 
         // Keeps the title readable on any picture.
@@ -183,8 +183,9 @@ public partial class MainWindow
             FontSize = 34,
             FontWeight = FontWeights.Bold,
             TextTrimming = TextTrimming.CharacterEllipsis,
+            HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Bottom,
-            Margin = new Thickness(40, 0, 40, 12),
+            Margin = new Thickness(40, 0, 40, 4),
         });
 
         var back = OverlayButton("← Projects", () =>
@@ -192,10 +193,14 @@ public partial class MainWindow
             BackToProjects();
             RefreshProjects(); // Cards say how long operations are going, and that may have changed.
         });
-        back.HorizontalAlignment = HorizontalAlignment.Left;
-        back.VerticalAlignment = VerticalAlignment.Top;
-        back.Margin = new Thickness(26, 18, 0, 0);
-        hero.Children.Add(back);
+        hero.Children.Add(new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(26, 18, 0, 0),
+            Children = { back, StageToggle(project) },
+        });
 
         var settings = OverlayButton("Project settings", () => OpenProjectSettings(project.Id));
         settings.HorizontalAlignment = HorizontalAlignment.Right;
