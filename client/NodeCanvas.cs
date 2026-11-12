@@ -13,7 +13,7 @@ namespace AgentOrange;
 /// a record of its own, so two PCs changing different ones both count, and it all syncs.
 ///
 /// Shift+A opens the list of nodes and adds the one picked where the mouse is, the way Blender
-/// does. Double-click a node to rename it, drag it to move it, drag from the dot on its side to
+/// does. Double-click a node to rename it, drag it to move it, drag from the dot under it to
 /// another node to link them, and drag empty space to move around. The wheel zooms, and Delete
 /// removes what's selected.
 /// </summary>
@@ -163,9 +163,9 @@ internal sealed class NodeCanvas : Border
             TextWrapping = TextWrapping.Wrap,
             MaxWidth = TitleWidth,
         };
-        var inside = new Border { Padding = new Thickness(18, 12, 18, 12), Child = title };
+        var inside = new Border { Padding = new Thickness(10, 6, 10, 12), Child = title };
 
-        // Sits on the edge, and is where a link is dragged from.
+        // Sits on the bottom edge, and is where a link is dragged from and where links join.
         var handle = new Ellipse
         {
             Width = 13,
@@ -173,20 +173,20 @@ internal sealed class NodeCanvas : Border
             Fill = (Brush)FindResource("Accent"),
             Stroke = Background,
             StrokeThickness = 2,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, -8, 0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 0, -7),
             Cursor = Cursors.Cross,
             Visibility = Visibility.Hidden,
             ToolTip = "Drag to another node to link them",
         };
         var box = new Border
         {
-            Background = (Brush)FindResource("ControlBackground"),
-            BorderBrush = (Brush)FindResource("Line"),
+            // Only the words show. See-through rather than nothing, so the space between them can still be clicked.
+            Background = Brushes.Transparent,
+            BorderBrush = Brushes.Transparent, // An outline shows only while it's selected.
             BorderThickness = new Thickness(1.5),
             CornerRadius = new CornerRadius(8),
-            MinWidth = 160,
             Child = new Grid { Children = { inside, handle } },
         };
 
@@ -281,12 +281,13 @@ internal sealed class NodeCanvas : Border
         Place(view);
     }
 
-    private static Point CentreOf(NodeView node) => new(node.Data.X + node.Box.ActualWidth / 2, node.Data.Y + node.Box.ActualHeight / 2);
+    // Where its pin is: the middle of the bottom edge.
+    private static Point PinOf(NodeView node) => new(node.Data.X + node.Box.ActualWidth / 2, node.Data.Y + node.Box.ActualHeight);
 
     private void Place(LinkView link)
     {
         if (!_nodes.TryGetValue(link.Data.From, out var from) || !_nodes.TryGetValue(link.Data.To, out var to)) return;
-        var (start, end) = (CentreOf(from), CentreOf(to));
+        var (start, end) = (PinOf(from), PinOf(to));
         (link.Line.X1, link.Line.Y1, link.Line.X2, link.Line.Y2) = (start.X, start.Y, end.X, end.Y);
     }
 
@@ -320,7 +321,7 @@ internal sealed class NodeCanvas : Border
         foreach (var node in _nodes.Values)
         {
             var selected = node.Id == _selected;
-            node.Box.BorderBrush = (Brush)FindResource(selected ? "Accent" : "Line");
+            node.Box.BorderBrush = selected ? (Brush)FindResource("Accent") : Brushes.Transparent;
             if (!node.Box.IsMouseOver) node.Handle.Visibility = selected ? Visibility.Visible : Visibility.Hidden;
         }
         foreach (var link in _links.Values) link.Line.Stroke = (Brush)FindResource(link.Id == _selected ? "Accent" : "TextMuted");
@@ -462,7 +463,7 @@ internal sealed class NodeCanvas : Border
             Select(node.Id);
             _gesture = Gesture.Link;
             _newLink = new Line { Stroke = (Brush)FindResource("Accent"), StrokeThickness = 2.5, StrokeDashArray = [3, 2], IsHitTestVisible = false };
-            var from = CentreOf(node);
+            var from = PinOf(node);
             (_newLink.X1, _newLink.Y1, _newLink.X2, _newLink.Y2) = (from.X, from.Y, from.X, from.Y);
             _world.Children.Insert(0, _newLink);
         }
