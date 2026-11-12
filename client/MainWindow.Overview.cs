@@ -47,7 +47,10 @@ public partial class MainWindow
         board.Height = Math.Max(240, ProjectView.ActualHeight - HeroHeight(project));
         board.Reload();
         body.Children.Add(board);
-        if (hadFocus) _ = Dispatcher.InvokeAsync(board.Focus, System.Windows.Threading.DispatcherPriority.Loaded);
+
+        // Its keys work as soon as the page opens, without a click on it first. Not while a
+        // window on top has the keyboard, such as project settings.
+        if (hadFocus || MainContent.IsEnabled) _ = Dispatcher.InvokeAsync(board.Focus, System.Windows.Threading.DispatcherPriority.Loaded);
 
         if (_boardsFollowWindow) return;
         _boardsFollowWindow = true;

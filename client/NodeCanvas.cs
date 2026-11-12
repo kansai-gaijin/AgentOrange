@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
@@ -11,9 +12,10 @@ namespace AgentOrange;
 /// A board of nodes and the links between them, for one part of a project. Every node and link is
 /// a record of its own, so two PCs changing different ones both count, and it all syncs.
 ///
-/// Double-click empty space to add a node, or a node to rename it. Drag a node to move it, drag
-/// from the dot on its side to another node to link them, and drag empty space to move around.
-/// The wheel zooms, and Delete removes what's selected.
+/// Shift+A opens the list of nodes and adds the one picked where the mouse is, the way Blender
+/// does. Double-click a node to rename it, drag it to move it, drag from the dot on its side to
+/// another node to link them, and drag empty space to move around. The wheel zooms, and Delete
+/// removes what's selected.
 /// </summary>
 internal sealed class NodeCanvas : Border
 {
@@ -22,6 +24,9 @@ internal sealed class NodeCanvas : Border
     private const double DragStartsAfter = 4;
     // The first kind of node: a heading, in large type. One saved before nodes had kinds is one of these.
     private const string TitleKind = "title";
+
+    // Every kind there is, in the order the list shows them.
+    private static readonly (string Kind, string Name)[] Kinds = [(TitleKind, "Title")];
     private const string Untitled = "Title";
     private const double TitleSize = 22;
     private const double TitleWidth = 420;
@@ -86,7 +91,7 @@ internal sealed class NodeCanvas : Border
         _world.RenderTransform = _view;
         _hint = new TextBlock
         {
-            Text = "Double-click anywhere to add a node",
+            Text = "Press Shift+A to add a node",
             Foreground = (Brush)FindResource("TextMuted"),
             FontSize = 14,
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -204,9 +209,9 @@ internal sealed class NodeCanvas : Border
         _changed();
     }
 
-    private void AddNodeAt(Point where)
+    private void AddNodeAt(Point where, string kind)
     {
-        var node = AddNodeView(NewId(), new NodeData(_board, Math.Round(where.X - 80), Math.Round(where.Y - 27), "", TitleKind));
+        var node = AddNodeView(NewId(), new NodeData(_board, Math.Round(where.X - 80), Math.Round(where.Y - 27), "", kind));
         _hint.Visibility = Visibility.Collapsed;
         SaveNode(node);
         Select(node.Id);
@@ -346,6 +351,71 @@ internal sealed class NodeCanvas : Border
         _changed();
     }
 
+    // The list of nodes to add, which opens at the mouse and adds there.
+
+    private void OpenAddList()
+    {
+        // Where the mouse is, or the middle if it's somewhere else, such as when Tab got here.
+        var mouse = Mouse.GetPosition(this);
+        var over = new Rect(0, 0, ActualWidth, ActualHeight).Contains(mouse);
+        var where = ToWorld(over ? mouse : new Point(ActualWidth / 2, ActualHeight / 2));
+
+        var items = new StackPanel();
+        var list = new Popup
+        {
+            PlacementTarget = this,
+            Placement = over ? PlacementMode.MousePoint : PlacementMode.Center,
+            StaysOpen = false,
+            AllowsTransparency = true,
+            Child = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x27, 0x32)),
+                BorderBrush = (Brush)FindResource("ModalBorder"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(6),
+                MinWidth = 180,
+                Child = items,
+            },
+        };
+
+        items.Children.Add(new TextBlock { Text = "Add", FontSize = 12, FontWeight = FontWeights.Medium, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(8, 4, 8, 6) });
+        foreach (var (kind, name) in Kinds)
+        {
+            var item = new Button { Style = (Style)FindResource("HeaderButton"), Content = name, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left };
+            item.Click += (_, _) =>
+            {
+                list.IsOpen = false;
+                AddNodeAt(where, kind);
+            };
+            items.Children.Add(item);
+        }
+
+        list.PreviewKeyDown += (_, pressed) =>
+        {
+            var buttons = items.Children.OfType<Button>().ToList();
+            var at = buttons.FindIndex(button => button.IsKeyboardFocused);
+            switch (pressed.Key)
+            {
+                case Key.Escape:
+                    list.IsOpen = false;
+                    Focus();
+                    break;
+                case Key.Down:
+                    buttons[(at + 1) % buttons.Count].Focus();
+                    break;
+                case Key.Up:
+                    buttons[(at + buttons.Count - 1) % buttons.Count].Focus();
+                    break;
+                default:
+                    return;
+            }
+            pressed.Handled = true;
+        };
+        list.Opened += (_, _) => items.Children.OfType<Button>().First().Focus();
+        list.IsOpen = true;
+    }
+
     // Mouse and keyboard
 
     private Point ToWorld(Point onScreen)
@@ -382,7 +452,6 @@ internal sealed class NodeCanvas : Border
         if (press.ClickCount == 2)
         {
             if (node is not null) StartEditing(node);
-            else if (link is null) AddNodeAt(_pressedAtInWorld);
             return;
         }
 
@@ -481,7 +550,12 @@ internal sealed class NodeCanvas : Border
     {
         if (_editing is not null) return;
 
-        if (pressed.Key == Key.Delete)
+        if (pressed.Key == Key.A && Keyboard.Modifiers == ModifierKeys.Shift)
+        {
+            OpenAddList();
+            pressed.Handled = true;
+        }
+        else if (pressed.Key == Key.Delete)
         {
             DeleteSelected();
             pressed.Handled = true;
