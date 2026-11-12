@@ -82,6 +82,17 @@ public partial class MainWindow : Window
         _database.CleanUpDeletedProjects();
         _database.RemoveOldDeletes();
         _database.RetryRefused();
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                _database.PruneFolderSettings();
+            }
+            catch (SqliteException error)
+            {
+                AppLog.Write($"Couldn't tidy up the settings kept for folders: {error.Message}");
+            }
+        });
         Settings.Folders = folders;
         Settings.Database = _database;
         Settings.Providers = new AgentProviders(_database, folders.AgentFolder);

@@ -749,6 +749,68 @@ public sealed class LocalDatabase
 
     private static string UnfinishedDownloadKey(string folder) => $"download_unfinished:{SameFolderKey(folder)}";
 
+    // Kept by folder, and cleared by setting them empty, which reads just the same as not there.
+    private static readonly string[] FolderSettingPrefixes = ["folder_settings_allowed:", "folder_shares_repo:", "download_unfinished:"];
+
+    /// <summary>
+    /// What's kept for folders and clones is no use once it's cleared, or once its folder's gone.
+    /// A folder is only taken to be gone from a fixed drive that's there, as one unplugged or on
+    /// the network may come back. An unfinished clone's note stays while it's set, as the clone
+    /// can have been moved anywhere.
+    /// </summary>
+    public void PruneFolderSettings()
+    {
+        using var connection = Open();
+        var gone = new List<string>();
+        using (var read = connection.CreateCommand())
+        {
+            read.CommandText = """
+                SELECT key, value FROM settings WHERE key LIKE 'folder\_settings\_allowed:%' ESCAPE '\'
+                    OR key LIKE 'folder\_shares\_repo:%' ESCAPE '\' OR key LIKE 'download\_unfinished:%' ESCAPE '\'
+                    OR key LIKE 'download\_note:%' ESCAPE '\' OR key LIKE 'project\_verified:%' ESCAPE '\'
+                    OR key LIKE 'project\_created\_here:%' ESCAPE '\' OR key LIKE 'engine\_here:%' ESCAPE '\'
+                """;
+            using var reader = read.ExecuteReader();
+            while (reader.Read())
+            {
+                var (key, value) = (reader.GetString(0), reader.GetString(1));
+                if (value.Length == 0) gone.Add(key);
+                else if (FolderSettingPrefixes.FirstOrDefault(key.StartsWith) is { } prefix)
+                {
+                    var folder = key[prefix.Length..];
+                    if (folder.EndsWith("|finish", StringComparison.Ordinal)) folder = folder[..^"|finish".Length];
+                    if (FolderIsGone(folder)) gone.Add(key);
+                }
+            }
+        }
+
+        using var transaction = connection.BeginTransaction();
+        using var remove = connection.CreateCommand();
+        remove.CommandText = "DELETE FROM settings WHERE key = $key";
+        var parameter = remove.Parameters.Add("$key", SqliteType.Text);
+        foreach (var key in gone)
+        {
+            parameter.Value = key;
+            remove.ExecuteNonQuery();
+        }
+        transaction.Commit();
+        if (gone.Count > 0) AppLog.Write($"Removed {gone.Count} settings kept for folders that are gone or were cleared.");
+    }
+
+    private static bool FolderIsGone(string folder)
+    {
+        try
+        {
+            if (!Path.IsPathFullyQualified(folder) || folder.StartsWith(@"\\", StringComparison.Ordinal)) return false;
+            var root = Path.GetPathRoot(folder);
+            return !string.IsNullOrEmpty(root) && new DriveInfo(root) is { DriveType: DriveType.Fixed, IsReady: true } && !Directory.Exists(folder);
+        }
+        catch (Exception error) when (error is ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Whether this folder has been seen to share a commit with this repo, which stands until it's disconnected.</summary>
     public bool FolderSharesRepo(string folder, string repoKey) => GetSetting(SharesRepoKey(folder)) == repoKey;
 
