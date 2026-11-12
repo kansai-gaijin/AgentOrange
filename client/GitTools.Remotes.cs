@@ -49,7 +49,21 @@ public static partial class GitTools
 
     // One that can push, or else one that can at least read, so what's chosen here passes the
     // guard's check of the same thing.
+    // Opening a page can ask this more than once, and each can take a slow probe of every form,
+    // so the answer is kept briefly. A failed one too, as it would only time out again.
+    private static readonly ConcurrentDictionary<string, (DateTimeOffset At, string? Form, bool CanPush)> RecentForms = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan KeepFormsFor = TimeSpan.FromMinutes(1);
+
     private static async Task<(string? Form, bool CanPush)> BestFormAsync(string url, CancellationToken cancel = default)
+    {
+        var key = RepoKey(url);
+        if (RecentForms.TryGetValue(key, out var recent) && DateTimeOffset.UtcNow - recent.At < KeepFormsFor) return (recent.Form, recent.CanPush);
+        var found = await ProbeFormsAsync(url, cancel);
+        if (!cancel.IsCancellationRequested) RecentForms[key] = (DateTimeOffset.UtcNow, found.Form, found.CanPush);
+        return found;
+    }
+
+    private static async Task<(string? Form, bool CanPush)> ProbeFormsAsync(string url, CancellationToken cancel)
     {
         string? readable = null;
         string? unsure = null;

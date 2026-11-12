@@ -287,6 +287,8 @@ public partial class MainWindow
 
     // Quietly, and only changes the page if the answer has changed. A check before each agent
     // action belongs here too, once agents work inside projects.
+    // Coming back to the window, and every few minutes while it's in use. Anything an agent does
+    // in a project will need its own check just before, as this can be minutes out of date.
     private async Task RecheckAccessOnReturnAsync()
     {
         if (_openProject is not { } project || _pageCheck is not { } shown || IsBusy) return;

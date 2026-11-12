@@ -158,6 +158,9 @@ public partial class MainWindow : Window
                         if (_pageCheck.FolderProblem?.Text == GitTools.WaitingForDownload) _ = RecheckIfStillOpenAsync(open.Id);
                         else RenderProjectKeepingFocus(open);
                     }
+
+                    // A page someone stays on would otherwise only be looked at again when they come back to the window.
+                    else if (IsActive) _ = RecheckAccessOnReturnAsync();
                 }
             }
             catch (SqliteException error)
