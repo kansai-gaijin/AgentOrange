@@ -31,13 +31,19 @@ public partial class MainWindow
     private void RenderProject(Project project)
     {
         _openProject = project;
+
+        // Someone's partway through a drag or typing a name on its board, which drawing the page
+        // again would cut short. The board reads itself again once they're done.
+        if (OpenBoard(project) is { IsBusy: true, IsVisible: true }) return;
+
         _shownDownloadState = DownloadStateOf(_database.GetProjectFolder(project.Id));
         ProjectPage.Children.Clear();
         ProjectPage.Children.Add(ProjectHero(project));
 
         // Stretched up to a limit, which puts it in the middle of a wide window.
         var body = new StackPanel { Margin = new Thickness(40, 2, 40, 0), MaxWidth = 840 };
-        body.Children.Add(new TextBlock { Text = project.Summary, Foreground = (Brush)FindResource("TextNormal"), FontSize = 14, HorizontalAlignment = HorizontalAlignment.Center });
+        var inSection = _openSection is { } openSection && openSection.ProjectId == project.Id;
+        if (!inSection) body.Children.Add(new TextBlock { Text = project.Summary, Foreground = (Brush)FindResource("TextNormal"), FontSize = 14, HorizontalAlignment = HorizontalAlignment.Center });
 
         // Two PCs can each add the same repo before they've synced, and only this can show that.
         if (project.RepoUrl.Length > 0 && _database.ListProjects().FirstOrDefault(other => other.Id != project.Id && GitTools.SameRepo(other.RepoUrl, project.RepoUrl)) is { } twin)
@@ -170,15 +176,17 @@ public partial class MainWindow
     private Grid ProjectHero(Project project)
     {
         var header = HeaderFor(project.Id);
-        // Only as tall as a picture needs. Without one it's just room for the title under the buttons.
-        var hero = new Grid { Height = header is null ? 112 : 180 };
+        var hero = new Grid { Height = HeroHeight(project) };
         hero.Children.Add(new Border { Background = header is null ? PlaceholderFor(project.Id) : new ImageBrush(header) { Stretch = Stretch.UniformToFill } });
 
+        // Inside one of its parts there's no title, as it only gets in the way of what's being worked on.
+        var inSection = _openSection is { } shown && shown.ProjectId == project.Id;
+
         // Keeps the title readable on any picture.
-        hero.Children.Add(new Border { Background = new LinearGradientBrush(Color.FromArgb(0, 0x17, 0x21, 0x2B), Color.FromRgb(0x17, 0x21, 0x2B), 90) });
-        hero.Children.Add(new TextBlock
+        if (!inSection) hero.Children.Add(new Border { Background = new LinearGradientBrush(Color.FromArgb(0, 0x17, 0x21, 0x2B), Color.FromRgb(0x17, 0x21, 0x2B), 90) });
+        if (!inSection) hero.Children.Add(new TextBlock
         {
-            Text = _openSection is { } shown && shown.ProjectId == project.Id ? shown.Name : project.Name,
+            Text = project.Name,
             Foreground = Brushes.White,
             FontSize = 34,
             FontWeight = FontWeights.Bold,

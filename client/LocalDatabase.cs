@@ -42,6 +42,35 @@ public sealed class LocalDatabase
     private const string EngineField = "engine";
     private const string GameTypeField = "gameType";
     private const string RepoUrlField = "repoUrl";
+    // A project's boards. Each node and link is named after its project, then a colon, like its fields and images.
+    public const string NodesCollection = "nodes";
+    public const string NodeLinksCollection = "node_links";
+    private static readonly string[] BoardCollections = [NodesCollection, NodeLinksCollection];
+
+    /// <summary>Everything in a collection that belongs to one project, deleted ones left out.</summary>
+    public List<(string Id, string Data)> ListProjectRecords(string collection, string projectId)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id, data FROM records WHERE collection = $collection AND deleted = 0 AND substr(id, 1, $length) = $prefix";
+        command.Parameters.AddWithValue("$collection", collection);
+        command.Parameters.AddWithValue("$prefix", $"{projectId}:");
+        command.Parameters.AddWithValue("$length", projectId.Length + 1);
+
+        var found = new List<(string, string)>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read()) found.Add((reader.GetString(0), reader.GetString(1)));
+        return found;
+    }
+
+    private void DeleteBoards(string projectId)
+    {
+        foreach (var collection in BoardCollections)
+        {
+            foreach (var (id, _) in ListProjectRecords(collection, projectId)) SaveRecord(collection, id, "", deleted: true);
+        }
+    }
+
     private const string StageField = "stage";
     private static readonly string[] ProjectFields = [NameField, EngineField, GameTypeField, RepoUrlField, StageField];
 
@@ -386,6 +415,7 @@ public sealed class LocalDatabase
         {
             if (GetRecord(FieldsCollection, FieldId(projectId, field)) is not null) SaveRecord(FieldsCollection, FieldId(projectId, field), "", deleted: true);
         }
+        DeleteBoards(projectId);
 
         // The library's order stays as it is. Nobody reordered anything, so saving it would look like
         // a newer choice than one made on another PC, and a project that's gone is ignored in it.
@@ -416,6 +446,7 @@ public sealed class LocalDatabase
             {
                 if (GetRecord(FieldsCollection, FieldId(projectId, field)) is not null) SaveRecord(FieldsCollection, FieldId(projectId, field), "", deleted: true);
             }
+            DeleteBoards(projectId);
             if (GetProjectFolder(projectId) is not null) SetProjectFolder(projectId, "");
             if (!string.IsNullOrEmpty(GetSetting($"project_verified:{projectId}"))) SetSetting($"project_verified:{projectId}", "");
             if (!string.IsNullOrEmpty(GetSetting($"project_created_here:{projectId}"))) SetSetting($"project_created_here:{projectId}", "");
@@ -712,7 +743,7 @@ public sealed class LocalDatabase
     private static string? ProjectIdOf(SyncChange change) => change.Collection switch
     {
         ProjectsCollection or EnginesCollection => change.Id,
-        FieldsCollection or ImagesCollection => change.Id.Split(':')[0],
+        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection => change.Id.Split(':')[0],
         _ => null,
     };
 
