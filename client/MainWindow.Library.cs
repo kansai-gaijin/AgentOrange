@@ -20,6 +20,15 @@ public partial class MainWindow
     private readonly Dictionary<string, (byte[] Bytes, ImageSource? Image)> _covers = [];
     private (string ProjectId, byte[] Bytes, ImageSource? Image)? _header;
 
+    // What each card was built from. One whose project, cover and status are the same stays as it
+    // is, so a sync that changes a few projects doesn't rebuild every card in a big library.
+    private sealed record CardLook(Project Project, ImageSource? Cover, string? Status);
+    private readonly Dictionary<string, (CardLook Look, Button Card, TextBlock NotHere)> _cards = [];
+
+    // A drive that's stopped answering can take a long time over each look, so a folder only has
+    // one look at a time, which every card asking about it shares.
+    private readonly Dictionary<string, Task<bool>> _folderLooks = new(StringComparer.OrdinalIgnoreCase);
+
     private Button? _pressedCard;
     private Button? _draggedCard;
     private Point _pressPoint;
@@ -42,8 +51,26 @@ public partial class MainWindow
         // Rebuilding the cards would otherwise send someone using the keyboard back to the top.
         var focusedCard = ProjectGrid.Children.OfType<Button>().FirstOrDefault(card => card.IsKeyboardFocusWithin)?.Tag as string;
 
+        var cards = new List<Button>();
+        foreach (var project in projects)
+        {
+            var cover = CoverFor(project.Id);
+            var look = new CardLook(project, cover, CardStatusFor(project.Id));
+
+            // The busy one's status label is updated in place as its work goes, so it's always new.
+            if (!IsBusyWith(project.Id) && _cards.TryGetValue(project.Id, out var kept) && kept.Look == look)
+            {
+                cards.Add(kept.Card);
+                _ = ShowIfNotOnThisPcAsync(project.Id, kept.NotHere);
+                continue;
+            }
+            var (card, notHere) = ProjectCard(project, cover);
+            _cards[project.Id] = (look, card, notHere);
+            cards.Add(card);
+        }
+        foreach (var gone in _cards.Keys.Except(projects.Select(project => project.Id)).ToList()) _cards.Remove(gone);
         ProjectGrid.Children.Clear();
-        foreach (var project in projects) ProjectGrid.Children.Add(ProjectCard(project));
+        foreach (var card in cards) ProjectGrid.Children.Add(card);
         if (focusedCard is not null) ProjectGrid.Children.OfType<Button>().FirstOrDefault(card => (string)card.Tag == focusedCard)?.Focus();
         NoProjects.Visibility = projects.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
@@ -71,9 +98,14 @@ public partial class MainWindow
 
     // Library
 
-    private Button ProjectCard(Project project)
+    private string? CardStatusFor(string projectId)
     {
-        var thumbnail = CoverFor(project.Id);
+        var ownJob = IsBusyWith(projectId) ? _job : null;
+        return ownJob is not null ? ownJob.CardText ?? ownJob.Text : _heldProblems.ContainsKey(projectId) ? "Open it to see what happened" : null;
+    }
+
+    private (Button Card, TextBlock NotHere) ProjectCard(Project project, ImageSource? thumbnail)
+    {
         var cover = new Border
         {
             Width = CoverWidth,
@@ -133,7 +165,7 @@ public partial class MainWindow
 
         // Long operations carry on after leaving the page, so the card says how it's going.
         var ownJob = IsBusyWith(project.Id) ? _job : null;
-        var cardStatus = ownJob is not null ? ownJob.CardText ?? ownJob.Text : _heldProblems.ContainsKey(project.Id) ? "Open it to see what happened" : null;
+        var cardStatus = CardStatusFor(project.Id);
         if (cardStatus is not null)
         {
             var statusLabel = new TextBlock { Text = cardStatus, Foreground = (Brush)FindResource("Accent"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0), TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = cardStatus };
@@ -191,7 +223,7 @@ public partial class MainWindow
             MoveDraggedCardTo(card);
         };
 
-        return card;
+        return (card, notHere);
     }
 
     private int CardsPerRow(FrameworkElement card) =>
@@ -233,7 +265,17 @@ public partial class MainWindow
     private async Task ShowIfNotOnThisPcAsync(string projectId, TextBlock label)
     {
         var folder = _database.GetProjectFolder(projectId);
-        var here = folder is not null && await GitTools.FolderExistsAsync(folder);
+        var here = false;
+        if (folder is not null)
+        {
+            if (!_folderLooks.TryGetValue(folder, out var looking))
+            {
+                looking = GitTools.FolderExistsAsync(folder);
+                _folderLooks[folder] = looking;
+            }
+            here = await looking;
+            if (_folderLooks.TryGetValue(folder, out var same) && same == looking) _folderLooks.Remove(folder);
+        }
         label.Text = folder is null ? "Not on this PC" : "Folder not found"; // It can just be on a drive that's unplugged.
         label.Visibility = here ? Visibility.Collapsed : Visibility.Visible;
     }
