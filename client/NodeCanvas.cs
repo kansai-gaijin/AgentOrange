@@ -185,7 +185,8 @@ internal sealed partial class NodeCanvas : Border
         {
             // Only the words show. See-through rather than nothing, so the space between them can still be clicked.
             Background = Brushes.Transparent,
-            BorderBrush = Brushes.Transparent, // An outline shows only while it's selected.
+            // A Rich Text node has a border, to show its size. A Title node's shows only while it's selected.
+            BorderBrush = isText ? (Brush)FindResource("Line") : Brushes.Transparent,
             BorderThickness = new Thickness(1.5),
             CornerRadius = new CornerRadius(8),
             Child = parts,
@@ -528,7 +529,7 @@ internal sealed partial class NodeCanvas : Border
         foreach (var node in _nodes.Values)
         {
             var selected = node.Id == _selected;
-            node.Box.BorderBrush = selected ? (Brush)FindResource("Accent") : Brushes.Transparent;
+            node.Box.BorderBrush = selected ? (Brush)FindResource("Accent") : node.Rich is not null ? (Brush)FindResource("Line") : Brushes.Transparent;
         }
         foreach (var link in _links.Values) link.Line.Stroke = (Brush)FindResource(link.Id == _selected ? "Accent" : "TextMuted");
     }
