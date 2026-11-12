@@ -35,6 +35,7 @@ public partial class MainWindow
         // Someone's partway through a drag or typing a name on its board, which drawing the page
         // again would cut short. The board reads itself again once they're done.
         if (OpenBoard(project) is { IsBusy: true, IsVisible: true }) return;
+        if (_draggedBoardCard is not null) return; // The same for a card being dragged to a new place.
 
         _shownDownloadState = DownloadStateOf(_database.GetProjectFolder(project.Id));
         ProjectPage.Children.Clear();
@@ -204,20 +205,30 @@ public partial class MainWindow
         // Inside one of its parts, the header is the way back out to the project, and the stage.
         if (_openSection is { } section && section.ProjectId == project.Id)
         {
-            var toProject = OverlayButton($"← {project.Name}", () =>
-            {
-                _openSection = null;
-                if (_openProject?.Id == project.Id) RenderProject(_openProject);
-            });
+            // From a card's own board, back is to the page of cards it's on.
+            var card = OpenCardOf(project);
+            var toProject = card is null
+                ? OverlayButton($"← {project.Name}", () =>
+                {
+                    _openSection = null;
+                    if (_openProject?.Id == project.Id) RenderProject(_openProject);
+                })
+                : OverlayButton($"← {section.Name}", () =>
+                {
+                    _openCard = null;
+                    if (_openProject?.Id == project.Id) RenderProject(_openProject);
+                });
             // And which stage's it is, as each stage has its own.
-            hero.Children.Add(new StackPanel
+            var across = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
                 HorizontalAlignment = HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Top,
                 Margin = new Thickness(26, 18, 0, 0),
                 Children = { toProject, StageToggle(project) },
-            });
+            };
+            if (card is not null) across.Children.Add(new TextBlock { Text = card.Name, Foreground = Brushes.White, FontSize = 16, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(14, 0, 0, 0), MaxWidth = 420, TextTrimming = TextTrimming.CharacterEllipsis });
+            hero.Children.Add(across);
             return hero;
         }
 

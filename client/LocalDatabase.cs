@@ -12,6 +12,12 @@ namespace AgentOrange;
 /// <summary>One of a project's stages, such as Alpha. Its id never changes, so it can be renamed.</summary>
 public sealed record Stage(string Id, string Name, double Order);
 
+/// <summary>
+/// A card on one of a project's card pages, such as one character. Board is the stage and page
+/// it's on, and it has a board of nodes of its own.
+/// </summary>
+public sealed record BoardCard(string Id, string Board, string Name, double Order);
+
 public sealed record Project(string Id, string Name, string Engine, string EngineVersion, string GameType, string RepoUrl, DateTimeOffset CreatedAt)
 {
     public string EngineLabel => EngineVersion.Length > 0 ? $"{Engine} {EngineVersion}" : Engine;
@@ -54,7 +60,10 @@ public sealed class LocalDatabase
     // A project's stages, each a record of its own named after the project, then a colon.
     private const string StagesCollection = "project_stages";
     // All that's deleted with a project.
-    private static readonly string[] BoardCollections = [NodesCollection, NodeLinksCollection, NodeImagesCollection, StagesCollection];
+    // The cards on a project's card pages, and each one's picture, named as its card is.
+    private const string CardsCollection = "cards";
+    private const string CardImagesCollection = "card_images";
+    private static readonly string[] BoardCollections = [NodesCollection, NodeLinksCollection, NodeImagesCollection, StagesCollection, CardsCollection, CardImagesCollection];
 
     /// <summary>Everything in a collection that belongs to one project, deleted ones left out.</summary>
     public List<(string Id, string Data)> ListProjectRecords(string collection, string projectId)
@@ -192,15 +201,27 @@ public sealed class LocalDatabase
     private void DeleteStageContents(string projectId, string stageId)
     {
         var stage = stageId + "/";
-        foreach (var (id, data) in ListProjectRecords(NodesCollection, projectId))
+        DeleteBoards(projectId, stage);
+        foreach (var (id, data) in ListProjectRecords(CardsCollection, projectId))
         {
             if (Restaged(data, stage, stage) is null) continue;
+            SaveRecord(CardsCollection, id, "", deleted: true);
+            if (!string.IsNullOrEmpty(GetRecord(CardImagesCollection, id))) SaveRecord(CardImagesCollection, id, "", deleted: true);
+        }
+    }
+
+    // Every node and link on the boards whose names start this way, and the nodes' pictures.
+    private void DeleteBoards(string projectId, string namedFrom)
+    {
+        foreach (var (id, data) in ListProjectRecords(NodesCollection, projectId))
+        {
+            if (Restaged(data, namedFrom, namedFrom) is null) continue;
             SaveRecord(NodesCollection, id, "", deleted: true);
             if (!string.IsNullOrEmpty(GetRecord(NodeImagesCollection, id))) SaveRecord(NodeImagesCollection, id, "", deleted: true);
         }
         foreach (var (id, data) in ListProjectRecords(NodeLinksCollection, projectId))
         {
-            if (Restaged(data, stage, stage) is not null) SaveRecord(NodeLinksCollection, id, "", deleted: true);
+            if (Restaged(data, namedFrom, namedFrom) is not null) SaveRecord(NodeLinksCollection, id, "", deleted: true);
         }
     }
 
@@ -212,10 +233,29 @@ public sealed class LocalDatabase
 
         // Every copy is a record of its own, so changing one stage afterwards never changes the other.
         var (from, to) = (fromId + "/", toId + "/");
+
+        // Cards first, as the boards of their own are named after them.
+        var cardCopies = new Dictionary<string, string>();
+        foreach (var (id, data) in ListProjectRecords(CardsCollection, projectId))
+        {
+            if (Restaged(data, from, to) is not { } copy) continue;
+            var copyId = $"{projectId}:{Guid.NewGuid():N}";
+            cardCopies[NameInBoard(id)] = NameInBoard(copyId);
+            SaveRecord(CardsCollection, copyId, copy.ToJsonString());
+            if (GetRecord(CardImagesCollection, id) is { Length: > 0 } picture) SaveRecord(CardImagesCollection, copyId, picture);
+        }
+
+        // A card's own board is its stage, its page, then the card.
+        void FollowCard(JsonObject record)
+        {
+            if (record["board"]?.GetValue<string>().Split('/') is [var stage, var part, var card] && cardCopies.TryGetValue(card, out var copied)) record["board"] = $"{stage}/{part}/{copied}";
+        }
+
         var copies = new Dictionary<string, string>();
         foreach (var (id, data) in ListProjectRecords(NodesCollection, projectId))
         {
             if (Restaged(data, from, to) is not { } copy) continue;
+            FollowCard(copy);
             var copyId = $"{projectId}:{Guid.NewGuid():N}";
             copies[id] = copyId;
             SaveRecord(NodesCollection, copyId, copy.ToJsonString());
@@ -228,6 +268,7 @@ public sealed class LocalDatabase
             {
                 if (copy["from"]?.GetValue<string>() is not { } start || copy["to"]?.GetValue<string>() is not { } end) continue;
                 if (!copies.TryGetValue(start, out var copiedStart) || !copies.TryGetValue(end, out var copiedEnd)) continue;
+                FollowCard(copy);
                 copy["from"] = copiedStart;
                 copy["to"] = copiedEnd;
                 SaveRecord(NodeLinksCollection, $"{projectId}:{Guid.NewGuid():N}", copy.ToJsonString());
@@ -237,6 +278,92 @@ public sealed class LocalDatabase
                 // Not a link that can be read.
             }
         }
+    }
+
+    // Cards
+
+    public const int LongestCardName = 60;
+
+    private sealed record CardData(string Board, string Name, double Order);
+
+    // A card's id is its project, a colon, then this, which is what its own board is named after.
+    private static string NameInBoard(string cardId) => cardId[(cardId.IndexOf(':') + 1)..];
+
+    /// <summary>What a card's own board is called in its records.</summary>
+    public static string CardBoardKey(BoardCard card) => $"{card.Board}/{NameInBoard(card.Id)}";
+
+    /// <summary>The cards on one page of one stage, in the order they were put in.</summary>
+    public List<BoardCard> ListCards(string projectId, string stageId, string part)
+    {
+        var board = BoardKey(stageId, part);
+        var cards = new List<BoardCard>();
+        foreach (var (id, data) in ListProjectRecords(CardsCollection, projectId))
+        {
+            try
+            {
+                if (JsonSerializer.Deserialize<CardData>(data, JsonOptions) is { } saved && saved.Board == board) cards.Add(new BoardCard(id, saved.Board, saved.Name ?? "", saved.Order));
+            }
+            catch (JsonException)
+            {
+                // It arrived from another PC and can't be read, so it's left out.
+            }
+        }
+        return [.. cards.OrderBy(card => card.Order).ThenBy(card => card.Id, StringComparer.Ordinal)];
+    }
+
+    private void SaveCard(BoardCard card) =>
+        SaveRecord(CardsCollection, card.Id, JsonSerializer.Serialize(new CardData(card.Board, card.Name, card.Order), JsonOptions));
+
+    /// <summary>Adds a card after the others on its page.</summary>
+    public BoardCard AddCard(string projectId, string stageId, string part, string name)
+    {
+        var last = ListCards(projectId, stageId, part).Select(card => card.Order).DefaultIfEmpty(-1).Max();
+        var card = new BoardCard($"{projectId}:{Guid.NewGuid():N}", BoardKey(stageId, part), name, last + 1);
+        SaveCard(card);
+        return card;
+    }
+
+    public void RenameCard(BoardCard card, string name) => SaveCard(card with { Name = name });
+
+    /// <summary>Saves the order a page's cards were dragged into. Only the ones that moved are saved.</summary>
+    public void SaveCardOrder(IReadOnlyList<BoardCard> inOrder)
+    {
+        for (var at = 0; at < inOrder.Count; at++)
+        {
+            if (inOrder[at].Order != at) SaveCard(inOrder[at] with { Order = at });
+        }
+    }
+
+    /// <summary>Removes a card, its picture and everything on its own board.</summary>
+    public void DeleteCard(string projectId, BoardCard card)
+    {
+        DeleteBoards(projectId, CardBoardKey(card));
+        SaveRecord(CardsCollection, card.Id, "", deleted: true);
+        if (!string.IsNullOrEmpty(GetRecord(CardImagesCollection, card.Id))) SaveRecord(CardImagesCollection, card.Id, "", deleted: true);
+    }
+
+    /// <summary>A card's picture as it's stored, which is as text, or null when it has none.</summary>
+    public string? GetCardImage(string cardId) => GetRecord(CardImagesCollection, cardId) is { Length: > 0 } stored ? stored : null;
+
+    public void SetCardImage(string cardId, byte[]? image) =>
+        SaveRecord(CardImagesCollection, cardId, image is null ? "" : Convert.ToBase64String(image), deleted: image is null);
+
+    /// <summary>How many nodes are on each of a project's boards.</summary>
+    public Dictionary<string, int> CountNodesByBoard(string projectId)
+    {
+        var counts = new Dictionary<string, int>();
+        foreach (var (_, data) in ListProjectRecords(NodesCollection, projectId))
+        {
+            try
+            {
+                if (JsonNode.Parse(data) is JsonObject record && record["board"]?.GetValue<string>() is { } board) counts[board] = counts.GetValueOrDefault(board) + 1;
+            }
+            catch (Exception error) when (error is JsonException or InvalidOperationException or FormatException)
+            {
+                // It arrived from another PC and can't be read.
+            }
+        }
+        return counts;
     }
 
     /// <summary>
@@ -927,7 +1054,7 @@ public sealed class LocalDatabase
     private static string? ProjectIdOf(SyncChange change) => change.Collection switch
     {
         ProjectsCollection or EnginesCollection => change.Id,
-        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection => change.Id.Split(':')[0],
+        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection => change.Id.Split(':')[0],
         _ => null,
     };
 
