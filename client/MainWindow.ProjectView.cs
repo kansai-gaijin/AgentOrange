@@ -402,7 +402,7 @@ public partial class MainWindow
         var name = Field(_replacementRepoName ?? "");
         name.Width = 260;
         name.TextChanged += (_, _) => _replacementRepoName = name.Text;
-        return Row("Repo name", "GitHub needs Latin letters and numbers. Anything else becomes a dash.", name);
+        return Row("Repo name", "GitHub needs Latin letters and numbers. Anything else becomes a dash. Owner/name puts it under an organisation.", name);
     }
 
     private void AddFolderSettingsRow(List<FrameworkElement> rows, Project project, string folder, PageCheck found)

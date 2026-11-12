@@ -507,6 +507,7 @@ public static partial class GitTools
         if (Headless.Active) return new GitResult(false, "Headless mode doesn't create real repos.");
 #endif
         var repoName = ChosenRepoName(wantedName, projectName);
+        if (repoName.Length == 0 && wantedName.Contains('/')) return new GitResult(false, "That isn't an owner and name GitHub could use. Write it as owner/name, with the owner spelt the way GitHub has it.");
         if (repoName.Length == 0) return new GitResult(false, "A repo's name can only use Latin letters and numbers, and this one has none. Give it a repo name that does, or enter a repo URL.");
 
         // Only the active account matters, because another one having expired fails this too.
@@ -525,12 +526,13 @@ public static partial class GitTools
 
         // A deleted repo's name is free on GitHub, but a project can still be pointing at that
         // address, and it would then pass the guard on a repo it never held.
-        if (await ActiveAccountAsync() is { } owner)
+        var slug = repoName.Contains('/') ? repoName : await ActiveAccountAsync() is { } owner ? $"{owner}/{repoName}" : null;
+        if (slug is not null)
         {
-            var address = $"https://github.com/{owner}/{repoName}.git";
+            var address = $"https://github.com/{slug}.git";
             if ((replacingRepo is null || !SameRepo(address, replacingRepo)) && ProjectUsingRepo(address) is { } otherProject)
             {
-                return new GitResult(false, $"{otherProject} still points at {owner}/{repoName}, so a new repo can't use that name. Rename this project, or change {otherProject}'s repo first.");
+                return new GitResult(false, $"{otherProject} still points at {slug}, so a new repo can't use that name. Rename this project, or change {otherProject}'s repo first.");
             }
         }
 

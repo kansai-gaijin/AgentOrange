@@ -265,8 +265,22 @@ public static partial class GitTools
     public static string RepoName(string projectName) => UsableRepoName(projectName.Trim().ToLowerInvariant());
 
     /// <summary>What a typed name stays as, capitals included, or else what comes from the project's name.</summary>
-    public static string ChosenRepoName(string typed, string projectName) =>
-        typed.Trim().Length > 0 ? UsableRepoName(typed.Trim()) : RepoName(projectName);
+    /// <summary>
+    /// The name for a new repo. Owner/name puts it under an organisation, or another account the
+    /// active one can make repos in. Empty if it can't be used.
+    /// </summary>
+    public static string ChosenRepoName(string typed, string projectName)
+    {
+        var text = typed.Trim();
+        if (text.Length == 0) return RepoName(projectName);
+        var slash = text.IndexOf('/');
+        if (slash < 0) return UsableRepoName(text);
+
+        // An owner can't be made up from something else the way a name can, as that would be someone else's.
+        var owner = text[..slash].Trim();
+        var name = UsableRepoName(text[(slash + 1)..].Trim());
+        return GitHubOwnerName().IsMatch(owner) && name.Length > 0 ? $"{owner}/{name}" : "";
+    }
 
     private static string UsableRepoName(string text)
     {
@@ -526,6 +540,9 @@ public static partial class GitTools
     // The short form Git uses for SSH, like git@github.com:you/game.git.
     [GeneratedRegex(@"^[\w.-]+@[\w.-]+:[\w./-]+\z")]
     private static partial Regex ScpStyleRepo();
+
+    [GeneratedRegex(@"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}\z")]
+    private static partial Regex GitHubOwnerName();
 
     [GeneratedRegex(@"^org-\d+\z")]
     private static partial Regex CertificateUser();

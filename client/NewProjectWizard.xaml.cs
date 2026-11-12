@@ -405,7 +405,7 @@ public partial class NewProjectWizard : UserControl
             {
                 Row("Project folder", "Where this game's files are on this PC.", folder, browse),
                 Row("Repo URL", "Leave blank to create a new, empty private repo on GitHub. Nothing is pushed, so push your work for your other PCs to get it.", repo),
-                Row("Repo name", "For a new repo. Leave blank to use the project's name. GitHub needs Latin letters and numbers.", repoName),
+                Row("Repo name", "For a new repo. Leave blank to use the project's name. GitHub needs Latin letters and numbers. Owner/name puts it under an organisation.", repoName),
                 progress,
                 problem,
                 useSettings,
@@ -520,8 +520,8 @@ public partial class NewProjectWizard : UserControl
                 var (gone, why) = check.Describe();
                 _replacingUrl = url;
                 _replacementOfferedFor = check;
-                var where = check.Account is null ? "your active GitHub account" : $"the GitHub account {check.Account}";
                 var newName = GitTools.ChosenRepoName(_wantedRepoName, project.Name);
+                var where = newName.Contains('/') ? newName.Split('/')[0] : check.Account is null ? "your active GitHub account" : $"the GitHub account {check.Account}";
                 var called = newName.Length > 0 ? $"called {newName} " : "";
                 return ("", false, $"{gone}. {why} This folder is connected to it, so you can create a new, empty private repo {called}for the folder under {where} instead. You can set its name above. Nothing is pushed.");
             default:
