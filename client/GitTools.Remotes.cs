@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -72,12 +73,39 @@ public static partial class GitTools
 
     // The one this PC's GitHub CLI is set to comes first. Anyone can read a public repo over
     // HTTPS, so trying that first could choose a form this PC can't push with.
+    // An organisation that requires SSH certificates only lets its members in under its own
+    // name, so that goes first for its repos once this PC is seen to use it.
     private static async Task<string[]> FormsToTryAsync(string url)
     {
-        var https = $"https://github.com/{GitHubPath(url)}.git";
-        var ssh = $"git@github.com:{GitHubPath(url)}.git";
+        var path = GitHubPath(url);
+        var https = $"https://github.com/{path}.git";
+        var ssh = $"git@github.com:{path}.git";
         var protocol = await RunAsync("gh", Path.GetTempPath(), "config", "get", "git_protocol", "--host", "github.com");
-        return protocol is { ExitCode: 0 } && protocol.Output.Trim() == "ssh" ? [ssh, https] : [https, ssh];
+        string[] forms = protocol is { ExitCode: 0 } && protocol.Output.Trim() == "ssh" ? [ssh, https] : [https, ssh];
+        return CertificateUserFor(path.Split('/')[0]) is { } user && CertificateUser().IsMatch(user) ? [$"{user}@github.com:{path}.git", .. forms] : forms;
+    }
+
+    /// <summary>Set up when the app starts. The org-ID name this PC uses for an owner's repos over SSH, kept on this PC.</summary>
+    public static Func<string, string?> CertificateUserFor { get; set; } = _ => null;
+
+    public static Action<string, string> RememberCertificateUser { get; set; } = (_, _) => { };
+
+    private static readonly ConcurrentDictionary<string, byte> CertificateUsersAsked = new(StringComparer.OrdinalIgnoreCase);
+
+    // Only once GitHub says the number is that organisation's, as a folder's remote can come from
+    // anyone. Asked once a session for each, and not again once it's kept.
+    private static async Task NoteCertificateUserAsync(string owner, string user)
+    {
+        try
+        {
+            if (string.Equals(CertificateUserFor(owner), user, StringComparison.Ordinal) || !CertificateUsersAsked.TryAdd($"{owner}|{user}", 0)) return;
+            var id = await RunAsync("gh", Path.GetTempPath(), "api", $"orgs/{owner}", "--jq", ".id");
+            if (id is { ExitCode: 0 } && $"org-{id.Output.Trim()}" == user) RememberCertificateUser(owner, user);
+        }
+        catch (Exception error) when (error is Microsoft.Data.Sqlite.SqliteException or IOException)
+        {
+            AppLog.Write($"Couldn't remember how this PC signs in to {owner}'s repos: {error.Message}");
+        }
     }
 
     private static string GitHubPath(string url)
@@ -128,7 +156,15 @@ public static partial class GitTools
     // SSH settings, which is common with more than one GitHub account.
     private static async Task<(string? GitHubForm, string? Problem)> GitHubFormAsync(string remote, string folder)
     {
-        if (RepoUrlProblem(remote) is null) return (remote, null);
+        if (RepoUrlProblem(remote) is null)
+        {
+            if (CertificateAddress().Match(remote) is { Success: true } certificate)
+            {
+                var certificateUser = remote.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase) ? remote[6..remote.IndexOf('@')] : remote[..remote.IndexOf('@')];
+                _ = NoteCertificateUserAsync(certificate.Groups[1].Value.Split('/')[0], certificateUser);
+            }
+            return (remote, null);
+        }
 
         // The username can be left out, and come from the person's SSH settings instead.
         string host, user, path;
@@ -153,7 +189,11 @@ public static partial class GitTools
         }
 
         if ((user.Length > 0 && !IsGitHubSshUser(user)) || !GitHubRepoPath().IsMatch($"/{path}") || !SafeSshHost().IsMatch(host)) return (null, null);
-        if (IsGitHubSshUser(user) && IsGitHubSshHost(host)) return ($"git@github.com:{path}", null);
+        if (IsGitHubSshUser(user) && IsGitHubSshHost(host))
+        {
+            if (CertificateUser().IsMatch(user)) _ = NoteCertificateUserAsync(path.Split('/')[0], user);
+            return ($"git@github.com:{path}", null);
+        }
 
         var settings = await ReadSshSettingsAsync(host, folder);
         if (settings is not var (realHost, realUser)) return (null, $"{CantTellSshSettings} {host} is GitHub from the SSH settings in use. Check that they work, or use a remote that says github.com.");

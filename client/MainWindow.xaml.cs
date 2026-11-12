@@ -68,6 +68,8 @@ public partial class MainWindow : Window
                 ? LocalDatabase.RefusalFor(owner, $"{owner.Name} already uses that repo. A repo can only be one project.")
                 : null;
         ProjectWizard.ReleaseRepo = _database.ReleaseRepo;
+        GitTools.CertificateUserFor = owner => _database.GetSetting($"ssh_certificate_user:{owner.ToLowerInvariant()}") is { Length: > 0 } user ? user : null;
+        GitTools.RememberCertificateUser = (owner, user) => _database.SetSetting($"ssh_certificate_user:{owner.ToLowerInvariant()}", user);
         GitTools.AllProjects = () => _database.ListProjects();
         GitTools.ProjectUsingRepo = url => _database.ListProjects().FirstOrDefault(project => GitTools.SameRepo(project.RepoUrl, url))?.Name;
         GitTools.AllowedFolderSettings = _database.AllowedFolderSettings;
