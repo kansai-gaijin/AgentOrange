@@ -20,7 +20,7 @@ namespace AgentOrange;
 /// another node to link them, and drag empty space to move around. The wheel zooms, and Delete
 /// removes what's selected.
 /// </summary>
-internal sealed class NodeCanvas : Border
+internal sealed partial class NodeCanvas : Border
 {
     private const double SmallestZoom = 0.25;
     private const double LargestZoom = 3;
@@ -28,7 +28,7 @@ internal sealed class NodeCanvas : Border
     // The first kind of node: a heading, in large type. One saved before nodes had kinds is one of these.
     private const string TitleKind = "title";
 
-    // Words that can be made bold, italic or underlined, in a box as wide as it's dragged to be.
+    // Words that can be given headings, lists, tick boxes, colours and links, in a box dragged to size.
     private const string TextKind = "text";
 
     // Every kind there is, in the order the list shows them.
@@ -40,13 +40,16 @@ internal sealed class NodeCanvas : Border
     private const double TextWidth = 280;
     private const double NarrowestText = 120;
     private const double WidestText = 1200;
+    private const double ShortestText = 30;
+    private const double TallestText = 4000;
     private const string Untitled = "Title";
     private const double TitleSize = 22;
     private const double TitleWidth = 420;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    // Text is a Rich Text node's words, as the XAML of a document. Width is how wide it was dragged to be.
-    private sealed record NodeData(string Board, double X, double Y, string Title, string? Kind = null, double? Width = null, string? Text = null);
+    // Text is a Rich Text node's words, as the XAML of a document. Width is how wide it was dragged
+    // to be, and Height how tall at least, as it's never shorter than its words.
+    private sealed record NodeData(string Board, double X, double Y, string Title, string? Kind = null, double? Width = null, string? Text = null, double? Height = null);
 
     // A link saved before nodes had a pin on top joins the bottom ones.
     private sealed record LinkData(string Board, string From, string To, string? FromPin = null, string? ToPin = null);
@@ -90,6 +93,7 @@ internal sealed class NodeCanvas : Border
     private Matrix _viewWhenPressed;
     private NodeView? _held;
     private string _heldPin = BottomPin;
+    private string _heldEdge = ResizePart; // Which of its edges is being dragged to resize it.
     private Point _heldFrom;
     private bool _dragging;
     private Line? _newLink;
@@ -117,7 +121,8 @@ internal sealed class NodeCanvas : Border
             VerticalAlignment = VerticalAlignment.Center,
             IsHitTestVisible = false,
         };
-        Child = new Grid { Children = { _world, _hint } };
+        _toolbar = NewToolbar();
+        Child = new Grid { Children = { _world, _hint, _toolbar } };
 
         MouseLeftButtonDown += Pressed;
         MouseMove += Moved;
@@ -224,7 +229,11 @@ internal sealed class NodeCanvas : Border
                 ToolTip = "Drag to another node to link them",
             });
         }
-        box.SizeChanged += (_, _) => PlaceLinksOf(view);
+        box.SizeChanged += (_, _) =>
+        {
+            PlaceLinksOf(view);
+            if (_editing == view) PlaceToolbar();
+        };
 
         Canvas.SetLeft(box, data.X);
         Canvas.SetTop(box, data.Y);
@@ -245,6 +254,7 @@ internal sealed class NodeCanvas : Border
             CaretBrush = (Brush)FindResource("TextStrong"),
             FontSize = TextSize,
             AcceptsReturn = true,
+            AcceptsTab = true, // Tab moves a list item in a level.
             IsReadOnly = true,
             IsHitTestVisible = false,
             Focusable = false,
@@ -266,29 +276,66 @@ internal sealed class NodeCanvas : Border
         view.Empty = empty;
         view.Inside.Child = new Grid { Children = { rich, empty } };
         view.Box.Width = Math.Clamp(view.Data.Width ?? TextWidth, NarrowestText, WidestText);
+        view.Box.MinHeight = Math.Clamp(view.Data.Height ?? 0, 0, TallestText);
 
         rich.PreviewKeyDown += (_, pressed) =>
         {
-            if (pressed.Key != Key.Escape) return;
-            pressed.Handled = true;
-            StopEditing(keep: false);
-            Focus();
+            if (pressed.Key == Key.Escape)
+            {
+                pressed.Handled = true;
+                StopEditing(keep: false);
+                Focus();
+            }
+            else if (pressed.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None)
+            {
+                pressed.Handled = EnterPressed(rich);
+            }
+            else if (pressed.Key == Key.K && Keyboard.Modifiers == ModifierKeys.Control)
+            {
+                pressed.Handled = true;
+                AskForLink(rich);
+            }
         };
-        rich.LostKeyboardFocus += (_, _) =>
+        rich.PreviewTextInput += (_, typed) => SpaceTyped(rich, typed);
+        rich.TextChanged += (_, _) =>
         {
-            if (_editing == view) StopEditing(keep: true);
+            // After the change is over, as the words can't be changed again from inside it.
+            if (_editing == view && !_formatting) Dispatcher.BeginInvoke(() => FormatAsTyped(rich));
+        };
+        rich.LostKeyboardFocus += (_, lost) =>
+        {
+            if (_editing == view && !IsInToolbar(lost.NewFocus)) StopEditing(keep: true);
         };
 
-        // The right edge, dragged to make it wider or narrower. It's as tall as its words need.
+        // The right edge, the bottom edge and the corner between them, dragged to resize it.
         parts.Children.Add(new Border
         {
-            Tag = ResizePart,
+            Tag = ResizePart + "-w",
             Width = 10,
             Background = Brushes.Transparent,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 0, -5, 0),
             Cursor = Cursors.SizeWE,
-            ToolTip = "Drag to change the width",
+        });
+        parts.Children.Add(new Border
+        {
+            Tag = ResizePart + "-h",
+            Height = 10,
+            Background = Brushes.Transparent,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 0, -5),
+            Cursor = Cursors.SizeNS,
+        });
+        parts.Children.Add(new Border
+        {
+            Tag = ResizePart + "-wh",
+            Width = 14,
+            Height = 14,
+            Background = Brushes.Transparent,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, -5, -5),
+            Cursor = Cursors.SizeNWSE,
         });
     }
 
@@ -349,6 +396,7 @@ internal sealed class NodeCanvas : Border
             {
                 rich.Focus();
                 rich.CaretPosition = rich.Document.ContentEnd;
+                PlaceToolbar();
             }, System.Windows.Threading.DispatcherPriority.Input);
             return;
         }
@@ -410,6 +458,7 @@ internal sealed class NodeCanvas : Border
                 SaveNode(node);
             }
             node.Empty!.Visibility = string.IsNullOrEmpty(node.Data.Text) ? Visibility.Visible : Visibility.Collapsed;
+            PlaceToolbar();
             return;
         }
         if (box is null || node.Title is null) return;
@@ -614,13 +663,17 @@ internal sealed class NodeCanvas : Border
             return;
         }
 
+        var onPart = (press.OriginalSource as FrameworkElement)?.Tag is string;
+        if (node?.Rich is { } words && !onPart && ClickedInWords(node, words, press)) return;
+
         _dragging = false;
         _held = node;
-        if (node is not null && press.OriginalSource is FrameworkElement { Tag: string part } && part == ResizePart)
+        if (node is not null && press.OriginalSource is FrameworkElement { Tag: string part } && part.StartsWith(ResizePart, StringComparison.Ordinal))
         {
             Select(node.Id);
             _gesture = Gesture.Resize;
-            _heldFrom = new Point(node.Box.ActualWidth, 0);
+            _heldEdge = part;
+            _heldFrom = new Point(node.Box.ActualWidth, node.Box.ActualHeight);
         }
         else if (node is not null && press.OriginalSource is Ellipse { Tag: string pin })
         {
@@ -675,9 +728,18 @@ internal sealed class NodeCanvas : Border
                 PlaceLinksOf(node);
                 break;
             case Gesture.Resize when _held is { } resized:
-                var width = Math.Clamp(Math.Round(_heldFrom.X + inWorld.X - _pressedAtInWorld.X), NarrowestText, WidestText);
-                resized.Data = resized.Data with { Width = width };
-                resized.Box.Width = width;
+                if (_heldEdge != ResizePart + "-h")
+                {
+                    var width = Math.Clamp(Math.Round(_heldFrom.X + inWorld.X - _pressedAtInWorld.X), NarrowestText, WidestText);
+                    resized.Data = resized.Data with { Width = width };
+                    resized.Box.Width = width;
+                }
+                if (_heldEdge != ResizePart + "-w")
+                {
+                    var height = Math.Clamp(Math.Round(_heldFrom.Y + inWorld.Y - _pressedAtInWorld.Y), ShortestText, TallestText);
+                    resized.Data = resized.Data with { Height = height };
+                    resized.Box.MinHeight = height;
+                }
                 break;
             case Gesture.Link when _newLink is { } line:
                 (line.X2, line.Y2) = (inWorld.X, inWorld.Y);
@@ -715,6 +777,7 @@ internal sealed class NodeCanvas : Border
         var at = wheel.GetPosition(this);
         view.ScaleAt(zoom / view.M11, zoom / view.M11, at.X, at.Y);
         _view.Matrix = view;
+        PlaceToolbar();
     }
 
     private void KeyPressed(object sender, KeyEventArgs pressed)
