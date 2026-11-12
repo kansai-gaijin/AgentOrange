@@ -16,6 +16,15 @@ public partial class MainWindow
     // Which part of which project is open, as the page is drawn again whenever anything syncs.
     private (string ProjectId, string Name)? _openSection;
 
+#if DEBUG
+    internal void RedrawAfterCodeChange()
+    {
+        _cards.Clear(); // Kept cards would keep what they did before the change.
+        RefreshProjects();
+        if (_openProject is { } open) RenderProject(open);
+    }
+#endif
+
     private void AddOverview(StackPanel body, Project project)
     {
         if (_openSection is { } open && open.ProjectId == project.Id)
@@ -109,17 +118,7 @@ public partial class MainWindow
 
     private void AddSectionPage(StackPanel body, Project project, string name)
     {
-        var back = ActionButton("← Overview");
-        back.HorizontalAlignment = HorizontalAlignment.Center;
-        back.Margin = new Thickness(0, 20, 0, 0);
-        back.Click += (_, _) =>
-        {
-            _openSection = null;
-            if (_openProject?.Id == project.Id) RenderProject(_openProject);
-        };
-        body.Children.Add(back);
-
-        body.Children.Add(new TextBlock { Text = name, FontSize = 24, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextStrong"), Margin = new Thickness(0, 16, 0, 0), HorizontalAlignment = HorizontalAlignment.Center });
+        // Its name and the way back are in the header.
         var note = CenteredNote("Nothing here yet.");
         note.Margin = new Thickness(0, 40, 0, 40);
         note.HorizontalAlignment = HorizontalAlignment.Center;

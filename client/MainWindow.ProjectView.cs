@@ -178,7 +178,7 @@ public partial class MainWindow
         hero.Children.Add(new Border { Background = new LinearGradientBrush(Color.FromArgb(0, 0x17, 0x21, 0x2B), Color.FromRgb(0x17, 0x21, 0x2B), 90) });
         hero.Children.Add(new TextBlock
         {
-            Text = project.Name,
+            Text = _openSection is { } shown && shown.ProjectId == project.Id ? shown.Name : project.Name,
             Foreground = Brushes.White,
             FontSize = 34,
             FontWeight = FontWeights.Bold,
@@ -193,6 +193,21 @@ public partial class MainWindow
             BackToProjects();
             RefreshProjects(); // Cards say how long operations are going, and that may have changed.
         });
+        // Inside one of its parts, the header is only the way back out to the project.
+        if (_openSection is { } section && section.ProjectId == project.Id)
+        {
+            var toProject = OverlayButton($"← {project.Name}", () =>
+            {
+                _openSection = null;
+                if (_openProject?.Id == project.Id) RenderProject(_openProject);
+            });
+            toProject.HorizontalAlignment = HorizontalAlignment.Left;
+            toProject.VerticalAlignment = VerticalAlignment.Top;
+            toProject.Margin = new Thickness(26, 18, 0, 0);
+            hero.Children.Add(toProject);
+            return hero;
+        }
+
         hero.Children.Add(new StackPanel
         {
             Orientation = Orientation.Horizontal,
