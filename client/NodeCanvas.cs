@@ -20,10 +20,14 @@ internal sealed class NodeCanvas : Border
     private const double SmallestZoom = 0.25;
     private const double LargestZoom = 3;
     private const double DragStartsAfter = 4;
-    private const string Untitled = "Untitled";
+    // The first kind of node: a heading, in large type. One saved before nodes had kinds is one of these.
+    private const string TitleKind = "title";
+    private const string Untitled = "Title";
+    private const double TitleSize = 22;
+    private const double TitleWidth = 420;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    private sealed record NodeData(string Board, double X, double Y, string Title);
+    private sealed record NodeData(string Board, double X, double Y, string Title, string? Kind = null);
 
     private sealed record LinkData(string Board, string From, string To);
 
@@ -149,12 +153,12 @@ internal sealed class NodeCanvas : Border
         {
             Text = data.Title.Length > 0 ? data.Title : Untitled,
             Foreground = (Brush)FindResource(data.Title.Length > 0 ? "TextStrong" : "TextMuted"),
-            FontSize = 14,
-            FontWeight = FontWeights.Medium,
+            FontSize = TitleSize,
+            FontWeight = FontWeights.Bold,
             TextWrapping = TextWrapping.Wrap,
-            MaxWidth = 240,
+            MaxWidth = TitleWidth,
         };
-        var inside = new Border { Padding = new Thickness(14, 9, 14, 9), Child = title };
+        var inside = new Border { Padding = new Thickness(18, 12, 18, 12), Child = title };
 
         // Sits on the edge, and is where a link is dragged from.
         var handle = new Ellipse
@@ -177,7 +181,7 @@ internal sealed class NodeCanvas : Border
             BorderBrush = (Brush)FindResource("Line"),
             BorderThickness = new Thickness(1.5),
             CornerRadius = new CornerRadius(8),
-            MinWidth = 120,
+            MinWidth = 160,
             Child = new Grid { Children = { inside, handle } },
         };
 
@@ -202,7 +206,7 @@ internal sealed class NodeCanvas : Border
 
     private void AddNodeAt(Point where)
     {
-        var node = AddNodeView(NewId(), new NodeData(_board, Math.Round(where.X - 60), Math.Round(where.Y - 18), ""));
+        var node = AddNodeView(NewId(), new NodeData(_board, Math.Round(where.X - 80), Math.Round(where.Y - 27), "", TitleKind));
         _hint.Visibility = Visibility.Collapsed;
         SaveNode(node);
         Select(node.Id);
@@ -214,10 +218,10 @@ internal sealed class NodeCanvas : Border
         var box = new TextBox
         {
             Text = node.Data.Title,
-            FontSize = 14,
-            FontWeight = FontWeights.Medium,
-            MinWidth = 120,
-            MaxWidth = 240,
+            FontSize = TitleSize,
+            FontWeight = FontWeights.Bold,
+            MinWidth = 124,
+            MaxWidth = TitleWidth,
             TextWrapping = TextWrapping.Wrap,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
