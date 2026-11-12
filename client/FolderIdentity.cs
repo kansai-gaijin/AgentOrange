@@ -22,21 +22,43 @@ internal static class FolderIdentity
         return Of(a) is { } first && Of(b) is { } second && first == second;
     }
 
-    /// <summary>
-    /// Whether one folder is, or holds, the other. Each is also compared by where it really is,
-    /// because a junction can put a folder inside another one without its path showing it.
-    /// </summary>
-    public static bool Overlap(string a, string b)
+    /// <summary>What Overlap needs about a folder, read from the disk once, so comparing it with many others is quick.</summary>
+    public sealed record Looked(string Full, string[] Ancestors, (ulong Volume, ulong High, ulong Low)?[] Ids, string? Real);
+
+    /// <summary>Reads a folder and everything above it. Touches the disk, so it can be slow on a drive that's stopped answering.</summary>
+    public static Looked Look(string path)
     {
-        if (IsOrHolds(a, b) || IsOrHolds(b, a)) return true;
-        return RealPath(a) is { } realA && RealPath(b) is { } realB && (Within(realA, realB) || Within(realB, realA));
+        var text = ByText(path);
+        return text with { Ids = text.Ancestors.Select(Of).ToArray(), Real = RealPath(path) };
     }
 
-    private static bool IsOrHolds(string folder, string other)
+    /// <summary>Only what the path says, for a folder whose drive didn't answer in time.</summary>
+    public static Looked ByText(string path)
     {
-        for (var at = other; at is not null; at = Path.GetDirectoryName(at))
+        string full;
+        try
         {
-            if (Same(at, folder)) return true;
+            full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            full = Path.TrimEndingDirectorySeparator(path);
+        }
+        var ancestors = new List<string>();
+        for (string? at = full; !string.IsNullOrEmpty(at); at = Path.GetDirectoryName(at)) ancestors.Add(at);
+        return new Looked(full, ancestors.ToArray(), new (ulong, ulong, ulong)?[ancestors.Count], null);
+    }
+
+    /// <summary>The same as comparing the paths, from what was read of each.</summary>
+    public static bool Overlap(Looked a, Looked b) =>
+        IsOrHolds(a, b) || IsOrHolds(b, a) || a.Real is { } realA && b.Real is { } realB && (Within(realA, realB) || Within(realB, realA));
+
+    private static bool IsOrHolds(Looked folder, Looked other)
+    {
+        for (var i = 0; i < other.Ancestors.Length; i++)
+        {
+            if (string.Equals(other.Ancestors[i].TrimEnd('\\', '/'), folder.Full.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase)) return true;
+            if (other.Ids[i] is { } id && folder.Ids.Length > 0 && folder.Ids[0] is { } own && id == own) return true;
         }
         return false;
     }

@@ -422,8 +422,13 @@ public sealed class LocalDatabase
     /// One claim runs at a time across every window, so two can't both find it free. Returns the
     /// project that already has it, in which case nothing is held.
     /// </summary>
-    public Task<Project?> ClaimFolderAsync(string folder, Project claimant) =>
-        ClaimAsync(FolderHold, folder, claimant, () => FolderOwner(folder, claimant.Id));
+    public async Task<Project?> ClaimFolderAsync(string folder, Project claimant)
+    {
+        // Read from the disk before the turn every window shares, as a drive that's stopped answering
+        // would otherwise hold up everyone's claims, whatever folder they're for.
+        var looked = await LookAtFoldersAsync(folder);
+        return await ClaimAsync(FolderHold, folder, claimant, () => FolderOwner(folder, claimant.Id, looked));
+    }
 
     public void ReleaseFolder(string folder) => Release(FolderHold, folder);
 
@@ -457,10 +462,38 @@ public sealed class LocalDatabase
     /// A folder can only be one project, so this finds who already has it, by any path. A folder
     /// inside or around another project's counts too, since their repos and engine files would mix.
     /// </summary>
-    public Task<Project?> ProjectUsingFolderAsync(string folder, string? exceptProjectId = null) =>
-        Task.Run(() => FolderOwner(folder, exceptProjectId));
+    public async Task<Project?> ProjectUsingFolderAsync(string folder, string? exceptProjectId = null)
+    {
+        var looked = await LookAtFoldersAsync(folder);
+        return await Task.Run(() => FolderOwner(folder, exceptProjectId, looked));
+    }
 
-    private Project? FolderOwner(string folder, string? exceptProjectId)
+    private static readonly TimeSpan LongestFolderLook = TimeSpan.FromSeconds(3);
+
+    // The folder and every linked one, each with its own time limit. One that doesn't answer in
+    // time is compared by its path alone. It's on a drive that isn't working, and can't be cloned into.
+    private async Task<Dictionary<string, FolderIdentity.Looked>> LookAtFoldersAsync(string folder)
+    {
+        var paths = await Task.Run(() => ListProjects().Select(project => GetProjectFolder(project.Id)).OfType<string>()
+            .Concat(LiveHolds(FolderHold, null, true).Select(hold => hold.Target)).Append(folder)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList());
+        var looks = paths.Select(async path =>
+        {
+            var look = Task.Run(() => FolderIdentity.Look(path));
+            try
+            {
+                return (path, await look.WaitAsync(LongestFolderLook));
+            }
+            catch (TimeoutException)
+            {
+                AppLog.Write("A project's folder took too long to answer, so it was only compared by its path.");
+                return (path, FolderIdentity.ByText(path));
+            }
+        });
+        return (await Task.WhenAll(looks)).ToDictionary(pair => pair.path, pair => pair.Item2, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private Project? FolderOwner(string folder, string? exceptProjectId, Dictionary<string, FolderIdentity.Looked> looked)
     {
         var linked = ListProjects()
             .Where(project => project.Id != exceptProjectId)
@@ -469,7 +502,10 @@ public sealed class LocalDatabase
             .Concat(LiveHolds(FolderHold, exceptProjectId, true).Select(hold => (Project: hold.Holder, Folder: (string?)hold.Target)))
             .ToList();
 
-        return linked.FirstOrDefault(link => FolderIdentity.Overlap(folder, link.Folder!)).Project;
+        // One linked since the look above is read now, as it can't have been read before.
+        FolderIdentity.Looked LookedAt(string path) => looked.TryGetValue(path, out var known) ? known : looked[path] = FolderIdentity.Look(path);
+        var chosen = LookedAt(folder);
+        return linked.FirstOrDefault(link => FolderIdentity.Overlap(chosen, LookedAt(link.Folder!))).Project;
     }
 
     private Project? RepoOwner(string url, string? exceptProjectId) =>
