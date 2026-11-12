@@ -67,6 +67,9 @@ public sealed class SyncEngine
 
     private static string CursorSetting(string epoch) => $"sync_cursor_for:{epoch}";
 
+    // The epoch of the server this PC last synced with.
+    private const string LastServerSetting = "sync_last_epoch";
+
     // One bad change would otherwise be first in line forever, and nothing behind it would ever
     // sync. So smaller and smaller batches are sent until it's alone, and it's then set aside.
     private void NarrowDownRefused(List<SyncChange> batch)
@@ -171,6 +174,15 @@ public sealed class SyncEngine
                 _database.QueueAllRecords();
                 _database.SetSetting(cursorSetting, "0");
             }
+            else if (_database.GetSetting(LastServerSetting) is { Length: > 0 } last && last != epoch)
+            {
+                // Back to a server this PC synced with before, after another. What went to that
+                // one in between, from here or from its other PCs, never reached this one. Newer
+                // copies win there, and identical ones aren't sent back, so all of it goes again.
+                AppLog.Write("This PC synced with another server since this one, so it's sending this one everything again.");
+                _database.QueueAllRecords();
+            }
+            _database.SetSetting(LastServerSetting, epoch);
             var cursor = stored is not null && long.TryParse(stored, out var storedCursor) ? storedCursor : 0;
 
             var onlyReceive = false;
@@ -221,6 +233,7 @@ public sealed class SyncEngine
                     var oldEpoch = epoch;
                     epoch = current;
                     cursorSetting = CursorSetting(epoch);
+                    _database.SetSetting(LastServerSetting, epoch); // The same server, with new data.
 
                     // Already caught up with this server's new data through another address.
                     if (_database.GetSetting(cursorSetting) is { } known)
