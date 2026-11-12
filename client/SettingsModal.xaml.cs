@@ -645,6 +645,8 @@ public partial class SettingsModal : UserControl
 
     public Action AppIsRestarting { get; set; } = () => { };
 
+    // Asked with the least access there is, which a window running as administrator still answers.
+    // One that can't be asked at all may be this app, using this database, so it counts.
     private static bool AnotherWindowIsOpen()
     {
         using var current = Process.GetCurrentProcess();
@@ -653,17 +655,39 @@ public partial class SettingsModal : UserControl
         {
             using (process)
             {
-                try
-                {
-                    return process.Id != current.Id && process.MainModule?.FileName == path;
-                }
-                catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
-                {
-                    return false; // Someone else's, or just gone.
-                }
+                if (process.Id == current.Id) return false;
+                var program = ProgramOf(process.Id);
+                return program is null || string.Equals(program, path, StringComparison.OrdinalIgnoreCase);
             }
         });
     }
+
+    private static string? ProgramOf(int processId)
+    {
+        var handle = OpenProcess(ProcessQueryLimitedInformation, false, processId);
+        if (handle == IntPtr.Zero) return null;
+        try
+        {
+            var name = new char[32768];
+            var length = name.Length;
+            return QueryFullProcessImageName(handle, 0, name, ref length) ? new string(name, 0, length) : null;
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+    }
+
+    private const uint ProcessQueryLimitedInformation = 0x1000;
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint access, bool inheritHandle, int processId);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern bool QueryFullProcessImageName(IntPtr process, int flags, char[] name, ref int size);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
 
     private UIElement[] LocalDataPage()
     {
@@ -713,7 +737,8 @@ public partial class SettingsModal : UserControl
         var downloadsFolder = Folders.DownloadsFolder(Database);
         var downloadsPath = FolderField(downloadsFolder);
         var changeDownloads = ActionButton("Change");
-        var downloadsRow = Row("Downloads", DownloadsDescription(downloadsFolder), downloadsPath, changeDownloads);
+        var downloadsRow = Row("Downloads", DownloadsDescription("Adding up its size…"), downloadsPath, changeDownloads);
+        _ = ShowDownloadsSizeAsync((TextBlock)((StackPanel)downloadsRow.Children[0]).Children[1], downloadsFolder);
         changeDownloads.Click += (_, _) =>
         {
             if (PickFolder(Folders.DownloadsFolder(Database)) is not { } folder) return;
@@ -741,8 +766,14 @@ public partial class SettingsModal : UserControl
         Process.Start(explorer, $"\"{folder}\"")?.Dispose();
     }
 
-    private static string DownloadsDescription(string folder) =>
-        $"Images, models and other files kept for offline use. {AppFolders.FormatSize(AppFolders.FolderSize(folder))}.";
+    private static string DownloadsDescription(string size) => $"Images, models and other files kept for offline use. {size}";
+
+    // Downloads can be large, so they're added up off the window's thread, and filled in once known.
+    private static async Task ShowDownloadsSizeAsync(TextBlock description, string folder)
+    {
+        var size = await Task.Run(() => AppFolders.FolderSize(folder));
+        description.Text = DownloadsDescription($"{AppFolders.FormatSize(size)}.");
+    }
 
     private TextBox FolderField(string folder)
     {

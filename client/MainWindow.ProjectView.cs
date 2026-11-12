@@ -127,7 +127,7 @@ public partial class MainWindow
                 }
 
                 // Some of what can stop this only the person can sort out, and it can't say so forever.
-                var sorted = TwoClickAction("I've sorted this myself", async () =>
+                var sorted = TwoClickAction("I've sorted this myself", actsOn: $"{project.Id}|{folder}", action: async () =>
                 {
                     await GitTools.ForgetUnfinishedDownloadAsync(folder!);
                     _finishSettingsToAllow = null;
@@ -325,13 +325,13 @@ public partial class MainWindow
             if (linked is not null && found.FolderExists && found.FolderProblem is { ConnectingCanFix: true } shown)
             {
                 // The project moved repos elsewhere, and this PC may only get in the way this folder does.
-                var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linked, shown));
+                var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linked, shown), $"{project.Id}|{linked}|{shown.Origin}");
                 connect.IsEnabled = !busy;
                 rows.Add(Row("Keep using this folder", "If the project moved repos, this points the folder's remote at the new one, the same way it connects now. Its files don't change.", connect));
             }
             else if (linked is not null && found.FolderExists)
             {
-                var repair = TwoClickAction("Repair it", () => RepairRemoteAsync(project, linked));
+                var repair = TwoClickAction("Repair it", () => RepairRemoteAsync(project, linked), $"{project.Id}|{linked}");
                 repair.IsEnabled = !busy;
                 rows.Add(Row("Repair this folder's connection", "Switches it between HTTPS and SSH, whichever works from this PC.", repair));
             }
@@ -414,7 +414,7 @@ public partial class MainWindow
             return;
         }
 
-        var allow = TwoClickAction("Allow", () => AllowFolderSettingsAsync(project, folder, settings.Fingerprint));
+        var allow = TwoClickAction("Allow", () => AllowFolderSettingsAsync(project, folder, settings.Fingerprint), $"{folder}|{settings.Fingerprint}");
         allow.IsEnabled = !IsBusy;
         rows.Add(Row("Use this folder's own Git settings", $"They can run programs or send your login somewhere else, so only allow them if you trust where this folder came from: {settings.Shown}", allow));
     }
@@ -433,7 +433,7 @@ public partial class MainWindow
             GitTools.RememberAllowedFolderSettings(GitTools.FinishApprovalKey(folder), settings.Fingerprint);
             _finishSettingsToAllow = null;
             await FinishDownloadAsync(project, folder);
-        });
+        }, $"finish|{folder}|{settings.Fingerprint}");
         allow.IsEnabled = !IsBusy;
         rows.Add(Row("Finishing would use this folder's own Git settings", $"They can run programs, so only allow them if you trust where this folder came from: {settings.Shown}", allow));
     }
@@ -490,7 +490,7 @@ public partial class MainWindow
         if (linkedFolder is not null && found.FolderExists && found.FolderProblem is { ConnectingCanFix: true } shown)
         {
             // The project may have moved to a new repo on another PC, with this copy's work unpushed.
-            var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linkedFolder, shown));
+            var connect = TwoClickAction("Connect it", () => PointFolderAtRepoAsync(project, linkedFolder, shown), $"{project.Id}|{linkedFolder}|{shown.Origin}");
             connect.IsEnabled = !busy;
             rows.Add(Row("Keep using this folder", "If the project moved repos, this points the folder's remote at the new one. Its files don't change.", connect));
         }

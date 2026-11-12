@@ -130,21 +130,30 @@ public static class Ui
     }
 
     // Takes two clicks, for things that are a nuisance to undo.
-    public static Button TwoClickAction(string label, Func<Task> action)
+    // The one waiting on its second click, so a page drawn again, such as after a sync, still asks.
+    // Only for one that says what it acts on, as the same label can come back meaning something else.
+    private static (string Key, DateTime Until)? _armedTwoClick;
+    private static readonly TimeSpan TwoClickStaysArmed = TimeSpan.FromSeconds(15);
+
+    public static Button TwoClickAction(string label, Func<Task> action, string? actsOn = null)
     {
         var button = ActionButton(label);
-        var confirming = false;
+        var key = actsOn is null ? null : $"{label}|{actsOn}";
+        var confirming = key is not null && _armedTwoClick is { } armed && armed.Key == key && DateTime.UtcNow < armed.Until;
+        if (confirming) button.Content = "Are you sure?";
         button.Click += async (_, _) =>
         {
             if (!confirming)
             {
                 confirming = true;
                 button.Content = "Are you sure?";
+                if (key is not null) _armedTwoClick = (key, DateTime.UtcNow + TwoClickStaysArmed);
                 return;
             }
 
             confirming = false;
             button.Content = label;
+            if (key is not null && _armedTwoClick?.Key == key) _armedTwoClick = null;
             await action();
         };
         return button;
