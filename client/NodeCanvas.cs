@@ -16,9 +16,11 @@ namespace AgentOrange;
 /// a record of its own, so two PCs changing different ones both count, and it all syncs.
 ///
 /// Shift+A opens the list of nodes and adds the one picked where the mouse is, the way Blender
-/// does. Double-click a node to change its words, drag it to move it, drag from one of its dots to
-/// another node to link them, and drag empty space to move around. The wheel zooms, and Delete
-/// removes what's selected.
+/// does. Double-click a node to change its words, drag it to move it, and drag from one of its
+/// dots to another node to link them. Drag empty space to select the nodes in a box, and hold
+/// Shift or Ctrl to add to what's selected, so they move together. Drag with the middle or the
+/// right button to move around, and with Ctrl and the right button across links to cut them.
+/// The wheel zooms, and Delete removes what's selected.
 /// </summary>
 internal sealed partial class NodeCanvas : Border
 {
@@ -71,9 +73,10 @@ internal sealed partial class NodeCanvas : Border
         public required string Id { get; init; }
         public required LinkData Data { get; init; }
         public required Line Line { get; init; }
+        public required Line Hit { get; init; } // Wider and unseen, as the line itself is too thin to click.
     }
 
-    private enum Gesture { None, Pan, Move, Link, Resize }
+    private enum Gesture { None, Pan, Move, Link, Resize, Box, Cut }
 
     private readonly LocalDatabase _database;
     private readonly string _projectId;
@@ -85,7 +88,12 @@ internal sealed partial class NodeCanvas : Border
     private readonly TextBlock _hint;
     private readonly Dictionary<string, NodeView> _nodes = [];
     private readonly Dictionary<string, LinkView> _links = [];
-    private string? _selected; // A node's or a link's.
+    private readonly HashSet<string> _selection = []; // Nodes' and links'.
+    private readonly Dictionary<NodeView, Point> _movedFrom = []; // Where each node being dragged started.
+    private readonly Border _band; // The box dragged out to select what's in it.
+    private HashSet<string> _selectionBefore = [];
+    private bool _adding; // Shift or Ctrl was held, so it adds to what's selected.
+    private Polyline? _cut;
 
     private Gesture _gesture;
     private Point _pressedAt;
@@ -122,11 +130,26 @@ internal sealed partial class NodeCanvas : Border
             IsHitTestVisible = false,
         };
         _toolbar = NewToolbar();
-        Child = new Grid { Children = { _world, _hint, _toolbar } };
+        _band = new Border
+        {
+            BorderBrush = (Brush)FindResource("Accent"),
+            BorderThickness = new Thickness(1),
+            Background = new SolidColorBrush(Color.FromArgb(0x22, 0x5B, 0xD0, 0xD6)),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed,
+        };
+        Child = new Grid { Children = { _world, _hint, _band, _toolbar } };
 
         MouseLeftButtonDown += Pressed;
         MouseMove += Moved;
         MouseLeftButtonUp += Released;
+        MouseDown += OtherPressed;
+        MouseUp += (_, release) =>
+        {
+            if (release.ChangedButton != MouseButton.Left) EndGesture(ToWorld(release.GetPosition(this)));
+        };
         LostMouseCapture += (_, _) => EndGesture(null);
         PreviewMouseWheel += Zoomed;
         KeyDown += KeyPressed;
@@ -154,7 +177,7 @@ internal sealed partial class NodeCanvas : Border
             if (Parse<LinkData>(text) is { } data && data.Board == _board && _nodes.ContainsKey(data.From) && _nodes.ContainsKey(data.To)) AddLinkView(id, data);
         }
 
-        if (_selected is not null && !_nodes.ContainsKey(_selected) && !_links.ContainsKey(_selected)) _selected = null;
+        _selection.RemoveWhere(id => !_nodes.ContainsKey(id) && !_links.ContainsKey(id));
         ShowSelection();
         _hint.Visibility = _nodes.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -478,12 +501,37 @@ internal sealed partial class NodeCanvas : Border
 
     private void AddLinkView(string id, LinkData data)
     {
-        var line = new Line { Stroke = (Brush)FindResource("TextMuted"), StrokeThickness = 2.5, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, Cursor = Cursors.Hand };
-        var view = new LinkView { Id = id, Data = data, Line = line };
-        line.Tag = view;
+        var line = new Line { Stroke = (Brush)FindResource("TextMuted"), StrokeThickness = 2.5, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, IsHitTestVisible = false };
+        var hit = new Line { Stroke = Brushes.Transparent, StrokeThickness = 14, Cursor = Cursors.Hand, ToolTip = "Click to select, then Delete to remove" };
+        var view = new LinkView { Id = id, Data = data, Line = line, Hit = hit };
+        hit.Tag = view;
         _world.Children.Insert(0, line); // Under the nodes.
+        _world.Children.Insert(0, hit);
         _links[id] = view;
         Place(view);
+    }
+
+    private void RemoveLink(LinkView link)
+    {
+        _links.Remove(link.Id);
+        _selection.Remove(link.Id);
+        _world.Children.Remove(link.Line);
+        _world.Children.Remove(link.Hit);
+        _database.SaveRecord(LocalDatabase.NodeLinksCollection, link.Id, "", deleted: true);
+    }
+
+    // Takes away every link the line drawn crosses.
+    private void CutLinks(PointCollection along)
+    {
+        static double Side(Point a, Point b, Point c) => (b.X - a.X) * (c.Y - a.Y) - (b.Y - a.Y) * (c.X - a.X);
+        static bool Cross(Point a, Point b, Point c, Point d) => Side(a, b, c) * Side(a, b, d) < 0 && Side(c, d, a) * Side(c, d, b) < 0;
+
+        var crossed = _links.Values.Where(link => Enumerable.Range(0, Math.Max(0, along.Count - 1)).Any(at =>
+            Cross(along[at], along[at + 1], new Point(link.Line.X1, link.Line.Y1), new Point(link.Line.X2, link.Line.Y2)))).ToList();
+        if (crossed.Count == 0) return;
+
+        foreach (var link in crossed) RemoveLink(link);
+        _changed();
     }
 
     // Where a pin is: the middle of the top or bottom edge. The bottom one when it has no such pin.
@@ -497,6 +545,7 @@ internal sealed partial class NodeCanvas : Border
         if (!_nodes.TryGetValue(link.Data.From, out var from) || !_nodes.TryGetValue(link.Data.To, out var to)) return;
         var (start, end) = (PinOf(from, link.Data.FromPin), PinOf(to, link.Data.ToPin));
         (link.Line.X1, link.Line.Y1, link.Line.X2, link.Line.Y2) = (start.X, start.Y, end.X, end.Y);
+        (link.Hit.X1, link.Hit.Y1, link.Hit.X2, link.Hit.Y2) = (start.X, start.Y, end.X, end.Y);
     }
 
     private void PlaceLinksOf(NodeView node)
@@ -520,7 +569,14 @@ internal sealed partial class NodeCanvas : Border
 
     private void Select(string? id)
     {
-        _selected = id;
+        _selection.Clear();
+        if (id is not null) _selection.Add(id);
+        ShowSelection();
+    }
+
+    private void Toggle(string id)
+    {
+        if (!_selection.Remove(id)) _selection.Add(id);
         ShowSelection();
     }
 
@@ -528,33 +584,35 @@ internal sealed partial class NodeCanvas : Border
     {
         foreach (var node in _nodes.Values)
         {
-            var selected = node.Id == _selected;
+            var selected = _selection.Contains(node.Id);
             node.Box.BorderBrush = selected ? (Brush)FindResource("Accent") : node.Rich is not null ? (Brush)FindResource("Line") : Brushes.Transparent;
         }
-        foreach (var link in _links.Values) link.Line.Stroke = (Brush)FindResource(link.Id == _selected ? "Accent" : "TextMuted");
+        foreach (var link in _links.Values)
+        {
+            var selected = _selection.Contains(link.Id);
+            link.Line.Stroke = (Brush)FindResource(selected ? "Accent" : "TextMuted");
+            link.Line.StrokeThickness = selected ? 3.5 : 2.5;
+        }
     }
 
     private void DeleteSelected()
     {
-        if (_selected is not { } id) return;
+        if (_selection.Count == 0) return;
 
-        if (_links.Remove(id, out var onlyLink))
+        foreach (var id in _selection.ToList())
         {
-            _world.Children.Remove(onlyLink.Line);
-            _database.SaveRecord(LocalDatabase.NodeLinksCollection, id, "", deleted: true);
-        }
-        else if (_nodes.Remove(id, out var node))
-        {
-            _world.Children.Remove(node.Box);
-            _database.SaveRecord(LocalDatabase.NodesCollection, id, "", deleted: true);
-            foreach (var link in _links.Values.Where(link => link.Data.From == id || link.Data.To == id).ToList())
+            if (_links.TryGetValue(id, out var onlyLink))
             {
-                _links.Remove(link.Id);
-                _world.Children.Remove(link.Line);
-                _database.SaveRecord(LocalDatabase.NodeLinksCollection, link.Id, "", deleted: true);
+                RemoveLink(onlyLink);
+            }
+            else if (_nodes.Remove(id, out var node))
+            {
+                _world.Children.Remove(node.Box);
+                _database.SaveRecord(LocalDatabase.NodesCollection, id, "", deleted: true);
+                foreach (var link in _links.Values.Where(link => link.Data.From == id || link.Data.To == id).ToList()) RemoveLink(link);
             }
         }
-        _selected = null;
+        _selection.Clear();
         _hint.Visibility = _nodes.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         _changed();
     }
@@ -649,6 +707,7 @@ internal sealed partial class NodeCanvas : Border
 
     private void Pressed(object sender, MouseButtonEventArgs press)
     {
+        if (_gesture != Gesture.None) return;
         Focus();
         StopEditing(keep: true);
 
@@ -669,6 +728,7 @@ internal sealed partial class NodeCanvas : Border
 
         _dragging = false;
         _held = node;
+        _adding = (Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) != 0;
         if (node is not null && press.OriginalSource is FrameworkElement { Tag: string part } && part.StartsWith(ResizePart, StringComparison.Ordinal))
         {
             Select(node.Id);
@@ -688,18 +748,64 @@ internal sealed partial class NodeCanvas : Border
         }
         else if (node is not null)
         {
-            Select(node.Id);
+            if (_adding)
+            {
+                Toggle(node.Id);
+                if (!_selection.Contains(node.Id))
+                {
+                    _held = null;
+                    return;
+                }
+            }
+            else if (!_selection.Contains(node.Id))
+            {
+                Select(node.Id); // One already among those selected keeps them, so they all move.
+            }
+
             _gesture = Gesture.Move;
-            _heldFrom = new Point(node.Data.X, node.Data.Y);
+            _movedFrom.Clear();
+            foreach (var id in _selection)
+            {
+                if (_nodes.TryGetValue(id, out var moved)) _movedFrom[moved] = new Point(moved.Data.X, moved.Data.Y);
+            }
         }
         else if (link is not null)
         {
-            Select(link.Id);
+            if (_adding) Toggle(link.Id);
+            else Select(link.Id);
             return;
         }
         else
         {
-            Select(null);
+            if (!_adding) Select(null);
+            _selectionBefore = [.. _selection];
+            _gesture = Gesture.Box;
+        }
+        CaptureMouse();
+    }
+
+    // The middle and right buttons move around, and Ctrl with the right one cuts links.
+    private void OtherPressed(object sender, MouseButtonEventArgs press)
+    {
+        if (press.ChangedButton == MouseButton.Left || _gesture != Gesture.None) return;
+        if (_editing?.Rich is { IsMouseOver: true } || IsInToolbar(press.OriginalSource)) return; // Words being edited have a menu of their own.
+
+        Focus();
+        StopEditing(keep: true);
+        _pressedAt = press.GetPosition(this);
+        _pressedAtInWorld = ToWorld(_pressedAt);
+        _dragging = false;
+        _held = null;
+        press.Handled = true;
+
+        if (press.ChangedButton == MouseButton.Right && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            _gesture = Gesture.Cut;
+            _cut = new Polyline { Stroke = (Brush)FindResource("Danger"), StrokeThickness = 2, StrokeDashArray = [3, 2], IsHitTestVisible = false, Points = [_pressedAtInWorld] };
+            _world.Children.Add(_cut);
+        }
+        else
+        {
             _gesture = Gesture.Pan;
             _viewWhenPressed = _view.Matrix;
         }
@@ -722,11 +828,14 @@ internal sealed partial class NodeCanvas : Border
                 view.Translate(at.X - _pressedAt.X, at.Y - _pressedAt.Y);
                 _view.Matrix = view;
                 break;
-            case Gesture.Move when _held is { } node:
-                node.Data = node.Data with { X = Math.Round(_heldFrom.X + inWorld.X - _pressedAtInWorld.X), Y = Math.Round(_heldFrom.Y + inWorld.Y - _pressedAtInWorld.Y) };
-                Canvas.SetLeft(node.Box, node.Data.X);
-                Canvas.SetTop(node.Box, node.Data.Y);
-                PlaceLinksOf(node);
+            case Gesture.Move:
+                foreach (var (moved, from) in _movedFrom)
+                {
+                    moved.Data = moved.Data with { X = Math.Round(from.X + inWorld.X - _pressedAtInWorld.X), Y = Math.Round(from.Y + inWorld.Y - _pressedAtInWorld.Y) };
+                    Canvas.SetLeft(moved.Box, moved.Data.X);
+                    Canvas.SetTop(moved.Box, moved.Data.Y);
+                    PlaceLinksOf(moved);
+                }
                 break;
             case Gesture.Resize when _held is { } resized:
                 if (_heldEdge != ResizePart + "-h")
@@ -745,6 +854,21 @@ internal sealed partial class NodeCanvas : Border
             case Gesture.Link when _newLink is { } line:
                 (line.X2, line.Y2) = (inWorld.X, inWorld.Y);
                 break;
+            case Gesture.Box:
+                var onScreen = new Rect(_pressedAt, at);
+                _band.Margin = new Thickness(onScreen.X, onScreen.Y, 0, 0);
+                (_band.Width, _band.Height) = (onScreen.Width, onScreen.Height);
+                _band.Visibility = Visibility.Visible;
+
+                var area = new Rect(_pressedAtInWorld, inWorld);
+                _selection.Clear();
+                _selection.UnionWith(_selectionBefore);
+                foreach (var inside in _nodes.Values.Where(one => area.IntersectsWith(new Rect(one.Data.X, one.Data.Y, one.Box.ActualWidth, one.Box.ActualHeight)))) _selection.Add(inside.Id);
+                ShowSelection();
+                break;
+            case Gesture.Cut when _cut is { } cutting:
+                cutting.Points.Add(inWorld);
+                break;
         }
     }
 
@@ -753,20 +877,37 @@ internal sealed partial class NodeCanvas : Border
     // Null for where it ended means it was cut short, such as by the window losing the mouse.
     private void EndGesture(Point? endedAt)
     {
-        var (gesture, held, dragged) = (_gesture, _held, _dragging);
+        var (gesture, held, dragged, cut) = (_gesture, _held, _dragging, _cut);
         if (gesture == Gesture.None) return;
         _gesture = Gesture.None;
         _held = null;
         _dragging = false;
+        _cut = null;
+        _band.Visibility = Visibility.Collapsed;
         if (_newLink is { } line)
         {
             _world.Children.Remove(line);
             _newLink = null;
         }
+        if (cut is not null) _world.Children.Remove(cut);
         if (IsMouseCaptured) ReleaseMouseCapture();
 
-        if (gesture is Gesture.Move or Gesture.Resize && dragged && held is not null) SaveNode(held);
+        if (gesture == Gesture.Move)
+        {
+            if (dragged)
+            {
+                foreach (var moved in _movedFrom.Keys) _database.SaveRecord(LocalDatabase.NodesCollection, moved.Id, JsonSerializer.Serialize(moved.Data, JsonOptions));
+                _changed();
+            }
+            else if (!_adding && held is not null && _selection.Count > 1)
+            {
+                Select(held.Id); // A plain click on one of several leaves just that one.
+            }
+            _movedFrom.Clear();
+        }
+        if (gesture == Gesture.Resize && dragged && held is not null) SaveNode(held);
         if (gesture == Gesture.Link && held is not null && endedAt is { } at && NodeAt(at) is { } target) AddLink(held, _heldPin, target, NearestPin(target, at));
+        if (gesture == Gesture.Cut && endedAt is not null && cut is not null) CutLinks(cut.Points);
     }
 
     private void Zoomed(object sender, MouseWheelEventArgs wheel)
@@ -795,7 +936,18 @@ internal sealed partial class NodeCanvas : Border
             DeleteSelected();
             pressed.Handled = true;
         }
-        else if (pressed.Key == Key.F2 && _selected is { } id && _nodes.TryGetValue(id, out var node))
+        else if (pressed.Key == Key.A && Keyboard.Modifiers == ModifierKeys.None)
+        {
+            _selection.UnionWith(_nodes.Keys);
+            ShowSelection();
+            pressed.Handled = true;
+        }
+        else if (pressed.Key == Key.Escape)
+        {
+            Select(null);
+            pressed.Handled = true;
+        }
+        else if (pressed.Key == Key.F2 && _selection.Count == 1 && _nodes.TryGetValue(_selection.First(), out var node))
         {
             StartEditing(node);
             pressed.Handled = true;
