@@ -115,7 +115,8 @@ public partial class MainWindow : Window
         _devices.ClientVersion = _updates.IsInstalled ? _updates.CurrentVersion?.ToString() : null;
         Settings.ConfirmStoppingWork = ConfirmStoppingClone;
         Settings.AppIsRestarting = () => _restarting = true;
-        Closing += (_, closing) => closing.Cancel = !_restarting && !ConfirmStoppingClone("Closing");
+        Closing += (_, closing) => closing.Cancel = !_restarting && (HideToTray() || !ConfirmStoppingClone("Closing"));
+        StartTray();
 
         // Nothing stays compatible across a release, so a copy that has to update doesn't sync.
         _sync = new SyncEngine(_database, _server, _devices, folders.DatabasePath) { IsPaused = () => _requiredVersion is not null };

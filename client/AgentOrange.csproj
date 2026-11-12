@@ -6,6 +6,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <!-- Only for the icon by the clock, which WPF has nothing for. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>Assets\app-icon.ico</ApplicationIcon>
     <StartupObject>AgentOrange.Program</StartupObject>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
@@ -17,6 +20,13 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
     <PackageReference Include="Velopack" Version="1.2.161" />
+  </ItemGroup>
+
+  <!-- Windows Forms has its own Button, Application and so on, which every file would otherwise have to tell apart. -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+    <Resource Include="Assets\app-icon.ico" />
   </ItemGroup>
 
   <!-- Velopack has to run before WPF starts, so Program.cs owns Main instead of App.xaml. -->

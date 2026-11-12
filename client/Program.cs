@@ -14,7 +14,12 @@ public static class Program
 
 #if DEBUG
         Headless.Configure(Environment.GetCommandLineArgs());
+        if (!Headless.Active)
 #endif
+        {
+            // Its window was closed to the tray, and starting the app again is asking for it back.
+            if (Tray.ShowHiddenWindow()) return;
+        }
 
         var app = new App();
         var toldAboutDatabase = DateTimeOffset.MinValue;

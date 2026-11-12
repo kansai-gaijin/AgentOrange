@@ -20,6 +20,12 @@ public partial class MainWindow
         public required Border ProviderSlot { get; init; }
         public AgentSession? Session { get; set; }
         public string? ProviderId { get; set; }
+        public bool Unseen { get; set; } // It finished while no one was looking at it.
+    }
+
+    private void MarkAgentRepliesSeen()
+    {
+        foreach (var chat in _agentChats.Values.Where(chat => chat.Root.IsVisible)) chat.Unseen = false;
     }
 
     private void AddAgent(StackPanel body, Project project, string folder, PageCheck found)
@@ -57,6 +63,7 @@ public partial class MainWindow
             })
             : null;
         body.Children.Add(chat.Root);
+        if (IsActive) chat.Unseen = false;
     }
 
     private AgentChat NewAgentChat(string projectId, string folder)
@@ -128,6 +135,7 @@ public partial class MainWindow
             finally
             {
                 send.Content = "Send";
+                if (!IsActive || !root.IsVisible) chat.Unseen = true;
             }
         }
 
