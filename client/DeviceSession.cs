@@ -25,20 +25,26 @@ public sealed record DeviceInfo(string Id, string Name, bool Current, double Las
 }
 
 /// <summary>Epoch is different if the server's data has started over.</summary>
-public sealed record SyncResponse(long Cursor, bool HasMore, List<SyncChange> Changes, string? Epoch);
+public sealed record SyncResponse(long Cursor, bool HasMore, List<SyncChange> Changes, string? Epoch, bool TooFarBehind = false);
 
 /// <summary>This PC's login to the server. It's stored encrypted, per server address.</summary>
 public sealed class DeviceSession(LocalDatabase database, ServerConnection server)
 {
     private sealed record PairResponse(string Id, string Token);
 
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(60) }; // Images can take a while.
+    // Each request gets its own time limit, by how much it sends.
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(60);
+
+    private readonly HttpClient _http = new() { Timeout = Timeout.InfiniteTimeSpan };
 
     /// <summary>Told to the server, which only syncs with its own release. Dev builds don't have one.</summary>
     public string? ClientVersion { get; set; }
 
     /// <summary>The server's last answer was that it won't take what it was sent, so sending it again won't help.</summary>
     public bool LastSyncRefused { get; private set; }
+
+    /// <summary>The last sync ran out of time, which sending less may not.</summary>
+    public bool LastSyncTimedOut { get; private set; }
 
     /// <summary>The server's last answer was that it's on a different release than this PC. Kept in the database, as only one window syncs.</summary>
     public bool VersionsDiffer => database.GetSetting(VersionsDifferSetting) == "1";
@@ -118,9 +124,13 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
     {
         // Only an answer to this request counts. A timeout says nothing about what was sent.
         LastSyncRefused = false;
+        LastSyncTimedOut = false;
         try
         {
-            using var response = await SendAsync(HttpMethod.Post, "/v1/sync", new { cursor, changes, epoch });
+            // A minute, plus time for what's sent at about 16 KB a second, so a slow connection can
+            // still get a batch of images through, given long enough.
+            var sending = changes.Sum(change => (long)change.Data.Length);
+            using var response = await SendAsync(HttpMethod.Post, "/v1/sync", new { cursor, changes, epoch }, RequestTimeout + TimeSpan.FromSeconds(sending / 16_000));
 
             // Only the server itself, not a proxy along the way, whose limits say nothing about the
             // change. Anything else is just a sync that didn't go through, and everything stays queued.
@@ -186,7 +196,7 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
         }
     }
 
-    private async Task<HttpResponseMessage?> SendAsync(HttpMethod method, string path, object? body = null)
+    private async Task<HttpResponseMessage?> SendAsync(HttpMethod method, string path, object? body = null, TimeSpan? timeout = null)
     {
         var address = server.Address;
         var setting = TokenSettingFor(address);
@@ -197,7 +207,17 @@ public sealed class DeviceSession(LocalDatabase database, ServerConnection serve
         if (ClientVersion is not null) request.Headers.Add("X-Agent-Orange-Version", ClientVersion);
         if (body is not null) request.Content = JsonContent.Create(body);
 
-        var response = await _http.SendAsync(request);
+        using var limit = new CancellationTokenSource(timeout ?? RequestTimeout);
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http.SendAsync(request, limit.Token);
+        }
+        catch (TaskCanceledException) when (limit.IsCancellationRequested && path == "/v1/sync")
+        {
+            LastSyncTimedOut = true;
+            throw;
+        }
         // This device was removed from the server, so its login is no use any more. Only the
         // server itself can say so, not a proxy or access rule along the way.
         if (response.StatusCode == HttpStatusCode.Unauthorized && response.Headers.Contains("X-Agent-Orange")) ForgetLogin(setting, token);

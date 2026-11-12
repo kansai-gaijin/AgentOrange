@@ -5,7 +5,7 @@
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -29,6 +29,12 @@ const PAGE_SIZE: i64 = 500;
 const MAX_RESPONSE_BYTES: usize = 1_500_000;
 const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const DAY_MILLISECONDS: i64 = 24 * 60 * 60 * 1000;
+
+/// How long a delete is kept for devices that haven't heard about it yet. One that's been away
+/// longer is told it's too far behind, and starts again from what's here, so a copy it still has
+/// can't bring back what was deleted.
+const KEEP_DELETES_DAYS: i64 = 180;
+const PRUNE_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How far this server's data has got, kept outside the database, so a backup restored over it
 /// can be told apart from data that only ever got that far. Without somewhere to keep it, which
@@ -102,8 +108,13 @@ pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
             PRIMARY KEY (collection, id)
          );
          ALTER TABLE sync_records ADD COLUMN IF NOT EXISTS changed_at BIGINT NOT NULL DEFAULT 0;
+         -- When this server got it, which is what a delete's age goes by, as a device can send
+         -- one made long ago. Rows from before this was kept count from when it was added.
+         ALTER TABLE sync_records ADD COLUMN IF NOT EXISTS received_at BIGINT NOT NULL
+            DEFAULT (EXTRACT(EPOCH FROM now()) * 1000)::BIGINT;
          CREATE INDEX IF NOT EXISTS sync_records_seq ON sync_records (seq);
          CREATE TABLE IF NOT EXISTS sync_meta (epoch TEXT NOT NULL);
+         ALTER TABLE sync_meta ADD COLUMN IF NOT EXISTS pruned_through BIGINT NOT NULL DEFAULT 0;
          INSERT INTO sync_meta (epoch)
             SELECT md5(random()::text || clock_timestamp()::text)
             WHERE NOT EXISTS (SELECT 1 FROM sync_meta);",
@@ -140,6 +151,9 @@ pub struct SyncResponse {
     /// Made once with the database. A new one tells a device this server has lost
     /// what it had, so the device's cursor means nothing and it should send everything.
     epoch: String,
+    /// Deletes this device never heard about have been removed, so it should drop what it has
+    /// from here and take everything again.
+    too_far_behind: bool,
 }
 
 /// Nothing stays compatible across a release, so only this server's own can read or change data
@@ -203,33 +217,67 @@ pub async fn sync(
     // Data that's gone back, on what's still the same epoch, means this database was restored
     // from a backup. Devices would otherwise miss changes without any sign until the numbers
     // caught up, so this counts as new data and devices send theirs again. Either this server
-    // noted getting further, or a device is ahead of everything here.
+    // noted getting further, or a device is ahead of everything here. That goes by the numbers
+    // given out, not the rows, as the newest row can be a delete that's since been removed.
     let current = db
         .query_one(
-            "SELECT epoch, (SELECT COALESCE(MAX(seq), 0) FROM sync_records), (SELECT last_value FROM sync_seq)
-             FROM sync_meta",
+            "SELECT epoch, (SELECT last_value FROM sync_seq) FROM sync_meta",
             &[],
         )
         .await
         .map_err(internal_error)?;
     let current_epoch: String = current.get(0);
-    let latest: i64 = current.get(1);
-    let issued: i64 = current.get(2);
+    let issued: i64 = current.get(1);
     let device_is_ahead = request
         .epoch
         .as_ref()
-        .is_some_and(|device_epoch| *device_epoch == current_epoch && request.cursor > latest);
+        .is_some_and(|device_epoch| *device_epoch == current_epoch && request.cursor > issued);
     if device_is_ahead || state.high_water.went_back(&current_epoch, issued) {
         println!(
             "The data has gone back, as from a restored backup, so every device sends what it has again."
         );
         db.execute(
-            "UPDATE sync_meta SET epoch = md5(random()::text || clock_timestamp()::text)",
+            // Every device starts from nothing then, so none can have missed a delete removed before.
+            "UPDATE sync_meta SET epoch = md5(random()::text || clock_timestamp()::text), pruned_through = 0",
             &[],
         )
         .await
         .map_err(internal_error)?;
     }
+
+    // Once a day, deletes older than every device should have heard about are removed. Only ever
+    // inside this transaction, so a device can't read past one being removed.
+    let due = {
+        let mut pruned_at = state.pruned_at.lock().unwrap();
+        let due = pruned_at.is_none_or(|at| at.elapsed() >= PRUNE_EVERY);
+        if due {
+            *pruned_at = Some(Instant::now());
+        }
+        due
+    };
+    if due {
+        let cutoff = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis() as i64)
+            - KEEP_DELETES_DAYS * DAY_MILLISECONDS;
+        db.execute(
+            "WITH removed AS (DELETE FROM sync_records WHERE deleted AND received_at < $1 RETURNING seq)
+             UPDATE sync_meta SET pruned_through = GREATEST(pruned_through, (SELECT COALESCE(MAX(seq), 0) FROM removed))",
+            &[&cutoff],
+        )
+        .await
+        .map_err(internal_error)?;
+    }
+    let pruned_through: i64 = db
+        .query_one("SELECT pruned_through FROM sync_meta", &[])
+        .await
+        .map_err(internal_error)?
+        .get(0);
+    // A device that's caught up to here has heard about every delete there was. One starting from
+    // nothing, or from another epoch, takes everything anyway.
+    let too_far_behind = request.cursor > 0
+        && request.cursor < pruned_through
+        && request.epoch.as_deref() == Some(current_epoch.as_str());
 
     // A time far from now can only be a broken device, and would then win over every real edit.
     let now = SystemTime::now()
@@ -255,14 +303,15 @@ pub async fn sync(
     for change in &request.changes {
         let stored = db
             .execute(
-                "INSERT INTO sync_records (collection, id, data, deleted, seq, updated_by, changed_at)
-                 VALUES ($1, $2, $3, $4, nextval('sync_seq'), $5, $6)
+                "INSERT INTO sync_records (collection, id, data, deleted, seq, updated_by, changed_at, received_at)
+                 VALUES ($1, $2, $3, $4, nextval('sync_seq'), $5, $6, $7)
                  ON CONFLICT (collection, id) DO UPDATE SET
                     data = excluded.data,
                     deleted = excluded.deleted,
                     seq = excluded.seq,
                     updated_by = excluded.updated_by,
-                    changed_at = excluded.changed_at
+                    changed_at = excluded.changed_at,
+                    received_at = excluded.received_at
                  WHERE excluded.changed_at > sync_records.changed_at
                     OR (excluded.changed_at = sync_records.changed_at
                         AND ((excluded.deleted AND NOT sync_records.deleted)
@@ -275,6 +324,7 @@ pub async fn sync(
                     &change.deleted,
                     &device,
                     &change.changed_at,
+                    &now,
                 ],
             )
             .await
@@ -284,13 +334,14 @@ pub async fn sync(
         // it would keep its own value, with no sign of that.
         if stored == 0 {
             db.execute(
-                "UPDATE sync_records SET seq = nextval('sync_seq')
+                "UPDATE sync_records SET seq = nextval('sync_seq'), received_at = $5
                      WHERE collection = $1 AND id = $2 AND (data <> $3 OR deleted <> $4)",
                 &[
                     &change.collection,
                     &change.id,
                     &change.data,
                     &change.deleted,
+                    &now,
                 ],
             )
             .await
@@ -343,6 +394,12 @@ pub async fn sync(
         });
     }
 
+    // Nothing removed is ever sent, so one removed last would otherwise keep a device that's
+    // caught up looking as if it hadn't got that far.
+    if !has_more {
+        cursor = cursor.max(pruned_through);
+    }
+
     let reached = db
         .query_one(
             "SELECT epoch, (SELECT last_value FROM sync_seq) FROM sync_meta",
@@ -360,5 +417,6 @@ pub async fn sync(
         has_more,
         changes,
         epoch,
+        too_far_behind,
     }))
 }

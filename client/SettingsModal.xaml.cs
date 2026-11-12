@@ -77,7 +77,7 @@ public partial class SettingsModal : UserControl
             _sync.StatusChanged += () => _refreshServerPage?.Invoke();
 
             // Another PC changed the approvals, so show them.
-            _sync.RecordsChanged += () =>
+            _sync.RecordsChanged += _ =>
             {
                 if (_currentPage.Name == "Approvals") ShowPage(_currentPage);
             };

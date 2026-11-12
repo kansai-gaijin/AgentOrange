@@ -377,9 +377,12 @@ public sealed class LocalDatabase
     /// A project deleted on another PC leaves things behind here: its folder link, and any
     /// image that was on its way when it was deleted, which would stay on the server forever.
     /// </summary>
-    public void CleanUpDeletedProjects()
+    /// Given what just arrived, only the projects it's about, as nothing's changed for the rest.
+    public void CleanUpDeletedProjects(IEnumerable<SyncChange>? arrived = null)
     {
-        foreach (var projectId in DeletedProjectIds())
+        var deleted = DeletedProjectIds();
+        if (arrived is not null) deleted.IntersectWith(arrived.Select(ProjectIdOf).OfType<string>());
+        foreach (var projectId in deleted)
         {
             foreach (var kind in Enum.GetValues<ProjectImageKind>())
             {
@@ -632,6 +635,14 @@ public sealed class LocalDatabase
         var gone = DeletedProjectIds();
         SaveRecord(SettingsCollection, ProjectOrderRecord, JsonSerializer.Serialize(order.Where(id => !gone.Contains(id)), JsonOptions));
     }
+
+    // Project ids have no colons, and what belongs to one is named after it, then a colon.
+    private static string? ProjectIdOf(SyncChange change) => change.Collection switch
+    {
+        ProjectsCollection or EnginesCollection => change.Id,
+        FieldsCollection or ImagesCollection => change.Id.Split(':')[0],
+        _ => null,
+    };
 
     private HashSet<string> DeletedProjectIds()
     {
@@ -1079,6 +1090,40 @@ public sealed class LocalDatabase
         transaction.Commit();
     }
 
+    /// <summary>
+    /// The server has removed deletes this PC never heard about, so anything here from the server
+    /// may be something deleted since. This PC's own changes that haven't gone through stay, and
+    /// everything else comes again from the server.
+    /// </summary>
+    public void ForgetWhatCameFromServer(string cursorSetting)
+    {
+        using var connection = Open();
+        using var transaction = connection.BeginTransaction();
+        Execute(connection, """
+            DELETE FROM records WHERE NOT EXISTS (SELECT 1 FROM outbox WHERE outbox.collection = records.collection AND outbox.id = records.id)
+                AND NOT EXISTS (SELECT 1 FROM refused WHERE refused.collection = records.collection AND refused.id = records.id)
+            """);
+        WriteSetting(connection, cursorSetting, "0");
+        transaction.Commit();
+    }
+
+    /// <summary>
+    /// Deletes are kept as long as the server keeps them, for devices that haven't heard yet, and
+    /// then they're only taking up room. A day longer here, so the server's always gone first.
+    /// </summary>
+    public void RemoveOldDeletes()
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            DELETE FROM records WHERE deleted = 1 AND changed_at < $cutoff
+                AND NOT EXISTS (SELECT 1 FROM outbox WHERE outbox.collection = records.collection AND outbox.id = records.id)
+                AND NOT EXISTS (SELECT 1 FROM refused WHERE refused.collection = records.collection AND refused.id = records.id)
+            """;
+        command.Parameters.AddWithValue("$cutoff", DateTimeOffset.UtcNow.AddDays(-181).ToUnixTimeMilliseconds());
+        command.ExecuteNonQuery();
+    }
+
     public string? GetSetting(string key)
     {
         using var connection = Open();
@@ -1108,6 +1153,15 @@ public sealed class LocalDatabase
     {
         using var connection = Open();
         WriteSetting(connection, key, value);
+    }
+
+    public void RemoveSetting(string key)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM settings WHERE key = $key";
+        command.Parameters.AddWithValue("$key", key);
+        command.ExecuteNonQuery();
     }
 
     private static void WriteSetting(SqliteConnection connection, string key, string value)

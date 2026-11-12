@@ -80,6 +80,7 @@ public partial class MainWindow : Window
 
         // A delete interrupted last time can leave parts of a project behind.
         _database.CleanUpDeletedProjects();
+        _database.RemoveOldDeletes();
         _database.RetryRefused();
         Settings.Folders = folders;
         Settings.Database = _database;
@@ -153,9 +154,9 @@ public partial class MainWindow : Window
             }
         };
         otherWindowTimer.Start();
-        _sync.RecordsChanged += () =>
+        _sync.RecordsChanged += async arrived =>
         {
-            _database.CleanUpDeletedProjects();
+            await Task.Run(() => _database.CleanUpDeletedProjects(arrived));
             RefreshProjects();
         };
         Settings.Sync = _sync;

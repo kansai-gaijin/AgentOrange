@@ -12,6 +12,9 @@ public sealed class SyncEngine
     // The server accepts requests up to 2 MB, and images make up most of the data.
     private const int MaxBatchBytes = 1_400_000;
 
+    // A change bigger than this still goes alone, as the outbox always gives at least one.
+    private const int MinBatchBytes = 50_000;
+
     private readonly LocalDatabase _database;
     private readonly ServerConnection _server;
     private readonly DeviceSession _devices;
@@ -21,6 +24,7 @@ public sealed class SyncEngine
     private int _syncTurnThread;
     private bool _running;
     private int _batchLimit = BatchSize;
+    private int _batchBytes = MaxBatchBytes;
 
     public SyncEngine(LocalDatabase database, ServerConnection server, DeviceSession devices, string databasePath)
     {
@@ -54,8 +58,8 @@ public sealed class SyncEngine
     /// <summary>The sync status may have changed.</summary>
     public event Action? StatusChanged;
 
-    /// <summary>Records arrived from the server.</summary>
-    public event Action? RecordsChanged;
+    /// <summary>Records arrived from the server, which are these.</summary>
+    public event Action<IReadOnlyList<SyncChange>>? RecordsChanged;
 
     private static string CursorSetting(string epoch) => $"sync_cursor_for:{epoch}";
 
@@ -170,11 +174,22 @@ public sealed class SyncEngine
             {
                 // The last answer was that this PC and the server are on different releases, so
                 // this just asks again. Sending queued images would be thrown away every time.
-                var batch = _devices.VersionsDiffer || onlyReceive ? [] : _database.ReadOutbox(_batchLimit, MaxBatchBytes);
+                // The database work runs off the window's thread, as batches can be large.
+                var (limit, bytes) = (_batchLimit, _batchBytes);
+                var batch = _devices.VersionsDiffer || onlyReceive ? [] : await Task.Run(() => _database.ReadOutbox(limit, bytes));
                 onlyReceive = false;
                 var response = await _devices.SyncAsync(cursor, batch, epoch);
                 if (response is null)
                 {
+                    // Too much for this connection. Sending it again as it was would time out again,
+                    // and hold up everything behind it.
+                    if (_devices.LastSyncTimedOut && batch.Count > 0)
+                    {
+                        _batchLimit = Math.Max(1, batch.Count / 2);
+                        _batchBytes = Math.Max(MinBatchBytes, batch.Sum(change => change.Data.Length) / 2);
+                        AppLog.Write($"A sync ran out of time, so the next sends at most {_batchLimit} changes and {_batchBytes / 1000} KB.");
+                        return;
+                    }
                     if (!_devices.LastSyncRefused || batch.Count == 0) return;
 
                     // Working through what it refuses shouldn't hold up what other PCs have sent.
@@ -182,9 +197,13 @@ public sealed class SyncEngine
                     onlyReceive = true;
                     continue;
                 }
-                if (batch.Count > 0) _batchLimit = Math.Min(BatchSize, _batchLimit * 2);
+                if (batch.Count > 0)
+                {
+                    _batchLimit = Math.Min(BatchSize, _batchLimit * 2);
+                    _batchBytes = (int)Math.Min(MaxBatchBytes, _batchBytes * 2L);
+                }
 
-                _database.RemoveFromOutbox(batch);
+                await Task.Run(() => _database.RemoveFromOutbox(batch));
 
                 if (response.Epoch is { Length: > 0 } current && current != epoch)
                 {
@@ -210,12 +229,30 @@ public sealed class SyncEngine
                     continue;
                 }
 
-                if (_database.ApplyFromServer(response.Changes) > 0) RecordsChanged?.Invoke();
+                // Away for longer than the server keeps deletes, so what's here may include things
+                // deleted since. It all comes again, which leaves those out.
+                // While that's coming again, the cursor is behind on purpose, and the server says so
+                // for every page. That's remembered across restarts, as stopping halfway would
+                // otherwise start it over.
+                var refetchSetting = $"sync_refetching:{epoch}";
+                if (response.TooFarBehind && _database.GetSetting(refetchSetting) is null)
+                {
+                    AppLog.Write("This PC was away longer than the server keeps deletes, so it's taking everything from the server again.");
+                    await Task.Run(() => _database.ForgetWhatCameFromServer(cursorSetting));
+                    _database.SetSetting(refetchSetting, "1");
+                    cursor = 0;
+                    RecordsChanged?.Invoke([]);
+                    continue;
+                }
+
+                var arrived = response.Changes;
+                if (await Task.Run(() => _database.ApplyFromServer(arrived)) > 0) RecordsChanged?.Invoke(arrived);
 
                 cursor = response.Cursor;
                 _database.SetSetting(cursorSetting, cursor.ToString());
                 LastSynced = DateTimeOffset.UtcNow;
 
+                if (!response.HasMore) _database.RemoveSetting(refetchSetting);
                 if (!response.HasMore && _database.CountOutbox() == 0) break;
             }
         }

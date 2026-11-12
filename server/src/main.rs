@@ -26,6 +26,8 @@ pub struct AppState {
     /// Only syncs use this one, one at a time, as each is a transaction.
     pub sync_db: tokio::sync::Mutex<Client>,
     pub high_water: sync::HighWater,
+    /// When old deletes were last removed. Not since this started, if never.
+    pub pruned_at: Mutex<Option<std::time::Instant>>,
     /// None turns pairing off, for a server that hasn't been given a key yet.
     pub pairing_key: Option<String>,
     pub pairing_limit: Mutex<devices::PairingLimit>,
@@ -55,6 +57,7 @@ async fn main() {
         db,
         sync_db: tokio::sync::Mutex::new(sync_db),
         high_water: sync::HighWater::load(),
+        pruned_at: Mutex::new(None),
         pairing_key,
         pairing_limit: Mutex::new(devices::PairingLimit::default()),
     });
