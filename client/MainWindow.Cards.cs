@@ -61,11 +61,15 @@ public partial class MainWindow
         var cards = _database.ListCards(project.Id, stage, part);
         var nodes = _database.CountNodesByBoard(project.Id);
 
+        // Assets can be filtered, and while they are they can't be dragged into order, as most aren't there.
+        var filtering = name == AssetsPage && AssetsFiltered(project.Id);
+        var shown = filtering ? cards.Where(card => AssetShown(project.Id, card)).ToList() : cards;
+
         body.MaxWidth = 1240;
         body.Margin = new Thickness(40, 22, 40, 30);
 
         var heading = new DockPanel { Margin = new Thickness(0, 0, 0, 18) };
-        var hint = new TextBlock { Text = cards.Count > 1 ? "Drag to reorder · right-click for more" : "", Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 18, 3) };
+        var hint = new TextBlock { Text = filtering ? "Clear the filters to reorder · right-click for more" : cards.Count > 1 ? "Drag to reorder · right-click for more" : "", Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 18, 3) };
         DockPanel.SetDock(hint, Dock.Right);
         heading.Children.Add(hint);
         if (name == AssetsPage)
@@ -83,15 +87,21 @@ public partial class MainWindow
             Children =
             {
                 new TextBlock { Text = name, Foreground = (Brush)FindResource("TextStrong"), FontSize = 24, FontWeight = FontWeights.SemiBold },
-                new TextBlock { Text = cards.Count.ToString(), Foreground = (Brush)FindResource("TextMuted"), FontSize = 15, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(10, 0, 0, 4) },
+                new TextBlock { Text = filtering ? $"{shown.Count} of {cards.Count}" : cards.Count.ToString(), Foreground = (Brush)FindResource("TextMuted"), FontSize = 15, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(10, 0, 0, 4) },
             },
         });
         body.Children.Add(heading);
+        if (name == AssetsPage && cards.Count > 0) body.Children.Add(AssetFilterBar(project, cards));
 
         var grid = new WrapPanel();
-        foreach (var card in cards) grid.Children.Add(CardTile(project, name, card, grid, nodes.GetValueOrDefault(LocalDatabase.CardBoardKey(card))));
+        foreach (var card in shown) grid.Children.Add(CardTile(project, name, card, grid, nodes.GetValueOrDefault(LocalDatabase.CardBoardKey(card)), reorderable: !filtering));
         grid.Children.Add(AddCardTile(project, stage, part, one, width, height));
         body.Children.Add(grid);
+
+        if (filtering && shown.Count == 0)
+        {
+            body.Children.Add(new TextBlock { Text = "No assets match these filters.", Foreground = (Brush)FindResource("TextMuted"), FontSize = 13.5, Margin = new Thickness(0, 4, 0, 0) });
+        }
 
         if (cards.Count == 0)
         {
@@ -127,7 +137,7 @@ public partial class MainWindow
         return picture;
     }
 
-    private Button CardTile(Project project, string page, BoardCard card, WrapPanel grid, int nodeCount)
+    private Button CardTile(Project project, string page, BoardCard card, WrapPanel grid, int nodeCount, bool reorderable)
     {
         var (one, width, height) = CardPages[page];
         var picture = CardPicture(card.Id, (int)(width * 2));
@@ -221,7 +231,7 @@ public partial class MainWindow
                 return;
             }
             var at = move.GetPosition(grid);
-            if (_draggedBoardCard is null && _pressedBoardCard is { } pressed && ReferenceEquals(pressed.Card, tile) && (at - pressed.At).Length >= CardDragStartsAfter)
+            if (reorderable && _draggedBoardCard is null && _pressedBoardCard is { } pressed && ReferenceEquals(pressed.Card, tile) && (at - pressed.At).Length >= CardDragStartsAfter)
             {
                 _draggedBoardCard = tile;
                 _cardOrderChanged = false;
@@ -258,7 +268,7 @@ public partial class MainWindow
         tile.PreviewKeyDown += (_, pressed) =>
         {
             if (!ReferenceEquals(pressed.OriginalSource, tile)) return;
-            var step = Keyboard.Modifiers == ModifierKeys.Control ? pressed.Key switch { Key.Left => -1, Key.Right => 1, _ => 0 } : 0;
+            var step = reorderable && Keyboard.Modifiers == ModifierKeys.Control ? pressed.Key switch { Key.Left => -1, Key.Right => 1, _ => 0 } : 0;
             if (step != 0)
             {
                 var order = grid.Children.OfType<Button>().Select(other => other.Tag).OfType<BoardCard>().ToList();

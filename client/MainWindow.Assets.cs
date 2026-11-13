@@ -538,4 +538,104 @@ public partial class MainWindow
         Show();
         return panel;
     }
+
+    // Filters
+
+    // What the Assets page is filtered to in each project: a type (null for any, "" for none) and tags it must all have.
+    private readonly Dictionary<string, (string? Type, HashSet<string> Tags)> _assetFilters = [];
+
+    private (string? Type, HashSet<string> Tags) AssetFilterOf(string projectId) => _assetFilters.GetValueOrDefault(projectId, (null, []));
+
+    private bool AssetsFiltered(string projectId) => AssetFilterOf(projectId) is var (type, tags) && (type is not null || tags.Count > 0);
+
+    private bool AssetShown(string projectId, BoardCard card)
+    {
+        var (type, tags) = AssetFilterOf(projectId);
+        var details = _database.GetAssetDetails(card.Id);
+        if (type is not null && (details.Type ?? "") != type) return false;
+        return tags.All(tag => details.Tags?.Contains(tag) == true);
+    }
+
+    private void FilterAssets(Project project, string? type, HashSet<string> tags, string focusTag)
+    {
+        _assetFilters[project.Id] = (type, tags);
+        if (_openProject?.Id != project.Id) return;
+        RenderProject(_openProject);
+
+        // The filter that was just used keeps the keyboard, as the page is drawn again.
+        _ = Dispatcher.InvokeAsync(() => FindTagged(ProjectPage, focusTag)?.Focus(), System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+
+    private static Control? FindTagged(DependencyObject root, string tag)
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is Control { Tag: string found } control && found == tag) return control;
+            if (FindTagged(child, tag) is { } inside) return inside;
+        }
+        return null;
+    }
+
+    // A type to pick, from those in use, and a chip for each tag in use to turn on and off.
+    private WrapPanel AssetFilterBar(Project project, List<BoardCard> cards)
+    {
+        var (type, chosenTags) = AssetFilterOf(project.Id);
+        var everyDetails = cards.Select(card => _database.GetAssetDetails(card.Id)).ToList();
+        var typesInUse = everyDetails.Select(details => details.Type).OfType<string>().ToHashSet();
+        var tagsInUse = everyDetails.SelectMany(details => details.Tags ?? []).ToHashSet();
+
+        var bar = new WrapPanel { Margin = new Thickness(0, -4, 0, 18) };
+
+        var types = new ComboBox { Style = (Style)FindResource("Choice"), Tag = "filter:type", Margin = new Thickness(0, 0, 10, 6), VerticalAlignment = VerticalAlignment.Center };
+        AutomationProperties.SetName(types, "Filter by type");
+        types.Items.Add(new ComboBoxItem { Content = "All types", Tag = null });
+        types.Items.Add(new ComboBoxItem { Content = "No type", Tag = "" });
+        foreach (var (group, inGroup) in AssetTypes)
+        {
+            var listed = inGroup.Where(each => typesInUse.Contains(each.Id) || each.Id == type).ToList();
+            if (listed.Count == 0) continue;
+            types.Items.Add(new ComboBoxItem { Content = group, IsEnabled = false, FontSize = 11.5, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextMuted") });
+            foreach (var (id, typeName) in listed) types.Items.Add(new ComboBoxItem { Content = typeName, Tag = id, Padding = new Thickness(14, 3, 8, 3) });
+        }
+        types.SelectedItem = types.Items.OfType<ComboBoxItem>().FirstOrDefault(item => item.IsEnabled && (string?)item.Tag == type) ?? types.Items[0];
+        types.SelectionChanged += (_, _) =>
+        {
+            if (types.SelectedItem is ComboBoxItem { IsEnabled: true } picked && (string?)picked.Tag != type) FilterAssets(project, (string?)picked.Tag, chosenTags, "filter:type");
+        };
+        bar.Children.Add(types);
+
+        // A tag no asset has is left out, unless it's on.
+        foreach (var tag in _database.ListAssetTags(project.Id).Where(tag => tagsInUse.Contains(tag.Id) || chosenTags.Contains(tag.Id)))
+        {
+            var on = chosenTags.Contains(tag.Id);
+            var chip = new Button
+            {
+                Style = (Style)FindResource("ControlButton"),
+                Content = tag.Name,
+                Tag = $"filter:tag:{tag.Id}",
+                Margin = new Thickness(0, 0, 6, 6),
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = (Brush)FindResource(on ? "TextStrong" : "TextMuted"),
+            };
+            if (on) chip.BorderBrush = (Brush)FindResource("Accent");
+            AutomationProperties.SetName(chip, on ? $"{tag.Name}, filtering by it" : $"Filter by {tag.Name}");
+            chip.Click += (_, _) =>
+            {
+                var tags = new HashSet<string>(chosenTags);
+                if (!tags.Remove(tag.Id)) tags.Add(tag.Id);
+                FilterAssets(project, type, tags, $"filter:tag:{tag.Id}");
+            };
+            bar.Children.Add(chip);
+        }
+
+        if (AssetsFiltered(project.Id))
+        {
+            var clear = TextButton("Clear filters", () => FilterAssets(project, null, [], "filter:type"));
+            clear.VerticalAlignment = VerticalAlignment.Center;
+            clear.Margin = new Thickness(4, 0, 0, 6);
+            bar.Children.Add(clear);
+        }
+        return bar;
+    }
 }
