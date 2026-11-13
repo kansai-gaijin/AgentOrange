@@ -16,10 +16,11 @@ public sealed record AgentEvent(AgentEventKind Kind, string Text);
 /// messages. It may edit files in the folder, and anything else it asks to do is refused for now,
 /// as there's nowhere yet to ask the person.
 ///
-/// It gets only the MCP servers Agent Orange gives it, and only project settings, so nothing from
-/// how the person set up the provider for their own use comes with it.
+/// It gets only the MCP servers and skills Agent Orange gives it, and only project settings, so
+/// nothing from how the person set up the provider for their own use comes with it, such as their
+/// own skills, plugins, hooks or MCP servers.
 /// </summary>
-public sealed class AgentSession(AgentProvider provider, string folder, Func<string> writeMcpConfig)
+public sealed class AgentSession(AgentProvider provider, string folder, Func<(string McpConfig, string SkillsPlugin)> prepare)
 {
     private string? _conversationId;
     private Process? _running;
@@ -34,10 +35,10 @@ public sealed class AgentSession(AgentProvider provider, string folder, Func<str
     {
         if (_running is not null) return;
 
-        string mcpConfig;
+        string mcpConfig, skillsPlugin;
         try
         {
-            mcpConfig = writeMcpConfig();
+            (mcpConfig, skillsPlugin) = prepare();
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -45,7 +46,7 @@ public sealed class AgentSession(AgentProvider provider, string folder, Func<str
             return;
         }
 
-        var arguments = $"-p --output-format stream-json --verbose --permission-mode acceptEdits --setting-sources project,local --strict-mcp-config --mcp-config \"{mcpConfig}\"";
+        var arguments = $"-p --output-format stream-json --verbose --permission-mode acceptEdits --setting-sources project,local --strict-mcp-config --mcp-config \"{mcpConfig}\" --plugin-dir \"{skillsPlugin}\"";
         if (_conversationId is not null) arguments += $" --resume {_conversationId}";
 
         Process? process;
