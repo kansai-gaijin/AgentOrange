@@ -180,6 +180,18 @@ public partial class MainWindow
         };
     }
 
+    // A window over the page that would be taller than the screen scrolls instead.
+    private static ScrollViewer Scrolling(FrameworkElement content) => new()
+    {
+        Content = content,
+        MaxHeight = SystemParameters.WorkArea.Height * 0.85,
+        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+    };
+
+    private void ScrollTo(FrameworkElement shown) =>
+        Dispatcher.InvokeAsync(() => shown.BringIntoView(), System.Windows.Threading.DispatcherPriority.Loaded);
+
     private Border OpenUnder() => new()
     {
         BorderBrush = (Brush)FindResource("Line"),
@@ -199,7 +211,7 @@ public partial class MainWindow
         var (saved, tagsChanged) = (false, false);
 
         var rows = new StackPanel { Width = 300, Margin = new Thickness(8, 6, 8, 6) };
-        var asked = NewMenu(by, atMouse: false, rows);
+        var asked = NewMenu(by, atMouse: false, Scrolling(rows));
         var problem = ProblemText();
         problem.Margin = new Thickness(0, 6, 0, 0);
 
@@ -275,6 +287,7 @@ public partial class MainWindow
             ownerSearch.Text = "";
             ListOwners();
             ownerSearch.Focus();
+            ScrollTo(ownerList);
         };
         ShowOwner();
         rows.Children.Add(FormLabel("Belongs to", above: 12));
@@ -357,6 +370,7 @@ public partial class MainWindow
             if (!opening) return;
             month = new DateOnly((due ?? Today).Year, (due ?? Today).Month, 1);
             ShowMonth();
+            ScrollTo(dueList);
         };
         ShowDue();
         rows.Children.Add(FormLabel("Deliver by", above: 12));
@@ -432,7 +446,9 @@ public partial class MainWindow
         {
             var opening = tagsList.Visibility != Visibility.Visible;
             tagsList.Visibility = opening ? Visibility.Visible : Visibility.Collapsed;
-            if (opening) ShowTagChoices();
+            if (!opening) return;
+            ShowTagChoices();
+            ScrollTo(tagsList);
         };
         ShowTags();
         rows.Children.Add(FormLabel("Tags", above: 12));
@@ -521,7 +537,7 @@ public partial class MainWindow
         var rows = new StackPanel { Width = 300, Margin = new Thickness(8, 6, 8, 6) };
         rows.Children.Add(new TextBlock { Text = "Asset tags", FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextStrong"), Margin = new Thickness(0, 0, 0, 10) });
         rows.Children.Add(TagEditor(project, () => changed = true));
-        var editor = NewMenu(by, atMouse: false, rows);
+        var editor = NewMenu(by, atMouse: false, Scrolling(rows));
         editor.PreviewKeyDown += (_, pressed) =>
         {
             if (pressed.Key != Key.Escape) return;
