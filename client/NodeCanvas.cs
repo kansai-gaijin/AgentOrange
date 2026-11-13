@@ -441,10 +441,18 @@ internal sealed partial class NodeCanvas : Border
             return;
         }
 
-        // Once it's been laid out, as the list of cards opens under it.
+        // Once it's been laid out, as the list of cards opens under it, and once a double-click on it
+        // is let go, as letting go of the mouse outside the list closes it.
         if (ReferenceTo(node.Data.Kind) is not null)
         {
-            Dispatcher.InvokeAsync(() => ChooseCard(node), System.Windows.Threading.DispatcherPriority.Loaded);
+            void Open() => Dispatcher.InvokeAsync(() => ChooseCard(node), System.Windows.Threading.DispatcherPriority.Loaded);
+            void LetGo(object sender, MouseButtonEventArgs release)
+            {
+                PreviewMouseLeftButtonUp -= LetGo;
+                Open();
+            }
+            if (Mouse.LeftButton == MouseButtonState.Pressed) PreviewMouseLeftButtonUp += LetGo;
+            else Open();
             return;
         }
 
