@@ -21,6 +21,13 @@ public sealed record BoardCard(string Id, string Board, string Name, double Orde
 /// <summary>What an asset is, the card it belongs to if any, and the ids of the project's tags it has.</summary>
 public sealed record AssetDetails(string? Type = null, string? Owner = null, string[]? Tags = null);
 
+/// <summary>
+/// The file that makes an asset delivered: where it is in the project's folder, which goes to other
+/// PCs with the project's repo, and what it was when it was given, so a changed file can be told apart.
+/// Only a person gives it, never an agent.
+/// </summary>
+public sealed record AssetDeliverable(string Path, long Size, string Sha256, DateTimeOffset At);
+
 /// <summary>One of the tags a project's assets can be given. Made, renamed and deleted only in the tag editor.</summary>
 public sealed record AssetTag(string Id, string Name);
 
@@ -73,7 +80,9 @@ public sealed class LocalDatabase
     private const string AssetDetailsCollection = "asset_details";
     // The tags a project's assets can have, in every stage, each a record named after its project, then a colon.
     private const string AssetTagsCollection = "asset_tags";
-    private static readonly string[] BoardCollections = [NodesCollection, NodeLinksCollection, NodeImagesCollection, StagesCollection, CardsCollection, CardImagesCollection, AssetDetailsCollection, AssetTagsCollection];
+    // Each asset's deliverable, named as its card is.
+    private const string AssetDeliverablesCollection = "asset_deliverables";
+    private static readonly string[] BoardCollections = [NodesCollection, NodeLinksCollection, NodeImagesCollection, StagesCollection, CardsCollection, CardImagesCollection, AssetDetailsCollection, AssetTagsCollection, AssetDeliverablesCollection];
 
     /// <summary>Everything in a collection that belongs to one project, deleted ones left out.</summary>
     public List<(string Id, string Data)> ListProjectRecords(string collection, string projectId)
@@ -259,6 +268,7 @@ public sealed class LocalDatabase
         string? CopiedCard(string? cardId) => cardId is not null && cardCopies.TryGetValue(NameInBoard(cardId), out var copied) ? $"{projectId}:{copied}" : null;
         foreach (var (id, copyId) in cardCopies.Select(pair => ($"{projectId}:{pair.Key}", $"{projectId}:{pair.Value}")))
         {
+            if (GetRecord(AssetDeliverablesCollection, id) is { Length: > 0 } deliverable) SaveRecord(AssetDeliverablesCollection, copyId, deliverable);
             if (GetRecord(AssetDetailsCollection, id) is not { Length: > 0 }) continue;
             var details = GetAssetDetails(id);
             SetAssetDetails(copyId, details with { Owner = CopiedCard(details.Owner) });
@@ -365,7 +375,7 @@ public sealed class LocalDatabase
     // What's kept apart from a card, named as it is.
     private void DeleteCardExtras(string cardId)
     {
-        foreach (var collection in new[] { CardImagesCollection, AssetDetailsCollection })
+        foreach (var collection in new[] { CardImagesCollection, AssetDetailsCollection, AssetDeliverablesCollection })
         {
             if (!string.IsNullOrEmpty(GetRecord(collection, cardId))) SaveRecord(collection, cardId, "", deleted: true);
         }
@@ -386,6 +396,23 @@ public sealed class LocalDatabase
 
     public void SetAssetDetails(string cardId, AssetDetails details) =>
         SaveRecord(AssetDetailsCollection, cardId, JsonSerializer.Serialize(details, JsonOptions));
+
+    /// <summary>An asset's deliverable, or null until a person gives it one.</summary>
+    public AssetDeliverable? GetAssetDeliverable(string cardId)
+    {
+        if (GetRecord(AssetDeliverablesCollection, cardId) is not { Length: > 0 } stored) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<AssetDeliverable>(stored, JsonOptions) is { Path.Length: > 0 } given ? given : null;
+        }
+        catch (JsonException)
+        {
+            return null; // It arrived from another PC and can't be read.
+        }
+    }
+
+    public void SetAssetDeliverable(string cardId, AssetDeliverable? given) =>
+        SaveRecord(AssetDeliverablesCollection, cardId, given is null ? "" : JsonSerializer.Serialize(given, JsonOptions), deleted: given is null);
 
     public const int LongestAssetTag = 32;
     private sealed record AssetTagData(string Name);
@@ -1142,7 +1169,7 @@ public sealed class LocalDatabase
     private static string? ProjectIdOf(SyncChange change) => change.Collection switch
     {
         ProjectsCollection or EnginesCollection => change.Id,
-        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection or AssetDetailsCollection or AssetTagsCollection => change.Id.Split(':')[0],
+        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection or AssetDetailsCollection or AssetTagsCollection or AssetDeliverablesCollection => change.Id.Split(':')[0],
         _ => null,
     };
 

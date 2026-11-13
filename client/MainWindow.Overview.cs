@@ -99,7 +99,7 @@ public partial class MainWindow
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Center,
-            Children = { ProgressTile("Tasks done", 0), ProgressTile("Assets delivered", 0) },
+            Children = { ProgressTile("Tasks done", 0), ProgressTile("Assets delivered", AssetsDelivered(project)) },
         });
 
         var sections = new WrapPanel { Margin = new Thickness(0, 28, 0, 24), HorizontalAlignment = HorizontalAlignment.Center };
@@ -259,6 +259,10 @@ public partial class MainWindow
         menu.Opened += (_, _) => newName.Focus();
         menu.IsOpen = true;
     }
+
+    // In the stage the project is at.
+    private int AssetsDelivered(Project project) =>
+        _database.ListCards(project.Id, _database.ProjectStage(project.Id), AssetsPart).Count(card => _database.GetAssetDeliverable(card.Id) is not null);
 
     private Border ProgressTile(string label, int count) => new()
     {

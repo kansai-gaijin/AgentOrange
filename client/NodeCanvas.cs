@@ -182,6 +182,7 @@ internal sealed partial class NodeCanvas : Border
             if (Parse<LinkData>(text) is { } data && data.Board == _board && _nodes.ContainsKey(data.From) && _nodes.ContainsKey(data.To)) AddLinkView(id, data);
         }
 
+        EnsureDeliverable();
         _selection.RemoveWhere(id => !_nodes.ContainsKey(id) && !_links.ContainsKey(id));
         ShowSelection();
         _hint.Visibility = _nodes.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -202,6 +203,9 @@ internal sealed partial class NodeCanvas : Border
 
     private string NewId() => $"{_projectId}:{Guid.NewGuid():N}";
 
+    // Every kind but a Title node shows its edges.
+    private static bool HasBorder(NodeData data) => data.Kind == TextKind || data.Kind == DeliverableKind || ReferenceTo(data.Kind) is not null;
+
     // Nodes
 
     private NodeView AddNodeView(string id, NodeData data)
@@ -209,19 +213,20 @@ internal sealed partial class NodeCanvas : Border
         var isText = data.Kind == TextKind;
         var isImage = data.Kind == ImageKind;
         var reference = ReferenceTo(data.Kind);
-        var inside = new Border { Padding = isImage || reference is not null ? new Thickness(0) : new Thickness(10, isText ? 12 : 6, 10, 12) };
+        var isDeliverable = data.Kind == DeliverableKind;
+        var inside = new Border { Padding = isImage || reference is not null || isDeliverable ? new Thickness(0) : new Thickness(10, isText ? 12 : 6, 10, 12) };
         var parts = new Grid { Children = { inside } };
         var box = new Border
         {
             // Only the words show. See-through rather than nothing, so the space between them can still be clicked.
             Background = Brushes.Transparent,
-            // A Rich Text or reference node has a border, to show its size. A Title node's shows only while it's selected.
-            BorderBrush = isText || reference is not null ? (Brush)FindResource("Line") : Brushes.Transparent,
+            // Most have a border, to show their size. A Title node's shows only while it's selected.
+            BorderBrush = HasBorder(data) ? (Brush)FindResource("Line") : Brushes.Transparent,
             BorderThickness = new Thickness(1.5),
             CornerRadius = new CornerRadius(8),
             Child = parts,
         };
-        var view = new NodeView { Id = id, Data = data, Box = box, Inside = inside, Pins = isText || isImage || reference is not null ? [TopPin, BottomPin] : [BottomPin] };
+        var view = new NodeView { Id = id, Data = data, Box = box, Inside = inside, Pins = isText || isImage || reference is not null || isDeliverable ? [TopPin, BottomPin] : [BottomPin] };
         box.Tag = view;
 
         if (isText)
@@ -235,6 +240,10 @@ internal sealed partial class NodeCanvas : Border
         else if (reference is { } to)
         {
             AddReferenceParts(view, to);
+        }
+        else if (isDeliverable)
+        {
+            AddDeliverableParts(view);
         }
         else
         {
@@ -441,6 +450,12 @@ internal sealed partial class NodeCanvas : Border
             return;
         }
 
+        if (node.Data.Kind == DeliverableKind)
+        {
+            FillDeliverable();
+            return;
+        }
+
         // Once it's been laid out, as the list of cards opens under it, and once a double-click on it
         // is let go, as letting go of the mouse outside the list closes it.
         if (ReferenceTo(node.Data.Kind) is not null)
@@ -632,7 +647,7 @@ internal sealed partial class NodeCanvas : Border
         foreach (var node in _nodes.Values)
         {
             var selected = _selection.Contains(node.Id);
-            node.Box.BorderBrush = selected ? (Brush)FindResource("Accent") : node.Rich is not null || ReferenceTo(node.Data.Kind) is not null ? (Brush)FindResource("Line") : Brushes.Transparent;
+            node.Box.BorderBrush = selected ? (Brush)FindResource("Accent") : HasBorder(node.Data) ? (Brush)FindResource("Line") : Brushes.Transparent;
         }
         foreach (var link in _links.Values)
         {
@@ -651,6 +666,10 @@ internal sealed partial class NodeCanvas : Border
             if (_links.TryGetValue(id, out var onlyLink))
             {
                 RemoveLink(onlyLink);
+            }
+            else if (_nodes.TryGetValue(id, out var kept) && kept.Data.Kind == DeliverableKind)
+            {
+                // An asset's deliverable stays, as it's what says whether the asset is done.
             }
             else if (_nodes.Remove(id, out var node))
             {

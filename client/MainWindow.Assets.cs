@@ -49,8 +49,27 @@ public partial class MainWindow
         var owner = AssetOwnerChoices(project.Id, card.Board.Split('/')[0]).FirstOrDefault(choice => choice.Card.Id == details.Owner);
         if (owner.Card is not null) said += $" · {CardName(owner.Card, owner.Page)}";
 
+        // A dot first, filled once a person has given it its deliverable.
+        var delivered = _database.GetAssetDeliverable(card.Id) is not null;
+        var dot = new System.Windows.Shapes.Ellipse
+        {
+            Width = 8,
+            Height = 8,
+            Fill = delivered ? (Brush)FindResource("Accent") : Brushes.Transparent,
+            Stroke = (Brush)FindResource(delivered ? "Accent" : "TextMuted"),
+            StrokeThickness = 1.2,
+            Margin = new Thickness(0, 1, 7, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            ToolTip = delivered ? "Delivered" : "Not delivered yet",
+        };
+        AutomationProperties.SetName(dot, delivered ? "Delivered" : "Not delivered yet");
+        var first = new DockPanel();
+        DockPanel.SetDock(dot, Dock.Left);
+        first.Children.Add(dot);
+        first.Children.Add(new TextBlock { Text = said, Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = said });
+
         var lines = new StackPanel { Margin = new Thickness(2, 2, 2, 0) };
-        lines.Children.Add(new TextBlock { Text = said, Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = said });
+        lines.Children.Add(first);
 
         var tags = _database.ListAssetTags(project.Id).Where(tag => details.Tags?.Contains(tag.Id) == true).ToList();
         if (tags.Count > 0)
