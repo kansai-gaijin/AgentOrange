@@ -123,7 +123,7 @@ public partial class MainWindow
                 Show("That provider isn't available any more. Check Settings.", "TextMuted", 12.5);
                 return;
             }
-            if (chat.Session is null || chat.Session.Provider != provider) chat.Session = new AgentSession(provider, folder);
+            if (chat.Session is null || chat.Session.Provider != provider) chat.Session = new AgentSession(provider, folder, () => AgentMcpConfig.Write(Settings.Editors, Settings.Folders.AgentFolder));
 
             input.Clear();
             Show(prompt, "TextStrong", own: true);

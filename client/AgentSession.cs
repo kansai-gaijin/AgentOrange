@@ -15,8 +15,11 @@ public sealed record AgentEvent(AgentEventKind Kind, string Text);
 /// program once and picks the conversation back up by its ID, so nothing is left running between
 /// messages. It may edit files in the folder, and anything else it asks to do is refused for now,
 /// as there's nowhere yet to ask the person.
+///
+/// It gets only the MCP servers Agent Orange gives it, and only project settings, so nothing from
+/// how the person set up the provider for their own use comes with it.
 /// </summary>
-public sealed class AgentSession(AgentProvider provider, string folder)
+public sealed class AgentSession(AgentProvider provider, string folder, Func<string> writeMcpConfig)
 {
     private string? _conversationId;
     private Process? _running;
@@ -31,7 +34,18 @@ public sealed class AgentSession(AgentProvider provider, string folder)
     {
         if (_running is not null) return;
 
-        var arguments = "-p --output-format stream-json --verbose --permission-mode acceptEdits";
+        string mcpConfig;
+        try
+        {
+            mcpConfig = writeMcpConfig();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            report(new AgentEvent(AgentEventKind.Problem, $"Couldn't set up the agent's tools: {error.Message}"));
+            return;
+        }
+
+        var arguments = $"-p --output-format stream-json --verbose --permission-mode acceptEdits --setting-sources project,local --strict-mcp-config --mcp-config \"{mcpConfig}\"";
         if (_conversationId is not null) arguments += $" --resume {_conversationId}";
 
         Process? process;
