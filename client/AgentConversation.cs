@@ -7,7 +7,8 @@ using System.Text.Json.Serialization;
 
 namespace AgentOrange;
 
-public enum AgentItemKind { User, Assistant, Tool, Approval, Question, Notice, Problem }
+// Saved as numbers, so new kinds only ever go on the end.
+public enum AgentItemKind { User, Assistant, Tool, Approval, Question, Notice, Problem, Plan }
 
 public enum AgentToolState { Running, Done, Failed }
 
@@ -16,6 +17,9 @@ public enum AgentRequestState { Waiting, Allowed, Denied, Answered, Gone }
 public sealed record AgentOption(string Label, string Description);
 
 public sealed record AgentQuestion(string Header, string Question, List<AgentOption> Options, bool MultiSelect);
+
+/// <summary>One step of the plan the agent keeps for itself as it works (its TodoWrite list).</summary>
+public sealed record AgentStep(string Content, string Status, string? ActiveForm);
 
 /// <summary>One thing in a conversation, in the order it happened. Saved as it is, so a conversation reads the same after a restart.</summary>
 public sealed class AgentItem
@@ -40,11 +44,18 @@ public sealed class AgentItem
     public List<AgentQuestion>? Questions { get; set; }
     public Dictionary<string, string>? Answers { get; set; }
 
+    /// <summary>A message from the person: the pictures and files sent with it.</summary>
+    public List<AgentAttachment>? Attachments { get; set; }
+
+    /// <summary>A message Agent Orange sent for the person, such as going on once a usage limit reset.</summary>
+    public bool Automatic { get; set; }
+
     [JsonIgnore] public bool Streaming { get; set; }
 
     // What a request needs to be answered while the agent is still waiting on it.
     [JsonIgnore] public JsonNode? RequestInput { get; set; }
     [JsonIgnore] public string? ToolUseId { get; set; }
+    [JsonIgnore] public JsonArray? Suggestions { get; set; } // Rules that would let it do the same again without asking.
 }
 
 /// <summary>
@@ -76,6 +87,30 @@ public sealed class AgentConversation
     public string? Model { get; set; }
     public string? Effort { get; set; }
 
+    /// <summary>
+    /// What it may do without asking: Claude Code's own permission modes. "acceptEdits" (the default)
+    /// edits the project's files freely and asks for anything else, "default" asks first for edits too,
+    /// "plan" only looks and plans, and "bypassPermissions" asks for nothing. Changed straight away,
+    /// even while it works.
+    /// </summary>
+    public string PermissionMode { get; set; } = "acceptEdits";
+
+    /// <summary>Done with: put away at the bottom of the list, its agent program ended. Sending to it again takes it back out.</summary>
+    public bool Settled { get; set; }
+    public DateTimeOffset? SettledAt { get; set; }
+
+    /// <summary>How full its context window is, in tokens, as it last said.</summary>
+    public int ContextUsed { get; set; }
+    public int ContextWindow { get; set; }
+
+    /// <summary>It stopped as its login ran out of usage. It goes on by itself once that resets, unless told not to.</summary>
+    public bool IsLimited { get; set; }
+    public DateTimeOffset? LimitResetsAt { get; set; }
+    public bool ResumeAtReset { get; set; } = true;
+
+    /// <summary>The plan it keeps for itself as it works, as it last wrote it.</summary>
+    public List<AgentStep>? Steps { get; set; }
+
     public DateTimeOffset Updated { get; set; } = DateTimeOffset.UtcNow;
     public List<AgentItem> Items { get; init; } = [];
 
@@ -85,7 +120,13 @@ public sealed class AgentConversation
     [JsonIgnore] public string? Folder { get; set; }
     [JsonIgnore] public bool IsWorking { get; private set; }
     [JsonIgnore] public DateTimeOffset WorkingSince { get; private set; }
-    [JsonIgnore] public bool IsWaiting => Items.Any(item => item.RequestState == AgentRequestState.Waiting && item.Kind is AgentItemKind.Approval or AgentItemKind.Question);
+    [JsonIgnore] public bool IsWaiting => Items.Any(item => item.RequestState == AgentRequestState.Waiting && item.Kind is AgentItemKind.Approval or AgentItemKind.Question or AgentItemKind.Plan);
+
+    /// <summary>What it's waiting on that isn't the person, such as a retry after an error from the model's side.</summary>
+    [JsonIgnore] public string? Retrying { get; private set; }
+
+    /// <summary>On the window's thread: its login said how much of its limits are used, all of them when complete.</summary>
+    public event Action<string, IReadOnlyList<AgentLimit>, bool>? LimitsReported;
 
     /// <summary>On the window's thread: an item was added or changed.</summary>
     public event Action<AgentItem>? ItemChanged;
@@ -98,6 +139,10 @@ public sealed class AgentConversation
     private bool _restarting; // Ended so the next message starts it with what's changed, which says nothing.
     private int _turns; // Messages sent that it hasn't finished with, as one sent while it works waits its turn.
     private string? _startedWith; // The model and effort it was started with.
+    private string? _runningMode; // The permission mode it's in, which can change while it runs.
+    private readonly Dictionary<string, Action<JsonObject?>> _controls = []; // Replies awaited, by request.
+    private readonly Dictionary<string, DateTimeOffset?> _limits = []; // Limits run out during this turn, and when each resets.
+    private DateTimeOffset _usageAskedAt;
     private readonly Dictionary<string, AgentItem> _byId = [];
     private string? _messageId; // The assistant message being streamed.
     private readonly HashSet<string> _confirmed = []; // Streamed text the whole message has since been read for.
@@ -117,7 +162,7 @@ public sealed class AgentConversation
                 loaded._byId[item.Id] = item;
 
                 // The program that was asking is gone, so nothing can answer it now.
-                if (item.RequestState == AgentRequestState.Waiting && item.Kind is AgentItemKind.Approval or AgentItemKind.Question) item.RequestState = AgentRequestState.Gone;
+                if (item.RequestState == AgentRequestState.Waiting && item.Kind is AgentItemKind.Approval or AgentItemKind.Question or AgentItemKind.Plan) item.RequestState = AgentRequestState.Gone;
                 if (item.Kind == AgentItemKind.Tool && item.ToolState == AgentToolState.Running) item.ToolState = AgentToolState.Failed;
             }
             return loaded;
@@ -145,28 +190,69 @@ public sealed class AgentConversation
     }
 
     /// <summary>Everything a session needs set up first, made fresh each time so it matches what's set up now.</summary>
-    public sealed record Setup(AgentProvider Provider, string McpConfig, IReadOnlyList<string> McpServers, string SkillsPlugin, string Briefing);
+    public sealed record Setup(AgentProvider Provider, string McpConfig, IReadOnlyList<string> McpServers, string SkillsPlugin, string Briefing, string AttachmentsFolder);
 
     /// <summary>
     /// Sends a message, starting the agent program if it isn't running. What the person is looking at
     /// goes first, in a block Agent Orange writes, so the agent knows what "this" means.
     /// </summary>
-    public void Send(string text, string viewLabel, string viewDetail, Func<Setup> prepare)
+    public void Send(string text, IReadOnlyList<AgentAttachment> attachments, string viewLabel, string viewDetail, Func<Setup> prepare, bool automatic = false)
     {
         if (Folder is null) return;
-        Add(new AgentItem { Id = NewId(), Kind = AgentItemKind.User, Text = text, View = viewLabel });
-        if (Title.Length == 0) Title = text.Length > 60 ? text[..60].TrimEnd() + "…" : text;
+        Settled = false;
+        SettledAt = null;
+        IsLimited = false;
+        Add(new AgentItem { Id = NewId(), Kind = AgentItemKind.User, Text = text, View = viewLabel, Attachments = attachments.Count == 0 ? null : [.. attachments], Automatic = automatic });
+        var named = text.Length > 0 ? text : attachments.Any(attachment => attachment.IsImage) ? "A picture" : $"About {attachments.FirstOrDefault()?.Name}";
+        if (Title.Length == 0) Title = named.Length > 60 ? named[..60].TrimEnd() + "…" : named;
 
-        if (_process is not null && _startedWith != $"{Model}|{Effort}") Restart();
+        if (_process is not null && (_startedWith != $"{Model}|{Effort}" || _runningMode != PermissionMode)) Restart();
         if (_process is null && !Start(prepare)) return;
 
         // Nothing typed can close the block early or pass for one.
         static string Plain(string words) => words.Replace("agent-orange-view", "agent-orange-view​", StringComparison.OrdinalIgnoreCase);
         var prompt = $"<agent-orange-view>\n{Plain(viewDetail)}\n</agent-orange-view>\n\n{Plain(text)}";
+        if (NeedsHandoff && SessionId is null)
+        {
+            // Everything up to the message being sent now, which is last.
+            prompt = Handoff(Items.Take(Items.Count - 1)) + prompt;
+        }
+        NeedsHandoff = false;
+
+        // Pictures and PDFs go with the message, for it to see straight away. Every file is also named
+        // where it's kept, for it to open or copy into the game itself, as T3 Code does.
+        var content = new JsonArray();
+        var listed = new List<string>();
+        foreach (var attachment in attachments)
+        {
+            listed.Add($"[Attached {(attachment.IsImage ? "image" : "file")} \"{attachment.Name}\" is saved at: {attachment.Path}]");
+            var block = attachment.IsImage ? "image" : AgentAttachments.IsPdf(attachment.Path) ? "document" : null;
+            if (block is null) continue;
+            try
+            {
+                if (block == "document" && new FileInfo(attachment.Path).Length > AgentAttachments.LargestPdf) continue;
+                content.Add(new JsonObject
+                {
+                    ["type"] = block,
+                    ["source"] = new JsonObject
+                    {
+                        ["type"] = "base64",
+                        ["media_type"] = block == "image" ? AgentAttachments.MediaType(attachment.Path) : "application/pdf",
+                        ["data"] = Convert.ToBase64String(File.ReadAllBytes(attachment.Path)),
+                    },
+                });
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                Notice($"Couldn't send {attachment.Name}: {error.Message}");
+            }
+        }
+        if (listed.Count > 0) prompt += "\n\n" + string.Join("\n", listed);
+        content.Add(new JsonObject { ["type"] = "text", ["text"] = prompt });
         Write(new JsonObject
         {
             ["type"] = "user",
-            ["message"] = new JsonObject { ["role"] = "user", ["content"] = prompt },
+            ["message"] = new JsonObject { ["role"] = "user", ["content"] = content },
             ["parent_tool_use_id"] = null,
         });
         _turns++;
@@ -189,8 +275,9 @@ public sealed class AgentConversation
         // The editors' tools are the agent's to use without asking each time. Edits in the folder are too.
         var allowed = setup.McpServers.Count == 0 ? "" : $" --allowedTools \"{string.Join(",", setup.McpServers.Select(server => $"mcp__{server}"))}\"";
         var arguments = "-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool=stdio"
-            + " --permission-mode acceptEdits --setting-sources project,local --strict-mcp-config"
+            + $" --permission-mode {PermissionMode} --setting-sources project,local --strict-mcp-config"
             + $" --mcp-config \"{setup.McpConfig}\" --plugin-dir \"{setup.SkillsPlugin}\" --append-system-prompt-file \"{setup.Briefing}\"{allowed}"
+            + $" --add-dir \"{setup.AttachmentsFolder}\""
             + (Model is { Length: > 0 } model ? $" --model {model}" : "")
             + (Effort is { Length: > 0 } effort ? $" --effort {effort}" : "")
             + (SessionId is null ? "" : $" --resume {SessionId}");
@@ -216,6 +303,8 @@ public sealed class AgentConversation
         _stopping = false;
         _restarting = false;
         _startedWith = $"{Model}|{Effort}";
+        _runningMode = PermissionMode;
+        _controls.Clear();
         ChildProcesses.Track(process);
         _ = ReadAsync(process);
         return true;
@@ -309,6 +398,134 @@ public sealed class AgentConversation
         }
     }
 
+    /// <summary>The next message carries what was said so far, as the agent program starting with it has none of it.</summary>
+    public bool NeedsHandoff { get; set; }
+
+    /// <summary>
+    /// Goes on with another login of the same kind, such as a second subscription when one runs out.
+    /// Claude Code keeps each conversation as a file in its login folder, so that file is copied to
+    /// the new login's, and it picks up with everything as it was. Without it, the conversation so far
+    /// is written out and goes with the next message.
+    /// </summary>
+    public void SwitchProvider(AgentProvider from, AgentProvider to)
+    {
+        if (from.Id == to.Id || IsWorking) return;
+        Restart();
+        ProviderId = to.Id;
+        if (SessionId is { } session && CarrySession(from.LoginFolder, to.LoginFolder, session))
+        {
+            Notice($"Switched to {to.Label}. It picks up with everything said so far.");
+        }
+        else if (Items.Any(item => item.Kind is AgentItemKind.User or AgentItemKind.Assistant))
+        {
+            SessionId = null;
+            NeedsHandoff = true;
+            Notice($"Switched to {to.Label}. What was said so far goes with your next message.");
+        }
+        StateChanged?.Invoke();
+    }
+
+    private static bool CarrySession(string fromLogin, string toLogin, string session)
+    {
+        try
+        {
+            var projects = Path.Combine(fromLogin, "projects");
+            if (!Directory.Exists(projects)) return false;
+            var file = Directory.EnumerateFiles(projects, $"{session}.jsonl", SearchOption.AllDirectories).FirstOrDefault();
+            if (file is null) return false;
+            var target = Path.Combine(toLogin, Path.GetRelativePath(fromLogin, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(file, target, overwrite: true);
+            return true;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write($"Couldn't carry a conversation to another login: {error.Message}");
+            return false;
+        }
+    }
+
+    // What was said, the latest kept when it's long, for an agent program that wasn't there for it.
+    private static string Handoff(IEnumerable<AgentItem> items)
+    {
+        const int Longest = 60_000;
+        var said = new List<string>();
+        foreach (var item in items)
+        {
+            switch (item.Kind)
+            {
+                case AgentItemKind.User:
+                    said.Add($"The person: {item.Text}{(item.Attachments is { Count: > 0 } sent ? $" [sent {string.Join(", ", sent.Select(attachment => attachment.Name))}]" : "")}");
+                    break;
+                case AgentItemKind.Assistant:
+                    said.Add($"You: {item.Text}");
+                    break;
+                case AgentItemKind.Tool:
+                    said.Add($"(You used {item.Text})");
+                    break;
+                case AgentItemKind.Question when item.Answers is { Count: > 0 } answers:
+                    said.Add($"(You asked, and the person answered: {string.Join("; ", answers.Select(answer => $"{answer.Key} → {answer.Value}"))})");
+                    break;
+            }
+        }
+        var text = string.Join("\n\n", said);
+        if (text.Length > Longest) text = "…" + text[^Longest..];
+        return "<agent-orange-handoff>\nThis conversation began with another login, and its agent program couldn't come along, so here is what was said so far, the latest last. Go on from it as if you'd been there.\n\n"
+            + text.Replace("agent-orange-handoff", "agent-orange-handoff​", StringComparison.OrdinalIgnoreCase) + "\n</agent-orange-handoff>\n\n";
+    }
+
+    /// <summary>Changes what it may do without asking, for what it's doing now as well as what comes next.</summary>
+    public void SetPermissionMode(string mode)
+    {
+        if (mode == PermissionMode) return;
+        PermissionMode = mode;
+        if (_process is not null) Control(new JsonObject { ["subtype"] = "set_permission_mode", ["mode"] = mode }, reply =>
+        {
+            // Full access can only be given as it starts, so that waits for the next message, which starts it again.
+            if (reply is not null) _runningMode = mode;
+            else if (IsWorking && PermissionMode == mode) Notice("That takes effect from your next message, as it can't be changed while it works.");
+        });
+        StateChanged?.Invoke();
+    }
+
+    /// <summary>Puts it away, ending its agent program, or takes it back out.</summary>
+    public bool Settle(bool settled)
+    {
+        if (settled == Settled) return true;
+        if (settled && (IsWorking || IsWaiting)) return false;
+        Settled = settled;
+        SettledAt = settled ? DateTimeOffset.UtcNow : null;
+        if (settled) Restart(); // Quietly: it was finished anyway.
+        StateChanged?.Invoke();
+        return true;
+    }
+
+    /// <summary>Allows it, and lets it do the same again for the rest of this conversation without asking.</summary>
+    public void AllowAlways(AgentItem request)
+    {
+        if (request.RequestState != AgentRequestState.Waiting) return;
+        request.RequestState = AgentRequestState.Allowed;
+        var rules = new JsonArray();
+        foreach (var suggestion in (request.Suggestions ?? []).OfType<JsonObject>())
+        {
+            var rule = (JsonObject)suggestion.DeepClone();
+            rule["destination"] = "session";
+            rules.Add(rule);
+        }
+        Respond(request, new JsonObject { ["behavior"] = "allow", ["updatedInput"] = request.RequestInput?.DeepClone() ?? new JsonObject(), ["updatedPermissions"] = rules });
+    }
+
+    /// <summary>Its plan, which it waits on: go ahead with it, editing freely, or keep planning with what the person says next.</summary>
+    public void AnswerPlan(AgentItem request, bool goAhead)
+    {
+        if (request.RequestState != AgentRequestState.Waiting) return;
+        request.RequestState = goAhead ? AgentRequestState.Allowed : AgentRequestState.Denied;
+        Respond(request, goAhead
+            ? new JsonObject { ["behavior"] = "allow", ["updatedInput"] = request.RequestInput?.DeepClone() ?? new JsonObject() }
+            : new JsonObject { ["behavior"] = "deny", ["message"] = "The person wants to keep planning. Stop here and wait for what they say next." });
+        if (goAhead && PermissionMode == "plan") SetPermissionMode("acceptEdits");
+    }
+
     public void Answer(AgentItem request, bool allow)
     {
         if (request.RequestState != AgentRequestState.Waiting) return;
@@ -339,6 +556,61 @@ public sealed class AgentConversation
         });
         ItemChanged?.Invoke(request);
         StateChanged?.Invoke();
+    }
+
+    // A request of Agent Orange's own, with what to do with the reply, or null for an error.
+    private void Control(JsonObject request, Action<JsonObject?>? replied = null)
+    {
+        var id = NewId();
+        if (replied is not null) _controls[id] = replied;
+        Write(new JsonObject { ["type"] = "control_request", ["request_id"] = id, ["request"] = request });
+    }
+
+    // How full its context is, every turn, and its login's limits, now and then. Neither uses any of them.
+    private void AskForUsage()
+    {
+        Control(new JsonObject { ["subtype"] = "get_context_usage" }, reply =>
+        {
+            if (reply?["totalTokens"] is not JsonValue used || !used.TryGetValue<int>(out var tokens)) return;
+            ContextUsed = tokens;
+            if (reply["maxTokens"] is JsonValue most && most.TryGetValue<int>(out var window)) ContextWindow = window;
+            StateChanged?.Invoke();
+        });
+        if (DateTimeOffset.UtcNow - _usageAskedAt < TimeSpan.FromMinutes(2) || ProviderId is not { } provider) return;
+        _usageAskedAt = DateTimeOffset.UtcNow;
+        Control(new JsonObject { ["subtype"] = "get_usage", ["skip_behaviors"] = true }, reply =>
+        {
+            if (reply is not null) LimitsReported?.Invoke(provider, AgentUsage.FromUsage(reply), true);
+        });
+    }
+
+    private void ReadLimit(JsonObject? info)
+    {
+        if (AgentUsage.FromEvent(info) is not { } limit) return;
+        if (limit.Blocked) _limits[limit.Kind] = limit.ResetsAt;
+        else _limits.Remove(limit.Kind);
+        if (ProviderId is { } provider) LimitsReported?.Invoke(provider, [limit], false);
+    }
+
+    // Its words when a limit stops it without saying so otherwise, as an API key's does: "(reset after 2h5m)".
+    private static bool SaysLimited(string text, out DateTimeOffset? resets)
+    {
+        resets = null;
+        var after = System.Text.RegularExpressions.Regex.Match(text, @"reset after (?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?");
+        if (after.Success && after.Length > "reset after ".Length)
+        {
+            static int Part(System.Text.RegularExpressions.Group group) => group.Success ? int.Parse(group.Value) : 0;
+            resets = DateTimeOffset.UtcNow + new TimeSpan(Part(after.Groups[1]), Part(after.Groups[2]), Part(after.Groups[3]));
+            return true;
+        }
+        var old = System.Text.RegularExpressions.Regex.Match(text, @"usage limit reached\|(\d{9,})");
+        if (old.Success)
+        {
+            resets = DateTimeOffset.FromUnixTimeSeconds(long.Parse(old.Groups[1].Value));
+            return true;
+        }
+        return text.Contains("usage limit", StringComparison.OrdinalIgnoreCase) || text.Contains("hit your limit", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("rate limit", StringComparison.OrdinalIgnoreCase);
     }
 
     private void Write(JsonObject message)
@@ -381,7 +653,18 @@ public sealed class AgentConversation
                 ReadStreamed(streamed);
                 break;
             case "assistant" when json["message"] is JsonObject message:
+                // A reply the limit stopped carries what the limit is.
+                if (Str(json, "error") == "rate_limit" || Str(message, "error") == "rate_limit") ReadLimit(json["api_error_params"]?["rate_limit_info"] as JsonObject ?? message["api_error_params"]?["rate_limit_info"] as JsonObject);
                 ReadAssistant(message);
+                break;
+            case "rate_limit_event":
+                ReadLimit(json["rate_limit_info"] as JsonObject);
+                break;
+            case "system":
+                ReadSystem(json);
+                break;
+            case "control_response" when json["response"] is JsonObject reply && Str(reply, "request_id") is { } replyTo && _controls.Remove(replyTo, out var replied):
+                replied(Str(reply, "subtype") == "success" ? reply["response"] as JsonObject ?? new JsonObject() : null);
                 break;
             case "user" when json["message"] is JsonObject said && said["content"] is JsonArray content:
                 ReadToolResults(content);
@@ -396,13 +679,65 @@ public sealed class AgentConversation
                 break;
             case "result":
                 EndStreaming();
-                if (json["is_error"]?.GetValueKind() == JsonValueKind.True && !_stopping) Problem(Str(json, "result") is { Length: > 0 } reason ? reason : "The agent stopped with an error.");
+                Retrying = null;
+                var failed = json["is_error"]?.GetValueKind() == JsonValueKind.True;
+                var reason = Str(json, "result") ?? "";
+                DateTimeOffset? resets = null;
+                if (failed && !_stopping && (_limits.Count > 0 || SaysLimited(reason, out resets)))
+                {
+                    // Its login ran out. It goes on once that resets, from the latest of the limits it hit.
+                    IsLimited = true;
+                    LimitResetsAt = _limits.Count > 0 && _limits.Values.All(at => at is not null) ? _limits.Values.Max() : resets;
+                    _turns = 0;
+                }
+                else if (failed && !_stopping)
+                {
+                    Problem(reason.Length > 0 ? reason : "The agent stopped with an error.");
+                }
+                _limits.Clear();
                 _stopping = false;
                 _turns = Math.Max(0, _turns - 1);
+                AskForUsage();
                 SetWorking(_turns > 0);
                 break;
         }
     }
+
+    private void ReadSystem(JsonObject json)
+    {
+        if (Str(json, "permissionMode") is { Length: > 0 } mode) _runningMode = mode;
+        switch (Str(json, "subtype"))
+        {
+            case "init":
+                AskForUsage();
+                break;
+            case "status" when Str(json, "status") == "compacting":
+                Retrying = "Making room in its memory";
+                StateChanged?.Invoke();
+                break;
+            case "compact_boundary":
+                Retrying = null;
+                var before = json["compact_metadata"]?["pre_tokens"]?.GetValue<double>();
+                var after = json["compact_metadata"]?["post_tokens"]?.GetValue<double>();
+                if (after is { } left) ContextUsed = (int)left;
+                Notice(before is { } was && after is { } now
+                    ? $"Made room in its memory, summing up what came before ({Tokens(was)} down to {Tokens(now)})."
+                    : "Made room in its memory, summing up what came before.");
+                StateChanged?.Invoke();
+                break;
+            case "api_retry":
+                var attempt = json["attempt"]?.ToString();
+                var most = json["max_retries"]?.ToString();
+                Retrying = attempt is null ? "Trying again" : $"Trying again ({attempt} of {most})";
+                StateChanged?.Invoke();
+                break;
+            case "informational" when Str(json, "level") is { } level && level != "info" && (Str(json, "content") ?? Str(json, "message")) is { Length: > 0 } words:
+                Notice(words);
+                break;
+        }
+    }
+
+    internal static string Tokens(double count) => count >= 1000 ? $"{count / 1000:0.#}k" : $"{count:0}";
 
     private void ReadStreamed(JsonObject streamed)
     {
@@ -412,7 +747,7 @@ public sealed class AgentConversation
                 _messageId = Str(streamed["message"] as JsonObject, "id");
                 break;
             case "content_block_start" when streamed["content_block"] is JsonObject started && Str(started, "type") == "tool_use"
-                && Str(started, "name") is { } toolName && toolName != "AskUserQuestion" && Str(started, "id") is { } toolId && !_byId.ContainsKey(toolId):
+                && Str(started, "name") is { } toolName && toolName is not "AskUserQuestion" and not "ExitPlanMode" && Str(started, "id") is { } toolId && !_byId.ContainsKey(toolId):
                 Add(new AgentItem { Id = toolId, Kind = AgentItemKind.Tool, Tool = toolName, Text = DescribeTool(toolName, null) });
                 break;
             case "content_block_start" when streamed["content_block"] is JsonObject block && Str(block, "type") == "text":
@@ -464,7 +799,12 @@ public sealed class AgentConversation
                     break;
 
                 // Its questions for the person come as a request of their own.
-                case "tool_use" when Str(part, "name") is { } name && name != "AskUserQuestion" && Str(part, "id") is { } toolId:
+                case "tool_use" when Str(part, "name") == "TodoWrite" && part["input"] is JsonObject planned && planned["todos"] is JsonArray todos:
+                    Steps = [.. todos.OfType<JsonObject>().Select(todo => new AgentStep(Str(todo, "content") ?? "", Str(todo, "status") ?? "pending", Str(todo, "activeForm")))];
+                    StateChanged?.Invoke();
+                    goto default;
+                default:
+                    if (Str(part, "type") != "tool_use" || Str(part, "name") is not { } name || name == "AskUserQuestion" || name == "ExitPlanMode" || Str(part, "id") is not { } toolId) break;
                     if (_byId.TryGetValue(toolId, out var started))
                     {
                         started.Text = DescribeTool(name, part["input"] as JsonObject);
@@ -504,11 +844,12 @@ public sealed class AgentConversation
         var item = new AgentItem
         {
             Id = requestId,
-            Kind = name == "AskUserQuestion" ? AgentItemKind.Question : AgentItemKind.Approval,
+            Kind = name == "AskUserQuestion" ? AgentItemKind.Question : name == "ExitPlanMode" ? AgentItemKind.Plan : AgentItemKind.Approval,
             Tool = name,
             RequestState = AgentRequestState.Waiting,
             RequestInput = input?.DeepClone(),
             ToolUseId = Str(request, "tool_use_id"),
+            Suggestions = request["permission_suggestions"]?.DeepClone() as JsonArray,
         };
         if (item.Kind == AgentItemKind.Question)
         {
@@ -517,6 +858,10 @@ public sealed class AgentConversation
                 Str(question, "question") ?? "",
                 [.. (question["options"] as JsonArray ?? []).OfType<JsonObject>().Select(option => new AgentOption(Str(option, "label") ?? "", Str(option, "description") ?? ""))],
                 question["multiSelect"]?.GetValueKind() == JsonValueKind.True))];
+        }
+        else if (item.Kind == AgentItemKind.Plan)
+        {
+            item.Text = Str(input, "plan") ?? "";
         }
         else
         {

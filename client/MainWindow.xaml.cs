@@ -117,6 +117,7 @@ public partial class MainWindow : Window
         Settings.AppIsRestarting = () => _restarting = true;
         Closing += (_, closing) => closing.Cancel = !_restarting && (HideToTray() || !ConfirmStoppingClone("Closing"));
         StartTray();
+        StartScreenshotHotkey();
 
         // Nothing stays compatible across a release, so a copy that has to update doesn't sync.
         _sync = new SyncEngine(_database, _server, _devices, folders.DatabasePath) { IsPaused = () => _requiredVersion is not null };

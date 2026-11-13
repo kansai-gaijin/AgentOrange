@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -21,7 +22,7 @@ namespace AgentOrange;
 /// arrives, and only the part of the timeline that changed is drawn again. Only the latest turns are
 /// drawn, with earlier ones a click away, and it follows the end unless it's been scrolled up.
 /// </summary>
-public sealed class AgentsWindow : Window
+public sealed partial class AgentsWindow : Window
 {
     private const int TurnsAtATime = 20;
     private const double FollowsWithin = 40;
@@ -30,6 +31,16 @@ public sealed class AgentsWindow : Window
 
     private static readonly (string? Id, string Name)[] Models =
         [(null, "Default model"), ("claude-opus-5-5", "Opus 5.5"), ("claude-sonnet-5-5", "Sonnet 5.5"), ("claude-fable-5-2", "Fable 5.2"), ("claude-haiku-5-5", "Haiku 5.5")];
+    // Claude Code's own permission modes, in the words the person sees.
+    private static readonly (string? Id, string Name)[] Permissions =
+        [("default", "Ask first"), ("acceptEdits", "Edit freely"), ("plan", "Plan only"), ("bypassPermissions", "Full access")];
+    private static readonly Dictionary<string, string> PermissionMeaning = new()
+    {
+        ["default"] = "Asks before it edits a file or runs anything.",
+        ["acceptEdits"] = "Edits the project's files and uses the editors freely. Asks before anything else.",
+        ["plan"] = "Looks around and makes a plan, but changes nothing.",
+        ["bypassPermissions"] = "Does whatever it needs without asking. Only for work you'd trust it with alone.",
+    };
     private static readonly (string? Id, string Name)[] Efforts =
         [(null, "Default effort"), ("low", "Low effort"), ("medium", "Medium effort"), ("high", "High effort"), ("xhigh", "Extra high effort"), ("max", "Max effort")];
 
@@ -46,6 +57,12 @@ public sealed class AgentsWindow : Window
     private readonly Button _send;
     private readonly Button _modelPill;
     private readonly Button _effortPill;
+    private readonly Button _permissionPill;
+    private readonly Button _settle;
+    private readonly StackPanel _headerTools = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+    private readonly HashSet<string> _openSettled = []; // Projects whose settled conversations are being shown.
+    private readonly WrapPanel _tray = new() { Margin = new Thickness(0, 0, 0, 10), Visibility = Visibility.Collapsed };
+    private readonly List<AgentAttachment> _pending = [];
     private readonly TextBlock _title = new() { FontSize = 14, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock _subtitle = new() { FontSize = 13, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly TextBlock _sees = new() { FontSize = 12, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
@@ -101,12 +118,26 @@ public sealed class AgentsWindow : Window
         DockPanel.SetDock(add, Dock.Top);
         side.Children.Add(heading);
         side.Children.Add(add);
+        DockPanel.SetDock(_usagePanel, Dock.Bottom);
+        side.Children.Add(_usagePanel);
         side.Children.Add(new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = _list, Padding = new Thickness(8, 0, 8, 16) });
         var sideEdge = new Border { BorderBrush = Brush("A.Border"), BorderThickness = new Thickness(0, 0, 1, 0), Child = side };
 
         // The open conversation.
         var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Children = { _title, _subtitle } };
-        var header = new Border { BorderBrush = Brush("A.Border"), BorderThickness = new Thickness(0, 0, 0, 1), Height = 52, Padding = new Thickness(22, 0, 22, 0), Child = titleRow };
+        _settle = Make("A.Pill", IconAndText("", "Settle", "A.Muted", 12), () =>
+        {
+            if (_open is not { } settling) return;
+            if (!settling.Settle(!settling.Settled)) ShowNote("Stop it, or answer what it's asking, before settling it.");
+            ShowHeader();
+            ShowConversations();
+        });
+        _headerTools.Children.Add(_settle);
+        var headerRow = new DockPanel();
+        DockPanel.SetDock(_headerTools, Dock.Right);
+        headerRow.Children.Add(_headerTools);
+        headerRow.Children.Add(titleRow);
+        var header = new Border { BorderBrush = Brush("A.Border"), BorderThickness = new Thickness(0, 0, 0, 1), Height = 52, Padding = new Thickness(22, 0, 16, 0), Child = headerRow };
 
         var earlier = Make("A.Ghost", Text("Show earlier messages", "A.Muted", 12.5), () =>
         {
@@ -169,6 +200,20 @@ public sealed class AgentsWindow : Window
         _modelPill = Make("A.Pill", Text("", "A.Muted", 12), () => PickModel());
         _effortPill = Make("A.Pill", Text("", "A.Muted", 12), () => PickEffort());
         _effortPill.Margin = new Thickness(6, 0, 0, 0);
+        _permissionPill = Make("A.Pill", IconAndText("", "", "A.Muted", 12), () => PickPermission());
+        _permissionPill.Margin = new Thickness(6, 0, 0, 0);
+        _loginPill = Make("A.Pill", IconAndText("\uE77B", "", "A.Muted", 12), PickLogin);
+        _loginPill.Margin = new Thickness(6, 0, 0, 0);
+        _loginPill.Visibility = Visibility.Collapsed;
+        var attach = Make("A.Round", Glyph("", "A.Muted", 14), PickFiles);
+        attach.Background = Brushes.Transparent;
+        attach.Margin = new Thickness(4, 0, 0, 0);
+        attach.ToolTip = "Send pictures or files (or paste, or drop them here)";
+        AutomationProperties.SetName(attach, "Send pictures or files");
+        var shoot = Make("A.Round", Glyph("", "A.Muted", 14), () => _ = ShootAsync());
+        shoot.Background = Brushes.Transparent;
+        shoot.ToolTip = $"Take a screenshot for the agent ({ScreenshotHotkey.Keys}, from anywhere)";
+        AutomationProperties.SetName(shoot, "Take a screenshot for the agent");
 
         var seesRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center, Children = { Glyph("", "A.Faint", 12), _sees } };
         ((TextBlock)seesRow.Children[0]).Margin = new Thickness(0, 1, 6, 0);
@@ -176,13 +221,25 @@ public sealed class AgentsWindow : Window
         DockPanel.SetDock(_send, Dock.Right);
         DockPanel.SetDock(_modelPill, Dock.Left);
         DockPanel.SetDock(_effortPill, Dock.Left);
+        DockPanel.SetDock(_permissionPill, Dock.Left);
+        DockPanel.SetDock(_loginPill, Dock.Left);
+        DockPanel.SetDock(_contextMeter, Dock.Right);
         toolbar.Children.Add(_send);
         toolbar.Children.Add(_modelPill);
         toolbar.Children.Add(_effortPill);
+        toolbar.Children.Add(_contextMeter);
+        toolbar.Children.Add(_permissionPill);
+        toolbar.Children.Add(_loginPill);
+        DockPanel.SetDock(attach, Dock.Left);
+        DockPanel.SetDock(shoot, Dock.Left);
+        toolbar.Children.Add(attach);
+        toolbar.Children.Add(shoot);
         toolbar.Children.Add(seesRow);
         var box = new DockPanel();
         DockPanel.SetDock(toolbar, Dock.Bottom);
         box.Children.Add(toolbar);
+        DockPanel.SetDock(_tray, Dock.Top);
+        box.Children.Add(_tray);
         box.Children.Add(new Grid { Children = { _placeholder, _input } });
         _composer = new Border
         {
@@ -194,7 +251,7 @@ public sealed class AgentsWindow : Window
             Child = box,
             Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 24, ShadowDepth = 4, Opacity = 0.5 },
         };
-        var composerArea = new StackPanel { MaxWidth = ColumnWidth + 32, Margin = new Thickness(20, 0, 20, 18), Children = { _note, _composer } };
+        var composerArea = new StackPanel { MaxWidth = ColumnWidth + 32, Margin = new Thickness(20, 0, 20, 18), Children = { _limitBanner, _note, _stepsPanel, _composer } };
 
         var conversationArea = new DockPanel();
         DockPanel.SetDock(header, Dock.Top);
@@ -211,15 +268,31 @@ public sealed class AgentsWindow : Window
 
         _input.PreviewKeyDown += (_, pressed) =>
         {
+            // A picture or files on the clipboard go with the message, rather than in as words.
+            if (pressed.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control && PasteAttachments())
+            {
+                pressed.Handled = true;
+                return;
+            }
             // Enter sends, and Shift+Enter starts a new line.
             if (pressed.Key != Key.Enter || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) return;
             pressed.Handled = true;
-            if (_input.Text.Trim().Length > 0) SendOrStop();
+            if (_input.Text.Trim().Length > 0 || _pending.Count > 0) SendOrStop();
         };
         _input.TextChanged += (_, _) =>
         {
             _placeholder.Visibility = _input.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
             ShowSendButton();
+        };
+        AllowDrop = true;
+        DragOver += (_, dragged) =>
+        {
+            dragged.Effects = dragged.Data.GetDataPresent(DataFormats.FileDrop) && _open is not null ? DragDropEffects.Copy : DragDropEffects.None;
+            dragged.Handled = true;
+        };
+        Drop += (_, dropped) =>
+        {
+            if (dropped.Data.GetData(DataFormats.FileDrop) is string[] files) AttachFiles(files);
         };
         _flush.Tick += (_, _) => Flush();
         _tick.Tick += (_, _) =>
@@ -240,6 +313,7 @@ public sealed class AgentsWindow : Window
             _tick.Stop();
         };
 
+        BuildUsageParts();
         ShowSees();
         ShowConversations();
         Show(_main.Conversations.OrderByDescending(conversation => conversation.Updated).FirstOrDefault());
@@ -266,6 +340,7 @@ public sealed class AgentsWindow : Window
           <SolidColorBrush x:Key="A.Danger" Color="#F87171" />
           <SolidColorBrush x:Key="A.DangerTint" Color="#1FF87171" />
           <SolidColorBrush x:Key="A.Success" Color="#34D399" />
+          <SolidColorBrush x:Key="A.Warning" Color="#F5A524" />
           <SolidColorBrush x:Key="A.CodeBack" Color="#0C0C0D" />
 
           <Style x:Key="A.Ghost" TargetType="Button">
@@ -500,7 +575,21 @@ public sealed class AgentsWindow : Window
         foreach (var project in conversations.GroupBy(conversation => conversation.ProjectId).OrderByDescending(group => group.Max(conversation => conversation.Updated)))
         {
             _list.Children.Add(new TextBlock { Text = _main.ProjectName(project.Key).ToUpperInvariant(), Foreground = Brush("A.Faint"), FontSize = 10.5, FontWeight = FontWeights.SemiBold, Margin = new Thickness(10, 16, 10, 6), TextTrimming = TextTrimming.CharacterEllipsis });
-            foreach (var conversation in project.OrderByDescending(conversation => conversation.Updated)) _list.Children.Add(ConversationRow(conversation));
+            foreach (var conversation in project.Where(each => !each.Settled).OrderByDescending(conversation => conversation.Updated)) _list.Children.Add(ConversationRow(conversation));
+
+            // Settled ones stay out of the way, a click from being seen.
+            var settled = project.Where(each => each.Settled).OrderByDescending(conversation => conversation.Updated).ToList();
+            if (settled.Count == 0) continue;
+            var showing = _openSettled.Contains(project.Key) || settled.Contains(_open!);
+            var toggle = Make("A.Ghost", IconAndText(showing ? "" : "", $"Settled  ·  {settled.Count}", "A.Faint", 12), () =>
+            {
+                if (!_openSettled.Remove(project.Key)) _openSettled.Add(project.Key);
+                ShowConversations();
+            });
+            ((TextBlock)((StackPanel)toggle.Content).Children[0]).FontSize = 9;
+            toggle.Padding = new Thickness(10, 5, 10, 5);
+            _list.Children.Add(toggle);
+            if (showing) foreach (var conversation in settled) _list.Children.Add(ConversationRow(conversation));
         }
     }
 
@@ -509,7 +598,8 @@ public sealed class AgentsWindow : Window
         var name = conversation.Title.Length > 0 ? conversation.Title : "New conversation";
         var selected = conversation == _open;
         var row = new DockPanel();
-        FrameworkElement state = conversation.IsWaiting ? Dot("A.Accent", "Needs you")
+        FrameworkElement state = conversation.IsLimited && !conversation.IsWorking ? Snoozed(conversation)
+            : conversation.IsWaiting ? Dot("A.Accent", "Needs you")
             : conversation.IsWorking ? Pulse()
             : conversation.Unseen ? Dot("A.Strong", "New")
             : Text(Ago(conversation.Updated), "A.Faint", 11);
@@ -531,6 +621,14 @@ public sealed class AgentsWindow : Window
         return button;
     }
 
+    private FrameworkElement Snoozed(AgentConversation conversation)
+    {
+        var resets = _main.ResumesAt(conversation);
+        var said = IconAndText("\uE823", resets is { } at && conversation.ResumeAtReset ? When(at).Replace("tomorrow ", "") : "", "A.Accent", 11);
+        said.ToolTip = conversation.ResumeAtReset ? $"Out of usage. Goes on by itself{(resets is { } then ? $" at {When(then)}" : " once it resets")}." : "Out of usage. Waiting for you to say go on.";
+        return said;
+    }
+
     private FrameworkElement Dot(string brush, string meaning)
     {
         var dot = new System.Windows.Shapes.Ellipse { Width = 7, Height = 7, Fill = Brush(brush), VerticalAlignment = VerticalAlignment.Center, ToolTip = meaning };
@@ -541,6 +639,14 @@ public sealed class AgentsWindow : Window
     private void OfferToDelete(UIElement by, AgentConversation conversation)
     {
         Popup? menu = null;
+        var settle = Make("A.Ghost", IconAndText(conversation.Settled ? "" : "", conversation.Settled ? "Unsettle" : "Settle", "A.Normal", 13), () =>
+        {
+            menu!.IsOpen = false;
+            if (!conversation.Settle(!conversation.Settled)) ShowNote("Stop it, or answer what it's asking, before settling it.");
+            ShowHeader();
+            ShowConversations();
+        });
+        settle.ToolTip = "Settled conversations are done with: put away at the bottom of their project, with their agent ended. Writing to one takes it back out.";
         var delete = Make("A.Ghost", IconAndText("", "Delete conversation", "A.Danger", 13), () =>
         {
             menu!.IsOpen = false;
@@ -549,7 +655,7 @@ public sealed class AgentsWindow : Window
             if (_open == conversation) Show(_main.Conversations.OrderByDescending(each => each.Updated).FirstOrDefault());
             ShowConversations();
         });
-        menu = Menu(by, PlacementMode.MousePoint, delete);
+        menu = Menu(by, PlacementMode.MousePoint, new StackPanel { Children = { settle, delete } });
         menu.IsOpen = true;
     }
 
@@ -592,7 +698,12 @@ public sealed class AgentsWindow : Window
         if (_open is not null) _open.Effort = chosen;
     });
 
-    private void Pick(Button by, (string? Id, string Name)[] options, string? current, Action<string?> chosen)
+    private void PickPermission() => Pick(_permissionPill, Permissions, _open?.PermissionMode, chosen =>
+    {
+        if (_open is not null && chosen is not null) _open.SetPermissionMode(chosen);
+    }, "Takes effect straight away, even while it works.", PermissionMeaning);
+
+    private void Pick(Button by, (string? Id, string Name)[] options, string? current, Action<string?> chosen, string footer = "Takes effect from the next message.", Dictionary<string, string>? meanings = null)
     {
         var rows = new StackPanel();
         Popup? menu = null;
@@ -603,7 +714,18 @@ public sealed class AgentsWindow : Window
             tick.Width = 16;
             DockPanel.SetDock(tick, Dock.Right);
             row.Children.Add(tick);
-            row.Children.Add(Text(name, "A.Normal", 13));
+            if (id is not null && meanings?.GetValueOrDefault(id) is { } meaning)
+            {
+                var about = Text(meaning, "A.Faint", 11.5);
+                about.TextWrapping = TextWrapping.Wrap;
+                about.TextTrimming = TextTrimming.None;
+                about.Margin = new Thickness(0, 2, 0, 0);
+                row.Children.Add(new StackPanel { MaxWidth = 260, Children = { Text(name, "A.Normal", 13), about } });
+            }
+            else
+            {
+                row.Children.Add(Text(name, "A.Normal", 13));
+            }
             rows.Children.Add(Make("A.Ghost", row, () =>
             {
                 menu!.IsOpen = false;
@@ -611,7 +733,7 @@ public sealed class AgentsWindow : Window
                 ShowPills();
             }));
         }
-        rows.Children.Add(new TextBlock { Text = "Takes effect from the next message.", Foreground = Brush("A.Faint"), FontSize = 11, Margin = new Thickness(10, 4, 10, 4) });
+        rows.Children.Add(new TextBlock { Text = footer, Foreground = Brush("A.Faint"), FontSize = 11, Margin = new Thickness(10, 4, 10, 4) });
         menu = Menu(by, PlacementMode.Top, rows);
         menu.IsOpen = true;
     }
@@ -620,6 +742,13 @@ public sealed class AgentsWindow : Window
     {
         ((TextBlock)_modelPill.Content).Text = Models.FirstOrDefault(model => model.Id == _open?.Model).Name ?? _open?.Model ?? "Default model";
         ((TextBlock)_effortPill.Content).Text = Efforts.FirstOrDefault(effort => effort.Id == _open?.Effort).Name ?? "Default effort";
+        var mode = _open?.PermissionMode ?? "acceptEdits";
+        var permission = (StackPanel)_permissionPill.Content;
+        ((TextBlock)permission.Children[1]).Text = Permissions.FirstOrDefault(each => each.Id == mode).Name ?? mode;
+        var risky = mode == "bypassPermissions";
+        ((TextBlock)permission.Children[0]).Foreground = Brush(risky ? "A.Danger" : mode == "plan" ? "A.Accent" : "A.Muted");
+        ((TextBlock)permission.Children[1]).Foreground = Brush(risky ? "A.Danger" : "A.Muted");
+        _permissionPill.ToolTip = PermissionMeaning.GetValueOrDefault(mode);
     }
 
     // The open conversation
@@ -645,8 +774,7 @@ public sealed class AgentsWindow : Window
         _openGroups.Clear();
         if (conversation is not null) conversation.Unseen = false;
 
-        _title.Text = conversation is null ? "No conversation open" : conversation.Title.Length > 0 ? conversation.Title : "New conversation";
-        _subtitle.Text = conversation is null ? "" : _main.ProjectName(conversation.ProjectId);
+        ShowHeader();
         _composer.IsEnabled = conversation is not null;
         DrawAll();
         ShowSendButton();
@@ -654,9 +782,24 @@ public sealed class AgentsWindow : Window
         ShowWorking();
         ShowConversations();
         ShowNote(null);
+        _stepsOpen = conversation?.Steps?.Any(step => step.Status != "completed") == true;
+        ShowUsage();
         _follow = true;
         ScrollToEnd();
         if (conversation is not null) _ = Dispatcher.InvokeAsync(() => _input.Focus(), DispatcherPriority.Input);
+    }
+
+    private void ShowHeader()
+    {
+        var conversation = _open;
+        _title.Text = conversation is null ? "No conversation open" : conversation.Title.Length > 0 ? conversation.Title : "New conversation";
+        _subtitle.Text = conversation is null ? "" : _main.ProjectName(conversation.ProjectId);
+        _headerTools.Visibility = conversation is null ? Visibility.Collapsed : Visibility.Visible;
+        var settle = (StackPanel)_settle.Content;
+        var settled = conversation?.Settled == true;
+        ((TextBlock)settle.Children[0]).Text = settled ? "" : "";
+        ((TextBlock)settle.Children[1]).Text = settled ? "Unsettle" : "Settle";
+        _settle.ToolTip = settled ? "Take it back out of the settled ones" : "Done with it: put it away with the settled ones, and end its agent";
     }
 
     private void ShowSees() => _sees.Text = _main.ViewLabel();
@@ -674,8 +817,8 @@ public sealed class AgentsWindow : Window
     private void ShowSendButton()
     {
         // While it works, typing something sends it on, and with nothing typed the button stops it.
-        var stops = _open is { IsWorking: true } && _input.Text.Trim().Length == 0;
-        var can = stops || _input.Text.Trim().Length > 0;
+        var stops = _open is { IsWorking: true } && _input.Text.Trim().Length == 0 && _pending.Count == 0;
+        var can = stops || _input.Text.Trim().Length > 0 || _pending.Count > 0;
         _send.Content = Glyph(stops ? "" : "", can ? "A.OnAccent" : "A.Faint", stops ? 12 : 14);
         _send.IsEnabled = can;
         AutomationProperties.SetName(_send, stops ? "Stop the agent" : "Send");
@@ -688,14 +831,15 @@ public sealed class AgentsWindow : Window
         _working.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
         if (!working) return;
         var seconds = (int)(DateTimeOffset.UtcNow - _open!.WorkingSince).TotalSeconds;
-        _workingText.Text = _open.IsWaiting ? "Waiting for you" : seconds < 60 ? $"Working · {seconds}s" : $"Working · {seconds / 60}m {seconds % 60}s";
+        var took = seconds < 60 ? $"{seconds}s" : $"{seconds / 60}m {seconds % 60}s";
+        _workingText.Text = _open.IsWaiting ? "Waiting for you" : _open.Retrying is { } retrying ? $"{retrying} · {took}" : seconds < 60 ? $"Working · {seconds}s" : $"Working · {seconds / 60}m {seconds % 60}s";
     }
 
     private async void SendOrStop()
     {
         if (_open is not { } conversation) return;
         var text = _input.Text.Trim();
-        if (text.Length == 0)
+        if (text.Length == 0 && _pending.Count == 0)
         {
             if (conversation.IsWorking) conversation.Stop();
             return;
@@ -708,17 +852,168 @@ public sealed class AgentsWindow : Window
         }
         ShowNote(null);
         _input.Clear();
+        var attachments = _pending.ToList();
+        _pending.Clear();
+        ShowTray();
         _follow = true;
-        conversation.Send(text, _main.ViewLabel(), _main.DescribeView(), () => _main.PrepareAgent(conversation));
-        _title.Text = conversation.Title;
+        conversation.Send(text, attachments, _main.ViewLabel(), _main.DescribeView(), () => _main.PrepareAgent(conversation));
+        ShowHeader();
         ShowConversations();
         ShowWorking();
+    }
+
+    // Pictures and files to go with the next message
+
+    private void PickFiles()
+    {
+        if (_open is null) return;
+        var dialog = new Microsoft.Win32.OpenFileDialog { Title = "Send to the agent", Multiselect = true, InitialDirectory = _main.ProjectFolderOf(_open) ?? "" };
+        if (dialog.ShowDialog(this) == true) AttachFiles(dialog.FileNames);
+    }
+
+    private bool PasteAttachments()
+    {
+        try
+        {
+            if (Clipboard.ContainsImage() && Clipboard.GetImage() is { } image)
+            {
+                AttachImage(image);
+                return true;
+            }
+            if (Clipboard.ContainsFileDropList() && Clipboard.GetFileDropList() is { Count: > 0 } files)
+            {
+                AttachFiles(files.Cast<string>());
+                return true;
+            }
+        }
+        catch (System.Runtime.InteropServices.COMException)
+        {
+            // Another program has the clipboard open. The paste goes in as words, if it can.
+        }
+        return false;
+    }
+
+    private void AttachFiles(IEnumerable<string> files)
+    {
+        if (_open is null) return;
+        foreach (var file in files)
+        {
+            if (Directory.Exists(file)) continue;
+            if (AgentAttachments.FromFile(file, _main.AttachmentsFolder) is { } attachment) _pending.Add(attachment);
+        }
+        ShowTray();
+        _input.Focus();
+    }
+
+    /// <summary>A picture for the next message, such as a screenshot.</summary>
+    internal void AttachImage(System.Windows.Media.Imaging.BitmapSource image)
+    {
+        if (_open is null) return;
+        if (AgentAttachments.SaveImage(image, _main.AttachmentsFolder) is { } attachment) _pending.Add(attachment);
+        ShowTray();
+        _input.Focus();
+    }
+
+    /// <summary>A screenshot taken with the key: for the conversation open here, or a new one about the project on screen.</summary>
+    internal void AttachScreenshotHere(System.Windows.Media.Imaging.BitmapSource image)
+    {
+        if (_open is null && _main.ProjectOnScreen is { } project)
+        {
+            Show(_main.NewConversation(project));
+            ShowConversations();
+        }
+        if (_open is null)
+        {
+            ShowNote("Open a project first, so the screenshot has a conversation to go to.");
+            return;
+        }
+        AttachImage(image);
+    }
+
+    // The window gets out of the way for it, so what's under it can be taken.
+    private async Task ShootAsync()
+    {
+        if (_open is null) return;
+        var state = WindowState;
+        Hide();
+        await Task.Delay(200);
+        var taken = await AgentAttachments.TakeScreenshotAsync();
+        Show();
+        WindowState = state;
+        Activate();
+        if (taken is not null) AttachImage(taken);
+    }
+
+    private void ShowTray()
+    {
+        _tray.Children.Clear();
+        _tray.Visibility = _pending.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        foreach (var attachment in _pending.ToList())
+        {
+            var remove = Make("A.Round", Glyph("", "A.Normal", 9), () =>
+            {
+                _pending.Remove(attachment);
+                ShowTray();
+            });
+            remove.Width = remove.Height = 20;
+            remove.Background = Brush("A.Surface");
+            remove.BorderBrush = Brush("A.InputBorder");
+            remove.HorizontalAlignment = HorizontalAlignment.Right;
+            remove.VerticalAlignment = VerticalAlignment.Top;
+            remove.Margin = new Thickness(0, -6, -6, 0);
+            remove.ToolTip = "Don't send this";
+            AutomationProperties.SetName(remove, $"Don't send {attachment.Name}");
+            _tray.Children.Add(new Grid { Margin = new Thickness(0, 6, 12, 0), Children = { AttachmentFace(attachment, 64), remove } });
+        }
+        ShowSendButton();
+    }
+
+    // A picture as a small rounded thumbnail, or a file as a chip with its name. Either opens on a click.
+    private FrameworkElement AttachmentFace(AgentAttachment attachment, double height)
+    {
+        FrameworkElement face;
+        if (attachment.IsImage && AgentAttachments.LoadImage(attachment.Path, (int)(height * 2)) is { } picture)
+        {
+            face = new Border
+            {
+                Height = height,
+                Width = Math.Min(height * 2.4, Math.Max(height * 0.6, height * picture.PixelWidth / Math.Max(1, picture.PixelHeight))),
+                CornerRadius = new CornerRadius(10),
+                BorderBrush = Brush("A.InputBorder"),
+                BorderThickness = new Thickness(1),
+                Background = new ImageBrush(picture) { Stretch = Stretch.UniformToFill },
+            };
+        }
+        else
+        {
+            var chip = IconAndText(attachment.IsImage ? "" : "", attachment.Name, "A.Normal", 12.5);
+            ((TextBlock)chip.Children[1]).MaxWidth = 220;
+            face = new Border { Height = Math.Min(height, 40), CornerRadius = new CornerRadius(10), Background = Brush("A.Surface"), BorderBrush = Brush("A.InputBorder"), BorderThickness = new Thickness(1), Padding = new Thickness(12, 0, 14, 0), Child = chip };
+        }
+        face.Cursor = Cursors.Hand;
+        face.ToolTip = attachment.Path;
+        face.MouseLeftButtonUp += (_, _) => OpenFile(attachment.Path);
+        return face;
+    }
+
+    private static void OpenFile(string path)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            AppLog.Write($"Couldn't open {path}: {error.Message}");
+        }
     }
 
     private void WorkingChanged()
     {
         ShowSendButton();
         ShowWorking();
+        ShowPills();
+        ShowUsage();
         if (_open is not null && IsActive) _open.Unseen = false;
         if (_follow) ScrollToEnd();
     }
@@ -836,6 +1131,7 @@ public sealed class AgentsWindow : Window
             AgentItemKind.Tool => ToolGroup(segment),
             AgentItemKind.Approval => Approval(item),
             AgentItemKind.Question => Questions(item),
+            AgentItemKind.Plan => PlanCard(item),
             AgentItemKind.Problem => Problem(item.Text),
             _ => Notice(item.Text),
         };
@@ -856,8 +1152,27 @@ public sealed class AgentsWindow : Window
             Padding = new Thickness(16, 10, 16, 11),
             Child = words,
         };
-        var message = new StackPanel { Margin = new Thickness(0, 26, 0, 6), Children = { bubble } };
-        if (item.View is { Length: > 0 } view)
+        var message = new StackPanel { Margin = new Thickness(0, 26, 0, 6) };
+        if (item.Attachments is { Count: > 0 } attachments)
+        {
+            var sent = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right, FlowDirection = FlowDirection.LeftToRight, Margin = new Thickness(0, 0, 0, 6) };
+            foreach (var attachment in attachments)
+            {
+                var face = AttachmentFace(attachment, attachments.Count == 1 ? 180 : 110);
+                face.Margin = new Thickness(6, 0, 0, 6);
+                sent.Children.Add(face);
+            }
+            message.Children.Add(sent);
+        }
+        if (item.Text.Length > 0) message.Children.Add(bubble);
+        if (item.Automatic)
+        {
+            var sent = IconAndText("\uE72C", "Sent for you once the usage limit reset", "A.Faint", 11.5);
+            sent.HorizontalAlignment = HorizontalAlignment.Right;
+            sent.Margin = new Thickness(0, 6, 8, 0);
+            message.Children.Add(sent);
+        }
+        else if (item.View is { Length: > 0 } view)
         {
             var seen = IconAndText("", view, "A.Faint", 11.5);
             seen.HorizontalAlignment = HorizontalAlignment.Right;
@@ -1048,6 +1363,14 @@ public sealed class AgentsWindow : Window
         deny.Padding = new Thickness(14, 6, 14, 6);
         buttons.Children.Add(allow);
         buttons.Children.Add(deny);
+        if (item.Suggestions is { Count: > 0 })
+        {
+            var always = Make("A.Pill", Text("Always allow", "A.Normal", 13), () => _open?.AllowAlways(item));
+            always.Margin = new Thickness(8, 0, 0, 0);
+            always.Padding = new Thickness(14, 6, 14, 6);
+            always.ToolTip = "Allow it, and the same again for the rest of this conversation without asking";
+            buttons.Children.Insert(1, always);
+        }
         if (item.Detail is { Length: > 0 })
         {
             var details = Make("A.Ghost", Text(_openTools.Contains(item.Id) ? "Hide details" : "Details", "A.Muted", 13), () =>

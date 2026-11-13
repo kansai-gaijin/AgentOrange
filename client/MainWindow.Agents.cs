@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Json.Nodes;
 using System.Windows;
+using System.Windows.Threading;
 
 namespace AgentOrange;
 
@@ -14,7 +15,7 @@ public partial class MainWindow
     private List<AgentConversation>? _conversations;
     private AgentsWindow? _agentsWindow;
 
-    private string ConversationsFolder => Path.Combine(Settings.Folders.AgentFolder, "conversations");
+    internal string ConversationsFolder => Path.Combine(Settings.Folders.AgentFolder, "conversations");
 
     internal List<AgentConversation> Conversations
     {
@@ -33,9 +34,15 @@ public partial class MainWindow
         }
     }
 
+    /// <summary>Each login's subscription limits, as last said.</summary>
+    internal AgentUsage Usage { get; } = new();
+
+    private DispatcherTimer? _agentClock;
+
     private void Keep(AgentConversation conversation)
     {
         _conversations!.Add(conversation);
+        conversation.LimitsReported += (provider, limits, complete) => Usage.Update(provider, limits, complete);
         conversation.StateChanged += () =>
         {
             // Done, or wanting something, with no one looking at it.
@@ -59,6 +66,12 @@ public partial class MainWindow
         try
         {
             File.Delete(Path.Combine(ConversationsFolder, $"{conversation.Id}.json"));
+
+            // Its pictures went nowhere else. Files it was sent are the person's own and stay.
+            foreach (var picture in conversation.Items.SelectMany(item => item.Attachments ?? []).Where(attachment => attachment.IsImage && Path.GetDirectoryName(attachment.Path) == AttachmentsFolder))
+            {
+                File.Delete(picture.Path);
+            }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -98,7 +111,65 @@ public partial class MainWindow
         var provider = AgentProviderFor(conversation) ?? throw new IOException("There's no Claude Code provider.");
         var mcp = AgentMcpConfig.Write(Settings.Editors, agentFolder);
         var servers = (JsonNode.Parse(File.ReadAllText(mcp))?["mcpServers"] as JsonObject)?.Select(server => server.Key).ToList() ?? [];
-        return new AgentConversation.Setup(provider, mcp, servers, AgentSkills.ClaudePlugin(agentFolder), AgentBriefing.Write(Settings.Editors, agentFolder));
+        Directory.CreateDirectory(AttachmentsFolder);
+        return new AgentConversation.Setup(provider, mcp, servers, AgentSkills.ClaudePlugin(agentFolder), AgentBriefing.Write(Settings.Editors, agentFolder), AttachmentsFolder);
+    }
+
+    /// <summary>The logins a conversation can go on with: every Claude Code one turned on.</summary>
+    internal List<AgentProvider> AgentLogins() => [.. Settings.Providers.List().Where(provider => provider.Enabled && provider.Kind == ProviderKind.Claude)];
+
+    internal void SwitchLogin(AgentConversation conversation, AgentProvider to)
+    {
+        if (AgentProviderFor(conversation) is { } from) conversation.SwitchProvider(from, to);
+    }
+
+    /// <summary>When a conversation stopped by its login's limit can go on: when it said, or else when its login's limits do.</summary>
+    internal DateTimeOffset? ResumesAt(AgentConversation conversation) =>
+        conversation.LimitResetsAt ?? Usage.BlockedUntil(AgentProviderFor(conversation)?.Id);
+
+    // Every 20 seconds: conversations whose limit has reset go on by themselves, as in T3 Code, and
+    // every five minutes, with the agents window open or a conversation waiting on a limit, each
+    // login is asked how much of its limits are used.
+    private void StartAgentClock()
+    {
+        if (_agentClock is not null) return;
+        var lastProbe = DateTimeOffset.MinValue;
+        _agentClock = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
+        _agentClock.Tick += async (_, _) =>
+        {
+            var conversations = _conversations ?? [];
+            foreach (var conversation in conversations.Where(each => each.IsLimited && each.ResumeAtReset && !each.IsWorking && !each.Settled).ToList())
+            {
+                // Long overdue, it's been left on purpose, so it isn't woken.
+                if (ResumesAt(conversation) is not { } resets || resets > DateTimeOffset.UtcNow || DateTimeOffset.UtcNow - resets > TimeSpan.FromHours(24)) continue;
+                await ResumeAsync(conversation);
+            }
+
+            var wanted = _agentsWindow is not null || conversations.Any(each => each.IsLimited);
+            if (!wanted || DateTimeOffset.UtcNow - lastProbe < TimeSpan.FromMinutes(5)) return;
+            lastProbe = DateTimeOffset.UtcNow;
+            await ProbeUsageAsync();
+        };
+        _agentClock.Start();
+    }
+
+    internal async Task ProbeUsageAsync()
+    {
+        var folder = Path.Combine(Settings.Folders.AgentFolder, "usage-check");
+        foreach (var login in AgentLogins())
+        {
+            // One running already says it as it goes.
+            if (_conversations?.Any(each => each.IsWorking && each.ProviderId == login.Id) == true) continue;
+            await Usage.ProbeAsync(login, folder);
+        }
+    }
+
+    /// <summary>Goes on where it stopped, as the person would by saying so.</summary>
+    internal async Task<string?> ResumeAsync(AgentConversation conversation)
+    {
+        if (await AgentProblemAsync(conversation) is { } problem) return problem;
+        conversation.Send("Continue where you left off.", [], ViewLabel(), DescribeView(), () => PrepareAgent(conversation), automatic: true);
+        return null;
     }
 
     /// <summary>What the person is looking at, in a few words, such as "Animal Planet › Characters › Player".</summary>
@@ -113,6 +184,40 @@ public partial class MainWindow
         }
         return string.Join(" › ", parts);
     }
+
+    /// <summary>Where pictures sent to agents are kept, on this PC only.</summary>
+    internal string AttachmentsFolder => Path.Combine(Settings.Folders.AgentFolder, "attachments");
+
+    internal string? ProjectFolderOf(AgentConversation conversation) => _database.GetProjectFolder(conversation.ProjectId);
+
+    private ScreenshotHotkey? _screenshotHotkey;
+
+    // From anywhere: a screenshot for the conversation open in the agents window, or a new one about the project on screen.
+    private void StartScreenshotHotkey()
+    {
+        StartAgentClock();
+#if DEBUG
+        if (Headless.Active) return;
+#endif
+        _screenshotHotkey = new ScreenshotHotkey(this, async () =>
+        {
+            if (_takingScreenshot) return;
+            _takingScreenshot = true;
+            try
+            {
+                var taken = await AgentAttachments.TakeScreenshotAsync();
+                if (taken is null) return;
+                OpenAgents_Click(this, new RoutedEventArgs());
+                _agentsWindow?.AttachScreenshotHere(taken);
+            }
+            finally
+            {
+                _takingScreenshot = false;
+            }
+        });
+    }
+
+    private bool _takingScreenshot;
 
     internal string ProjectName(string projectId) => _database.ListProjects().FirstOrDefault(project => project.Id == projectId)?.Name ?? "A project that's gone";
 
@@ -139,5 +244,9 @@ public partial class MainWindow
     }
 
     // Or the app would stay running for it once the main window's gone.
-    private void CloseAgentsWindow() => _agentsWindow?.Close();
+    private void CloseAgentsWindow()
+    {
+        _agentsWindow?.Close();
+        _screenshotHotkey?.Dispose();
+    }
 }
