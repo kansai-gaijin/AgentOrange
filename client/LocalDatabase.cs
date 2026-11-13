@@ -18,8 +18,11 @@ public sealed record Stage(string Id, string Name, double Order);
 /// </summary>
 public sealed record BoardCard(string Id, string Board, string Name, double Order);
 
-/// <summary>What an asset is, the card it belongs to if any, and the words it's tagged with.</summary>
+/// <summary>What an asset is, the card it belongs to if any, and the ids of the project's tags it has.</summary>
 public sealed record AssetDetails(string? Type = null, string? Owner = null, string[]? Tags = null);
+
+/// <summary>One of the tags a project's assets can be given. Made, renamed and deleted only in the tag editor.</summary>
+public sealed record AssetTag(string Id, string Name);
 
 public sealed record Project(string Id, string Name, string Engine, string EngineVersion, string GameType, string RepoUrl, DateTimeOffset CreatedAt)
 {
@@ -68,7 +71,9 @@ public sealed class LocalDatabase
     private const string CardImagesCollection = "card_images";
     // An asset card's details, named as its card is, and apart from it so they and its name and order can change on two PCs at once.
     private const string AssetDetailsCollection = "asset_details";
-    private static readonly string[] BoardCollections = [NodesCollection, NodeLinksCollection, NodeImagesCollection, StagesCollection, CardsCollection, CardImagesCollection, AssetDetailsCollection];
+    // The tags a project's assets can have, in every stage, each a record named after its project, then a colon.
+    private const string AssetTagsCollection = "asset_tags";
+    private static readonly string[] BoardCollections = [NodesCollection, NodeLinksCollection, NodeImagesCollection, StagesCollection, CardsCollection, CardImagesCollection, AssetDetailsCollection, AssetTagsCollection];
 
     /// <summary>Everything in a collection that belongs to one project, deleted ones left out.</summary>
     public List<(string Id, string Data)> ListProjectRecords(string collection, string projectId)
@@ -381,6 +386,49 @@ public sealed class LocalDatabase
 
     public void SetAssetDetails(string cardId, AssetDetails details) =>
         SaveRecord(AssetDetailsCollection, cardId, JsonSerializer.Serialize(details, JsonOptions));
+
+    public const int LongestAssetTag = 32;
+    private sealed record AssetTagData(string Name);
+
+    /// <summary>A project's asset tags, by name.</summary>
+    public List<AssetTag> ListAssetTags(string projectId)
+    {
+        var tags = new List<AssetTag>();
+        foreach (var (id, data) in ListProjectRecords(AssetTagsCollection, projectId))
+        {
+            try
+            {
+                if (JsonSerializer.Deserialize<AssetTagData>(data, JsonOptions) is { Name.Length: > 0 } saved) tags.Add(new AssetTag(id, saved.Name));
+            }
+            catch (JsonException)
+            {
+                // It arrived from another PC and can't be read, so it's left out.
+            }
+        }
+        return [.. tags.OrderBy(tag => tag.Name, StringComparer.CurrentCultureIgnoreCase)];
+    }
+
+    /// <summary>Why a tag can't be called this, or null when it can. Names are tidied first, and each is used once whatever its case.</summary>
+    public string? AssetTagProblem(string projectId, string name, string? renaming = null)
+    {
+        if (name.Length == 0) return "Give it a name.";
+        if (name.Length > LongestAssetTag) return $"A tag can be at most {LongestAssetTag} characters.";
+        return ListAssetTags(projectId).Any(tag => tag.Id != renaming && string.Equals(tag.Name, name, StringComparison.CurrentCultureIgnoreCase)) ? "There's already a tag called that." : null;
+    }
+
+    public static string TidyTagName(string typed) => string.Join(' ', typed.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
+    public AssetTag AddAssetTag(string projectId, string name)
+    {
+        var tag = new AssetTag($"{projectId}:{Guid.NewGuid():N}", name);
+        SaveRecord(AssetTagsCollection, tag.Id, JsonSerializer.Serialize(new AssetTagData(name), JsonOptions));
+        return tag;
+    }
+
+    public void RenameAssetTag(AssetTag tag, string name) => SaveRecord(AssetTagsCollection, tag.Id, JsonSerializer.Serialize(new AssetTagData(name), JsonOptions));
+
+    // Assets that had it keep its id, which no longer names a tag, so nothing they're saved with changes.
+    public void DeleteAssetTag(AssetTag tag) => SaveRecord(AssetTagsCollection, tag.Id, "", deleted: true);
 
     /// <summary>A card's picture as it's stored, which is as text, or null when it has none.</summary>
     public string? GetCardImage(string cardId) => GetRecord(CardImagesCollection, cardId) is { Length: > 0 } stored ? stored : null;
@@ -1094,7 +1142,7 @@ public sealed class LocalDatabase
     private static string? ProjectIdOf(SyncChange change) => change.Collection switch
     {
         ProjectsCollection or EnginesCollection => change.Id,
-        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection or AssetDetailsCollection => change.Id.Split(':')[0],
+        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection or AssetDetailsCollection or AssetTagsCollection => change.Id.Split(':')[0],
         _ => null,
     };
 

@@ -68,6 +68,15 @@ public partial class MainWindow
         var hint = new TextBlock { Text = cards.Count > 1 ? "Drag to reorder · right-click for more" : "", Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 18, 3) };
         DockPanel.SetDock(hint, Dock.Right);
         heading.Children.Add(hint);
+        if (name == AssetsPage)
+        {
+            Button editTags = null!;
+            editTags = TextButton("Edit tags", () => OpenTagEditor(editTags, project));
+            editTags.VerticalAlignment = VerticalAlignment.Bottom;
+            editTags.Margin = new Thickness(0, 0, 12, 0);
+            DockPanel.SetDock(editTags, Dock.Right);
+            heading.Children.Add(editTags);
+        }
         heading.Children.Add(new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -324,12 +333,21 @@ public partial class MainWindow
         tile.MouseEnter += (_, _) => ShowActive();
         tile.MouseLeave += (_, _) => ShowActive();
         tile.IsKeyboardFocusWithinChanged += (_, _) => ShowActive();
-        tile.Click += (_, _) => AskForName(tile, $"New {one}", "", "Add", name =>
+        tile.Click += (_, _) =>
         {
-            var added = _database.AddCard(project.Id, stage, part, name);
-            RedrawProject(project);
-            FocusCardAfterRedraw(added.Id);
-        });
+            // An asset is given its details as it's added.
+            if (part == AssetsPart)
+            {
+                OpenAssetForm(tile, project, stage, null);
+                return;
+            }
+            AskForName(tile, $"New {one}", "", "Add", name =>
+            {
+                var added = _database.AddCard(project.Id, stage, part, name);
+                RedrawProject(project);
+                FocusCardAfterRedraw(added.Id);
+            });
+        };
         return tile;
     }
 
@@ -377,7 +395,7 @@ public partial class MainWindow
 
         Item("Open", open);
         Item("Rename", () => RenameCard(by, project, card, one));
-        if (page == AssetsPage) Item("Edit details", () => EditAssetDetails(by, project, card));
+        if (page == AssetsPage) Item("Edit details", () => OpenAssetForm(by, project, card.Board.Split('/')[0], card));
         Item(_database.GetCardImage(card.Id) is null ? "Add a picture" : "Change the picture", () => ChangeCardPicture(project, card));
         if (_database.GetCardImage(card.Id) is not null)
         {

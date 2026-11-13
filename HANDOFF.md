@@ -60,7 +60,7 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 - **Section pages:** no title, and a back button that returns to the project page.
   - **Overview:** a node board.
   - **Story, Characters, Levels, Mechanics:** pages of cards (story beats, characters and so on), each card with a picture and a board of its own.
-  - **Assets:** a page of cards like the others. Each asset also has a type (2D, 3D, Audio or Other kinds, as GamePipe had), what it belongs to (a story beat, character, level or mechanic), and tags. They're kept in `asset_details`, apart from the card. Not built yet: GamePipe's deliverable (one file node per asset that only a person fills, which is what marks it delivered) and filtering the page by type, owner and tags.
+  - **Assets:** a page of cards like the others. Each asset also has a type (2D, 3D, Audio or Other kinds, as GamePipe had), what it belongs to (a story beat, character, level or mechanic, picked from a searchable list), and tags, all given in the form that adds it. They're kept in `asset_details`, apart from the card. Tags are the project's own (`asset_tags`): an asset only ticks them from a list, and they're made, renamed and deleted only in the tag editor (Edit tags on the Assets page, or in the tag list). Not built yet: GamePipe's deliverable (one file node per asset that only a person fills, which is what marks it delivered) and filtering the page by type, owner and tags.
   - **References:** still empty.
 - **Node boards (`client/NodeCanvas*.cs`):**
   - Nodes are added the way Blender does it: Shift+A opens a list, and the node lands at the cursor. Node types are built **one at a time, in the order the user picks**.
