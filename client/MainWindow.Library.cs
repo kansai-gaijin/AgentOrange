@@ -281,7 +281,7 @@ public partial class MainWindow
     }
 
     // Colors picked from the id, so a project keeps its look on every PC.
-    private static Brush PlaceholderFor(string projectId)
+    internal static Brush PlaceholderFor(string projectId)
     {
         (Color, Color)[] pairs =
         [

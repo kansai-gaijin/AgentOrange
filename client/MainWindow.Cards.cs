@@ -16,7 +16,7 @@ namespace AgentOrange;
 public partial class MainWindow
 {
     // What one card is called on each page, and the shape of its picture: people stand tall, places lie wide.
-    private static readonly Dictionary<string, (string One, double Width, double Height)> CardPages = new()
+    internal static readonly Dictionary<string, (string One, double Width, double Height)> CardPages = new()
     {
         // A story is its beats, in the order they're dragged into.
         ["Story"] = ("beat", 264, 164),
@@ -179,7 +179,7 @@ public partial class MainWindow
         };
         // An asset says what it is instead of how much is on its board.
         content.Children.Add(page == AssetsPage
-            ? AssetCardLines(project, card)
+            ? AssetCardLines(_database, project.Id, card)
             : new TextBlock { Text = nodeCount switch { 0 => "Nothing on its board yet", 1 => "1 node", _ => $"{nodeCount} nodes" }, Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0) });
         var tile = new Button { Style = (Style)FindResource("ProjectCard"), Content = content, Tag = card, Width = width, Margin = new Thickness(0, 0, 20, 24), VerticalAlignment = VerticalAlignment.Top };
         AutomationProperties.SetName(tile, shownName);

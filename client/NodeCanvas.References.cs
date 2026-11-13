@@ -21,8 +21,6 @@ internal sealed partial class NodeCanvas
     private const string LevelReferenceKind = "level_ref";
     private const string MechanicReferenceKind = "mechanic_ref";
     private const string AssetReferenceKind = "asset_ref";
-    private const double ReferenceWidth = 200;
-    private const double ReferencePictureHeight = 112;
 
     // The page whose cards a kind stands for: where they're kept, what one and many are called.
     private static (string Part, string One, string Many)? ReferenceTo(string? kind) => kind switch
@@ -41,7 +39,7 @@ internal sealed partial class NodeCanvas
     // The stage this board is in. Its key starts with it, whether it's a page's board or a card's.
     private string BoardStage => _board.Split('/')[0];
 
-    private ImageSource? CardPictureOf(string cardId)
+    private ImageSource? CardPictureOf(string cardId, double width)
     {
         if (_database.GetCardImage(cardId) is not { } stored)
         {
@@ -53,7 +51,7 @@ internal sealed partial class NodeCanvas
         ImageSource? picture = null;
         try
         {
-            picture = ProjectImages.ToImage(Convert.FromBase64String(stored), (int)(ReferenceWidth * 2));
+            picture = ProjectImages.ToImage(Convert.FromBase64String(stored), (int)(width * 2));
         }
         catch (FormatException)
         {
@@ -67,35 +65,86 @@ internal sealed partial class NodeCanvas
     private BoardCard? ReferencedCard(NodeData data, (string Part, string One, string Many) to) =>
         data.Card is { } cardId ? _database.ListCards(_projectId, BoardStage, to.Part).FirstOrDefault(each => each.Id == cardId) : null;
 
+    // Drawn as its card is on its page, the same shape, with its name and what's known about it
+    // over the bottom of its picture, and what kind of card it is in the corner.
     private void AddReferenceParts(NodeView view, (string Part, string One, string Many) to)
     {
+        var page = MainWindow.CardPages.Keys.First(each => each.ToLowerInvariant() == to.Part);
+        var (_, width, height) = MainWindow.CardPages[page];
         var card = ReferencedCard(view.Data, to);
-        var rows = new StackPanel();
-        if (card is not null && CardPictureOf(card.Id) is { } picture)
+        var face = new Grid();
+
+        if (card is null)
         {
-            rows.Children.Add(new Border
+            // Until one's picked, or when the card it was is gone, it says to pick one.
+            view.Box.Background = new SolidColorBrush(Color.FromRgb(0x13, 0x1B, 0x24));
+            face.Children.Add(new System.Windows.Shapes.Rectangle { RadiusX = 7, RadiusY = 7, Stroke = (Brush)FindResource("Line"), StrokeThickness = 2, StrokeDashArray = [4, 3], Margin = new Thickness(6) });
+            face.Children.Add(new StackPanel
             {
-                Height = ReferencePictureHeight,
-                CornerRadius = new CornerRadius(6.5, 6.5, 0, 0),
-                Background = new ImageBrush(picture) { Stretch = Stretch.UniformToFill },
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Children =
+                {
+                    new TextBlock { Text = $"Choose a {to.One}", FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextMuted"), HorizontalAlignment = HorizontalAlignment.Center },
+                    new TextBlock { Text = "Double-click to pick one", FontSize = 12, Foreground = (Brush)FindResource("TextMuted"), HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 3, 0, 0) },
+                },
+            });
+        }
+        else
+        {
+            var name = MainWindow.CardName(card, page);
+            if (CardPictureOf(card.Id, width) is { } picture)
+            {
+                view.Box.Background = new ImageBrush(picture) { Stretch = Stretch.UniformToFill };
+            }
+            else
+            {
+                // Its first letter stands in for a picture, as on its page.
+                view.Box.Background = MainWindow.PlaceholderFor(card.Id);
+                face.Children.Add(new TextBlock { Text = name[..1].ToUpperInvariant(), Foreground = new SolidColorBrush(Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF)), FontSize = height * 0.42, FontWeight = FontWeights.Bold, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 0, height * 0.18) });
+            }
+
+            var said = new StackPanel { Children = { new TextBlock { Text = name, FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White, TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = name } } };
+            if (to.Part == "assets")
+            {
+                said.Children.Add(MainWindow.AssetCardLines(_database, _projectId, card));
+            }
+            else
+            {
+                // How much is planned on its own board, and how many assets belong to it.
+                var nodes = _database.CountNodesByBoard(_projectId).GetValueOrDefault(LocalDatabase.CardBoardKey(card));
+                var assets = _database.ListCards(_projectId, BoardStage, "assets").Count(asset => _database.GetAssetDetails(asset.Id).Owner == card.Id);
+                var counts = new List<string> { nodes switch { 0 => "Nothing on its board yet", 1 => "1 node", _ => $"{nodes} nodes" } };
+                if (assets > 0) counts.Add(assets == 1 ? "1 asset" : $"{assets} assets");
+                said.Children.Add(new TextBlock { Text = string.Join(" · ", counts), FontSize = 12.5, Foreground = new SolidColorBrush(Color.FromRgb(0xD0, 0xD8, 0xE0)), Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis });
+            }
+
+            // Dark along the bottom, so the words can be read over any picture.
+            face.Children.Add(new Border
+            {
+                VerticalAlignment = VerticalAlignment.Bottom,
+                CornerRadius = new CornerRadius(0, 0, 6.5, 6.5),
+                Padding = new Thickness(12, 30, 12, 11),
+                Background = new LinearGradientBrush(Color.FromArgb(0x00, 0x0C, 0x12, 0x18), Color.FromArgb(0xE6, 0x0C, 0x12, 0x18), 90),
+                Child = said,
             });
         }
 
-        // Until one's picked, or when the card it was is gone, it says to pick one.
-        var name = card is null ? $"Choose a {to.One}" : card.Name.Length > 0 ? card.Name : $"Untitled {to.One}";
-        rows.Children.Add(new StackPanel
+        // What kind of card it is, in the corner.
+        face.Children.Add(new Border
         {
-            Margin = new Thickness(12, 9, 12, 11),
-            Children =
-            {
-                new TextBlock { Text = char.ToUpperInvariant(to.One[0]) + to.One[1..], FontSize = 11.5, FontWeight = FontWeights.Medium, Foreground = (Brush)FindResource("TextMuted") },
-                new TextBlock { Text = name, FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource(card is null ? "TextMuted" : "TextStrong"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) },
-            },
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(9),
+            Padding = new Thickness(7, 2, 7, 3),
+            CornerRadius = new CornerRadius(5),
+            Background = new SolidColorBrush(Color.FromArgb(0xB3, 0x0C, 0x12, 0x18)),
+            Child = new TextBlock { Text = MainWindow.OneOf(page), FontSize = 11, FontWeight = FontWeights.Medium, Foreground = Brushes.White },
         });
 
-        view.Inside.Child = rows;
-        view.Box.Width = ReferenceWidth;
-        view.Box.Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x27, 0x32));
+        view.Inside.Child = face;
+        view.Box.Width = width;
+        view.Box.Height = height;
     }
 
     // The card whose board this is, when it's one an asset can belong to: a story beat, character, level or mechanic.

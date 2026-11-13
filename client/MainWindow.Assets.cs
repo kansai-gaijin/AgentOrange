@@ -31,32 +31,32 @@ public partial class MainWindow
     // The pages whose cards an asset can belong to.
     private static readonly string[] AssetOwnerPages = ["Story", "Characters", "Levels", "Mechanics"];
 
-    private static string? AssetTypeName(string? id) => AssetTypes.SelectMany(group => group.Types).FirstOrDefault(type => type.Id == id).Name;
+    internal static string? AssetTypeName(string? id) => AssetTypes.SelectMany(group => group.Types).FirstOrDefault(type => type.Id == id).Name;
 
-    private static string CardName(BoardCard card, string page) => card.Name.Length > 0 ? card.Name : $"Untitled {CardPages[page].One}";
+    internal static string CardName(BoardCard card, string page) => card.Name.Length > 0 ? card.Name : $"Untitled {CardPages[page].One}";
 
-    private static string OneOf(string page) => char.ToUpperInvariant(CardPages[page].One[0]) + CardPages[page].One[1..];
+    internal static string OneOf(string page) => char.ToUpperInvariant(CardPages[page].One[0]) + CardPages[page].One[1..];
 
     // Every card in a stage an asset could belong to, and the page each is on.
-    private List<(BoardCard Card, string Page)> AssetOwnerChoices(string projectId, string stage) =>
-        [.. AssetOwnerPages.SelectMany(page => _database.ListCards(projectId, stage, page.ToLowerInvariant()).Select(card => (card, page)))];
+    internal static List<(BoardCard Card, string Page)> AssetOwnerChoices(LocalDatabase database, string projectId, string stage) =>
+        [.. AssetOwnerPages.SelectMany(page => database.ListCards(projectId, stage, page.ToLowerInvariant()).Select(card => (card, page)))];
 
-    // Under an asset's name: what it is and what it belongs to, then its tags.
-    private StackPanel AssetCardLines(Project project, BoardCard card)
+    // Under an asset's name, here and on the board: what it is and what it belongs to, then its tags.
+    internal static StackPanel AssetCardLines(LocalDatabase database, string projectId, BoardCard card)
     {
-        var details = _database.GetAssetDetails(card.Id);
+        var details = database.GetAssetDetails(card.Id);
         var said = AssetTypeName(details.Type) ?? "No type";
-        var owner = AssetOwnerChoices(project.Id, card.Board.Split('/')[0]).FirstOrDefault(choice => choice.Card.Id == details.Owner);
+        var owner = AssetOwnerChoices(database, projectId, card.Board.Split('/')[0]).FirstOrDefault(choice => choice.Card.Id == details.Owner);
         if (owner.Card is not null) said += $" · {CardName(owner.Card, owner.Page)}";
 
         // A dot first, filled once a person has given it its deliverable.
-        var delivered = _database.GetAssetDeliverable(card.Id) is not null;
+        var delivered = database.GetAssetDeliverable(card.Id) is not null;
         var dot = new System.Windows.Shapes.Ellipse
         {
             Width = 8,
             Height = 8,
-            Fill = delivered ? (Brush)FindResource("Accent") : Brushes.Transparent,
-            Stroke = (Brush)FindResource(delivered ? "Accent" : "TextMuted"),
+            Fill = delivered ? (Brush)Application.Current.FindResource("Accent") : Brushes.Transparent,
+            Stroke = (Brush)Application.Current.FindResource(delivered ? "Accent" : "TextMuted"),
             StrokeThickness = 1.2,
             Margin = new Thickness(0, 1, 7, 0),
             VerticalAlignment = VerticalAlignment.Center,
@@ -66,12 +66,12 @@ public partial class MainWindow
         var first = new DockPanel();
         DockPanel.SetDock(dot, Dock.Left);
         first.Children.Add(dot);
-        first.Children.Add(new TextBlock { Text = said, Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = said });
+        first.Children.Add(new TextBlock { Text = said, Foreground = (Brush)Application.Current.FindResource("TextMuted"), FontSize = 12.5, TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = said });
 
         var lines = new StackPanel { Margin = new Thickness(2, 2, 2, 0) };
         lines.Children.Add(first);
 
-        var tags = _database.ListAssetTags(project.Id).Where(tag => details.Tags?.Contains(tag.Id) == true).ToList();
+        var tags = database.ListAssetTags(projectId).Where(tag => details.Tags?.Contains(tag.Id) == true).ToList();
         if (tags.Count > 0)
         {
             var row = new WrapPanel { Margin = new Thickness(0, 5, 0, 0) };
@@ -79,12 +79,12 @@ public partial class MainWindow
             {
                 row.Children.Add(new Border
                 {
-                    BorderBrush = (Brush)FindResource("Line"),
+                    BorderBrush = (Brush)Application.Current.FindResource("Line"),
                     BorderThickness = new Thickness(1),
                     CornerRadius = new CornerRadius(9),
                     Padding = new Thickness(7, 1, 7, 2),
                     Margin = new Thickness(0, 0, 4, 4),
-                    Child = new TextBlock { Text = tag.Name, FontSize = 11, Foreground = (Brush)FindResource("TextMuted") },
+                    Child = new TextBlock { Text = tag.Name, FontSize = 11, Foreground = (Brush)Application.Current.FindResource("TextMuted") },
                 });
             }
             lines.Children.Add(row);
@@ -226,7 +226,7 @@ public partial class MainWindow
         rows.Children.Add(type);
 
         // What it belongs to, searched for in a list that opens under it.
-        var owners = AssetOwnerChoices(project.Id, stage);
+        var owners = AssetOwnerChoices(_database, project.Id, stage);
         var ownerButton = DropButton("Belongs to", out var ownerShown);
         var (ownerSearchBox, ownerSearch) = SearchBox("Search");
         var ownerRows = new StackPanel();
