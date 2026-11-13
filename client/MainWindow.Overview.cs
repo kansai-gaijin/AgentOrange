@@ -11,10 +11,13 @@ namespace AgentOrange;
 /// <summary>What an open project shows first: its stage, how far along it is, and the way into each part of it.</summary>
 public partial class MainWindow
 {
-    private static readonly string[] ProjectSections = ["GDD", "Story", "Characters", "Levels", "Assets", "Mechanics", "References"];
+    private static readonly string[] ProjectSections = ["Overview", "Story", "Characters", "Levels", "Assets", "Mechanics", "References"];
 
     // The parts that are one node board, rather than a page of cards that each have their own.
-    private static readonly HashSet<string> BoardSections = ["GDD", "Story"];
+    private static readonly HashSet<string> BoardSections = ["Overview", "Story"];
+
+    // Where a part's board is kept. Overview was called GDD when its boards were first made.
+    private static string BoardPart(string name) => name == "Overview" ? "gdd" : name.ToLowerInvariant();
     private const int SectionCoverWidth = 176;
     private const int SectionCoverHeight = 110;
 
@@ -49,7 +52,7 @@ public partial class MainWindow
         _database.GiveBoardsAStage(project.Id);
         var stage = _database.ProjectStage(project.Id);
         var key = $"{project.Id}|{stage}|{name}|{card?.Id}";
-        var named = card is null ? LocalDatabase.BoardKey(stage, name.ToLowerInvariant()) : LocalDatabase.CardBoardKey(card);
+        var named = card is null ? LocalDatabase.BoardKey(stage, BoardPart(name)) : LocalDatabase.CardBoardKey(card);
         if (!_boards.TryGetValue(key, out var board)) board = _boards[key] = new NodeCanvas(_database, project.Id, named, () => _ = _sync.SyncNowAsync());
         var hadFocus = board.IsKeyboardFocusWithin;
         (board.Parent as Panel)?.Children.Remove(board);

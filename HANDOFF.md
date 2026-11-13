@@ -56,9 +56,9 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 - **Project overview:**
   - Alpha/Beta/Demo/Production stage toggle in the header. Each stage keeps its own boards, and a project can add, rename, copy and delete stages.
   - Progress tiles for Tasks done and Assets delivered.
-  - Section cards for GDD, Characters, Levels, Assets, Mechanics and References.
+  - Section cards for Overview (the board once called GDD), Story, Characters, Levels, Assets, Mechanics and References.
 - **Section pages:** no title, and a back button that returns to the project page.
-  - **GDD:** a node board.
+  - **Overview, Story:** a node board each.
   - **Characters, Levels, Mechanics:** pages of cards, each card with a board of its own.
   - **Assets, References:** still empty.
 - **Node boards (`client/NodeCanvas*.cs`):**
