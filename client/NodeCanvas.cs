@@ -163,6 +163,9 @@ internal sealed partial class NodeCanvas : Border
     /// <summary>In the middle of something that drawing the page again would cut short.</summary>
     public bool IsBusy => _gesture != Gesture.None || _editing is not null;
 
+    /// <summary>Opens a card's own board: the page it's on, as its cards are kept, then the card.</summary>
+    public Action<string, string>? OpenCard { get; set; }
+
     /// <summary>Reads the board again, as another PC or window can have changed it.</summary>
     public void Reload()
     {
@@ -456,9 +459,15 @@ internal sealed partial class NodeCanvas : Border
 
         // Once it's been laid out, as the list of cards opens under it, and once a double-click on it
         // is let go, as letting go of the mouse outside the list closes it.
-        if (ReferenceTo(node.Data.Kind) is not null)
+        // Once it stands for a card, it opens that card's board, and can't be changed. Until then, or
+        // when its card is gone, it picks one.
+        if (ReferenceTo(node.Data.Kind) is { } to)
         {
-            void Open() => Dispatcher.InvokeAsync(() => ChooseCard(node), System.Windows.Threading.DispatcherPriority.Loaded);
+            void Open() => Dispatcher.InvokeAsync(() =>
+            {
+                if (ReferencedCard(node.Data, to) is { } card) OpenCard?.Invoke(to.Part, card.Id);
+                else ChooseCard(node);
+            }, System.Windows.Threading.DispatcherPriority.Loaded);
             void LetGo(object sender, MouseButtonEventArgs release)
             {
                 PreviewMouseLeftButtonUp -= LetGo;

@@ -68,7 +68,7 @@ Everything is merged and pushed. Nothing is waiting on any branch.
   - Rich Text node: a button bar, Markdown as it's typed, height you can drag.
   - Image node: from a file, a paste or a drop, resizable.
   - Multi-select to move nodes together, and cutting links by dragging across them.
-  - The add list (`client/NodeCanvas.AddList.cs`) is searchable, with groups: Primitives (Title, Rich Text, Image) and References (Story Beat, Character, Level, Mechanic, Asset). A reference node stands for one card in the board's stage (`client/NodeCanvas.References.cs`). Asset boards don't offer References. On a story beat's, character's, level's or mechanic's board, the Asset node lists only the assets that belong to it, and typing a new name adds an asset that already belongs to it.
+  - The add list (`client/NodeCanvas.AddList.cs`) is searchable, with groups: Primitives (Title, Rich Text, Image) and References (Story Beat, Character, Level, Mechanic, Asset). A reference node stands for one card in the board's stage (`client/NodeCanvas.References.cs`). Once its card is picked it never changes: double-clicking opens that card's board, and another card needs a new node. Asset boards don't offer References. On a story beat's, character's, level's or mechanic's board, the Asset node lists only the assets that belong to it, and typing a new name adds an asset that already belongs to it.
 - **Agents button:** above "Connected to server", it opens a new window. The user said **not to design that window yet**.
 - **Tool forks:**
   - Settings › Editors › Tools installs and updates the user's forks from each fork's newest GitHub release, through the gh CLI login, into `%LOCALAPPDATA%\Programs\<Name>`.

@@ -11,7 +11,8 @@ namespace AgentOrange;
 /// <summary>
 /// Nodes that stand for one of the project's cards: a story beat, character, level, mechanic or
 /// asset, in the same stage as the board. Each shows its card's picture and name, which change
-/// with the card, and has a pin in and a pin out. Adding one, or double-clicking it, picks the card.
+/// with the card, and has a pin in and a pin out. Adding one picks the card, which then never
+/// changes: double-clicking it opens that card's board. Another card needs a new node.
 /// </summary>
 internal sealed partial class NodeCanvas
 {
@@ -62,9 +63,13 @@ internal sealed partial class NodeCanvas
         return picture;
     }
 
+    // The card a reference node stands for, if it's been picked and is still there.
+    private BoardCard? ReferencedCard(NodeData data, (string Part, string One, string Many) to) =>
+        data.Card is { } cardId ? _database.ListCards(_projectId, BoardStage, to.Part).FirstOrDefault(each => each.Id == cardId) : null;
+
     private void AddReferenceParts(NodeView view, (string Part, string One, string Many) to)
     {
-        var card = view.Data.Card is { } cardId ? _database.ListCards(_projectId, BoardStage, to.Part).FirstOrDefault(each => each.Id == cardId) : null;
+        var card = ReferencedCard(view.Data, to);
         var rows = new StackPanel();
         if (card is not null && CardPictureOf(card.Id) is { } picture)
         {

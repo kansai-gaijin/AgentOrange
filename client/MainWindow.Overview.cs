@@ -41,6 +41,15 @@ public partial class MainWindow
     private NodeCanvas? OpenBoard(Project project) =>
         _openSection is { } open && open.ProjectId == project.Id ? _boards.GetValueOrDefault($"{project.Id}|{_database.ProjectStage(project.Id)}|{open.Name}|{OpenCardOf(project)?.Id}") : null;
 
+    // Straight to a card's own board, from a node that stands for it.
+    private void OpenCardBoard(Project project, string part, string cardId)
+    {
+        if (CardPages.Keys.FirstOrDefault(page => page.ToLowerInvariant() == part) is not { } page) return;
+        _openSection = (project.Id, page);
+        _openCard = (project.Id, page, cardId);
+        if (_openProject?.Id == project.Id) RenderProject(_openProject);
+    }
+
     // A card page's board is one card's own. Any other page has just the one.
     private void AddBoard(StackPanel body, Project project, string name, BoardCard? card = null)
     {
@@ -54,6 +63,7 @@ public partial class MainWindow
         var key = $"{project.Id}|{stage}|{name}|{card?.Id}";
         var named = card is null ? LocalDatabase.BoardKey(stage, BoardPart(name)) : LocalDatabase.CardBoardKey(card);
         if (!_boards.TryGetValue(key, out var board)) board = _boards[key] = new NodeCanvas(_database, project.Id, named, () => _ = _sync.SyncNowAsync());
+        board.OpenCard = (part, cardId) => OpenCardBoard(project, part, cardId);
         var hadFocus = board.IsKeyboardFocusWithin;
         (board.Parent as Panel)?.Children.Remove(board);
 
