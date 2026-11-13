@@ -18,6 +18,9 @@ public sealed record Stage(string Id, string Name, double Order);
 /// </summary>
 public sealed record BoardCard(string Id, string Board, string Name, double Order);
 
+/// <summary>What an asset is, the card it belongs to if any, and the words it's tagged with.</summary>
+public sealed record AssetDetails(string? Type = null, string? Owner = null, string[]? Tags = null);
+
 public sealed record Project(string Id, string Name, string Engine, string EngineVersion, string GameType, string RepoUrl, DateTimeOffset CreatedAt)
 {
     public string EngineLabel => EngineVersion.Length > 0 ? $"{Engine} {EngineVersion}" : Engine;
@@ -63,7 +66,9 @@ public sealed class LocalDatabase
     // The cards on a project's card pages, and each one's picture, named as its card is.
     private const string CardsCollection = "cards";
     private const string CardImagesCollection = "card_images";
-    private static readonly string[] BoardCollections = [NodesCollection, NodeLinksCollection, NodeImagesCollection, StagesCollection, CardsCollection, CardImagesCollection];
+    // An asset card's details, named as its card is, and apart from it so they and its name and order can change on two PCs at once.
+    private const string AssetDetailsCollection = "asset_details";
+    private static readonly string[] BoardCollections = [NodesCollection, NodeLinksCollection, NodeImagesCollection, StagesCollection, CardsCollection, CardImagesCollection, AssetDetailsCollection];
 
     /// <summary>Everything in a collection that belongs to one project, deleted ones left out.</summary>
     public List<(string Id, string Data)> ListProjectRecords(string collection, string projectId)
@@ -206,7 +211,7 @@ public sealed class LocalDatabase
         {
             if (Restaged(data, stage, stage) is null) continue;
             SaveRecord(CardsCollection, id, "", deleted: true);
-            if (!string.IsNullOrEmpty(GetRecord(CardImagesCollection, id))) SaveRecord(CardImagesCollection, id, "", deleted: true);
+            DeleteCardExtras(id);
         }
     }
 
@@ -245,6 +250,15 @@ public sealed class LocalDatabase
             if (GetRecord(CardImagesCollection, id) is { Length: > 0 } picture) SaveRecord(CardImagesCollection, copyId, picture);
         }
 
+        // What points at a card points at its copy, in the stage it was copied to.
+        string? CopiedCard(string? cardId) => cardId is not null && cardCopies.TryGetValue(NameInBoard(cardId), out var copied) ? $"{projectId}:{copied}" : null;
+        foreach (var (id, copyId) in cardCopies.Select(pair => ($"{projectId}:{pair.Key}", $"{projectId}:{pair.Value}")))
+        {
+            if (GetRecord(AssetDetailsCollection, id) is not { Length: > 0 }) continue;
+            var details = GetAssetDetails(id);
+            SetAssetDetails(copyId, details with { Owner = CopiedCard(details.Owner) });
+        }
+
         // A card's own board is its stage, its page, then the card.
         void FollowCard(JsonObject record)
         {
@@ -256,6 +270,7 @@ public sealed class LocalDatabase
         {
             if (Restaged(data, from, to) is not { } copy) continue;
             FollowCard(copy);
+            if (copy["card"] is JsonValue pointed && pointed.TryGetValue<string>(out var cardId)) copy["card"] = CopiedCard(cardId);
             var copyId = $"{projectId}:{Guid.NewGuid():N}";
             copies[id] = copyId;
             SaveRecord(NodesCollection, copyId, copy.ToJsonString());
@@ -339,8 +354,33 @@ public sealed class LocalDatabase
     {
         DeleteBoards(projectId, CardBoardKey(card));
         SaveRecord(CardsCollection, card.Id, "", deleted: true);
-        if (!string.IsNullOrEmpty(GetRecord(CardImagesCollection, card.Id))) SaveRecord(CardImagesCollection, card.Id, "", deleted: true);
+        DeleteCardExtras(card.Id);
     }
+
+    // What's kept apart from a card, named as it is.
+    private void DeleteCardExtras(string cardId)
+    {
+        foreach (var collection in new[] { CardImagesCollection, AssetDetailsCollection })
+        {
+            if (!string.IsNullOrEmpty(GetRecord(collection, cardId))) SaveRecord(collection, cardId, "", deleted: true);
+        }
+    }
+
+    public AssetDetails GetAssetDetails(string cardId)
+    {
+        if (GetRecord(AssetDetailsCollection, cardId) is not { Length: > 0 } stored) return new AssetDetails();
+        try
+        {
+            return JsonSerializer.Deserialize<AssetDetails>(stored, JsonOptions) ?? new AssetDetails();
+        }
+        catch (JsonException)
+        {
+            return new AssetDetails(); // It arrived from another PC and can't be read.
+        }
+    }
+
+    public void SetAssetDetails(string cardId, AssetDetails details) =>
+        SaveRecord(AssetDetailsCollection, cardId, JsonSerializer.Serialize(details, JsonOptions));
 
     /// <summary>A card's picture as it's stored, which is as text, or null when it has none.</summary>
     public string? GetCardImage(string cardId) => GetRecord(CardImagesCollection, cardId) is { Length: > 0 } stored ? stored : null;
@@ -1054,7 +1094,7 @@ public sealed class LocalDatabase
     private static string? ProjectIdOf(SyncChange change) => change.Collection switch
     {
         ProjectsCollection or EnginesCollection => change.Id,
-        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection => change.Id.Split(':')[0],
+        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection or AssetDetailsCollection => change.Id.Split(':')[0],
         _ => null,
     };
 

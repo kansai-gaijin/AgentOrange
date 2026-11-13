@@ -23,6 +23,7 @@ public partial class MainWindow
         ["Characters"] = ("character", 184, 244),
         ["Levels"] = ("level", 264, 164),
         ["Mechanics"] = ("mechanic", 264, 164),
+        [AssetsPage] = ("asset", 200, 200),
     };
     private const string PictureFiles = "Pictures|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff";
     private const double CardDragStartsAfter = 6;
@@ -155,9 +156,12 @@ public partial class MainWindow
             {
                 new Grid { Children = { cover, more } },
                 new TextBlock { Text = shownName, Foreground = (Brush)FindResource(card.Name.Length > 0 ? "TextStrong" : "TextMuted"), FontSize = 14, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(2, 10, 2, 0), ToolTip = shownName },
-                new TextBlock { Text = nodeCount switch { 0 => "Nothing on its board yet", 1 => "1 node", _ => $"{nodeCount} nodes" }, Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0) },
             },
         };
+        // An asset says what it is instead of how much is on its board.
+        content.Children.Add(page == AssetsPage
+            ? AssetCardLines(project, card)
+            : new TextBlock { Text = nodeCount switch { 0 => "Nothing on its board yet", 1 => "1 node", _ => $"{nodeCount} nodes" }, Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0) });
         var tile = new Button { Style = (Style)FindResource("ProjectCard"), Content = content, Tag = card, Width = width, Margin = new Thickness(0, 0, 20, 24), VerticalAlignment = VerticalAlignment.Top };
         AutomationProperties.SetName(tile, shownName);
 
@@ -166,7 +170,7 @@ public partial class MainWindow
             _openCard = (project.Id, page, card.Id);
             if (_openProject?.Id == project.Id) RenderProject(_openProject);
         }
-        void OpenMenu(bool atMouse) => OpenCardMenu(atMouse ? tile : more, atMouse, project, card, one, Open);
+        void OpenMenu(bool atMouse) => OpenCardMenu(atMouse ? tile : more, atMouse, project, page, card, one, Open);
 
         // The dots have to show for the keyboard too, or Tab can never reach them.
         void ShowActive()
@@ -354,7 +358,7 @@ public partial class MainWindow
         },
     };
 
-    private void OpenCardMenu(UIElement by, bool atMouse, Project project, BoardCard card, string one, Action open)
+    private void OpenCardMenu(UIElement by, bool atMouse, Project project, string page, BoardCard card, string one, Action open)
     {
         var items = new StackPanel { MinWidth = 180 };
         var menu = NewMenu(by, atMouse, items);
@@ -373,6 +377,7 @@ public partial class MainWindow
 
         Item("Open", open);
         Item("Rename", () => RenameCard(by, project, card, one));
+        if (page == AssetsPage) Item("Edit details", () => EditAssetDetails(by, project, card));
         Item(_database.GetCardImage(card.Id) is null ? "Add a picture" : "Change the picture", () => ChangeCardPicture(project, card));
         if (_database.GetCardImage(card.Id) is not null)
         {
