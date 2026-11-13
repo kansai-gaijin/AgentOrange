@@ -16,6 +16,7 @@ namespace AgentOrange;
 internal sealed partial class NodeCanvas
 {
     private const string PrimitivesGroup = "Primitives";
+    private const string ReferencesGroup = "References";
 
     // Every kind there is, in the order the list shows them, and the group it's under, if any.
     private static readonly (string Kind, string Name, string? Group)[] Kinds =
@@ -23,6 +24,11 @@ internal sealed partial class NodeCanvas
         (TitleKind, "Title", PrimitivesGroup),
         (TextKind, "Rich Text", PrimitivesGroup),
         (ImageKind, "Image", PrimitivesGroup),
+        (BeatReferenceKind, "Story Beat", ReferencesGroup),
+        (CharacterReferenceKind, "Character", ReferencesGroup),
+        (LevelReferenceKind, "Level", ReferencesGroup),
+        (MechanicReferenceKind, "Mechanic", ReferencesGroup),
+        (AssetReferenceKind, "Asset", ReferencesGroup),
     ];
 
     private void OpenAddList()
@@ -32,18 +38,8 @@ internal sealed partial class NodeCanvas
         var over = new Rect(0, 0, ActualWidth, ActualHeight).Contains(mouse);
         var where = ToWorld(over ? mouse : new Point(ActualWidth / 2, ActualHeight / 2));
 
-        Border Panel(UIElement child) => new()
-        {
-            Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x27, 0x32)),
-            BorderBrush = (Brush)FindResource("ModalBorder"),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(6),
-            MinWidth = 200,
-            VerticalAlignment = VerticalAlignment.Top,
-            Child = child,
-        };
         Brush muted = (Brush)FindResource("TextMuted");
+        Border Panel(UIElement child) => MenuPanel(child);
 
         var search = new TextBox { Style = (Style)FindResource("Field"), Width = double.NaN, Margin = new Thickness(0, 0, 0, 6) };
         AutomationProperties.SetName(search, "Search nodes");
@@ -74,21 +70,7 @@ internal sealed partial class NodeCanvas
             AddNodeAt(where, kind);
         }
 
-        Button Row(string name, string? aside, Action chosen)
-        {
-            var content = new DockPanel();
-            if (aside is not null)
-            {
-                var side = new TextBlock { Text = aside, Foreground = muted, Margin = new Thickness(18, 0, 0, 0) };
-                DockPanel.SetDock(side, Dock.Right);
-                content.Children.Add(side);
-            }
-            content.Children.Add(new TextBlock { Text = name });
-            var row = new Button { Style = (Style)FindResource("HeaderButton"), Content = content, HorizontalAlignment = HorizontalAlignment.Stretch };
-            AutomationProperties.SetName(row, name);
-            row.Click += (_, _) => chosen();
-            return row;
-        }
+        Button Row(string name, string? aside, Action chosen) => MenuRow(name, aside, chosen);
 
         void CloseGroup()
         {
@@ -225,5 +207,34 @@ internal sealed partial class NodeCanvas
         // After the key that opened it is done with, so it isn't typed into the search.
         list.Opened += (_, _) => Dispatcher.BeginInvoke(() => search.Focus(), DispatcherPriority.Input);
         list.IsOpen = true;
+    }
+
+    // How the lists that open over the board look: a panel, and a row in it to pick.
+    private Border MenuPanel(UIElement child) => new()
+    {
+        Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x27, 0x32)),
+        BorderBrush = (Brush)FindResource("ModalBorder"),
+        BorderThickness = new Thickness(1),
+        CornerRadius = new CornerRadius(8),
+        Padding = new Thickness(6),
+        MinWidth = 200,
+        VerticalAlignment = VerticalAlignment.Top,
+        Child = child,
+    };
+
+    private Button MenuRow(string name, string? aside, Action chosen)
+    {
+        var content = new DockPanel();
+        if (aside is not null)
+        {
+            var side = new TextBlock { Text = aside, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(18, 0, 0, 0) };
+            DockPanel.SetDock(side, Dock.Right);
+            content.Children.Add(side);
+        }
+        content.Children.Add(new TextBlock { Text = name, TextTrimming = TextTrimming.CharacterEllipsis });
+        var row = new Button { Style = (Style)FindResource("HeaderButton"), Content = content, HorizontalAlignment = HorizontalAlignment.Stretch };
+        AutomationProperties.SetName(row, name);
+        row.Click += (_, _) => chosen();
+        return row;
     }
 }

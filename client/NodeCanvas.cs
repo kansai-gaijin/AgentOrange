@@ -50,7 +50,8 @@ internal sealed partial class NodeCanvas : Border
     // Text is a Rich Text node's words, as the XAML of a document. Width is how wide it was dragged
     // to be, and Height how tall at least, as it's never shorter than its words. Aspect is an Image
     // node's shape, its height over its width, so it's the right size before its picture arrives.
-    private sealed record NodeData(string Board, double X, double Y, string Title, string? Kind = null, double? Width = null, string? Text = null, double? Height = null, double? Aspect = null);
+    // Card is the card a reference node stands for.
+    private sealed record NodeData(string Board, double X, double Y, string Title, string? Kind = null, double? Width = null, string? Text = null, double? Height = null, double? Aspect = null, string? Card = null);
 
     // A link saved before nodes had a pin on top joins the bottom ones.
     private sealed record LinkData(string Board, string From, string To, string? FromPin = null, string? ToPin = null);
@@ -207,19 +208,20 @@ internal sealed partial class NodeCanvas : Border
     {
         var isText = data.Kind == TextKind;
         var isImage = data.Kind == ImageKind;
-        var inside = new Border { Padding = isImage ? new Thickness(0) : new Thickness(10, isText ? 12 : 6, 10, 12) };
+        var reference = ReferenceTo(data.Kind);
+        var inside = new Border { Padding = isImage || reference is not null ? new Thickness(0) : new Thickness(10, isText ? 12 : 6, 10, 12) };
         var parts = new Grid { Children = { inside } };
         var box = new Border
         {
             // Only the words show. See-through rather than nothing, so the space between them can still be clicked.
             Background = Brushes.Transparent,
-            // A Rich Text node has a border, to show its size. A Title node's shows only while it's selected.
-            BorderBrush = isText ? (Brush)FindResource("Line") : Brushes.Transparent,
+            // A Rich Text or reference node has a border, to show its size. A Title node's shows only while it's selected.
+            BorderBrush = isText || reference is not null ? (Brush)FindResource("Line") : Brushes.Transparent,
             BorderThickness = new Thickness(1.5),
             CornerRadius = new CornerRadius(8),
             Child = parts,
         };
-        var view = new NodeView { Id = id, Data = data, Box = box, Inside = inside, Pins = isText || isImage ? [TopPin, BottomPin] : [BottomPin] };
+        var view = new NodeView { Id = id, Data = data, Box = box, Inside = inside, Pins = isText || isImage || reference is not null ? [TopPin, BottomPin] : [BottomPin] };
         box.Tag = view;
 
         if (isText)
@@ -229,6 +231,10 @@ internal sealed partial class NodeCanvas : Border
         else if (isImage)
         {
             AddImageParts(view, parts);
+        }
+        else if (reference is { } to)
+        {
+            AddReferenceParts(view, to);
         }
         else
         {
@@ -435,6 +441,13 @@ internal sealed partial class NodeCanvas : Border
             return;
         }
 
+        // Once it's been laid out, as the list of cards opens under it.
+        if (ReferenceTo(node.Data.Kind) is not null)
+        {
+            Dispatcher.InvokeAsync(() => ChooseCard(node), System.Windows.Threading.DispatcherPriority.Loaded);
+            return;
+        }
+
         if (node.Rich is { } rich)
         {
             _editing = node;
@@ -611,7 +624,7 @@ internal sealed partial class NodeCanvas : Border
         foreach (var node in _nodes.Values)
         {
             var selected = _selection.Contains(node.Id);
-            node.Box.BorderBrush = selected ? (Brush)FindResource("Accent") : node.Rich is not null ? (Brush)FindResource("Line") : Brushes.Transparent;
+            node.Box.BorderBrush = selected ? (Brush)FindResource("Accent") : node.Rich is not null || ReferenceTo(node.Data.Kind) is not null ? (Brush)FindResource("Line") : Brushes.Transparent;
         }
         foreach (var link in _links.Values)
         {
