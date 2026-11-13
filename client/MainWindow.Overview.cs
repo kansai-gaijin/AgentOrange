@@ -11,7 +11,10 @@ namespace AgentOrange;
 /// <summary>What an open project shows first: its stage, how far along it is, and the way into each part of it.</summary>
 public partial class MainWindow
 {
-    private static readonly string[] ProjectSections = ["GDD", "Characters", "Levels", "Assets", "Mechanics", "References"];
+    private static readonly string[] ProjectSections = ["GDD", "Story", "Characters", "Levels", "Assets", "Mechanics", "References"];
+
+    // The parts that are one node board, rather than a page of cards that each have their own.
+    private static readonly HashSet<string> BoardSections = ["GDD", "Story"];
     private const int SectionCoverWidth = 176;
     private const int SectionCoverHeight = 110;
 
@@ -303,7 +306,7 @@ public partial class MainWindow
 
     private void AddSectionPage(StackPanel body, Project project, string name)
     {
-        if (name == "GDD")
+        if (BoardSections.Contains(name))
         {
             AddBoard(body, project, name);
             return;
