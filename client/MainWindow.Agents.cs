@@ -83,17 +83,20 @@ public partial class MainWindow
 
     internal Project? ProjectOnScreen => _openProject;
 
-    // Only Claude Code so far.
+    // Its own login, or another of the same kind if that one's gone, or for a new one, the first turned on.
     internal AgentProvider? AgentProviderFor(AgentConversation conversation)
     {
-        var providers = Settings.Providers.List().Where(provider => provider.Enabled && provider.Kind == ProviderKind.Claude).ToList();
-        return providers.FirstOrDefault(provider => provider.Id == conversation.ProviderId) ?? providers.FirstOrDefault();
+        var all = Settings.Providers.List();
+        var providers = all.Where(provider => provider.Enabled).ToList();
+        if (providers.FirstOrDefault(provider => provider.Id == conversation.ProviderId) is { } own) return own;
+        var kind = all.FirstOrDefault(provider => provider.Id == conversation.ProviderId)?.Kind;
+        return kind is { } same ? providers.FirstOrDefault(provider => provider.Kind == same) : providers.OrderBy(provider => provider.Kind).FirstOrDefault();
     }
 
     /// <summary>Why the conversation can't be sent anything right now, or null when it can.</summary>
     internal async Task<string?> AgentProblemAsync(AgentConversation conversation)
     {
-        if (AgentProviderFor(conversation) is null) return "Add a Claude Code provider in Settings, under Agents, to work with an agent.";
+        if (AgentProviderFor(conversation) is null) return "Add a Claude Code or Codex login in Settings, under Agents, to work with an agent.";
         if (_database.GetProjectFolder(conversation.ProjectId) is not { } folder || !Directory.Exists(folder)) return "This project has no folder on this PC yet. Set one up on its project page.";
         if (IsBusyWith(conversation.ProjectId)) return "This project is busy. Send this once that finishes.";
 
@@ -119,7 +122,17 @@ public partial class MainWindow
     /// <summary>Every login turned on, of either kind, for showing their usage.</summary>
     internal List<AgentProvider> AllAgentLogins() => [.. Settings.Providers.List().Where(provider => provider.Enabled)];
 
-    internal List<AgentProvider> AgentLogins() => [.. Settings.Providers.List().Where(provider => provider.Enabled && provider.Kind == ProviderKind.Claude)];
+    /// <summary>
+    /// The logins a conversation can go on with: any turned on before it's begun, and after that only
+    /// those of its own kind, as one kind's conversation can't be carried to the other.
+    /// </summary>
+    internal List<AgentProvider> AgentLogins(AgentConversation? conversation = null)
+    {
+        var enabled = Settings.Providers.List().Where(provider => provider.Enabled).ToList();
+        if (conversation is null || !conversation.Items.Any(item => item.Kind == AgentItemKind.User)) return enabled;
+        var kind = AgentProviderFor(conversation)?.Kind;
+        return [.. enabled.Where(provider => provider.Kind == kind)];
+    }
 
     internal void SwitchLogin(AgentConversation conversation, AgentProvider to)
     {
@@ -159,7 +172,7 @@ public partial class MainWindow
     internal async Task ProbeUsageAsync()
     {
         var folder = Path.Combine(Settings.Folders.AgentFolder, "usage-check");
-        foreach (var login in AgentLogins())
+        foreach (var login in AllAgentLogins())
         {
             // One running already says it as it goes.
             if (_conversations?.Any(each => each.IsWorking && each.ProviderId == login.Id) == true) continue;

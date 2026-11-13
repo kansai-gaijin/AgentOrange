@@ -106,9 +106,34 @@ public sealed class AgentUsage
         return new AgentLimit(kind, used, resets, Str(info, "status") == "rejected" && !overage);
     }
 
+    /// <summary>
+    /// A Codex snapshot's limits: its primary and secondary windows, their use in percent and their
+    /// reset in seconds. Without a length, the primary is five hours and the secondary a week, as T3 Code assumes.
+    /// </summary>
+    public static List<AgentLimit> FromCodex(JsonObject? snapshot)
+    {
+        var limits = new List<AgentLimit>();
+        if (snapshot is null) return limits;
+        foreach (var (slot, fallback) in new[] { ("primary", 300), ("secondary", 10080) })
+        {
+            if (snapshot[slot] is not JsonObject window) continue;
+            double? used = window["usedPercent"] is JsonValue percent && percent.TryGetValue<double>(out var value) ? value : null;
+            var minutes = window["windowDurationMins"] is JsonValue length && length.TryGetValue<int>(out var mins) ? mins : fallback;
+            DateTimeOffset? resets = window["resetsAt"] is JsonValue at && at.TryGetValue<double>(out var epoch) ? DateTimeOffset.FromUnixTimeSeconds((long)epoch) : null;
+            var kind = minutes switch { 300 => "five_hour", 10080 => "seven_day", _ => $"{slot}_{minutes}" };
+            limits.Add(new AgentLimit(kind, used, resets, used >= 100));
+        }
+        return limits;
+    }
+
     /// <summary>Asks a login's agent program for its limits, without sending anything to a model.</summary>
     public async Task ProbeAsync(AgentProvider provider, string folder)
     {
+        if (provider.Kind == ProviderKind.Codex)
+        {
+            await ProbeCodexAsync(provider, folder);
+            return;
+        }
         Process? process = null;
         try
         {
@@ -131,6 +156,64 @@ public sealed class AgentUsage
                 if (!line.Contains("\"control_response\"", StringComparison.Ordinal)) continue;
                 if (JsonNode.Parse(line)?["response"] is not JsonObject response || Str(response, "request_id") != "usage") continue;
                 if (Str(response, "subtype") == "success") Update(provider.Id, FromUsage(response["response"] as JsonObject), complete: true);
+                break;
+            }
+        }
+        catch (Exception error) when (error is Win32Exception or IOException or InvalidOperationException or OperationCanceledException or System.Text.Json.JsonException or UnauthorizedAccessException)
+        {
+            AppLog.Write($"Couldn't ask {provider.Label} about its usage: {error.Message}");
+        }
+        finally
+        {
+            try
+            {
+                process?.Kill(entireProcessTree: true);
+            }
+            catch (Exception error) when (error is InvalidOperationException or Win32Exception)
+            {
+                // Already gone.
+            }
+            process?.Dispose();
+        }
+    }
+
+    // Codex's app server, initialised, then asked for account/rateLimits/read.
+    private async Task ProbeCodexAsync(AgentProvider provider, string folder)
+    {
+        Process? process = null;
+        try
+        {
+            Directory.CreateDirectory(folder);
+            process = Process.Start(AgentProviders.SessionStartInfo(provider, "app-server", folder));
+            if (process is null) return;
+            ChildProcesses.Track(process);
+            _ = process.StandardError.ReadToEndAsync();
+            async Task Send(JsonObject message)
+            {
+                await process.StandardInput.WriteLineAsync(message.ToJsonString());
+                await process.StandardInput.FlushAsync();
+            }
+            await Send(new JsonObject
+            {
+                ["id"] = 1,
+                ["method"] = "initialize",
+                ["params"] = new JsonObject { ["clientInfo"] = new JsonObject { ["name"] = "Agent Orange", ["title"] = "Agent Orange", ["version"] = "1" }, ["capabilities"] = new JsonObject() },
+            });
+
+            using var waiting = new CancellationTokenSource(ProbeWaitsFor);
+            while (await process.StandardOutput.ReadLineAsync(waiting.Token) is { } line)
+            {
+                if (JsonNode.Parse(line) is not JsonObject reply || reply["id"] is not JsonValue id || reply["method"] is not null) continue;
+                if (id.GetValue<long>() == 1)
+                {
+                    await Send(new JsonObject { ["method"] = "initialized" });
+                    await Send(new JsonObject { ["id"] = 2, ["method"] = "account/rateLimits/read" });
+                    continue;
+                }
+                if (id.GetValue<long>() != 2) continue;
+                var result = reply["result"] as JsonObject;
+                var snapshot = result?["rateLimitsByLimitId"]?["codex"] as JsonObject ?? result?["rateLimits"] as JsonObject;
+                Update(provider.Id, FromCodex(snapshot), complete: true);
                 break;
             }
         }

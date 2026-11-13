@@ -69,7 +69,7 @@ public sealed class AgentItem
 /// project's folder and the app's editors' tools are allowed. Anything else it wants to do, the
 /// person is asked first.
 /// </summary>
-public sealed class AgentConversation
+public sealed partial class AgentConversation
 {
     private const int LongestDetail = 4000;
     private static readonly TimeSpan StopWaitsFor = TimeSpan.FromSeconds(10);
@@ -139,6 +139,7 @@ public sealed class AgentConversation
     private bool _restarting; // Ended so the next message starts it with what's changed, which says nothing.
     private int _turns; // Messages sent that it hasn't finished with, as one sent while it works waits its turn.
     private string? _startedWith; // The model and effort it was started with.
+    private bool _codex; // Talking to Codex's app server rather than Claude Code.
     private string? _runningMode; // The permission mode it's in, which can change while it runs.
     private readonly Dictionary<string, Action<JsonObject?>> _controls = []; // Replies awaited, by request.
     private readonly Dictionary<string, DateTimeOffset?> _limits = []; // Limits run out during this turn, and when each resets.
@@ -206,7 +207,8 @@ public sealed class AgentConversation
         var named = text.Length > 0 ? text : attachments.Any(attachment => attachment.IsImage) ? "A picture" : $"About {attachments.FirstOrDefault()?.Name}";
         if (Title.Length == 0) Title = named.Length > 60 ? named[..60].TrimEnd() + "…" : named;
 
-        if (_process is not null && (_startedWith != $"{Model}|{Effort}" || _runningMode != PermissionMode)) Restart();
+        // Codex takes the model, effort and permissions with each turn, so only Claude Code starts again for them.
+        if (!_codex && _process is not null && (_startedWith != $"{Model}|{Effort}" || _runningMode != PermissionMode)) Restart();
         if (_process is null && !Start(prepare)) return;
 
         // Nothing typed can close the block early or pass for one.
@@ -218,6 +220,11 @@ public sealed class AgentConversation
             prompt = Handoff(Items.Take(Items.Count - 1)) + prompt;
         }
         NeedsHandoff = false;
+        if (_codex)
+        {
+            SendCodexTurn(prompt, attachments);
+            return;
+        }
 
         // Pictures and PDFs go with the message, for it to see straight away. Every file is also named
         // where it's kept, for it to open or copy into the game itself, as T3 Code does.
@@ -271,6 +278,8 @@ public sealed class AgentConversation
             Problem($"Couldn't set up the agent's tools: {error.Message}");
             return false;
         }
+        _codex = setup.Provider.Kind == ProviderKind.Codex;
+        if (_codex) return StartCodex(setup);
 
         // The editors' tools are the agent's to use without asking each time. Edits in the folder are too.
         var allowed = setup.McpServers.Count == 0 ? "" : $" --allowedTools \"{string.Join(",", setup.McpServers.Select(server => $"mcp__{server}"))}\"";
@@ -361,7 +370,8 @@ public sealed class AgentConversation
 
         // Messages waiting their turn go too, so only the one it's on is left to finish.
         _turns = Math.Min(_turns, 1);
-        Write(new JsonObject { ["type"] = "control_request", ["request_id"] = NewId(), ["request"] = new JsonObject { ["subtype"] = "interrupt", ["cancel_queued"] = true } });
+        if (_codex) InterruptCodex();
+        else Write(new JsonObject { ["type"] = "control_request", ["request_id"] = NewId(), ["request"] = new JsonObject { ["subtype"] = "interrupt", ["cancel_queued"] = true } });
 
         await Task.Delay(StopWaitsFor);
         if (_process == process && IsWorking) End();
@@ -429,9 +439,8 @@ public sealed class AgentConversation
     {
         try
         {
-            var projects = Path.Combine(fromLogin, "projects");
-            if (!Directory.Exists(projects)) return false;
-            var file = Directory.EnumerateFiles(projects, $"{session}.jsonl", SearchOption.AllDirectories).FirstOrDefault();
+            if (!Directory.Exists(fromLogin)) return false;
+            var file = Directory.EnumerateFiles(fromLogin, $"*{session}.jsonl", SearchOption.AllDirectories).FirstOrDefault();
             if (file is null) return false;
             var target = Path.Combine(toLogin, Path.GetRelativePath(fromLogin, file));
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
@@ -479,6 +488,12 @@ public sealed class AgentConversation
     {
         if (mode == PermissionMode) return;
         PermissionMode = mode;
+        if (_codex)
+        {
+            // Codex takes it with the next turn.
+            StateChanged?.Invoke();
+            return;
+        }
         if (_process is not null) Control(new JsonObject { ["subtype"] = "set_permission_mode", ["mode"] = mode }, reply =>
         {
             // Full access can only be given as it starts, so that waits for the next message, which starts it again.
@@ -505,6 +520,11 @@ public sealed class AgentConversation
     {
         if (request.RequestState != AgentRequestState.Waiting) return;
         request.RequestState = AgentRequestState.Allowed;
+        if (_codex)
+        {
+            AnswerCodex(request, "acceptForSession");
+            return;
+        }
         var rules = new JsonArray();
         foreach (var suggestion in (request.Suggestions ?? []).OfType<JsonObject>())
         {
@@ -520,6 +540,13 @@ public sealed class AgentConversation
     {
         if (request.RequestState != AgentRequestState.Waiting) return;
         request.RequestState = goAhead ? AgentRequestState.Allowed : AgentRequestState.Denied;
+        if (_codex)
+        {
+            if (goAhead && PermissionMode == "plan") SetPermissionMode("acceptEdits");
+            ItemChanged?.Invoke(request);
+            StateChanged?.Invoke();
+            return;
+        }
         Respond(request, goAhead
             ? new JsonObject { ["behavior"] = "allow", ["updatedInput"] = request.RequestInput?.DeepClone() ?? new JsonObject() }
             : new JsonObject { ["behavior"] = "deny", ["message"] = "The person wants to keep planning. Stop here and wait for what they say next." });
@@ -530,6 +557,11 @@ public sealed class AgentConversation
     {
         if (request.RequestState != AgentRequestState.Waiting) return;
         request.RequestState = allow ? AgentRequestState.Allowed : AgentRequestState.Denied;
+        if (_codex)
+        {
+            AnswerCodex(request, allow ? "accept" : "decline");
+            return;
+        }
         Respond(request, allow
             ? new JsonObject { ["behavior"] = "allow", ["updatedInput"] = request.RequestInput?.DeepClone() ?? new JsonObject() }
             : new JsonObject { ["behavior"] = "deny", ["message"] = "The person said no to this." });
@@ -541,6 +573,11 @@ public sealed class AgentConversation
         if (request.RequestState != AgentRequestState.Waiting) return;
         request.RequestState = AgentRequestState.Answered;
         request.Answers = answers;
+        if (_codex)
+        {
+            AnswerCodexQuestions(request, answers);
+            return;
+        }
         var input = request.RequestInput?.DeepClone() as JsonObject ?? new JsonObject();
         input["answers"] = new JsonObject(answers.Select(answer => KeyValuePair.Create(answer.Key, (JsonNode?)answer.Value)));
         Respond(request, new JsonObject { ["behavior"] = "allow", ["updatedInput"] = input });
@@ -569,6 +606,11 @@ public sealed class AgentConversation
     // How full its context is, every turn, and its login's limits, now and then. Neither uses any of them.
     private void AskForUsage()
     {
+        if (_codex)
+        {
+            AskCodexUsage();
+            return;
+        }
         Control(new JsonObject { ["subtype"] = "get_context_usage" }, reply =>
         {
             if (reply?["totalTokens"] is not JsonValue used || !used.TryGetValue<int>(out var tokens)) return;
@@ -642,6 +684,11 @@ public sealed class AgentConversation
             return; // Not an event, such as a warning printed by something it started.
         }
         if (root is not JsonObject json) return;
+        if (_codex)
+        {
+            ReadCodex(json);
+            return;
+        }
         if (Str(json, "session_id") is { Length: > 0 } session && session != SessionId) SessionId = session;
 
         // What its own subagents do stays inside them.

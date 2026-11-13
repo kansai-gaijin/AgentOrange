@@ -237,7 +237,7 @@ public sealed partial class AgentsWindow
         ((FrameworkElement)modeRow.Children[0]).Opacity = risky ? 1 : 0.8;
         _controls.Children.Add(ComposerControl(modeRow, () => PickPermission(_controls.Children[^1]), mode.Meaning));
 
-        var logins = _main.AgentLogins();
+        var logins = _main.AgentLogins(conversation);
         var login = _main.AgentProviderFor(conversation);
         if (logins.Count > 1 && login is not null)
         {
@@ -249,8 +249,8 @@ public sealed partial class AgentsWindow
         }
 
         // The model and how hard it thinks, as one control: "✳ Opus 5.5 High".
-        var model = Models.FirstOrDefault(each => each.Id == conversation.Model).Name ?? conversation.Model ?? "Default model";
-        var effort = Efforts.FirstOrDefault(each => each.Id == conversation.Effort).Name;
+        var model = ModelChoices(conversation).FirstOrDefault(each => each.Id == conversation.Model).Name ?? conversation.Model ?? "Default model";
+        var effort = EffortChoices(conversation).FirstOrDefault(each => each.Id == conversation.Effort).Name;
         var glyph = AgentIcons.Provider(IsClaude(conversation), 16, Ocean.Foreground);
         glyph.Margin = new Thickness(0, 0, 6, 0);
         var modelRow = new StackPanel { Orientation = Orientation.Horizontal, Children = { glyph, Ocean.Text(model, Ocean.Soft, 14, FontWeights.Medium) } };
@@ -281,6 +281,24 @@ public sealed partial class AgentsWindow
         return grid;
     }
 
+    // Claude's models, or the ones the Codex login listed when it started.
+    private (string? Id, string Name)[] ModelChoices(AgentConversation conversation)
+    {
+        if (IsClaude(conversation)) return Models;
+        var listed = _main.AgentProviderFor(conversation) is { } login && AgentConversation.CodexModels.TryGetValue(login.Id, out var models) ? models : [];
+        return [(null, "Default model"), .. listed.Select(model => ((string?)model.Id, model.Name))];
+    }
+
+    private (string? Id, string Name)[] EffortChoices(AgentConversation conversation)
+    {
+        if (IsClaude(conversation)) return Efforts;
+        var listed = _main.AgentProviderFor(conversation) is { } login && AgentConversation.CodexModels.TryGetValue(login.Id, out var models)
+            ? models.FirstOrDefault(model => model.Id == conversation.Model) ?? models.FirstOrDefault(model => model.IsDefault)
+            : null;
+        var efforts = listed?.Efforts is { Count: > 0 } offered ? offered : ["minimal", "low", "medium", "high", "xhigh"];
+        return [(null, "Default"), .. efforts.Select(effort => ((string?)effort, Efforts.FirstOrDefault(each => each.Id == effort).Name ?? char.ToUpperInvariant(effort[0]) + effort[1..]))];
+    }
+
     private static FrameworkElement Tick(bool on)
     {
         var tick = AgentIcons.Line("check", 14, on ? Ocean.Foreground : Brushes.Transparent);
@@ -295,7 +313,7 @@ public sealed partial class AgentsWindow
         Popup? menu = null;
         var models = new StackPanel { MinWidth = 200 };
         models.Children.Add(new TextBlock { Text = "Model", Foreground = Ocean.MutedText, FontSize = 12, FontWeight = FontWeights.Medium, Margin = new Thickness(8, 4, 8, 4) });
-        foreach (var (id, name) in Models)
+        foreach (var (id, name) in ModelChoices(conversation))
         {
             var row = new DockPanel();
             var tick = Tick(id == conversation.Model);
@@ -314,7 +332,7 @@ public sealed partial class AgentsWindow
         }
         var efforts = new StackPanel { Width = 192 };
         efforts.Children.Add(new TextBlock { Text = "Effort", Foreground = Ocean.MutedText, FontSize = 12, FontWeight = FontWeights.Medium, Margin = new Thickness(8, 4, 8, 4) });
-        foreach (var (id, name) in Efforts)
+        foreach (var (id, name) in EffortChoices(conversation))
         {
             var row = new DockPanel();
             var tick = Tick(id == conversation.Effort);
@@ -383,7 +401,7 @@ public sealed partial class AgentsWindow
         var current = _main.AgentProviderFor(conversation);
         var rows = new StackPanel { MinWidth = 220 };
         Popup? menu = null;
-        foreach (var login in _main.AgentLogins())
+        foreach (var login in _main.AgentLogins(conversation))
         {
             var row = new DockPanel();
             var tick = Tick(login.Id == current?.Id);

@@ -557,7 +557,7 @@ public sealed partial class AgentsWindow : Window
             icon.Margin = new Thickness(0, 0, 8, 0);
             return new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(2, 6, 0, 0), Children = { icon, Ocean.Text(text, new SolidColorBrush(Color.FromArgb(0xBF, 0xFF, 0xFA, 0xFF)), 12) } };
         }
-        var model = Models.FirstOrDefault(each => each.Id == conversation.Model).Name ?? conversation.Model ?? "Default model";
+        var model = ModelChoices(conversation).FirstOrDefault(each => each.Id == conversation.Model).Name ?? conversation.Model ?? "Default model";
         var glyph = AgentIcons.Provider(IsClaude(conversation), 12, Ocean.Foreground);
         glyph.Opacity = 0.6;
         return new StackPanel
