@@ -31,8 +31,14 @@ internal sealed partial class NodeCanvas
         (AssetReferenceKind, "Asset", ReferencesGroup),
     ];
 
+    // An asset's own board: a card on the Assets page. Its stage, the page, then the card.
+    private bool IsAssetBoard => _board.Split('/') is [_, "assets", _];
+
     private void OpenAddList()
     {
+        // An asset's board doesn't take reference nodes.
+        var kinds = Kinds.Where(each => each.Group != ReferencesGroup || !IsAssetBoard).ToArray();
+
         // Where the mouse is, or the middle if it's somewhere else, such as when Tab got here.
         var mouse = Mouse.GetPosition(this);
         var over = new Rect(0, 0, ActualWidth, ActualHeight).Contains(mouse);
@@ -87,7 +93,7 @@ internal sealed partial class NodeCanvas
                 openGroupRow = row;
                 row.Foreground = (Brush)FindResource("TextStrong");
                 groupItems.Children.Clear();
-                foreach (var (kind, name, _) in Kinds.Where(each => each.Group == group)) groupItems.Children.Add(Row(name, null, () => Add(kind)));
+                foreach (var (kind, name, _) in kinds.Where(each => each.Group == group)) groupItems.Children.Add(Row(name, null, () => Add(kind)));
 
                 // Its first kind level with the group's row.
                 var top = row.TranslatePoint(new Point(0, 0), main).Y - main.Padding.Top - main.BorderThickness.Top;
@@ -103,7 +109,7 @@ internal sealed partial class NodeCanvas
             CloseGroup();
             items.Children.Clear();
             var shownGroups = new HashSet<string>();
-            foreach (var (kind, name, group) in Kinds)
+            foreach (var (kind, name, group) in kinds)
             {
                 if (group is null)
                 {
@@ -127,7 +133,7 @@ internal sealed partial class NodeCanvas
         {
             CloseGroup();
             items.Children.Clear();
-            foreach (var (kind, name, group) in Kinds)
+            foreach (var (kind, name, group) in kinds)
             {
                 if (name.Contains(typed, StringComparison.OrdinalIgnoreCase) || group?.Contains(typed, StringComparison.OrdinalIgnoreCase) == true)
                 {
