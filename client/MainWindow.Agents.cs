@@ -116,6 +116,9 @@ public partial class MainWindow
     }
 
     /// <summary>The logins a conversation can go on with: every Claude Code one turned on.</summary>
+    /// <summary>Every login turned on, of either kind, for showing their usage.</summary>
+    internal List<AgentProvider> AllAgentLogins() => [.. Settings.Providers.List().Where(provider => provider.Enabled)];
+
     internal List<AgentProvider> AgentLogins() => [.. Settings.Providers.List().Where(provider => provider.Enabled && provider.Kind == ProviderKind.Claude)];
 
     internal void SwitchLogin(AgentConversation conversation, AgentProvider to)

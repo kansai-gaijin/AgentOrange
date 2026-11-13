@@ -14,9 +14,9 @@ public sealed record AgentLimit(string Kind, double? Used, DateTimeOffset? Reset
     public string Name => Kind switch
     {
         "five_hour" => "Session",
-        "seven_day" => "Week",
-        "seven_day_opus" => "Week · Opus",
-        "seven_day_sonnet" => "Week · Sonnet",
+        "seven_day" => "Weekly",
+        "seven_day_opus" => "Weekly · Opus",
+        "seven_day_sonnet" => "Weekly · Sonnet",
         "overage" => "Extra usage",
         _ => Kind.Replace('_', ' '),
     };

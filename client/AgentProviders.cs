@@ -202,10 +202,61 @@ public sealed partial class AgentProviders(LocalDatabase database, string agentF
         return info;
     }
 
+    /// <summary>
+    /// The program to run: as set, when it's a path or on PATH, or else where its own installers put
+    /// it. The Codex app keeps its command line in the person's .codex folder, not on PATH.
+    /// </summary>
+    public static string ResolveProgram(AgentProvider provider)
+    {
+        var program = provider.Program;
+        if (Path.IsPathRooted(program) || program.Contains(Path.DirectorySeparatorChar) || OnPath(program)) return program;
+        if (program != DefaultProgram(provider.Kind)) return program;
+
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        string[] places = provider.Kind == ProviderKind.Codex
+            ?
+            [
+                Path.Combine(home, ".codex", "plugins", ".plugin-appserver", "codex.exe"),
+                Path.Combine(roaming, "npm", "codex.cmd"),
+                Path.Combine(local, "Programs", "codex", "codex.exe"),
+                Path.Combine(home, ".bun", "bin", "codex.exe"),
+            ]
+            :
+            [
+                Path.Combine(home, ".local", "bin", "claude.exe"),
+                Path.Combine(roaming, "npm", "claude.cmd"),
+                Path.Combine(home, ".bun", "bin", "claude.exe"),
+            ];
+        return places.FirstOrDefault(File.Exists) ?? program;
+    }
+
+    private static bool OnPath(string program)
+    {
+        var extensions = Path.HasExtension(program) ? [""] : (Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.CMD;.BAT").Split(';');
+        foreach (var folder in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            foreach (var extension in extensions)
+            {
+                try
+                {
+                    if (File.Exists(Path.Combine(folder.Trim('"'), program + extension))) return true;
+                }
+                catch (ArgumentException)
+                {
+                    // A folder on PATH that isn't a path.
+                }
+            }
+        }
+        return false;
+    }
+
     // Goes through cmd because npm installs these programs as .cmd files.
     private static ProcessStartInfo StartInfo(AgentProvider provider, string arguments, bool hidden)
     {
         Directory.CreateDirectory(provider.LoginFolder);
+        provider = provider with { Program = ResolveProgram(provider) };
 
         var shell = Environment.GetEnvironmentVariable("ComSpec") is { Length: > 0 } comSpec
             ? comSpec

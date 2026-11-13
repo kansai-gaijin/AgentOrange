@@ -4,174 +4,220 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
-using System.Windows.Markup;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
-using System.Windows.Media.Effects;
+using System.Windows.Shell;
 using System.Windows.Threading;
 
 namespace AgentOrange;
 
 /// <summary>
-/// The agents' window: conversations down the side, the open one in the middle, and the box to write
-/// to it at the bottom, which also says what the agent will be told the person is looking at.
+/// The agents' window, made after T3 Code's chat, in its "ocean" dark theme and its Inter type:
+/// conversations down the side with what each is doing, the open one's timeline, and the box to
+/// write to it, which also says what the agent will be told the person is looking at.
 ///
-/// Built the way T3 Code builds its timeline, and in its quiet dark look, with orange for what
-/// matters. What the agent did between messages folds into one line, opened to see each tool. Its
-/// replies are Markdown. Streamed words are put on screen every 50 ms rather than as each piece
-/// arrives, and only the part of the timeline that changed is drawn again. Only the latest turns are
-/// drawn, with earlier ones a click away, and it follows the end unless it's been scrolled up.
+/// As in T3 Code, each turn's work sits under a "Working for 12s" line while it goes, and folds
+/// into "Worked for 1m 05s" once it's done, leaving the answer. Tools used one after another are
+/// one line, opened to see each. Streamed words are put on screen every 50 ms, only the part of
+/// the timeline that changed is drawn again, only the latest turns are drawn, and it follows the
+/// end unless it's been scrolled up.
 /// </summary>
 public sealed partial class AgentsWindow : Window
 {
     private const int TurnsAtATime = 20;
     private const double FollowsWithin = 40;
     private const double ColumnWidth = 736;
-    private const string Icons = "Segoe Fluent Icons, Segoe MDL2 Assets";
+    private const double SidebarWidth = 256;
+    private const double TopBar = 52;
+
+    // Inter, bundled, as T3 Code bundles it, with Segoe UI for anything it lacks.
+    internal static readonly FontFamily Inter = new(new Uri("pack://application:,,,/"), "./Assets/Fonts/#Inter, Segoe UI");
 
     private static readonly (string? Id, string Name)[] Models =
         [(null, "Default model"), ("claude-opus-5-5", "Opus 5.5"), ("claude-sonnet-5-5", "Sonnet 5.5"), ("claude-fable-5-2", "Fable 5.2"), ("claude-haiku-5-5", "Haiku 5.5")];
-    // Claude Code's own permission modes, in the words the person sees.
-    private static readonly (string? Id, string Name)[] Permissions =
-        [("default", "Ask first"), ("acceptEdits", "Edit freely"), ("plan", "Plan only"), ("bypassPermissions", "Full access")];
-    private static readonly Dictionary<string, string> PermissionMeaning = new()
-    {
-        ["default"] = "Asks before it edits a file or runs anything.",
-        ["acceptEdits"] = "Edits the project's files and uses the editors freely. Asks before anything else.",
-        ["plan"] = "Looks around and makes a plan, but changes nothing.",
-        ["bypassPermissions"] = "Does whatever it needs without asking. Only for work you'd trust it with alone.",
-    };
     private static readonly (string? Id, string Name)[] Efforts =
-        [(null, "Default effort"), ("low", "Low effort"), ("medium", "Medium effort"), ("high", "High effort"), ("xhigh", "Extra high effort"), ("max", "Max effort")];
+        [(null, "Default"), ("low", "Low"), ("medium", "Medium"), ("high", "High"), ("xhigh", "Extra high"), ("max", "Max")];
+
+    // Claude Code's own permission modes, in the words the person sees.
+    private static readonly (string Id, string Name, string Icon, string Meaning)[] Permissions =
+    [
+        ("default", "Ask first", "shield-question", "Asks before it edits a file or runs anything."),
+        ("acceptEdits", "Edit freely", "square-pen", "Edits the project's files and uses the editors freely. Asks before anything else."),
+        ("plan", "Plan only", "map", "Looks around and makes a plan, but changes nothing."),
+        ("bypassPermissions", "Full access", "lock-open", "Does whatever it needs without asking. Only for work you'd trust it with alone."),
+    ];
 
     private readonly MainWindow _main;
     private readonly StackPanel _list = new();
+    private readonly StackPanel _settledList = new();
+    private readonly TextBox _search;
     private readonly StackPanel _timeline = new();
     private readonly Border _earlier = new();
-    private readonly Border _working = new();
-    private readonly TextBlock _workingText = new();
     private readonly ScrollViewer _scroll;
     private readonly Button _jump;
     private readonly TextBox _input;
-    private readonly TextBlock _placeholder = new() { Text = "Ask the agent to do something…", IsHitTestVisible = false, FontSize = 14, Margin = new Thickness(2, 2, 0, 0) };
+    private readonly TextBlock _placeholder;
     private readonly Button _send;
-    private readonly Button _modelPill;
-    private readonly Button _effortPill;
-    private readonly Button _permissionPill;
-    private readonly Button _settle;
+    private readonly StackPanel _controls = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+    private readonly StackPanel _crumbs = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
     private readonly StackPanel _headerTools = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-    private readonly HashSet<string> _openSettled = []; // Projects whose settled conversations are being shown.
-    private readonly WrapPanel _tray = new() { Margin = new Thickness(0, 0, 0, 10), Visibility = Visibility.Collapsed };
-    private readonly List<AgentAttachment> _pending = [];
-    private readonly TextBlock _title = new() { FontSize = 14, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
-    private readonly TextBlock _subtitle = new() { FontSize = 13, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
-    private readonly TextBlock _sees = new() { FontSize = 12, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+    private readonly TextBlock _sees = Ocean.Text("", Ocean.Secondary, 12);
     private readonly Border _note = new() { Visibility = Visibility.Collapsed, CornerRadius = new CornerRadius(10), Padding = new Thickness(12, 8, 12, 8), Margin = new Thickness(0, 0, 0, 8) };
     private readonly Border _composer;
+    private readonly StackPanel _banners = new();
+    private readonly Grid _overlay = new() { Visibility = Visibility.Collapsed };
     private readonly DispatcherTimer _flush = new() { Interval = TimeSpan.FromMilliseconds(50) };
     private readonly DispatcherTimer _tick = new() { Interval = TimeSpan.FromSeconds(1) };
 
     private AgentConversation? _open;
     private int _turnsShown = TurnsAtATime;
     private bool _follow = true;
+    private bool _showSettled;
     private readonly HashSet<AgentItem> _changed = [];
     private readonly List<Segment> _segments = [];
     private readonly Dictionary<string, Segment> _segmentOf = [];
     private readonly HashSet<string> _openTools = [];
     private readonly HashSet<Segment> _openGroups = [];
+    private readonly HashSet<string> _openTurns = []; // Turns unfolded, by the message that began them.
     private readonly Dictionary<string, Dictionary<string, string>> _choices = []; // Answers being picked, by question request.
 
-    // A run of the timeline drawn as one thing: a message, a request, or the tools used between messages.
+    // A run of the timeline drawn as one thing: a message, a request, the tools used between messages,
+    // or the line a turn's work sits under.
     private sealed class Segment
     {
         public required AgentItemKind Kind { get; init; }
         public List<AgentItem> Items { get; } = [];
         public FrameworkElement Element { get; set; } = new Border();
         public AgentMarkdown? Reply { get; set; }
+        public bool IsTurnLine { get; init; }
+        public TextBlock? TurnWords { get; set; }
     }
 
     public AgentsWindow(MainWindow main)
     {
         _main = main;
-        Resources.MergedDictionaries.Add(Look());
+        Resources.MergedDictionaries.Add(Ocean.Resources());
         Title = "Agents";
-        Width = 1120;
-        Height = 760;
-        MinWidth = 680;
-        MinHeight = 460;
-        Background = Brush("A.Canvas");
-        FontFamily = new FontFamily("Segoe UI Variable Text, Segoe UI");
-        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
-        _title.Foreground = Brush("A.Strong");
-        _subtitle.Foreground = Brush("A.Muted");
-        _sees.Foreground = Brush("A.Faint");
-        _placeholder.Foreground = Brush("A.Faint");
-        _workingText.Foreground = Brush("A.Muted");
+        Width = 1180;
+        Height = 780;
+        MinWidth = 760;
+        MinHeight = 480;
+        Background = Ocean.Canvas;
+        Foreground = Ocean.Foreground;
+        FontFamily = Inter;
+        FontSize = 14;
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Ideal);
+        TextOptions.SetTextRenderingMode(this, TextRenderingMode.ClearType);
+        UseLayoutRounding = true;
+
+        // Its own frame, as T3 Code has: the top bars are where it's dragged from, with its own buttons.
+        WindowChrome.SetWindowChrome(this, new WindowChrome
+        {
+            CaptionHeight = TopBar,
+            ResizeBorderThickness = new Thickness(6),
+            GlassFrameThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(0),
+            UseAeroCaptionButtons = false,
+        });
 
         // Down the side.
-        var add = Make("A.Ghost", IconAndText("", "New conversation", "A.Normal", 13), NewConversation);
-        add.Margin = new Thickness(8, 4, 8, 6);
-        add.HorizontalAlignment = HorizontalAlignment.Stretch;
-        var heading = new TextBlock { Text = "Agents", FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = Brush("A.Strong"), Margin = new Thickness(18, 16, 18, 8) };
-        var side = new DockPanel { Background = Brush("A.Raised") };
-        DockPanel.SetDock(heading, Dock.Top);
-        DockPanel.SetDock(add, Dock.Top);
-        side.Children.Add(heading);
-        side.Children.Add(add);
-        DockPanel.SetDock(_usagePanel, Dock.Bottom);
-        side.Children.Add(_usagePanel);
-        side.Children.Add(new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = _list, Padding = new Thickness(8, 0, 8, 16) });
-        var sideEdge = new Border { BorderBrush = Brush("A.Border"), BorderThickness = new Thickness(0, 0, 1, 0), Child = side };
+        var brand = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) };
+        brand.Children.Add(Ocean.Text("Agent", Ocean.Foreground, 14, FontWeights.Medium));
+        brand.Children.Add(Ocean.Text(" Orange", Ocean.MutedText, 14, FontWeights.Medium));
+        var top = new Grid { Height = TopBar, Children = { brand } };
 
-        // The open conversation.
-        var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Children = { _title, _subtitle } };
-        _settle = Make("A.Pill", IconAndText("", "Settle", "A.Muted", 12), () =>
+        _search = new TextBox
         {
-            if (_open is not { } settling) return;
-            if (!settling.Settle(!settling.Settled)) ShowNote("Stop it, or answer what it's asking, before settling it.");
-            ShowHeader();
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Foreground = Ocean.Foreground,
+            CaretBrush = Ocean.Foreground,
+            SelectionBrush = Ocean.Focus,
+            FontSize = 14,
+            FontWeight = FontWeights.Medium,
+            Padding = new Thickness(0),
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+        AutomationProperties.SetName(_search, "Search conversations");
+        var searchHint = Ocean.Text("Search", Ocean.SidebarMuted, 14, FontWeights.Medium);
+        searchHint.IsHitTestVisible = false;
+        _search.TextChanged += (_, _) =>
+        {
+            searchHint.Visibility = _search.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
             ShowConversations();
-        });
-        _headerTools.Children.Add(_settle);
+        };
+        var searchIcon = AgentIcons.Line("search", 16, Ocean.SidebarIcon);
+        searchIcon.Margin = new Thickness(0, 0, 8, 0);
+        var searchRow = new DockPanel();
+        DockPanel.SetDock(searchIcon, Dock.Left);
+        searchRow.Children.Add(searchIcon);
+        searchRow.Children.Add(new Grid { Children = { searchHint, _search } });
+        var searchField = new Border { Height = 32, CornerRadius = new CornerRadius(6), Padding = new Thickness(8, 0, 8, 0), Background = Brushes.Transparent, Child = searchRow };
+        searchField.MouseEnter += (_, _) => searchField.Background = Ocean.RowHover;
+        searchField.MouseLeave += (_, _) => searchField.Background = _search.IsKeyboardFocusWithin ? Ocean.RowHover : Brushes.Transparent;
+        _search.GotKeyboardFocus += (_, _) => searchField.Background = Ocean.RowHover;
+        _search.LostKeyboardFocus += (_, _) => searchField.Background = Brushes.Transparent;
+        var write = Ocean.IconButton("square-pen", NewConversation, "New conversation", 28, 16, Ocean.SidebarIcon, Ocean.RowHover);
+        write.Margin = new Thickness(4, 0, 0, 0);
+        var searchLine = new DockPanel { Margin = new Thickness(8, 0, 8, 4) };
+        DockPanel.SetDock(write, Dock.Right);
+        searchLine.Children.Add(write);
+        searchLine.Children.Add(searchField);
+
+        var usage = Ocean.IconButton("chart-no-axes-column", ShowUsagePage, "Usage", 32, 16, Ocean.SidebarIcon, Ocean.RowHover);
+        var footer = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 4, 8, 8), Children = { usage } };
+
+        var sideScroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = _list, Padding = new Thickness(8, 4, 8, 4) };
+        var side = new DockPanel { Background = Ocean.Sidebar };
+        DockPanel.SetDock(top, Dock.Top);
+        DockPanel.SetDock(searchLine, Dock.Top);
+        DockPanel.SetDock(footer, Dock.Bottom);
+        DockPanel.SetDock(_settledList, Dock.Bottom);
+        side.Children.Add(top);
+        side.Children.Add(searchLine);
+        side.Children.Add(footer);
+        side.Children.Add(_settledList);
+        side.Children.Add(sideScroll);
+        _settledList.Margin = new Thickness(8, 0, 8, 0);
+        var sideEdge = new Border { BorderBrush = Ocean.SidebarDivider, BorderThickness = new Thickness(0, 0, 1, 0), Child = side };
+
+        // The open conversation's bar: where it is, and what can be done with it.
         var headerRow = new DockPanel();
         DockPanel.SetDock(_headerTools, Dock.Right);
         headerRow.Children.Add(_headerTools);
-        headerRow.Children.Add(titleRow);
-        var header = new Border { BorderBrush = Brush("A.Border"), BorderThickness = new Thickness(0, 0, 0, 1), Height = 52, Padding = new Thickness(22, 0, 16, 0), Child = headerRow };
+        headerRow.Children.Add(_crumbs);
+        var header = new Border { Height = TopBar, Padding = new Thickness(20, 0, 150, 0), Background = Ocean.Canvas, Child = headerRow };
 
-        var earlier = Make("A.Ghost", Text("Show earlier messages", "A.Muted", 12.5), () =>
+        var earlier = Ocean.Ghost(Ocean.Text("Show earlier messages", Ocean.MutedText, 12, FontWeights.Medium), () =>
         {
             _turnsShown += TurnsAtATime;
             DrawAll();
-        });
+        }, 6, new Thickness(8, 4, 8, 4));
         earlier.HorizontalAlignment = HorizontalAlignment.Center;
         _earlier.Child = earlier;
         _earlier.Margin = new Thickness(0, 0, 0, 12);
-
-        _working.Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { Pulse(), _workingText } };
-        _working.Margin = new Thickness(0, 10, 0, 4);
-        _working.Visibility = Visibility.Collapsed;
 
         _scroll = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Content = new StackPanel { MaxWidth = ColumnWidth, Margin = new Thickness(28, 24, 28, 28), Children = { _earlier, _timeline, _working } },
+            Content = new StackPanel { MaxWidth = ColumnWidth + 96, Margin = new Thickness(0, 16, 0, 24), Children = { _earlier, _timeline } },
         };
+        _timeline.Margin = new Thickness(48, 0, 48, 0);
 
         // Scrolled up, it stays put, with a way back to the end. Back near the end, it follows again.
-        _jump = Make("A.Round", Glyph("", "A.Normal", 13), () =>
+        _jump = Ocean.IconButton("chevron-down", () =>
         {
             _follow = true;
             _scroll.ScrollToEnd();
-        });
-        _jump.Background = Brush("A.Raised");
-        _jump.BorderBrush = Brush("A.InputBorder");
+        }, "Go to the latest", 32, 16, Ocean.Foreground);
+        _jump.Background = Ocean.Glass;
+        _jump.BorderBrush = Ocean.GlassBorder;
+        _jump.BorderThickness = new Thickness(1);
+        _jump.Template = Ocean.Template(16, Ocean.Accent);
         _jump.HorizontalAlignment = HorizontalAlignment.Center;
         _jump.VerticalAlignment = VerticalAlignment.Bottom;
         _jump.Margin = new Thickness(0, 0, 0, 12);
         _jump.Visibility = Visibility.Collapsed;
-        AutomationProperties.SetName(_jump, "Go to the latest");
         _scroll.ScrollChanged += (_, changed) =>
         {
             if (changed.ExtentHeightChange == 0) _follow = _scroll.VerticalOffset >= _scroll.ScrollableHeight - FollowsWithin;
@@ -179,92 +225,88 @@ public sealed partial class AgentsWindow : Window
         };
         var timelineArea = new Grid { Children = { _scroll, _jump } };
 
-        // Where it's written to.
+        // The box: T3 Code's composer, its words two lines at least and 208 px at most.
         _input = new TextBox
         {
             AcceptsReturn = true,
             TextWrapping = TextWrapping.Wrap,
-            MinHeight = 48,
-            MaxHeight = 240,
+            MinHeight = 45.5,
+            MaxHeight = 208,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
-            Foreground = Brush("A.Strong"),
-            CaretBrush = Brush("A.Strong"),
-            SelectionBrush = Brush("A.Accent"),
+            Foreground = Ocean.Foreground,
+            CaretBrush = Ocean.Foreground,
+            SelectionBrush = Ocean.Focus,
             FontSize = 14,
             Padding = new Thickness(0),
         };
+        TextBlock.SetLineHeight(_input, 22.75);
+        TextBlock.SetLineStackingStrategy(_input, LineStackingStrategy.BlockLineHeight);
         AutomationProperties.SetName(_input, "Message for the agent");
-        _send = Make("A.Round", Glyph("", "A.OnAccent", 14), SendOrStop);
-        _modelPill = Make("A.Pill", Text("", "A.Muted", 12), () => PickModel());
-        _effortPill = Make("A.Pill", Text("", "A.Muted", 12), () => PickEffort());
-        _effortPill.Margin = new Thickness(6, 0, 0, 0);
-        _permissionPill = Make("A.Pill", IconAndText("", "", "A.Muted", 12), () => PickPermission());
-        _permissionPill.Margin = new Thickness(6, 0, 0, 0);
-        _loginPill = Make("A.Pill", IconAndText("\uE77B", "", "A.Muted", 12), PickLogin);
-        _loginPill.Margin = new Thickness(6, 0, 0, 0);
-        _loginPill.Visibility = Visibility.Collapsed;
-        var attach = Make("A.Round", Glyph("", "A.Muted", 14), PickFiles);
-        attach.Background = Brushes.Transparent;
-        attach.Margin = new Thickness(4, 0, 0, 0);
-        attach.ToolTip = "Send pictures or files (or paste, or drop them here)";
-        AutomationProperties.SetName(attach, "Send pictures or files");
-        var shoot = Make("A.Round", Glyph("", "A.Muted", 14), () => _ = ShootAsync());
-        shoot.Background = Brushes.Transparent;
-        shoot.ToolTip = $"Take a screenshot for the agent ({ScreenshotHotkey.Keys}, from anywhere)";
-        AutomationProperties.SetName(shoot, "Take a screenshot for the agent");
+        _placeholder = Ocean.Text("Ask anything. Paste or drop pictures and files", Ocean.Placeholder, 14, lineHeight: 22.75);
+        _placeholder.IsHitTestVisible = false;
+        _placeholder.VerticalAlignment = VerticalAlignment.Top;
 
-        var seesRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center, Children = { Glyph("", "A.Faint", 12), _sees } };
-        ((TextBlock)seesRow.Children[0]).Margin = new Thickness(0, 1, 6, 0);
-        var toolbar = new DockPanel { Margin = new Thickness(0, 8, 0, 0) };
-        DockPanel.SetDock(_send, Dock.Right);
-        DockPanel.SetDock(_modelPill, Dock.Left);
-        DockPanel.SetDock(_effortPill, Dock.Left);
-        DockPanel.SetDock(_permissionPill, Dock.Left);
-        DockPanel.SetDock(_loginPill, Dock.Left);
-        DockPanel.SetDock(_contextMeter, Dock.Right);
-        toolbar.Children.Add(_send);
-        toolbar.Children.Add(_modelPill);
-        toolbar.Children.Add(_effortPill);
-        toolbar.Children.Add(_contextMeter);
-        toolbar.Children.Add(_permissionPill);
-        toolbar.Children.Add(_loginPill);
+        _send = Ocean.Ghost(new Border(), SendOrStop, 16, hover: Ocean.PrimaryHover);
+        _send.Width = 32;
+        _send.Height = 32;
+
+        var attach = Ocean.IconButton("paperclip", PickFiles, "Send pictures or files (or paste, or drop them here)", 28, 16, Ocean.MutedText);
+        var shoot = Ocean.IconButton("camera", () => _ = ShootAsync(), $"Take a screenshot for the agent ({ScreenshotHotkey.Keys}, from anywhere)", 28, 16, Ocean.MutedText);
+        shoot.Margin = new Thickness(2, 0, 8, 0);
+        var eye = AgentIcons.Line("eye", 14, Ocean.Secondary);
+        eye.Margin = new Thickness(0, 0, 6, 0);
+        var sees = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Children = { eye, _sees } };
+        sees.ToolTip = "What the agent is told you're looking at in Agent Orange, with each message";
+
+        var footerRow = new DockPanel { Margin = new Thickness(8, 0, 8, 8), Height = 32, LastChildFill = true };
         DockPanel.SetDock(attach, Dock.Left);
         DockPanel.SetDock(shoot, Dock.Left);
-        toolbar.Children.Add(attach);
-        toolbar.Children.Add(shoot);
-        toolbar.Children.Add(seesRow);
-        var box = new DockPanel();
-        DockPanel.SetDock(toolbar, Dock.Bottom);
-        box.Children.Add(toolbar);
-        DockPanel.SetDock(_tray, Dock.Top);
-        box.Children.Add(_tray);
-        box.Children.Add(new Grid { Children = { _placeholder, _input } });
+        DockPanel.SetDock(_send, Dock.Right);
+        DockPanel.SetDock(_controls, Dock.Right);
+        _controls.Margin = new Thickness(0, 0, 8, 0);
+        footerRow.Children.Add(attach);
+        footerRow.Children.Add(shoot);
+        footerRow.Children.Add(_send);
+        footerRow.Children.Add(_controls);
+        footerRow.Children.Add(sees);
+
+        var body = new StackPanel { Margin = new Thickness(16, 16, 16, 8), Children = { _tray, new Grid { Children = { _placeholder, _input } } } };
+        var surface = new DockPanel();
+        DockPanel.SetDock(footerRow, Dock.Bottom);
+        surface.Children.Add(footerRow);
+        surface.Children.Add(body);
         _composer = new Border
         {
-            BorderBrush = Brush("A.InputBorder"),
+            Background = Ocean.Composer,
+            BorderBrush = Ocean.ComposerOutline,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(20),
-            Background = Brush("A.Raised"),
-            Padding = new Thickness(16, 14, 10, 10),
-            Child = box,
-            Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 24, ShadowDepth = 4, Opacity = 0.5 },
+            CornerRadius = new CornerRadius(16),
+            Child = surface,
         };
-        var composerArea = new StackPanel { MaxWidth = ColumnWidth + 32, Margin = new Thickness(20, 0, 20, 18), Children = { _limitBanner, _note, _stepsPanel, _composer } };
+        Panel.SetZIndex(_composer, 2);
+        var composerLane = new StackPanel { MaxWidth = ColumnWidth, Margin = new Thickness(48, 4, 48, 20), Children = { _note, _banners, _composer } };
 
-        var conversationArea = new DockPanel();
+        var conversationArea = new DockPanel { Background = Ocean.Canvas };
         DockPanel.SetDock(header, Dock.Top);
-        DockPanel.SetDock(composerArea, Dock.Bottom);
+        DockPanel.SetDock(composerLane, Dock.Bottom);
         conversationArea.Children.Add(header);
-        conversationArea.Children.Add(composerArea);
+        conversationArea.Children.Add(composerLane);
         conversationArea.Children.Add(timelineArea);
 
-        var layout = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(268) }, new ColumnDefinition() } };
+        var layout = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(SidebarWidth) }, new ColumnDefinition() } };
         Grid.SetColumn(conversationArea, 1);
         layout.Children.Add(sideEdge);
         layout.Children.Add(conversationArea);
+
+        var caption = CaptionButtons();
+        Grid.SetColumnSpan(caption, 2);
+        layout.Children.Add(caption);
+        Grid.SetColumnSpan(_overlay, 2);
+        layout.Children.Add(_overlay);
         Content = layout;
+        StateChanged += (_, _) => layout.Margin = WindowState == WindowState.Maximized ? new Thickness(7) : new Thickness(0);
 
         _input.PreviewKeyDown += (_, pressed) =>
         {
@@ -274,6 +316,7 @@ public sealed partial class AgentsWindow : Window
                 pressed.Handled = true;
                 return;
             }
+
             // Enter sends, and Shift+Enter starts a new line.
             if (pressed.Key != Key.Enter || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) return;
             pressed.Handled = true;
@@ -294,11 +337,20 @@ public sealed partial class AgentsWindow : Window
         {
             if (dropped.Data.GetData(DataFormats.FileDrop) is string[] files) AttachFiles(files);
         };
+        PreviewKeyDown += (_, pressed) =>
+        {
+            if (pressed.Key == Key.Escape && _overlay.Visibility == Visibility.Visible)
+            {
+                _overlay.Visibility = Visibility.Collapsed;
+                pressed.Handled = true;
+            }
+        };
         _flush.Tick += (_, _) => Flush();
         _tick.Tick += (_, _) =>
         {
             ShowSees();
-            ShowWorking();
+            ShowTurns();
+            ShowConversationStates();
         };
         _tick.Start();
         Activated += (_, _) =>
@@ -316,239 +368,41 @@ public sealed partial class AgentsWindow : Window
         BuildUsageParts();
         ShowSees();
         ShowConversations();
-        Show(_main.Conversations.OrderByDescending(conversation => conversation.Updated).FirstOrDefault());
+        Show(_main.Conversations.Where(each => !each.Settled).OrderByDescending(conversation => conversation.Updated).FirstOrDefault());
     }
-
-    // The look, apart from the rest of the app's: near-black, quiet borders, and orange for what matters.
-    private static ResourceDictionary Look() => (ResourceDictionary)XamlReader.Parse("""
-        <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-          <SolidColorBrush x:Key="A.Canvas" Color="#000000" />
-          <SolidColorBrush x:Key="A.Raised" Color="#101011" />
-          <SolidColorBrush x:Key="A.Surface" Color="#1C1C1E" />
-          <SolidColorBrush x:Key="A.Hover" Color="#19191B" />
-          <SolidColorBrush x:Key="A.Selected" Color="#1F1F22" />
-          <SolidColorBrush x:Key="A.Border" Color="#1E1E21" />
-          <SolidColorBrush x:Key="A.InputBorder" Color="#2A2A2E" />
-          <SolidColorBrush x:Key="A.Strong" Color="#F5F5F5" />
-          <SolidColorBrush x:Key="A.Normal" Color="#E3E3E5" />
-          <SolidColorBrush x:Key="A.Muted" Color="#A3A3A8" />
-          <SolidColorBrush x:Key="A.Faint" Color="#6D6D73" />
-          <SolidColorBrush x:Key="A.Accent" Color="#FF8A3D" />
-          <SolidColorBrush x:Key="A.AccentHover" Color="#FF9D5C" />
-          <SolidColorBrush x:Key="A.AccentTint" Color="#22FF8A3D" />
-          <SolidColorBrush x:Key="A.OnAccent" Color="#1A0B00" />
-          <SolidColorBrush x:Key="A.Danger" Color="#F87171" />
-          <SolidColorBrush x:Key="A.DangerTint" Color="#1FF87171" />
-          <SolidColorBrush x:Key="A.Success" Color="#34D399" />
-          <SolidColorBrush x:Key="A.Warning" Color="#F5A524" />
-          <SolidColorBrush x:Key="A.CodeBack" Color="#0C0C0D" />
-
-          <Style x:Key="A.Ghost" TargetType="Button">
-            <Setter Property="Foreground" Value="{StaticResource A.Normal}" />
-            <Setter Property="Background" Value="Transparent" />
-            <Setter Property="BorderBrush" Value="Transparent" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Padding" Value="10,6" />
-            <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
-            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-            <Setter Property="Template">
-              <Setter.Value>
-                <ControlTemplate TargetType="Button">
-                  <Border x:Name="Face" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8" Padding="{TemplateBinding Padding}">
-                    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center" />
-                  </Border>
-                  <ControlTemplate.Triggers>
-                    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Face" Property="Background" Value="{StaticResource A.Hover}" /></Trigger>
-                    <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Face" Property="BorderBrush" Value="{StaticResource A.Accent}" /></Trigger>
-                    <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45" /></Trigger>
-                  </ControlTemplate.Triggers>
-                </ControlTemplate>
-              </Setter.Value>
-            </Setter>
-          </Style>
-
-          <Style x:Key="A.Pill" TargetType="Button" BasedOn="{StaticResource A.Ghost}">
-            <Setter Property="Padding" Value="10,4" />
-            <Setter Property="BorderBrush" Value="{StaticResource A.InputBorder}" />
-            <Setter Property="HorizontalContentAlignment" Value="Left" />
-            <Setter Property="Template">
-              <Setter.Value>
-                <ControlTemplate TargetType="Button">
-                  <Border x:Name="Face" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="13" Padding="{TemplateBinding Padding}">
-                    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center" />
-                  </Border>
-                  <ControlTemplate.Triggers>
-                    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Face" Property="Background" Value="{StaticResource A.Hover}" /></Trigger>
-                    <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Face" Property="BorderBrush" Value="{StaticResource A.Accent}" /></Trigger>
-                    <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45" /></Trigger>
-                  </ControlTemplate.Triggers>
-                </ControlTemplate>
-              </Setter.Value>
-            </Setter>
-          </Style>
-
-          <Style x:Key="A.Option" TargetType="Button" BasedOn="{StaticResource A.Ghost}">
-            <Setter Property="Padding" Value="12,8" />
-            <Setter Property="BorderBrush" Value="{StaticResource A.InputBorder}" />
-            <Setter Property="HorizontalContentAlignment" Value="Left" />
-          </Style>
-
-          <Style x:Key="A.Primary" TargetType="Button">
-            <Setter Property="Foreground" Value="{StaticResource A.OnAccent}" />
-            <Setter Property="Background" Value="{StaticResource A.Accent}" />
-            <Setter Property="Padding" Value="14,7" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
-            <Setter Property="Template">
-              <Setter.Value>
-                <ControlTemplate TargetType="Button">
-                  <Border x:Name="Face" Background="{TemplateBinding Background}" CornerRadius="9" Padding="{TemplateBinding Padding}" BorderThickness="2" BorderBrush="Transparent">
-                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                  </Border>
-                  <ControlTemplate.Triggers>
-                    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Face" Property="Background" Value="{StaticResource A.AccentHover}" /></Trigger>
-                    <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Face" Property="BorderBrush" Value="{StaticResource A.Strong}" /></Trigger>
-                    <Trigger Property="IsEnabled" Value="False">
-                      <Setter TargetName="Face" Property="Background" Value="{StaticResource A.Surface}" />
-                      <Setter Property="Foreground" Value="{StaticResource A.Faint}" />
-                    </Trigger>
-                  </ControlTemplate.Triggers>
-                </ControlTemplate>
-              </Setter.Value>
-            </Setter>
-          </Style>
-
-          <Style x:Key="A.Round" TargetType="Button">
-            <Setter Property="Width" Value="34" />
-            <Setter Property="Height" Value="34" />
-            <Setter Property="Background" Value="{StaticResource A.Accent}" />
-            <Setter Property="BorderBrush" Value="Transparent" />
-            <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
-            <Setter Property="Template">
-              <Setter.Value>
-                <ControlTemplate TargetType="Button">
-                  <Border x:Name="Face" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="17">
-                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                  </Border>
-                  <ControlTemplate.Triggers>
-                    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Face" Property="Opacity" Value="0.88" /></Trigger>
-                    <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Face" Property="BorderBrush" Value="{StaticResource A.Strong}" /></Trigger>
-                    <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Face" Property="Background" Value="{StaticResource A.Surface}" /></Trigger>
-                  </ControlTemplate.Triggers>
-                </ControlTemplate>
-              </Setter.Value>
-            </Setter>
-          </Style>
-        </ResourceDictionary>
-        """);
-
-    private Brush Brush(string key) => (Brush)FindResource(key);
 
     internal bool IsLookingAt(AgentConversation conversation) => IsActive && _open == conversation;
 
-    // Small parts everything's made of
-
-    private Button Make(string style, object content, Action click)
+    // Minimise, maximise and close, as Windows draws them, in the top bar.
+    private FrameworkElement CaptionButtons()
     {
-        var button = new Button { Style = (Style)FindResource(style), Content = content };
-        button.Click += (_, _) => click();
-        return button;
-    }
-
-    private TextBlock Text(string text, string brush, double size, FontWeight? weight = null) => new()
-    {
-        Text = text,
-        Foreground = Brush(brush),
-        FontSize = size,
-        FontWeight = weight ?? FontWeights.Normal,
-        TextTrimming = TextTrimming.CharacterEllipsis,
-        VerticalAlignment = VerticalAlignment.Center,
-    };
-
-    private TextBlock Glyph(string glyph, string brush, double size) => new()
-    {
-        Text = glyph,
-        FontFamily = new FontFamily(Icons),
-        FontSize = size,
-        Foreground = Brush(brush),
-        VerticalAlignment = VerticalAlignment.Center,
-    };
-
-    private StackPanel IconAndText(string glyph, string text, string brush, double size)
-    {
-        var icon = Glyph(glyph, brush, size - 1);
-        icon.Margin = new Thickness(0, 1, 10, 0);
-        return new StackPanel { Orientation = Orientation.Horizontal, Children = { icon, Text(text, brush, size) } };
-    }
-
-    // Words that can be selected and copied, without looking like a field.
-    private TextBox Words(string text, string brush, double size) => new()
-    {
-        Text = text,
-        IsReadOnly = true,
-        TextWrapping = TextWrapping.Wrap,
-        Background = Brushes.Transparent,
-        BorderThickness = new Thickness(0),
-        Padding = new Thickness(0),
-        Foreground = Brush(brush),
-        SelectionBrush = Brush("A.Accent"),
-        FontSize = size,
-        Cursor = Cursors.IBeam,
-    };
-
-    private TextBox Mono(string text, double maxHeight)
-    {
-        var shown = Words(text, "A.Muted", 12);
-        shown.FontFamily = new FontFamily("Cascadia Mono, Consolas");
-        shown.TextWrapping = TextWrapping.NoWrap;
-        shown.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
-        shown.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
-        shown.MaxHeight = maxHeight;
-        return shown;
-    }
-
-    private Border Inset(UIElement content, Thickness margin) => new()
-    {
-        Background = Brush("A.CodeBack"),
-        BorderBrush = Brush("A.Border"),
-        BorderThickness = new Thickness(1),
-        CornerRadius = new CornerRadius(10),
-        Padding = new Thickness(12, 9, 12, 10),
-        Margin = margin,
-        Child = content,
-    };
-
-    // A dot that breathes, for something working.
-    private FrameworkElement Pulse()
-    {
-        var dot = new System.Windows.Shapes.Ellipse { Width = 7, Height = 7, Fill = Brush("A.Accent"), Margin = new Thickness(1, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center };
-        dot.BeginAnimation(OpacityProperty, new DoubleAnimation(1, 0.25, TimeSpan.FromSeconds(0.9)) { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever, EasingFunction = new SineEase() });
-        return dot;
-    }
-
-    private Popup Menu(UIElement by, PlacementMode placement, UIElement content) => new()
-    {
-        PlacementTarget = by,
-        Placement = placement,
-        VerticalOffset = placement == PlacementMode.Top ? -6 : 4,
-        StaysOpen = false,
-        AllowsTransparency = true,
-        Child = new Border
+        Button Caption(string glyph, string name, Action click, bool close = false)
         {
-            Background = Brush("A.Raised"),
-            BorderBrush = Brush("A.InputBorder"),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(5),
-            MinWidth = 200,
-            Margin = new Thickness(10),
-            Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 18, ShadowDepth = 3, Opacity = 0.6 },
-            Child = content,
-        },
-    };
+            var icon = new TextBlock { Text = glyph, FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"), FontSize = 10, Foreground = Ocean.Soft, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            var button = Ocean.Ghost(icon, click, 0, hover: close ? new SolidColorBrush(Color.FromRgb(0xC4, 0x2B, 0x1C)) : new SolidColorBrush(Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF)));
+            button.Width = 46;
+            button.Height = 40;
+            button.ToolTip = name;
+            AutomationProperties.SetName(button, name);
+            if (close) button.MouseEnter += (_, _) => icon.Foreground = Brushes.White;
+            if (close) button.MouseLeave += (_, _) => icon.Foreground = Ocean.Soft;
+            return button;
+        }
+        var maximise = Caption("", "Maximise", () => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized);
+        StateChanged += (_, _) => ((TextBlock)maximise.Content).Text = WindowState == WindowState.Maximized ? "" : "";
+        return new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Children =
+            {
+                Caption("", "Minimise", () => WindowState = WindowState.Minimized),
+                maximise,
+                Caption("", "Close", Close, close: true),
+            },
+        };
+    }
 
     private static string Ago(DateTimeOffset when)
     {
@@ -559,103 +413,244 @@ public sealed partial class AgentsWindow : Window
         return gone < TimeSpan.FromDays(7) ? $"{(int)gone.TotalDays}d" : when.LocalDateTime.ToString("d MMM", System.Globalization.CultureInfo.InvariantCulture);
     }
 
+    // As T3 Code says how long: 5s, 2m 05s, 1h 03m.
+    private static string Took(TimeSpan span) =>
+        span < TimeSpan.FromMinutes(1) ? $"{Math.Max(0, (int)span.TotalSeconds)}s"
+        : span < TimeSpan.FromHours(1) ? $"{(int)span.TotalMinutes}m {span.Seconds:00}s"
+        : $"{(int)span.TotalHours}h {span.Minutes:00}m";
+
+    // A project's mark: its first letter on a tile of its own colour, as T3 Code's monograms are.
+    private static FrameworkElement Monogram(string name, double size)
+    {
+        var hue = (uint)name.Aggregate(17, (hash, ch) => unchecked(hash * 31 + ch)) % 360;
+        var color = FromHue(hue);
+        return new Border
+        {
+            Width = size,
+            Height = size,
+            CornerRadius = new CornerRadius(size * 0.25),
+            Background = new SolidColorBrush(Color.FromArgb(0x24, color.R, color.G, color.B)),
+            Child = new TextBlock
+            {
+                Text = name.Length > 0 ? name[..1].ToUpperInvariant() : "?",
+                FontFamily = Ocean.Mono,
+                FontWeight = FontWeights.Bold,
+                FontSize = size * 0.52,
+                Foreground = new SolidColorBrush(color),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+    }
+
+    private static Color FromHue(double hue)
+    {
+        double s = 0.6, l = 0.66;
+        var c = (1 - Math.Abs(2 * l - 1)) * s;
+        var x = c * (1 - Math.Abs(hue / 60 % 2 - 1));
+        var m = l - c / 2;
+        var (r, g, b) = hue switch { < 60 => (c, x, 0d), < 120 => (x, c, 0d), < 180 => (0d, c, x), < 240 => (0d, x, c), < 300 => (x, 0d, c), _ => (c, 0d, x) };
+        return Color.FromRgb((byte)((r + m) * 255), (byte)((g + m) * 255), (byte)((b + m) * 255));
+    }
+
+    private bool IsClaude(AgentConversation conversation) => _main.AgentProviderFor(conversation)?.Kind != ProviderKind.Codex;
+
     // Down the side
 
-    /// <summary>Every conversation, by project, the latest first, with what each is doing.</summary>
+    /// <summary>Every conversation, the latest first, each with its project and what it's doing. The settled ones wait at the bottom.</summary>
     internal void ShowConversations()
     {
         _list.Children.Clear();
-        var conversations = _main.Conversations;
-        if (conversations.Count == 0)
-        {
-            _list.Children.Add(new TextBlock { Text = "No conversations yet.", Foreground = Brush("A.Faint"), FontSize = 12.5, Margin = new Thickness(10, 8, 10, 0) });
-            return;
-        }
+        var search = _search.Text.Trim();
+        bool Matches(AgentConversation conversation) => search.Length == 0
+            || conversation.Title.Contains(search, StringComparison.OrdinalIgnoreCase)
+            || _main.ProjectName(conversation.ProjectId).Contains(search, StringComparison.OrdinalIgnoreCase);
+        var conversations = _main.Conversations.Where(Matches).ToList();
 
-        foreach (var project in conversations.GroupBy(conversation => conversation.ProjectId).OrderByDescending(group => group.Max(conversation => conversation.Updated)))
+        var active = conversations.Where(each => !each.Settled).OrderByDescending(each => each.Updated).ToList();
+        if (active.Count == 0)
         {
-            _list.Children.Add(new TextBlock { Text = _main.ProjectName(project.Key).ToUpperInvariant(), Foreground = Brush("A.Faint"), FontSize = 10.5, FontWeight = FontWeights.SemiBold, Margin = new Thickness(10, 16, 10, 6), TextTrimming = TextTrimming.CharacterEllipsis });
-            foreach (var conversation in project.Where(each => !each.Settled).OrderByDescending(conversation => conversation.Updated)) _list.Children.Add(ConversationRow(conversation));
-
-            // Settled ones stay out of the way, a click from being seen.
-            var settled = project.Where(each => each.Settled).OrderByDescending(conversation => conversation.Updated).ToList();
-            if (settled.Count == 0) continue;
-            var showing = _openSettled.Contains(project.Key) || settled.Contains(_open!);
-            var toggle = Make("A.Ghost", IconAndText(showing ? "" : "", $"Settled  ·  {settled.Count}", "A.Faint", 12), () =>
-            {
-                if (!_openSettled.Remove(project.Key)) _openSettled.Add(project.Key);
-                ShowConversations();
-            });
-            ((TextBlock)((StackPanel)toggle.Content).Children[0]).FontSize = 9;
-            toggle.Padding = new Thickness(10, 5, 10, 5);
-            _list.Children.Add(toggle);
-            if (showing) foreach (var conversation in settled) _list.Children.Add(ConversationRow(conversation));
+            var none = Ocean.Wrapped(search.Length > 0 ? "Nothing matches." : "No conversations yet. Start one with the pen above.", Ocean.SidebarMuted, 12.5, 18);
+            none.Margin = new Thickness(10, 8, 10, 0);
+            _list.Children.Add(none);
         }
+        foreach (var conversation in active) _list.Children.Add(ConversationRow(conversation));
+
+        // Settled ones: a header at the bottom that opens to their rows.
+        _settledList.Children.Clear();
+        var settled = conversations.Where(each => each.Settled).OrderByDescending(each => each.SettledAt ?? each.Updated).ToList();
+        var header = new DockPanel();
+        var chevron = AgentIcons.Line("chevron-down", 12, Ocean.SidebarMuted);
+        chevron.RenderTransformOrigin = new Point(0.5, 0.5);
+        chevron.RenderTransform = new RotateTransform(_showSettled ? 0 : -90);
+        chevron.Margin = new Thickness(6, 0, 0, 0);
+        DockPanel.SetDock(chevron, Dock.Right);
+        var count = Ocean.Text($"{settled.Count}", Ocean.SidebarMuted, 12);
+        DockPanel.SetDock(count, Dock.Right);
+        header.Children.Add(chevron);
+        header.Children.Add(count);
+        header.Children.Add(Ocean.Text("Settled", Ocean.SidebarMuted, 12, FontWeights.Medium));
+        var toggle = Ocean.Ghost(header, () =>
+        {
+            _showSettled = !_showSettled;
+            ShowConversations();
+        }, 6, new Thickness(8, 0, 8, 0), Ocean.RowHover);
+        toggle.Height = 32;
+        toggle.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        toggle.Margin = new Thickness(2, 0, 2, 0);
+        AutomationProperties.SetName(toggle, $"Settled, {settled.Count}, {(_showSettled ? "showing" : "click to show")}");
+        if (_showSettled)
+        {
+            var rows = new StackPanel();
+            foreach (var conversation in settled) rows.Children.Add(SettledRow(conversation));
+            _settledList.Children.Add(new ScrollViewer { MaxHeight = 220, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = rows });
+        }
+        _settledList.Children.Add(toggle);
     }
 
+    // T3 Code's thread row: the project on the first line with what it's doing on the right, the title under it.
     private FrameworkElement ConversationRow(AgentConversation conversation)
     {
         var name = conversation.Title.Length > 0 ? conversation.Title : "New conversation";
         var selected = conversation == _open;
-        var row = new DockPanel();
-        FrameworkElement state = conversation.IsLimited && !conversation.IsWorking ? Snoozed(conversation)
-            : conversation.IsWaiting ? Dot("A.Accent", "Needs you")
-            : conversation.IsWorking ? Pulse()
-            : conversation.Unseen ? Dot("A.Strong", "New")
-            : Text(Ago(conversation.Updated), "A.Faint", 11);
-        state.Margin = new Thickness(10, 0, 0, 0);
-        DockPanel.SetDock(state, Dock.Right);
-        row.Children.Add(state);
-        row.Children.Add(Text(name, selected ? "A.Strong" : "A.Normal", 13));
+        var project = _main.ProjectName(conversation.ProjectId);
 
-        var button = Make("A.Ghost", row, () => Show(conversation));
-        button.Padding = new Thickness(10, 7, 10, 7);
-        if (selected) button.Background = Brush("A.Selected");
-        button.Margin = new Thickness(0, 0, 0, 1);
-        AutomationProperties.SetName(button, $"{name}{(conversation.IsWaiting ? ", needs you" : conversation.IsWorking ? ", working" : conversation.Unseen ? ", new" : "")}");
+        var first = new DockPanel { Height = 20 };
+        var mark = Monogram(project, 16);
+        mark.Margin = new Thickness(0, 0, 6, 0);
+        DockPanel.SetDock(mark, Dock.Left);
+        var state = new ContentControl { Content = ConversationState(conversation), Tag = conversation, VerticalAlignment = VerticalAlignment.Center };
+        DockPanel.SetDock(state, Dock.Right);
+        first.Children.Add(mark);
+        first.Children.Add(state);
+        first.Children.Add(Ocean.Text(project, Ocean.Secondary, 12));
+
+        var second = new DockPanel { Margin = new Thickness(0, 4, 0, 0) };
+        var glyph = AgentIcons.Provider(IsClaude(conversation), 14, Ocean.Foreground);
+        glyph.Opacity = 0.6;
+        glyph.Margin = new Thickness(6, 0, 0, 0);
+        DockPanel.SetDock(glyph, Dock.Right);
+        second.Children.Add(glyph);
+        second.Children.Add(Ocean.Text(name, Ocean.Foreground, 14, FontWeights.Medium));
+
+        var content = new StackPanel { Children = { first, second } };
+        var button = Ocean.Ghost(content, () => Show(conversation), 6, new Thickness(10, 8, 10, 8), Ocean.RowHover, selected ? Ocean.RowActive : null);
+        button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        button.Margin = new Thickness(0, 2, 0, 2);
+        button.ToolTip = ConversationTip(conversation, name, project);
+        ToolTipService.SetPlacement(button, PlacementMode.Right);
+        ToolTipService.SetInitialShowDelay(button, 600);
+        AutomationProperties.SetName(button, $"{name}, {project}");
         button.MouseRightButtonUp += (_, click) =>
         {
             click.Handled = true;
-            OfferToDelete(button, conversation);
+            OfferActions(button, conversation);
         };
         return button;
     }
 
-    private FrameworkElement Snoozed(AgentConversation conversation)
+    // Its hover card: the title, the project and the model.
+    private FrameworkElement ConversationTip(AgentConversation conversation, string name, string project)
     {
-        var resets = _main.ResumesAt(conversation);
-        var said = IconAndText("\uE823", resets is { } at && conversation.ResumeAtReset ? When(at).Replace("tomorrow ", "") : "", "A.Accent", 11);
-        said.ToolTip = conversation.ResumeAtReset ? $"Out of usage. Goes on by itself{(resets is { } then ? $" at {When(then)}" : " once it resets")}." : "Out of usage. Waiting for you to say go on.";
-        return said;
+        StackPanel Row(FrameworkElement icon, string text)
+        {
+            icon.Margin = new Thickness(0, 0, 8, 0);
+            return new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(2, 6, 0, 0), Children = { icon, Ocean.Text(text, new SolidColorBrush(Color.FromArgb(0xBF, 0xFF, 0xFA, 0xFF)), 12) } };
+        }
+        var model = Models.FirstOrDefault(each => each.Id == conversation.Model).Name ?? conversation.Model ?? "Default model";
+        var glyph = AgentIcons.Provider(IsClaude(conversation), 12, Ocean.Foreground);
+        glyph.Opacity = 0.6;
+        return new StackPanel
+        {
+            Margin = new Thickness(2, 4, 2, 4),
+            Children =
+            {
+                Ocean.Text(name, Ocean.Foreground, 12, FontWeights.Medium),
+                Row(Monogram(project, 12), project),
+                Row(glyph, model),
+            },
+        };
     }
 
-    private FrameworkElement Dot(string brush, string meaning)
+    private FrameworkElement SettledRow(AgentConversation conversation)
     {
-        var dot = new System.Windows.Shapes.Ellipse { Width = 7, Height = 7, Fill = Brush(brush), VerticalAlignment = VerticalAlignment.Center, ToolTip = meaning };
-        AutomationProperties.SetName(dot, meaning);
-        return dot;
+        var name = conversation.Title.Length > 0 ? conversation.Title : "New conversation";
+        var mark = Monogram(_main.ProjectName(conversation.ProjectId), 16);
+        mark.Opacity = 0.4;
+        mark.Margin = new Thickness(0, 0, 10, 0);
+        var words = Ocean.Text(name, conversation == _open ? Ocean.Foreground : new SolidColorBrush(Color.FromArgb(0xB3, 0x8D, 0x8F, 0x97)), 14);
+        var row = new DockPanel();
+        DockPanel.SetDock(mark, Dock.Left);
+        row.Children.Add(mark);
+        row.Children.Add(words);
+        var button = Ocean.Ghost(row, () => Show(conversation), 6, new Thickness(10, 0, 10, 0), Ocean.RowHover, conversation == _open ? Ocean.RowActive : null);
+        button.Height = 36;
+        button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        button.MouseEnter += (_, _) => mark.Opacity = 1;
+        button.MouseLeave += (_, _) => mark.Opacity = 0.4;
+        button.MouseRightButtonUp += (_, click) =>
+        {
+            click.Handled = true;
+            OfferActions(button, conversation);
+        };
+        AutomationProperties.SetName(button, $"{name}, settled");
+        return button;
     }
 
-    private void OfferToDelete(UIElement by, AgentConversation conversation)
+    // What a conversation's doing, as T3 Code's thread status: an icon and a word in the colour of the state.
+    private FrameworkElement ConversationState(AgentConversation conversation)
+    {
+        FrameworkElement Status(string icon, string words, Brush brush, string? after = null)
+        {
+            var row = Ocean.IconText(icon, words, brush, 12, 16, FontWeights.Medium, 4);
+            if (after is not null) row.Children.Add(Ocean.Text($" {after}", brush, 12, FontWeights.Medium));
+            return row;
+        }
+        if (conversation.IsLimited && !conversation.IsWorking)
+        {
+            var resets = _main.ResumesAt(conversation);
+            return Status("alarm-clock", resets is { } at && conversation.ResumeAtReset ? When(at).Replace("tomorrow ", "") : "Out", Ocean.Warning);
+        }
+        if (conversation.IsWaiting) return Status("shield-question", "Needs you", Ocean.Warning);
+        if (conversation.IsWorking) return Status("circle-dashed", "Working", Ocean.Info, Took(DateTimeOffset.UtcNow - conversation.WorkingSince));
+        if (conversation.Unseen && conversation.Items.LastOrDefault()?.Kind == AgentItemKind.Problem) return Status("circle-alert", "Failed", Ocean.Error);
+        if (conversation.Unseen) return Status("circle-check", "Done", Ocean.Success);
+        return Ocean.Text(Ago(conversation.Updated), Ocean.Secondary, 12);
+    }
+
+    // Each second: the rows' states, so "Working 12s" counts.
+    private void ShowConversationStates()
+    {
+        foreach (var row in _list.Children.OfType<Button>())
+        {
+            if (row.Content is StackPanel { Children: [DockPanel first, ..] } && first.Children.OfType<ContentControl>().FirstOrDefault() is { Tag: AgentConversation conversation } state)
+            {
+                state.Content = ConversationState(conversation);
+            }
+        }
+    }
+
+    private void OfferActions(UIElement by, AgentConversation conversation)
     {
         Popup? menu = null;
-        var settle = Make("A.Ghost", IconAndText(conversation.Settled ? "" : "", conversation.Settled ? "Unsettle" : "Settle", "A.Normal", 13), () =>
+        var settle = Ocean.MenuRow(Ocean.IconText(conversation.Settled ? "refresh-cw" : "check", conversation.Settled ? "Unsettle" : "Settle", Ocean.Foreground), () =>
         {
             menu!.IsOpen = false;
             if (!conversation.Settle(!conversation.Settled)) ShowNote("Stop it, or answer what it's asking, before settling it.");
             ShowHeader();
             ShowConversations();
         });
-        settle.ToolTip = "Settled conversations are done with: put away at the bottom of their project, with their agent ended. Writing to one takes it back out.";
-        var delete = Make("A.Ghost", IconAndText("", "Delete conversation", "A.Danger", 13), () =>
+        settle.ToolTip = "Settled conversations are done with: put away at the bottom of the list, with their agent ended. Writing to one takes it back out.";
+        var delete = Ocean.MenuRow(Ocean.IconText("x", "Delete", Ocean.Error), () =>
         {
             menu!.IsOpen = false;
             if (!Dialogs.Confirm("Delete this conversation?\n\nWhat was said in it is gone from Agent Orange. Anything the agent changed stays changed.")) return;
             _main.DeleteConversation(conversation);
-            if (_open == conversation) Show(_main.Conversations.OrderByDescending(each => each.Updated).FirstOrDefault());
+            if (_open == conversation) Show(_main.Conversations.Where(each => !each.Settled).OrderByDescending(each => each.Updated).FirstOrDefault());
             ShowConversations();
         });
-        menu = Menu(by, PlacementMode.MousePoint, new StackPanel { Children = { settle, delete } });
+        var line = new Border { Height = 1, Background = Ocean.Border, Margin = new Thickness(8, 4, 8, 4) };
+        menu = Ocean.Menu(by, PlacementMode.MousePoint, new StackPanel { Children = { settle, line, delete } });
         menu.IsOpen = true;
     }
 
@@ -672,83 +667,23 @@ public sealed partial class AgentsWindow : Window
         var projects = _main.AgentProjects();
         var rows = new StackPanel();
         Popup? menu = null;
-        rows.Children.Add(new TextBlock { Text = projects.Count == 0 ? "Make a project first." : "Which project is it about?", Foreground = Brush("A.Faint"), FontSize = 12, Margin = new Thickness(10, 6, 10, 6) });
+        rows.Children.Add(new TextBlock { Text = projects.Count == 0 ? "Make a project first." : "Which project is it about?", Foreground = Ocean.MutedText, FontSize = 12, Margin = new Thickness(8, 6, 8, 6) });
         foreach (var each in projects)
         {
-            rows.Children.Add(Make("A.Ghost", Text(each.Name, "A.Normal", 13), () =>
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            var mark = Monogram(each.Name, 16);
+            mark.Margin = new Thickness(0, 0, 8, 0);
+            row.Children.Add(mark);
+            row.Children.Add(Ocean.Text(each.Name, Ocean.Foreground, 14));
+            rows.Children.Add(Ocean.MenuRow(row, () =>
             {
                 menu!.IsOpen = false;
                 Show(_main.NewConversation(each));
                 ShowConversations();
             }));
         }
-        menu = Menu(_list, PlacementMode.Relative, rows);
+        menu = Ocean.Menu(_list, PlacementMode.Relative, rows, 220);
         menu.IsOpen = true;
-    }
-
-    // The model and effort, from small lists above where they're shown.
-
-    private void PickModel() => Pick(_modelPill, Models, _open?.Model, chosen =>
-    {
-        if (_open is not null) _open.Model = chosen;
-    });
-
-    private void PickEffort() => Pick(_effortPill, Efforts, _open?.Effort, chosen =>
-    {
-        if (_open is not null) _open.Effort = chosen;
-    });
-
-    private void PickPermission() => Pick(_permissionPill, Permissions, _open?.PermissionMode, chosen =>
-    {
-        if (_open is not null && chosen is not null) _open.SetPermissionMode(chosen);
-    }, "Takes effect straight away, even while it works.", PermissionMeaning);
-
-    private void Pick(Button by, (string? Id, string Name)[] options, string? current, Action<string?> chosen, string footer = "Takes effect from the next message.", Dictionary<string, string>? meanings = null)
-    {
-        var rows = new StackPanel();
-        Popup? menu = null;
-        foreach (var (id, name) in options)
-        {
-            var row = new DockPanel();
-            var tick = Glyph(id == current ? "" : "", "A.Accent", 12);
-            tick.Width = 16;
-            DockPanel.SetDock(tick, Dock.Right);
-            row.Children.Add(tick);
-            if (id is not null && meanings?.GetValueOrDefault(id) is { } meaning)
-            {
-                var about = Text(meaning, "A.Faint", 11.5);
-                about.TextWrapping = TextWrapping.Wrap;
-                about.TextTrimming = TextTrimming.None;
-                about.Margin = new Thickness(0, 2, 0, 0);
-                row.Children.Add(new StackPanel { MaxWidth = 260, Children = { Text(name, "A.Normal", 13), about } });
-            }
-            else
-            {
-                row.Children.Add(Text(name, "A.Normal", 13));
-            }
-            rows.Children.Add(Make("A.Ghost", row, () =>
-            {
-                menu!.IsOpen = false;
-                chosen(id);
-                ShowPills();
-            }));
-        }
-        rows.Children.Add(new TextBlock { Text = footer, Foreground = Brush("A.Faint"), FontSize = 11, Margin = new Thickness(10, 4, 10, 4) });
-        menu = Menu(by, PlacementMode.Top, rows);
-        menu.IsOpen = true;
-    }
-
-    private void ShowPills()
-    {
-        ((TextBlock)_modelPill.Content).Text = Models.FirstOrDefault(model => model.Id == _open?.Model).Name ?? _open?.Model ?? "Default model";
-        ((TextBlock)_effortPill.Content).Text = Efforts.FirstOrDefault(effort => effort.Id == _open?.Effort).Name ?? "Default effort";
-        var mode = _open?.PermissionMode ?? "acceptEdits";
-        var permission = (StackPanel)_permissionPill.Content;
-        ((TextBlock)permission.Children[1]).Text = Permissions.FirstOrDefault(each => each.Id == mode).Name ?? mode;
-        var risky = mode == "bypassPermissions";
-        ((TextBlock)permission.Children[0]).Foreground = Brush(risky ? "A.Danger" : mode == "plan" ? "A.Accent" : "A.Muted");
-        ((TextBlock)permission.Children[1]).Foreground = Brush(risky ? "A.Danger" : "A.Muted");
-        _permissionPill.ToolTip = PermissionMeaning.GetValueOrDefault(mode);
     }
 
     // The open conversation
@@ -772,14 +707,14 @@ public sealed partial class AgentsWindow : Window
         _turnsShown = TurnsAtATime;
         _openTools.Clear();
         _openGroups.Clear();
+        _openTurns.Clear();
         if (conversation is not null) conversation.Unseen = false;
 
         ShowHeader();
         _composer.IsEnabled = conversation is not null;
         DrawAll();
         ShowSendButton();
-        ShowPills();
-        ShowWorking();
+        ShowControls();
         ShowConversations();
         ShowNote(null);
         _stepsOpen = conversation?.Steps?.Any(step => step.Status != "completed") == true;
@@ -789,17 +724,33 @@ public sealed partial class AgentsWindow : Window
         if (conversation is not null) _ = Dispatcher.InvokeAsync(() => _input.Focus(), DispatcherPriority.Input);
     }
 
+    // The breadcrumb, as T3 Code's: the project, a slash, and the conversation's title.
     private void ShowHeader()
     {
-        var conversation = _open;
-        _title.Text = conversation is null ? "No conversation open" : conversation.Title.Length > 0 ? conversation.Title : "New conversation";
-        _subtitle.Text = conversation is null ? "" : _main.ProjectName(conversation.ProjectId);
-        _headerTools.Visibility = conversation is null ? Visibility.Collapsed : Visibility.Visible;
-        var settle = (StackPanel)_settle.Content;
-        var settled = conversation?.Settled == true;
-        ((TextBlock)settle.Children[0]).Text = settled ? "" : "";
-        ((TextBlock)settle.Children[1]).Text = settled ? "Unsettle" : "Settle";
-        _settle.ToolTip = settled ? "Take it back out of the settled ones" : "Done with it: put it away with the settled ones, and end its agent";
+        _crumbs.Children.Clear();
+        _headerTools.Children.Clear();
+        if (_open is not { } conversation)
+        {
+            _crumbs.Children.Add(Ocean.Text("Agents", Ocean.Foreground, 14, FontWeights.Medium));
+            return;
+        }
+        var project = _main.ProjectName(conversation.ProjectId);
+        var mark = Monogram(project, 14);
+        mark.Margin = new Thickness(0, 0, 6, 0);
+        var projectName = Ocean.Text(project, Ocean.MutedText, 14, FontWeights.Medium);
+        projectName.MaxWidth = 160;
+        _crumbs.Children.Add(mark);
+        _crumbs.Children.Add(projectName);
+        _crumbs.Children.Add(Ocean.Text("  /  ", Ocean.Secondary, 14));
+        _crumbs.Children.Add(Ocean.Text(conversation.Title.Length > 0 ? conversation.Title : "New conversation", Ocean.Foreground, 14, FontWeights.Medium));
+
+        var settle = Ocean.IconButton(conversation.Settled ? "refresh-cw" : "check", () =>
+        {
+            if (!conversation.Settle(!conversation.Settled)) ShowNote("Stop it, or answer what it's asking, before settling it.");
+            ShowHeader();
+            ShowConversations();
+        }, conversation.Settled ? "Unsettle: take it back out of the settled ones" : "Settle: done with it, so put it away and end its agent", 28, 16, Ocean.MutedText);
+        _headerTools.Children.Add(settle);
     }
 
     private void ShowSees() => _sees.Text = _main.ViewLabel();
@@ -808,31 +759,47 @@ public sealed partial class AgentsWindow : Window
     {
         _note.Visibility = problem is null ? Visibility.Collapsed : Visibility.Visible;
         if (problem is null) return;
-        _note.Background = Brush("A.DangerTint");
-        _note.Child = IconAndText("", problem, "A.Danger", 13);
-        ((TextBlock)((StackPanel)_note.Child).Children[1]).TextWrapping = TextWrapping.Wrap;
-        ((TextBlock)((StackPanel)_note.Child).Children[1]).TextTrimming = TextTrimming.None;
+        _note.Background = Ocean.ErrorSurface;
+        var words = Ocean.Wrapped(problem, Ocean.Error, 13, 20);
+        var icon = AgentIcons.Line("circle-alert", 16, Ocean.Error);
+        icon.Margin = new Thickness(0, 2, 8, 0);
+        icon.VerticalAlignment = VerticalAlignment.Top;
+        var row = new DockPanel();
+        DockPanel.SetDock(icon, Dock.Left);
+        row.Children.Add(icon);
+        row.Children.Add(words);
+        _note.Child = row;
     }
 
+    // T3 Code's send button: a 32 px circle in the theme's action colour with its own arrow, or red with
+    // a square to stop. While it works, something typed goes after what it's doing.
     private void ShowSendButton()
     {
-        // While it works, typing something sends it on, and with nothing typed the button stops it.
-        var stops = _open is { IsWorking: true } && _input.Text.Trim().Length == 0 && _pending.Count == 0;
-        var can = stops || _input.Text.Trim().Length > 0 || _pending.Count > 0;
-        _send.Content = Glyph(stops ? "" : "", can ? "A.OnAccent" : "A.Faint", stops ? 12 : 14);
+        var typed = _input.Text.Trim().Length > 0 || _pending.Count > 0;
+        var stops = _open is { IsWorking: true } && !typed;
+        var can = stops || typed;
         _send.IsEnabled = can;
+        _send.Background = stops ? Ocean.Destructive : can ? Ocean.Primary : Ocean.SendDisabled;
+        _send.Template = Ocean.Template(16, stops ? Ocean.DestructiveHover : can ? Ocean.PrimaryHover : Ocean.SendDisabled);
+        if (stops)
+        {
+            _send.Content = new Border { Width = 8, Height = 8, CornerRadius = new CornerRadius(1.5), Background = Brushes.White };
+        }
+        else
+        {
+            var arrow = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"),
+                Stroke = can ? Ocean.OnPrimary : Ocean.MutedText,
+                StrokeThickness = 1.8,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                StrokeLineJoin = PenLineJoin.Round,
+            };
+            _send.Content = new Canvas { Width = 14, Height = 14, Children = { arrow } };
+        }
         AutomationProperties.SetName(_send, stops ? "Stop the agent" : "Send");
         _send.ToolTip = stops ? "Stop" : "Send (Enter)";
-    }
-
-    private void ShowWorking()
-    {
-        var working = _open is { IsWorking: true };
-        _working.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
-        if (!working) return;
-        var seconds = (int)(DateTimeOffset.UtcNow - _open!.WorkingSince).TotalSeconds;
-        var took = seconds < 60 ? $"{seconds}s" : $"{seconds / 60}m {seconds % 60}s";
-        _workingText.Text = _open.IsWaiting ? "Waiting for you" : _open.Retrying is { } retrying ? $"{retrying} · {took}" : seconds < 60 ? $"Working · {seconds}s" : $"Working · {seconds / 60}m {seconds % 60}s";
     }
 
     private async void SendOrStop()
@@ -859,161 +826,15 @@ public sealed partial class AgentsWindow : Window
         conversation.Send(text, attachments, _main.ViewLabel(), _main.DescribeView(), () => _main.PrepareAgent(conversation));
         ShowHeader();
         ShowConversations();
-        ShowWorking();
-    }
-
-    // Pictures and files to go with the next message
-
-    private void PickFiles()
-    {
-        if (_open is null) return;
-        var dialog = new Microsoft.Win32.OpenFileDialog { Title = "Send to the agent", Multiselect = true, InitialDirectory = _main.ProjectFolderOf(_open) ?? "" };
-        if (dialog.ShowDialog(this) == true) AttachFiles(dialog.FileNames);
-    }
-
-    private bool PasteAttachments()
-    {
-        try
-        {
-            if (Clipboard.ContainsImage() && Clipboard.GetImage() is { } image)
-            {
-                AttachImage(image);
-                return true;
-            }
-            if (Clipboard.ContainsFileDropList() && Clipboard.GetFileDropList() is { Count: > 0 } files)
-            {
-                AttachFiles(files.Cast<string>());
-                return true;
-            }
-        }
-        catch (System.Runtime.InteropServices.COMException)
-        {
-            // Another program has the clipboard open. The paste goes in as words, if it can.
-        }
-        return false;
-    }
-
-    private void AttachFiles(IEnumerable<string> files)
-    {
-        if (_open is null) return;
-        foreach (var file in files)
-        {
-            if (Directory.Exists(file)) continue;
-            if (AgentAttachments.FromFile(file, _main.AttachmentsFolder) is { } attachment) _pending.Add(attachment);
-        }
-        ShowTray();
-        _input.Focus();
-    }
-
-    /// <summary>A picture for the next message, such as a screenshot.</summary>
-    internal void AttachImage(System.Windows.Media.Imaging.BitmapSource image)
-    {
-        if (_open is null) return;
-        if (AgentAttachments.SaveImage(image, _main.AttachmentsFolder) is { } attachment) _pending.Add(attachment);
-        ShowTray();
-        _input.Focus();
-    }
-
-    /// <summary>A screenshot taken with the key: for the conversation open here, or a new one about the project on screen.</summary>
-    internal void AttachScreenshotHere(System.Windows.Media.Imaging.BitmapSource image)
-    {
-        if (_open is null && _main.ProjectOnScreen is { } project)
-        {
-            Show(_main.NewConversation(project));
-            ShowConversations();
-        }
-        if (_open is null)
-        {
-            ShowNote("Open a project first, so the screenshot has a conversation to go to.");
-            return;
-        }
-        AttachImage(image);
-    }
-
-    // The window gets out of the way for it, so what's under it can be taken.
-    private async Task ShootAsync()
-    {
-        if (_open is null) return;
-        var state = WindowState;
-        Hide();
-        await Task.Delay(200);
-        var taken = await AgentAttachments.TakeScreenshotAsync();
-        Show();
-        WindowState = state;
-        Activate();
-        if (taken is not null) AttachImage(taken);
-    }
-
-    private void ShowTray()
-    {
-        _tray.Children.Clear();
-        _tray.Visibility = _pending.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
-        foreach (var attachment in _pending.ToList())
-        {
-            var remove = Make("A.Round", Glyph("", "A.Normal", 9), () =>
-            {
-                _pending.Remove(attachment);
-                ShowTray();
-            });
-            remove.Width = remove.Height = 20;
-            remove.Background = Brush("A.Surface");
-            remove.BorderBrush = Brush("A.InputBorder");
-            remove.HorizontalAlignment = HorizontalAlignment.Right;
-            remove.VerticalAlignment = VerticalAlignment.Top;
-            remove.Margin = new Thickness(0, -6, -6, 0);
-            remove.ToolTip = "Don't send this";
-            AutomationProperties.SetName(remove, $"Don't send {attachment.Name}");
-            _tray.Children.Add(new Grid { Margin = new Thickness(0, 6, 12, 0), Children = { AttachmentFace(attachment, 64), remove } });
-        }
-        ShowSendButton();
-    }
-
-    // A picture as a small rounded thumbnail, or a file as a chip with its name. Either opens on a click.
-    private FrameworkElement AttachmentFace(AgentAttachment attachment, double height)
-    {
-        FrameworkElement face;
-        if (attachment.IsImage && AgentAttachments.LoadImage(attachment.Path, (int)(height * 2)) is { } picture)
-        {
-            face = new Border
-            {
-                Height = height,
-                Width = Math.Min(height * 2.4, Math.Max(height * 0.6, height * picture.PixelWidth / Math.Max(1, picture.PixelHeight))),
-                CornerRadius = new CornerRadius(10),
-                BorderBrush = Brush("A.InputBorder"),
-                BorderThickness = new Thickness(1),
-                Background = new ImageBrush(picture) { Stretch = Stretch.UniformToFill },
-            };
-        }
-        else
-        {
-            var chip = IconAndText(attachment.IsImage ? "" : "", attachment.Name, "A.Normal", 12.5);
-            ((TextBlock)chip.Children[1]).MaxWidth = 220;
-            face = new Border { Height = Math.Min(height, 40), CornerRadius = new CornerRadius(10), Background = Brush("A.Surface"), BorderBrush = Brush("A.InputBorder"), BorderThickness = new Thickness(1), Padding = new Thickness(12, 0, 14, 0), Child = chip };
-        }
-        face.Cursor = Cursors.Hand;
-        face.ToolTip = attachment.Path;
-        face.MouseLeftButtonUp += (_, _) => OpenFile(attachment.Path);
-        return face;
-    }
-
-    private static void OpenFile(string path)
-    {
-        try
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
-        }
-        catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
-        {
-            AppLog.Write($"Couldn't open {path}: {error.Message}");
-        }
+        ShowTurns();
     }
 
     private void WorkingChanged()
     {
         ShowSendButton();
-        ShowWorking();
-        ShowPills();
+        ShowControls();
         ShowUsage();
+        ShowTurns();
         if (_open is not null && IsActive) _open.Unseen = false;
         if (_follow) ScrollToEnd();
     }
@@ -1049,7 +870,8 @@ public sealed partial class AgentsWindow : Window
         }
         _changed.Clear();
         foreach (var segment in redraw) Draw(segment);
-        ShowWorking();
+        ShowTurns();
+        ShowQuestions();
         if (_follow) ScrollToEnd();
     }
 
@@ -1065,7 +887,8 @@ public sealed partial class AgentsWindow : Window
         if (_open is null)
         {
             _earlier.Visibility = Visibility.Collapsed;
-            _timeline.Children.Add(Welcome("No conversation open", "Start one with New conversation. It's about the project open in the main window."));
+            _timeline.Children.Add(Welcome("No conversation open", "Start one with the pen at the top of the list. It's about the project open in the main window."));
+            ShowQuestions();
             return;
         }
 
@@ -1075,6 +898,8 @@ public sealed partial class AgentsWindow : Window
         var redraw = new HashSet<Segment>();
         foreach (var item in _open.Items.Skip(from)) Append(item, redraw);
         foreach (var segment in redraw) Draw(segment);
+        ShowTurns();
+        ShowQuestions();
 
         if (_open.Items.Count == 0)
         {
@@ -1084,22 +909,21 @@ public sealed partial class AgentsWindow : Window
 
     private FrameworkElement Welcome(string title, string said)
     {
-        var words = Text(said, "A.Muted", 14);
-        words.TextWrapping = TextWrapping.Wrap;
-        words.TextTrimming = TextTrimming.None;
+        var words = Ocean.Wrapped(said, Ocean.MutedText, 14);
         words.TextAlignment = TextAlignment.Center;
         words.MaxWidth = 460;
         words.Margin = new Thickness(0, 10, 0, 0);
-        var heading = Text(title, "A.Strong", 24, FontWeights.SemiBold);
+        var heading = Ocean.Text(title, Ocean.Foreground, 24, FontWeights.SemiBold);
         heading.HorizontalAlignment = HorizontalAlignment.Center;
-        return new StackPanel { Margin = new Thickness(0, 120, 0, 0), HorizontalAlignment = HorizontalAlignment.Center, Children = { heading, words } };
+        return new StackPanel { Margin = new Thickness(0, 140, 0, 0), HorizontalAlignment = HorizontalAlignment.Center, Children = { heading, words } };
     }
 
-    // Tools used one after another go together, between whatever comes before and after them.
+    // Tools used one after another go together, between whatever comes before and after them. A message
+    // from the person begins a turn, with the line its work sits under right after it.
     private void Append(AgentItem item, HashSet<Segment> redraw)
     {
         if (_segments.Count == 0 && _timeline.Children.Count > 0) _timeline.Children.Clear(); // The welcome.
-        if (item.Kind == AgentItemKind.Tool && _segments.LastOrDefault() is { Kind: AgentItemKind.Tool } tools)
+        if (item.Kind == AgentItemKind.Tool && _segments.LastOrDefault() is { Kind: AgentItemKind.Tool, IsTurnLine: false } tools)
         {
             tools.Items.Add(item);
             _segmentOf[item.Id] = tools;
@@ -1113,10 +937,18 @@ public sealed partial class AgentsWindow : Window
         _segmentOf[item.Id] = segment;
         _timeline.Children.Add(segment.Element);
         redraw.Add(segment);
+
+        if (item.Kind != AgentItemKind.User) return;
+        var line = new Segment { Kind = AgentItemKind.Notice, IsTurnLine = true };
+        line.Items.Add(item);
+        line.Element = TurnLine(line);
+        _segments.Add(line);
+        _timeline.Children.Add(line.Element);
     }
 
     private void Draw(Segment segment)
     {
+        if (segment.IsTurnLine) return;
         var at = _timeline.Children.IndexOf(segment.Element);
         var item = segment.Items[0];
         if (segment.Kind == AgentItemKind.Assistant && segment.Reply is { } reply)
@@ -1124,61 +956,183 @@ public sealed partial class AgentsWindow : Window
             reply.Show(item.Text);
             return;
         }
+        var visibility = segment.Element.Visibility;
         segment.Element = segment.Kind switch
         {
             AgentItemKind.User => UserMessage(item),
             AgentItemKind.Assistant => AssistantMessage(segment, item),
             AgentItemKind.Tool => ToolGroup(segment),
             AgentItemKind.Approval => Approval(item),
-            AgentItemKind.Question => Questions(item),
+            AgentItemKind.Question => AskedRow(item),
             AgentItemKind.Plan => PlanCard(item),
             AgentItemKind.Problem => Problem(item.Text),
             _ => Notice(item.Text),
         };
+        segment.Element.Visibility = visibility;
         if (at < 0) return;
         _timeline.Children.RemoveAt(at);
         _timeline.Children.Insert(at, segment.Element);
     }
 
+    // Turns
+
+    // Under the person's message: "Working for 12s" while the agent works, then "Worked for 1m 05s",
+    // which folds away what it did on the way, leaving its answer, as T3 Code's turns do.
+    private FrameworkElement TurnLine(Segment line)
+    {
+        var words = Ocean.Text("", Ocean.MutedText, 14, lineHeight: 22.75);
+        line.TurnWords = words;
+        var chevron = AgentIcons.Line("chevron-right", 14, Ocean.MutedText);
+        chevron.Margin = new Thickness(4, 0, 0, 0);
+        chevron.RenderTransformOrigin = new Point(0.5, 0.5);
+        chevron.RenderTransform = new RotateTransform(0);
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Children = { words, chevron } };
+        var button = Ocean.Ghost(row, () =>
+        {
+            var id = line.Items[0].Id;
+            if (!_openTurns.Remove(id)) _openTurns.Add(id);
+            ShowTurns();
+        }, 6, new Thickness(4, 0, 4, 0));
+        button.Height = 24;
+        button.HorizontalAlignment = HorizontalAlignment.Left;
+        button.Template = Ocean.Template(6, Brushes.Transparent);
+        button.MouseEnter += (_, _) => words.Foreground = Ocean.Foreground;
+        button.MouseLeave += (_, _) => words.Foreground = Ocean.MutedText;
+        return new Border
+        {
+            BorderBrush = Ocean.Border60,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(0, 4, 0, 8),
+            Margin = new Thickness(0, 0, 0, 6),
+            Child = button,
+            Visibility = Visibility.Collapsed,
+        };
+    }
+
+    private void ShowTurns()
+    {
+        if (_open is null) return;
+        var lastTurn = _segments.LastOrDefault(segment => segment.IsTurnLine);
+        Segment? line = null;
+        var inTurn = new List<Segment>();
+
+        void Finish()
+        {
+            if (line is null) return;
+            var current = line == lastTurn && _open.IsWorking;
+            var answer = current ? null : inTurn.LastOrDefault(segment => segment.Kind == AgentItemKind.Assistant);
+            var hideable = inTurn.Where(segment => segment != answer && !NeedsPerson(segment) && segment.Kind != AgentItemKind.Problem).ToList();
+            var started = line.Items[0].At;
+            var ended = inTurn.SelectMany(segment => segment.Items).Select(item => item.At).DefaultIfEmpty(started).Max();
+            var element = (Border)line.Element;
+            var button = (Button)element.Child;
+            var chevron = (FrameworkElement)((StackPanel)button.Content).Children[1];
+
+            if (current)
+            {
+                element.Visibility = Visibility.Visible;
+                line.TurnWords!.Text = _open.IsWaiting ? "Waiting for you" : $"{_open.Retrying ?? "Working"} for {Took(DateTimeOffset.UtcNow - _open.WorkingSince)}";
+                chevron.Visibility = Visibility.Collapsed;
+                button.IsHitTestVisible = false;
+                foreach (var segment in inTurn) segment.Element.Visibility = Visibility.Visible;
+                return;
+            }
+            var unfolded = _openTurns.Contains(line.Items[0].Id);
+            element.Visibility = hideable.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            line.TurnWords!.Text = $"Worked for {Took(ended - started)}";
+            chevron.Visibility = Visibility.Visible;
+            ((RotateTransform)chevron.RenderTransform).Angle = unfolded ? 90 : 0;
+            button.IsHitTestVisible = true;
+            AutomationProperties.SetName(button, $"{line.TurnWords.Text}, {(unfolded ? "showing what it did" : "click to see what it did")}");
+            foreach (var segment in inTurn) segment.Element.Visibility = unfolded || !hideable.Contains(segment) ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        foreach (var segment in _segments)
+        {
+            if (segment.IsTurnLine)
+            {
+                Finish();
+                line = segment;
+                inTurn = [];
+                continue;
+            }
+            if (segment.Kind == AgentItemKind.User) continue;
+            inTurn.Add(segment);
+        }
+        Finish();
+    }
+
+    private static bool NeedsPerson(Segment segment) =>
+        segment.Items.Any(item => item.RequestState == AgentRequestState.Waiting && item.Kind is AgentItemKind.Approval or AgentItemKind.Question or AgentItemKind.Plan);
+
+    // Messages
+
     private FrameworkElement UserMessage(AgentItem item)
     {
-        var words = Words(item.Text, "A.Strong", 14);
-        var bubble = new Border
-        {
-            HorizontalAlignment = HorizontalAlignment.Right,
-            MaxWidth = ColumnWidth * 0.8,
-            Background = Brush("A.Surface"),
-            CornerRadius = new CornerRadius(18),
-            Padding = new Thickness(16, 10, 16, 11),
-            Child = words,
-        };
-        var message = new StackPanel { Margin = new Thickness(0, 26, 0, 6) };
+        var message = new StackPanel { Margin = new Thickness(0, 0, 0, 16), HorizontalAlignment = HorizontalAlignment.Stretch };
         if (item.Attachments is { Count: > 0 } attachments)
         {
-            var sent = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right, FlowDirection = FlowDirection.LeftToRight, Margin = new Thickness(0, 0, 0, 6) };
+            var sent = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 0, 0, 4), MaxWidth = ColumnWidth * 0.8 };
             foreach (var attachment in attachments)
             {
-                var face = AttachmentFace(attachment, attachments.Count == 1 ? 180 : 110);
-                face.Margin = new Thickness(6, 0, 0, 6);
+                var face = SentFace(attachment, attachments.Count(each => each.IsImage) == 1);
+                face.Margin = new Thickness(4, 0, 0, 4);
                 sent.Children.Add(face);
             }
             message.Children.Add(sent);
         }
-        if (item.Text.Length > 0) message.Children.Add(bubble);
+        if (item.Text.Length > 0)
+        {
+            var words = new TextBox
+            {
+                Text = item.Text,
+                IsReadOnly = true,
+                TextWrapping = TextWrapping.Wrap,
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(0),
+                Foreground = Ocean.Foreground,
+                SelectionBrush = Ocean.Focus,
+                FontSize = 14,
+                Cursor = Cursors.IBeam,
+            };
+            TextBlock.SetLineHeight(words, 22.75);
+            TextBlock.SetLineStackingStrategy(words, LineStackingStrategy.BlockLineHeight);
+            message.Children.Add(new Border
+            {
+                HorizontalAlignment = HorizontalAlignment.Right,
+                MaxWidth = ColumnWidth * 0.8,
+                Background = Ocean.Message,
+                CornerRadius = new CornerRadius(16),
+                Padding = new Thickness(12),
+                Child = words,
+            });
+        }
+
+        // Under it, faint until it's pointed at: when it was sent, and what the agent was told the person was looking at.
+        var meta = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 4, 4, 0) };
         if (item.Automatic)
         {
-            var sent = IconAndText("\uE72C", "Sent for you once the usage limit reset", "A.Faint", 11.5);
-            sent.HorizontalAlignment = HorizontalAlignment.Right;
-            sent.Margin = new Thickness(0, 6, 8, 0);
-            message.Children.Add(sent);
+            meta.Children.Add(Ocean.IconText("refresh-cw", "Sent for you once the usage limit reset", Ocean.MutedText, 12, 12));
         }
-        else if (item.View is { Length: > 0 } view)
+        else
         {
-            var seen = IconAndText("", view, "A.Faint", 11.5);
-            seen.HorizontalAlignment = HorizontalAlignment.Right;
-            seen.Margin = new Thickness(0, 6, 8, 0);
-            seen.ToolTip = "What you were looking at in Agent Orange, which the agent was told";
-            message.Children.Add(seen);
+            if (item.View is { Length: > 0 } view)
+            {
+                var seen = Ocean.IconText("eye", view, Ocean.MutedText, 12, 12, gap: 4);
+                seen.ToolTip = "What you were looking at in Agent Orange, which the agent was told";
+                meta.Children.Add(seen);
+                meta.Children.Add(Ocean.Text("  ·  ", Ocean.MutedText, 12));
+            }
+            meta.Children.Add(Ocean.Text(item.At.ToLocalTime().ToString("h:mm tt", System.Globalization.CultureInfo.InvariantCulture), Ocean.MutedText, 12));
+        }
+        meta.Opacity = item.Automatic ? 1 : 0;
+        message.Children.Add(meta);
+        message.Background = Brushes.Transparent;
+        if (!item.Automatic)
+        {
+            message.MouseEnter += (_, _) => meta.Opacity = 1;
+            message.MouseLeave += (_, _) => meta.Opacity = 0;
         }
         return message;
     }
@@ -1186,87 +1140,113 @@ public sealed partial class AgentsWindow : Window
     private FrameworkElement AssistantMessage(Segment segment, AgentItem item)
     {
         var reply = new AgentMarkdown(new AgentMarkdown.Look(
-            Brush("A.Normal"), Brush("A.Strong"), Brush("A.Muted"), Brush("A.Normal"), Brush("A.CodeBack"), Brush("A.Surface"), Brush("A.Border"), Brush("A.Accent"),
-            FontFamily, new FontFamily("Cascadia Mono, Consolas"), 14, 23));
-        reply.View.SelectionBrush = Brush("A.Accent");
+            Ocean.Body, Ocean.Foreground, Ocean.MutedText, Ocean.Foreground, Ocean.CodeBack, Ocean.InlineCode, Ocean.Border, Ocean.Info,
+            Inter, Ocean.Mono, 14, 22.75) { Rule = Ocean.Border60, Hover = Ocean.Accent });
+        reply.View.SelectionBrush = Ocean.Focus;
         reply.Show(item.Text);
         segment.Reply = reply;
-        return new Border { Margin = new Thickness(0, 10, 0, 10), Child = reply.View };
+        return new Border { Margin = new Thickness(4, 2, 4, 10), Child = reply.View };
     }
 
-    private static string ToolGlyph(string? name) => name switch
+    // Work, as T3 Code's work log: a 24 px row with a 16 px icon in the secondary colour.
+
+    private static string ToolIcon(string? name) => name switch
     {
-        "Read" => "",
-        "Edit" or "MultiEdit" or "Write" or "NotebookEdit" => "",
-        "Bash" or "PowerShell" => "",
-        "Grep" or "Glob" => "",
-        "WebFetch" or "WebSearch" => "",
-        "TodoWrite" => "",
-        _ when name?.StartsWith("mcp__", StringComparison.Ordinal) == true => "",
-        _ => "",
+        "Read" or "NotebookRead" => "eye",
+        "Edit" or "MultiEdit" or "Write" or "NotebookEdit" => "square-pen",
+        "Bash" or "PowerShell" or "BashOutput" or "KillShell" => "terminal",
+        "Grep" or "Glob" => "search",
+        "WebFetch" or "WebSearch" => "globe",
+        "TodoWrite" => "list-checks",
+        "Task" or "Agent" => "bot",
+        _ when name?.StartsWith("mcp__", StringComparison.Ordinal) == true => "hammer",
+        _ => "wrench",
     };
 
-    // One line for the lot while it's done, or the tool working now while it isn't. Opened, a line each.
+    private FrameworkElement WorkRow(string icon, string words, Brush iconBrush, Action? click = null, bool live = false, bool chevron = false, bool opened = false, Brush? wordsBrush = null)
+    {
+        var glyph = AgentIcons.Line(icon, 16, iconBrush, 2);
+        glyph.Opacity = iconBrush == Ocean.Secondary ? 0.7 : 1;
+        var cell = new Grid { Width = 24, Height = 24, Children = { glyph } };
+        glyph.HorizontalAlignment = HorizontalAlignment.Center;
+        glyph.VerticalAlignment = VerticalAlignment.Center;
+        var label = Ocean.Text(words, wordsBrush ?? Ocean.Secondary, 14, lineHeight: 22.75);
+        if (live) Ocean.Shine(label, wordsBrush ?? Ocean.Secondary);
+        var row = new DockPanel { MinHeight = 24 };
+        DockPanel.SetDock(cell, Dock.Left);
+        row.Children.Add(cell);
+        if (chevron)
+        {
+            var mark = AgentIcons.Line("chevron-right", 12, Ocean.Secondary);
+            mark.Opacity = 0.7;
+            mark.Margin = new Thickness(6, 0, 0, 0);
+            mark.RenderTransformOrigin = new Point(0.5, 0.5);
+            mark.RenderTransform = new RotateTransform(opened ? 90 : 0);
+            DockPanel.SetDock(mark, Dock.Right);
+            row.Children.Add(mark);
+        }
+        label.Margin = new Thickness(6, 0, 0, 0);
+        row.Children.Add(label);
+        if (click is null) return new Border { Padding = new Thickness(2), Child = row };
+        var button = Ocean.Ghost(row, click, 6, new Thickness(2, 1, 2, 1), Brushes.Transparent);
+        button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        button.MouseEnter += (_, _) => { if (!live) label.Foreground = Ocean.Foreground; };
+        button.MouseLeave += (_, _) => { if (!live) label.Foreground = wordsBrush ?? Ocean.Secondary; };
+        AutomationProperties.SetName(button, words);
+        return button;
+    }
+
+    // One line for the lot once they're done, or each, while they work. Opened, a line each, and each opens to what it gave back.
     private FrameworkElement ToolGroup(Segment segment)
     {
-        var running = _open?.IsWorking == true ? segment.Items.LastOrDefault(tool => tool.ToolState == AgentToolState.Running) : null;
-        var opened = _openGroups.Contains(segment);
-        var failed = segment.Items.Count(tool => tool.ToolState == AgentToolState.Failed);
-        var said = running is not null ? running.Text : Summary(segment.Items);
-
-        var line = new StackPanel { Orientation = Orientation.Horizontal };
-        if (running is not null) line.Children.Add(Pulse());
-        else line.Children.Add(new TextBlock { Text = opened ? "" : "", FontFamily = new FontFamily(Icons), FontSize = 9, Foreground = Brush("A.Faint"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(1, 1, 10, 0) });
-        var words = Text(said, running is not null ? "A.Normal" : "A.Muted", 13);
-        words.MaxWidth = ColumnWidth - 60;
-        line.Children.Add(words);
-        if (failed > 0) line.Children.Add(Text($"  ·  {failed} failed", "A.Danger", 13));
-
-        var header = Make("A.Ghost", line, () =>
+        var working = _open?.IsWorking == true && segment == _segments.LastOrDefault(each => !each.IsTurnLine);
+        var opened = _openGroups.Contains(segment) || working;
+        var group = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+        if (!working)
         {
-            if (!_openGroups.Remove(segment)) _openGroups.Add(segment);
-            Draw(segment);
-        });
-        header.HorizontalAlignment = HorizontalAlignment.Left;
-        header.Padding = new Thickness(8, 5, 10, 5);
-        AutomationProperties.SetName(header, $"{said}, {(opened ? "showing each tool" : "click to see each tool")}");
-
-        var group = new StackPanel { Margin = new Thickness(-8, 4, 0, 4), Children = { header } };
+            var failed = segment.Items.Count(tool => tool.ToolState == AgentToolState.Failed);
+            var kinds = segment.Items.Select(tool => ToolIcon(tool.Tool)).Distinct().ToList();
+            var summary = Summary(segment.Items) + (failed > 0 ? $", {failed} failed" : "");
+            group.Children.Add(WorkRow(kinds.Count == 1 ? kinds[0] : "hammer", summary, Ocean.Secondary, () =>
+            {
+                if (!_openGroups.Remove(segment)) _openGroups.Add(segment);
+                Draw(segment);
+            }, chevron: true, opened: opened, wordsBrush: failed > 0 ? Ocean.Error : null));
+        }
         if (!opened) return group;
-        var list = new StackPanel { Margin = new Thickness(19, 2, 0, 4) };
-        foreach (var tool in segment.Items) list.Children.Add(ToolLine(segment, tool));
-        group.Children.Add(new Border { BorderBrush = Brush("A.Border"), BorderThickness = new Thickness(1, 0, 0, 0), Margin = new Thickness(13, 0, 0, 0), Child = list });
+        var list = new StackPanel { Margin = new Thickness(working ? 0 : 12, 0, 0, 0) };
+        foreach (var tool in segment.Items) list.Children.Add(ToolLine(segment, tool, working));
+        group.Children.Add(list);
         return group;
     }
 
-    private FrameworkElement ToolLine(Segment segment, AgentItem tool)
+    private FrameworkElement ToolLine(Segment segment, AgentItem tool, bool working)
     {
-        var row = new DockPanel();
-        var mark = tool.ToolState switch
-        {
-            AgentToolState.Failed => Glyph("", "A.Danger", 11),
-            AgentToolState.Running => Glyph("", "A.Accent", 11),
-            _ => Glyph("", "A.Faint", 11),
-        };
-        mark.Margin = new Thickness(10, 0, 0, 0);
-        DockPanel.SetDock(mark, Dock.Right);
-        var icon = Glyph(ToolGlyph(tool.Tool), "A.Faint", 12);
-        icon.Margin = new Thickness(0, 1, 10, 0);
-        DockPanel.SetDock(icon, Dock.Left);
-        row.Children.Add(mark);
-        row.Children.Add(icon);
-        row.Children.Add(Text(tool.Text, "A.Normal", 12.5));
-
-        var line = Make("A.Ghost", row, () =>
+        var running = working && tool.ToolState == AgentToolState.Running;
+        var failed = tool.ToolState == AgentToolState.Failed;
+        var words = tool.Text.Replace("  ", " ");
+        var hasDetail = tool.Detail is { Length: > 0 };
+        var row = WorkRow(failed ? "circle-x" : ToolIcon(tool.Tool), words, failed ? Ocean.Error : Ocean.Secondary, hasDetail ? () =>
         {
             if (!_openTools.Remove(tool.Id)) _openTools.Add(tool.Id);
             Draw(segment);
-        });
-        line.Padding = new Thickness(8, 4, 8, 4);
-        line.MaxWidth = ColumnWidth - 30;
-        line.HorizontalAlignment = HorizontalAlignment.Left;
-        if (!_openTools.Contains(tool.Id) || tool.Detail is not { Length: > 0 } detail) return line;
-        return new StackPanel { Children = { line, Inset(Mono(detail, 260), new Thickness(30, 2, 0, 8)) } };
+        } : null, live: running, chevron: hasDetail, opened: _openTools.Contains(tool.Id));
+        if (!_openTools.Contains(tool.Id) || tool.Detail is not { Length: > 0 } detail) return row;
+        var output = new TextBox
+        {
+            Text = detail,
+            IsReadOnly = true,
+            TextWrapping = TextWrapping.Wrap,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0),
+            Foreground = Ocean.Secondary,
+            FontFamily = Ocean.Mono,
+            FontSize = 13,
+            MaxHeight = 256,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        };
+        return new StackPanel { Children = { row, new Border { Margin = new Thickness(32, 2, 0, 6), Padding = new Thickness(0, 0, 0, 8), Child = output } } };
     }
 
     // Such as "Read 3 files, ran 2 commands", from the two kinds of tool used most.
@@ -1301,208 +1281,121 @@ public sealed partial class AgentsWindow : Window
         return char.ToUpperInvariant(said[0]) + said[1..];
     }
 
-    private Border Card(UIElement content, bool waiting) => new()
-    {
-        Background = Brush("A.Raised"),
-        BorderBrush = Brush(waiting ? "A.Accent" : "A.InputBorder"),
-        BorderThickness = new Thickness(1),
-        CornerRadius = new CornerRadius(14),
-        Padding = new Thickness(18, 14, 18, 16),
-        Margin = new Thickness(0, 10, 0, 10),
-        Child = content,
-    };
-
     private FrameworkElement Problem(string text)
     {
-        var said = IconAndText("", text, "A.Danger", 13);
-        var words = (TextBlock)said.Children[1];
-        words.TextWrapping = TextWrapping.Wrap;
-        words.TextTrimming = TextTrimming.None;
-        words.MaxWidth = ColumnWidth - 60;
-        return new Border { Background = Brush("A.DangerTint"), CornerRadius = new CornerRadius(10), Padding = new Thickness(12, 9, 12, 9), Margin = new Thickness(0, 8, 0, 8), Child = said };
+        var icon = AgentIcons.Line("circle-alert", 16, Ocean.Error);
+        icon.Margin = new Thickness(4, 3, 8, 0);
+        icon.VerticalAlignment = VerticalAlignment.Top;
+        var row = new DockPanel { Margin = new Thickness(0, 2, 0, 10) };
+        DockPanel.SetDock(icon, Dock.Left);
+        row.Children.Add(icon);
+        row.Children.Add(Ocean.Wrapped(text, Ocean.Error, 14));
+        return row;
     }
 
     private FrameworkElement Notice(string text)
     {
-        var said = Text(text, "A.Faint", 12.5);
-        said.Margin = new Thickness(0, 6, 0, 6);
-        return said;
+        var row = WorkRow("info", text, Ocean.Secondary);
+        row.Margin = new Thickness(0, 0, 0, 8);
+        if (row is Border { Child: DockPanel dock } && dock.Children.OfType<TextBlock>().FirstOrDefault() is { } words)
+        {
+            words.TextWrapping = TextWrapping.Wrap;
+            words.TextTrimming = TextTrimming.None;
+        }
+        return row;
     }
 
-    // Something it wants to do that needs the person's yes first. Once answered, it's one quiet line.
+    // Something it wants to do that needs the person's yes first, as T3 Code's approval row: the
+    // command, then "Waiting for approval" with the answers as words to click.
     private FrameworkElement Approval(AgentItem item)
     {
         if (item.RequestState != AgentRequestState.Waiting)
         {
-            var (glyph, said, brush) = item.RequestState switch
+            var (icon, said, brush) = item.RequestState switch
             {
-                AgentRequestState.Allowed => ("", "Allowed", "A.Faint"),
-                AgentRequestState.Denied => ("", "Not allowed", "A.Danger"),
-                _ => ("", "No longer waiting", "A.Faint"),
+                AgentRequestState.Allowed => ("check", "Allowed", Ocean.Secondary),
+                AgentRequestState.Denied => ("x", "Not allowed", Ocean.Error),
+                _ => ("circle", "No longer waiting", Ocean.Secondary),
             };
-            var line = IconAndText(glyph, $"{said}: {item.Text}", brush, 12.5);
-            ((TextBlock)line.Children[1]).MaxWidth = ColumnWidth - 40;
-            line.Margin = new Thickness(0, 6, 0, 6);
-            return line;
+            var answered = WorkRow(icon, $"{said}: {item.Text}", brush);
+            answered.Margin = new Thickness(0, 0, 0, 8);
+            return answered;
         }
 
-        var rows = new StackPanel();
-        var title = IconAndText("", $"Allow {item.Tool}?", "A.Strong", 14);
-        ((TextBlock)title.Children[1]).FontWeight = FontWeights.SemiBold;
-        ((TextBlock)title.Children[0]).Foreground = Brush("A.Accent");
-        rows.Children.Add(title);
-        var what = Words(item.Text, "A.Normal", 13);
-        what.Margin = new Thickness(0, 8, 0, 0);
-        rows.Children.Add(what);
-        if (item.Detail is { Length: > 0 } detail && _openTools.Contains(item.Id)) rows.Children.Add(Inset(Mono(detail, 240), new Thickness(0, 10, 0, 0)));
+        var rows = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
+        var top = new DockPanel { MinHeight = 24 };
+        var shield = AgentIcons.Line("shield", 16, Ocean.WarningStrong, 2);
+        var cell = new Grid { Width = 24, Height = 24, Children = { shield } };
+        shield.HorizontalAlignment = HorizontalAlignment.Center;
+        DockPanel.SetDock(cell, Dock.Left);
+        top.Children.Add(cell);
+        var command = Ocean.Wrapped(item.Text, Ocean.Foreground, 12, 20);
+        command.FontFamily = Ocean.Mono;
+        command.Margin = new Thickness(6, 2, 0, 0);
+        command.MaxHeight = 160;
+        top.Children.Add(command);
+        rows.Children.Add(new Border { Padding = new Thickness(2), Child = top });
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 14, 0, 0) };
-        var allow = Make("A.Primary", "Allow", () => _open?.Answer(item, allow: true));
-        var deny = Make("A.Pill", Text("Don't allow", "A.Normal", 13), () => _open?.Answer(item, allow: false));
-        deny.Margin = new Thickness(8, 0, 0, 0);
-        deny.Padding = new Thickness(14, 6, 14, 6);
-        buttons.Children.Add(allow);
-        buttons.Children.Add(deny);
-        if (item.Suggestions is { Count: > 0 })
+        var actions = new WrapPanel { Margin = new Thickness(32, 2, 0, 0) };
+        actions.Children.Add(Ocean.IconText("shield", "Waiting for approval", Ocean.WarningStrong, 12, 12, gap: 4));
+        void Add(string words, Action click, bool strong, string? tip = null)
         {
-            var always = Make("A.Pill", Text("Always allow", "A.Normal", 13), () => _open?.AllowAlways(item));
-            always.Margin = new Thickness(8, 0, 0, 0);
-            always.Padding = new Thickness(14, 6, 14, 6);
-            always.ToolTip = "Allow it, and the same again for the rest of this conversation without asking";
-            buttons.Children.Insert(1, always);
+            actions.Children.Add(Ocean.Text("  ·  ", Ocean.MutedText, 12));
+            actions.Children.Add(InlineButton(words, click, strong, tip));
         }
-        if (item.Detail is { Length: > 0 })
+        Add($"Allow {item.Tool}", () => _open?.Answer(item, allow: true), true);
+        if (item.Suggestions is { Count: > 0 }) Add("Always allow", () => _open?.AllowAlways(item), true, "Allow it, and the same again for the rest of this conversation without asking");
+        Add("Don't allow", () => _open?.Answer(item, allow: false), false);
+        if (item.Detail is { Length: > 0 }) Add(_openTools.Contains(item.Id) ? "Hide details" : "Details", () =>
         {
-            var details = Make("A.Ghost", Text(_openTools.Contains(item.Id) ? "Hide details" : "Details", "A.Muted", 13), () =>
-            {
-                if (!_openTools.Remove(item.Id)) _openTools.Add(item.Id);
-                if (_segmentOf.TryGetValue(item.Id, out var segment)) Draw(segment);
-            });
-            details.Margin = new Thickness(8, 0, 0, 0);
-            buttons.Children.Add(details);
+            if (!_openTools.Remove(item.Id)) _openTools.Add(item.Id);
+            if (_segmentOf.TryGetValue(item.Id, out var segment)) Draw(segment);
+        }, false);
+        rows.Children.Add(actions);
+        if (item.Detail is { Length: > 0 } detail && _openTools.Contains(item.Id))
+        {
+            var shown = Ocean.Wrapped(detail, Ocean.Secondary, 12, 18);
+            shown.FontFamily = Ocean.Mono;
+            rows.Children.Add(new Border { Margin = new Thickness(32, 8, 0, 0), Padding = new Thickness(12, 10, 12, 10), CornerRadius = new CornerRadius(8), Background = Ocean.CodeBack, BorderBrush = Ocean.Border, BorderThickness = new Thickness(1), Child = shown });
         }
-        rows.Children.Add(buttons);
-        return Card(rows, waiting: true);
+        return rows;
     }
 
-    // Its questions, each answered with one of its choices, several where it says so, or the person's own words.
-    private FrameworkElement Questions(AgentItem item)
+    // T3 Code's inline button: words that underline under the mouse.
+    private static FrameworkElement InlineButton(string words, Action click, bool strong, string? tip = null)
     {
-        var rows = new StackPanel();
-        var questions = item.Questions ?? [];
-        if (item.RequestState != AgentRequestState.Waiting)
+        var text = Ocean.Text(words, strong ? Ocean.Foreground : Ocean.MutedText, 12, FontWeights.Medium);
+        text.Cursor = Cursors.Hand;
+        text.ToolTip = tip;
+        text.MouseEnter += (_, _) =>
         {
-            rows.Children.Add(Text(item.RequestState == AgentRequestState.Answered ? "You answered" : "It asked, but is no longer waiting", "A.Faint", 12));
-            foreach (var question in questions)
-            {
-                var asked = Words(question.Question, "A.Muted", 13);
-                asked.Margin = new Thickness(0, 8, 0, 2);
-                rows.Children.Add(asked);
-                if (item.Answers?.GetValueOrDefault(question.Question) is { } answer) rows.Children.Add(Words(answer, "A.Strong", 13.5));
-            }
-            return Card(rows, waiting: false);
+            text.TextDecorations = TextDecorations.Underline;
+            if (!strong) text.Foreground = Ocean.Foreground;
+        };
+        text.MouseLeave += (_, _) =>
+        {
+            text.TextDecorations = null;
+            if (!strong) text.Foreground = Ocean.MutedText;
+        };
+        text.MouseLeftButtonUp += (_, _) => click();
+        AutomationProperties.SetName(text, words);
+        return text;
+    }
+
+    // Its questions are answered above the box; here, a line for each once it's asked.
+    private FrameworkElement AskedRow(AgentItem item)
+    {
+        var rows = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+        if (item.RequestState == AgentRequestState.Waiting)
+        {
+            rows.Children.Add(WorkRow("message-circle-question", "Asked you something, below", Ocean.Indigo, wordsBrush: Ocean.Indigo));
+            return rows;
         }
-
-        if (!_choices.TryGetValue(item.Id, out var chosen)) chosen = _choices[item.Id] = [];
-        var send = Make("A.Primary", "Send answers", () =>
+        foreach (var question in item.Questions ?? [])
         {
-            _open?.AnswerQuestions(item, new Dictionary<string, string>(chosen));
-            _choices.Remove(item.Id);
-        });
-        send.HorizontalAlignment = HorizontalAlignment.Left;
-        send.Margin = new Thickness(0, 16, 0, 0);
-        void ShowReady() => send.IsEnabled = questions.All(question => chosen.GetValueOrDefault(question.Question) is { Length: > 0 });
-
-        foreach (var question in questions)
-        {
-            var first = rows.Children.Count == 0;
-            if (question.Header.Length > 0)
-            {
-                var chip = Text(question.Header.ToUpperInvariant(), "A.Accent", 10.5, FontWeights.SemiBold);
-                chip.Margin = new Thickness(0, first ? 0 : 18, 0, 4);
-                rows.Children.Add(chip);
-            }
-            var asked = Words(question.Question, "A.Strong", 14.5);
-            asked.FontWeight = FontWeights.SemiBold;
-            rows.Children.Add(asked);
-            if (question.MultiSelect) rows.Children.Add(Text("Choose any", "A.Faint", 11.5));
-
-            var picked = (chosen.GetValueOrDefault(question.Question) ?? "").Split(", ", StringSplitOptions.RemoveEmptyEntries).ToHashSet();
-            var options = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
-            foreach (var option in question.Options)
-            {
-                var on = picked.Contains(option.Label);
-                var label = Text(option.Label, "A.Strong", 13, FontWeights.SemiBold);
-                label.TextWrapping = TextWrapping.Wrap;
-                label.TextTrimming = TextTrimming.None;
-                var face = new StackPanel { MaxWidth = 280, Children = { label } };
-                if (option.Description.Length > 0)
-                {
-                    var about = Text(option.Description, "A.Muted", 12);
-                    about.TextWrapping = TextWrapping.Wrap;
-                    about.TextTrimming = TextTrimming.None;
-                    about.Margin = new Thickness(0, 2, 0, 0);
-                    face.Children.Add(about);
-                }
-                var choice = Make("A.Option", face, () =>
-                {
-                    if (question.MultiSelect)
-                    {
-                        if (!picked.Remove(option.Label)) picked.Add(option.Label);
-                        chosen[question.Question] = string.Join(", ", question.Options.Select(each => each.Label).Where(picked.Contains));
-                    }
-                    else
-                    {
-                        chosen[question.Question] = option.Label;
-                    }
-                    if (_segmentOf.TryGetValue(item.Id, out var segment)) Draw(segment);
-                });
-                choice.Margin = new Thickness(0, 0, 8, 8);
-                if (on)
-                {
-                    choice.BorderBrush = Brush("A.Accent");
-                    choice.Background = Brush("A.AccentTint");
-                }
-                AutomationProperties.SetName(choice, on ? $"{option.Label}, chosen" : option.Label);
-                options.Children.Add(choice);
-            }
-            rows.Children.Add(options);
-
-            // Or in the person's own words.
-            var own = new TextBox
-            {
-                Text = picked.Count == 0 ? chosen.GetValueOrDefault(question.Question) ?? "" : "",
-                Background = Brushes.Transparent,
-                BorderThickness = new Thickness(0),
-                Foreground = Brush("A.Strong"),
-                CaretBrush = Brush("A.Strong"),
-                SelectionBrush = Brush("A.Accent"),
-                FontSize = 13,
-                Padding = new Thickness(0),
-            };
-            AutomationProperties.SetName(own, $"Your own answer to: {question.Question}");
-            var ownHint = Text("Or say something else…", "A.Faint", 13);
-            ownHint.IsHitTestVisible = false;
-            ownHint.Visibility = own.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-            own.TextChanged += (_, _) =>
-            {
-                ownHint.Visibility = own.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-                if (own.Text.Trim().Length > 0) chosen[question.Question] = own.Text.Trim();
-                else if (picked.Count == 0) chosen.Remove(question.Question);
-                ShowReady();
-            };
-            rows.Children.Add(new Border
-            {
-                BorderBrush = Brush("A.InputBorder"),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(9),
-                Padding = new Thickness(12, 8, 12, 8),
-                Background = Brush("A.Canvas"),
-                Child = new Grid { Children = { ownHint, own } },
-            });
+            var answer = item.Answers?.GetValueOrDefault(question.Question);
+            rows.Children.Add(WorkRow("message-circle-question", answer is null ? $"Asked: {question.Question}" : $"{question.Question}  →  {answer}", Ocean.Secondary));
         }
-        rows.Children.Add(send);
-        ShowReady();
-        return Card(rows, waiting: true);
+        return rows;
     }
 }

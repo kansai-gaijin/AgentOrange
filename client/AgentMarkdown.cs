@@ -16,7 +16,12 @@ namespace AgentOrange;
 /// </summary>
 internal sealed partial class AgentMarkdown
 {
-    public sealed record Look(Brush Text, Brush Strong, Brush Muted, Brush CodeText, Brush CodeBack, Brush InlineCodeBack, Brush Line, Brush Link, FontFamily Font, FontFamily Mono, double Size, double LineHeight);
+    /// <summary>Its colours and type. Line edges code blocks; Rule is the quieter line under table rows.</summary>
+    public sealed record Look(Brush Text, Brush Strong, Brush Muted, Brush CodeText, Brush CodeBack, Brush InlineCodeBack, Brush Line, Brush Link, FontFamily Font, FontFamily Mono, double Size, double LineHeight)
+    {
+        public Brush? Rule { get; init; }
+        public Brush? Hover { get; init; }
+    }
 
     private readonly Look _look;
     private readonly List<(string Source, List<Block> Blocks)> _drawn = [];
@@ -48,7 +53,7 @@ internal sealed partial class AgentMarkdown
             Cursor = System.Windows.Input.Cursors.IBeam,
 
             // Each block has space under it, so the last one's is taken back, and the reply ends where its words do.
-            Margin = new Thickness(0, 0, 0, -12),
+            Margin = new Thickness(0, 0, 0, -Gap),
         };
         System.Windows.Automation.AutomationProperties.SetName(View, "The agent's reply");
     }
@@ -109,7 +114,10 @@ internal sealed partial class AgentMarkdown
         return chunks;
     }
 
-    private Thickness Spaced => new(0, 0, 0, 12);
+    // T3 Code's: 0.65rem between blocks.
+    private const double Gap = 10.4;
+
+    private static Thickness Spaced => new(0, 0, 0, Gap);
 
     private List<Block> Render(string chunk)
     {
@@ -136,10 +144,11 @@ internal sealed partial class AgentMarkdown
                 list = null;
                 var level = heading.Groups[1].Length;
                 var paragraph = Paragraph(heading.Groups[2].Value);
-                paragraph.FontSize = level switch { 1 => _look.Size + 6, 2 => _look.Size + 3, _ => _look.Size + 1 };
+                paragraph.FontSize = level switch { 1 => 20, 2 => 18, 3 => 16, _ => 14 };
+                paragraph.LineHeight = paragraph.FontSize * 1.3;
                 paragraph.FontWeight = FontWeights.SemiBold;
-                paragraph.Foreground = _look.Strong;
-                paragraph.Margin = new Thickness(0, blocks.Count == 0 ? 0 : 6, 0, 8);
+                paragraph.Foreground = level == 6 ? _look.Muted : _look.Strong;
+                paragraph.Margin = new Thickness(0, blocks.Count == 0 && _drawn.Count == 0 ? 0 : 20 - Gap, 0, 8);
                 blocks.Add(paragraph);
                 continue;
             }
@@ -149,12 +158,12 @@ internal sealed partial class AgentMarkdown
                 var numbered = char.IsDigit(item.Groups[2].Value[0]);
                 if (list is null || (list.MarkerStyle == TextMarkerStyle.Decimal) != numbered)
                 {
-                    list = new List { MarkerStyle = numbered ? TextMarkerStyle.Decimal : TextMarkerStyle.Disc, Margin = Spaced, Padding = new Thickness(22, 0, 0, 0) };
+                    list = new List { MarkerStyle = numbered ? TextMarkerStyle.Decimal : TextMarkerStyle.Disc, Margin = Spaced, Padding = new Thickness(20, 0, 0, 0), MarkerOffset = 6 };
                     if (numbered && int.TryParse(item.Groups[2].Value.TrimEnd('.', ')'), out var start)) list.StartIndex = start;
                     blocks.Add(list);
                 }
                 var entry = Paragraph(item.Groups[3].Value);
-                entry.Margin = new Thickness(Math.Min(item.Groups[1].Value.Length, 8) * 6, 0, 0, 3);
+                entry.Margin = new Thickness(Math.Min(item.Groups[1].Value.Length, 8) * 6, list.ListItems.Count == 0 ? 0 : 4, 0, 0);
                 list.ListItems.Add(new ListItem(entry));
                 continue;
             }
@@ -191,11 +200,11 @@ internal sealed partial class AgentMarkdown
             var part = found.Value;
             if (found.Groups["code"].Success)
             {
-                inlines.Add(new Run(found.Groups["code"].Value) { FontFamily = _look.Mono, FontSize = _look.Size - 1, Foreground = _look.CodeText, Background = _look.InlineCodeBack });
+                inlines.Add(new Run($"\u2009{found.Groups["code"].Value}\u2009") { FontFamily = _look.Mono, FontSize = Math.Round(_look.Size * 0.85, 1), Foreground = _look.Strong, Background = _look.InlineCodeBack });
             }
             else if (found.Groups["bold"].Success)
             {
-                var bold = new Bold { Foreground = _look.Strong };
+                var bold = new Bold { Foreground = _look.Strong, FontWeight = FontWeights.Bold };
                 AddInlines(bold.Inlines, found.Groups["bold"].Value);
                 inlines.Add(bold);
             }
@@ -244,42 +253,89 @@ internal sealed partial class AgentMarkdown
         var language = lines[0].Trim().TrimStart('`').Trim();
         var body = lines.Skip(1).ToList();
         if (body.Count > 0 && body[^1].TrimStart().StartsWith("```", StringComparison.Ordinal)) body.RemoveAt(body.Count - 1);
+        var source = string.Join('\n', body);
 
         var code = new TextBox
         {
-            Text = string.Join('\n', body),
+            Text = source,
             IsReadOnly = true,
             FontFamily = _look.Mono,
-            FontSize = _look.Size - 1.5,
+            FontSize = 13,
             Foreground = _look.CodeText,
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
-            Padding = new Thickness(0),
+            Padding = new Thickness(14.4, 6, 14.4, 12.8),
             TextWrapping = TextWrapping.NoWrap,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
         };
-        var panel = new StackPanel();
-        if (language.Length > 0) panel.Children.Add(new TextBlock { Text = language, FontSize = 11, Foreground = _look.Muted, Margin = new Thickness(0, 0, 0, 6) });
-        panel.Children.Add(code);
+        TextBlock.SetLineHeight(code, 13 * 1.375);
+
+        var copy = new Button
+        {
+            Width = 24,
+            Height = 24,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Cursor = System.Windows.Input.Cursors.Hand,
+            ToolTip = "Copy",
+            Content = AgentIcons.Line("copy", 12, _look.Muted),
+            Template = FlatButton(_look.Hover),
+        };
+        System.Windows.Automation.AutomationProperties.SetName(copy, "Copy code");
+        copy.Click += (_, _) =>
+        {
+            try
+            {
+                Clipboard.SetText(source);
+                copy.Content = AgentIcons.Line("check", 12, _look.Muted);
+            }
+            catch (System.Runtime.InteropServices.COMException)
+            {
+                // Another program has the clipboard.
+            }
+        };
+        var header = new DockPanel { Margin = new Thickness(12, 6, 6, 0) };
+        DockPanel.SetDock(copy, Dock.Right);
+        header.Children.Add(copy);
+        header.Children.Add(new TextBlock { Text = language, FontFamily = _look.Mono, FontSize = 11, Foreground = _look.CodeText, Opacity = 0.72, VerticalAlignment = VerticalAlignment.Center });
         return new BlockUIContainer(new Border
         {
             Background = _look.CodeBack,
             BorderBrush = _look.Line,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(14, 10, 14, 12),
-            Child = panel,
+            CornerRadius = new CornerRadius(8),
+            Child = new StackPanel { Children = { header, code } },
         }) { Margin = Spaced };
+    }
+
+    // A button that's only its content, with a rounded wash on hover.
+    internal static ControlTemplate FlatButton(Brush? hover)
+    {
+        var face = new FrameworkElementFactory(typeof(Border), "Face");
+        face.SetValue(Border.CornerRadiusProperty, new CornerRadius(6));
+        face.SetValue(Border.BackgroundProperty, new TemplateBindingExtension(Control.BackgroundProperty));
+        var content = new FrameworkElementFactory(typeof(ContentPresenter));
+        content.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        content.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        face.AppendChild(content);
+        var template = new ControlTemplate(typeof(Button)) { VisualTree = face };
+        if (hover is not null)
+        {
+            var over = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
+            over.Setters.Add(new Setter(Border.BackgroundProperty, hover, "Face"));
+            template.Triggers.Add(over);
+        }
+        return template;
     }
 
     private Block Quote(string[] lines)
     {
         var paragraph = Paragraph(string.Join(' ', lines.Select(line => line.TrimStart().TrimStart('>').Trim())));
         paragraph.Foreground = _look.Muted;
-        paragraph.BorderBrush = _look.Line;
-        paragraph.BorderThickness = new Thickness(3, 0, 0, 0);
-        paragraph.Padding = new Thickness(12, 0, 0, 0);
+        paragraph.BorderBrush = _look.Rule ?? _look.Line;
+        paragraph.BorderThickness = new Thickness(2, 0, 0, 0);
+        paragraph.Padding = new Thickness(12.8, 0, 0, 0);
         return paragraph;
     }
 
@@ -288,7 +344,7 @@ internal sealed partial class AgentMarkdown
         static string[] Cells(string line) => [.. line.Trim().Trim('|').Split('|').Select(cell => cell.Trim())];
         var rows = lines.Where((_, at) => at != 1).Select(Cells).ToList();
         var columns = rows.Max(row => row.Length);
-        var table = new Table { CellSpacing = 0, Margin = Spaced, BorderBrush = _look.Line, BorderThickness = new Thickness(1) };
+        var table = new Table { CellSpacing = 0, Margin = Spaced };
         for (var i = 0; i < columns; i++) table.Columns.Add(new TableColumn());
         var group = new TableRowGroup();
         for (var r = 0; r < rows.Count; r++)
@@ -303,7 +359,13 @@ internal sealed partial class AgentMarkdown
                     paragraph.FontWeight = FontWeights.SemiBold;
                     paragraph.Foreground = _look.Strong;
                 }
-                row.Cells.Add(new TableCell(paragraph) { Background = r == 0 ? _look.CodeBack : null, Padding = new Thickness(10, 6, 10, 6), BorderBrush = _look.Line, BorderThickness = new Thickness(0, 0, c < columns - 1 ? 1 : 0, r < rows.Count - 1 ? 1 : 0) });
+                var across = r == 0 ? 8.8 : 7.2;
+                row.Cells.Add(new TableCell(paragraph)
+                {
+                    Padding = new Thickness(c == 0 ? 0 : 12, across, c == columns - 1 ? 0 : 12, across),
+                    BorderBrush = _look.Rule ?? _look.Line,
+                    BorderThickness = new Thickness(0, 0, 0, 1),
+                });
             }
             group.Rows.Add(row);
         }
