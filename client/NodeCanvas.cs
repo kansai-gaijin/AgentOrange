@@ -33,8 +33,6 @@ internal sealed partial class NodeCanvas : Border
     // Words that can be given headings, lists, tick boxes, colours and links, in a box dragged to size.
     private const string TextKind = "text";
 
-    // Every kind there is, in the order the list shows them.
-    private static readonly (string Kind, string Name)[] Kinds = [(TitleKind, "Title"), (TextKind, "Rich Text"), (ImageKind, "Image")];
     private const string TopPin = "top";
     private const string BottomPin = "bottom";
     private const string ResizePart = "resize";
@@ -644,71 +642,6 @@ internal sealed partial class NodeCanvas : Border
         _selection.Clear();
         _hint.Visibility = _nodes.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         _changed();
-    }
-
-    // The list of nodes to add, which opens at the mouse and adds there.
-
-    private void OpenAddList()
-    {
-        // Where the mouse is, or the middle if it's somewhere else, such as when Tab got here.
-        var mouse = Mouse.GetPosition(this);
-        var over = new Rect(0, 0, ActualWidth, ActualHeight).Contains(mouse);
-        var where = ToWorld(over ? mouse : new Point(ActualWidth / 2, ActualHeight / 2));
-
-        var items = new StackPanel();
-        var list = new Popup
-        {
-            PlacementTarget = this,
-            Placement = over ? PlacementMode.MousePoint : PlacementMode.Center,
-            StaysOpen = false,
-            AllowsTransparency = true,
-            Child = new Border
-            {
-                Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x27, 0x32)),
-                BorderBrush = (Brush)FindResource("ModalBorder"),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(6),
-                MinWidth = 180,
-                Child = items,
-            },
-        };
-
-        items.Children.Add(new TextBlock { Text = "Add", FontSize = 12, FontWeight = FontWeights.Medium, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(8, 4, 8, 6) });
-        foreach (var (kind, name) in Kinds)
-        {
-            var item = new Button { Style = (Style)FindResource("HeaderButton"), Content = name, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left };
-            item.Click += (_, _) =>
-            {
-                list.IsOpen = false;
-                AddNodeAt(where, kind);
-            };
-            items.Children.Add(item);
-        }
-
-        list.PreviewKeyDown += (_, pressed) =>
-        {
-            var buttons = items.Children.OfType<Button>().ToList();
-            var at = buttons.FindIndex(button => button.IsKeyboardFocused);
-            switch (pressed.Key)
-            {
-                case Key.Escape:
-                    list.IsOpen = false;
-                    Focus();
-                    break;
-                case Key.Down:
-                    buttons[(at + 1) % buttons.Count].Focus();
-                    break;
-                case Key.Up:
-                    buttons[(at + buttons.Count - 1) % buttons.Count].Focus();
-                    break;
-                default:
-                    return;
-            }
-            pressed.Handled = true;
-        };
-        list.Opened += (_, _) => items.Children.OfType<Button>().First().Focus();
-        list.IsOpen = true;
     }
 
     // Mouse and keyboard
