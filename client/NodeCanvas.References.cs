@@ -93,17 +93,32 @@ internal sealed partial class NodeCanvas
         view.Box.Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x27, 0x32));
     }
 
+    // The card whose board this is, when it's one an asset can belong to: a story beat, character, level or mechanic.
+    private BoardCard? BoardOwnerCard()
+    {
+        if (_board.Split('/') is not [var stage, var part, var name] || part is not ("story" or "characters" or "levels" or "mechanics")) return null;
+        var id = $"{_projectId}:{name}";
+        return _database.ListCards(_projectId, stage, part).FirstOrDefault(card => card.Id == id);
+    }
+
     // A list of the cards it can stand for, under the node, to search and pick from.
     private void ChooseCard(NodeView node)
     {
         if (ReferenceTo(node.Data.Kind) is not { } to) return;
         var id = node.Id;
         var cards = _database.ListCards(_projectId, BoardStage, to.Part);
+
+        // On a story beat's, character's, level's or mechanic's board, an asset is one of the ones
+        // that belong to it, or a new one that does.
+        var asset = node.Data.Kind == AssetReferenceKind;
+        var owner = asset ? BoardOwnerCard() : null;
+        if (owner is not null) cards = [.. cards.Where(card => _database.GetAssetDetails(card.Id).Owner == owner.Id)];
+        var ownerName = owner is null ? "" : owner.Name.Length > 0 ? owner.Name : "this card";
         Brush muted = (Brush)FindResource("TextMuted");
 
         var search = new TextBox { Style = (Style)FindResource("Field"), Width = double.NaN, Margin = new Thickness(0, 0, 0, 6) };
         AutomationProperties.SetName(search, $"Search {to.Many}");
-        var searchHint = new TextBlock { Text = $"Search {to.Many}", Foreground = muted, FontSize = 13, Margin = new Thickness(11, 6, 0, 0), IsHitTestVisible = false };
+        var searchHint = new TextBlock { Text = asset ? "Search, or name a new asset" : $"Search {to.Many}", Foreground = muted, FontSize = 13, Margin = new Thickness(11, 6, 0, 0), IsHitTestVisible = false };
         var rows = new StackPanel();
         var panel = MenuPanel(new StackPanel { Children = { new Grid { Children = { search, searchHint } }, new ScrollViewer { MaxHeight = 320, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = rows } } });
         panel.Width = 240;
@@ -126,7 +141,22 @@ internal sealed partial class NodeCanvas
             {
                 rows.Children.Add(MenuRow(card.Name.Length > 0 ? card.Name : $"Untitled {to.One}", card.Id == node.Data.Card ? "✓" : null, () => Choose(card)));
             }
-            if (rows.Children.Count == 0) rows.Children.Add(new TextBlock { Text = cards.Count == 0 ? $"No {to.Many} yet" : $"No {to.Many} match", Foreground = muted, FontSize = 13, Margin = new Thickness(7, 4, 7, 4) });
+            // What's typed can be a new asset, unless one's already called that.
+            var name = typed.Length > LocalDatabase.LongestCardName ? typed[..LocalDatabase.LongestCardName] : typed;
+            if (asset && name.Length > 0 && !cards.Any(card => string.Equals(card.Name, name, StringComparison.CurrentCultureIgnoreCase)))
+            {
+                rows.Children.Add(MenuRow($"New asset “{name}”", owner is null ? "+" : $"+ {ownerName}", () =>
+                {
+                    var added = _database.AddCard(_projectId, BoardStage, to.Part, name);
+                    if (owner is not null) _database.SetAssetDetails(added.Id, new AssetDetails(Owner: owner.Id));
+                    Choose(added);
+                }));
+            }
+
+            if (rows.Children.Count > 0) return;
+            var none = asset && cards.Count == 0 ? owner is null ? "No assets yet. Type a name to add one." : $"No assets belong to {ownerName} yet. Type a name to add one."
+                : cards.Count == 0 ? $"No {to.Many} yet" : $"No {to.Many} match";
+            rows.Children.Add(new TextBlock { Text = none, Foreground = muted, FontSize = 13, Margin = new Thickness(7, 4, 7, 4), TextWrapping = TextWrapping.Wrap });
         }
 
         search.TextChanged += (_, _) =>
