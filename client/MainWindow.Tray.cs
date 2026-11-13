@@ -26,37 +26,11 @@ public partial class MainWindow
         };
         timer.Start();
 
-        Activated += (_, _) => MarkAgentRepliesSeen();
-        Closed += (_, _) => _tray?.Dispose();
-    }
-
-    // Where agent chats will go. A window of its own, so it can stay beside whatever the main one shows.
-    private Window? _agentsWindow;
-
-    private void OpenAgents_Click(object sender, RoutedEventArgs e)
-    {
-        if (_agentsWindow is null)
+        Closed += (_, _) =>
         {
-            _agentsWindow = new Window
-            {
-                Title = "Agents",
-                Width = 900,
-                Height = 640,
-                MinWidth = 480,
-                MinHeight = 360,
-                Background = (System.Windows.Media.Brush)FindResource("ContentBackground"),
-                Icon = Icon,
-            };
-            _agentsWindow.Closed += (_, _) => _agentsWindow = null;
-
-            // Or the app would stay running for it once the main window's gone.
-            Closed += (_, _) => _agentsWindow?.Close();
-            _agentsWindow.Show();
-            return;
-        }
-
-        if (_agentsWindow.WindowState == WindowState.Minimized) _agentsWindow.WindowState = WindowState.Normal;
-        _agentsWindow.Activate();
+            _tray?.Dispose();
+            CloseAgentsWindow();
+        };
     }
 
     private void TakeTrayIfFree() => _tray ??= Tray.TryCreate(ShowFromTray, QuitFromTray);
@@ -94,5 +68,5 @@ public partial class MainWindow
     // Results that arrived for a project that wasn't open, an update that has to be installed,
     // and agents that finished while no one was looking.
     private int ThingsToLookAt() =>
-        _heldProblems.Count + (_requiredVersion is not null ? 1 : 0) + _agentChats.Values.Count(chat => chat.Unseen);
+        _heldProblems.Count + (_requiredVersion is not null ? 1 : 0) + UnseenAgents;
 }
