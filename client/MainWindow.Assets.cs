@@ -70,6 +70,11 @@ public partial class MainWindow
 
         var lines = new StackPanel { Margin = new Thickness(2, 2, 2, 0) };
         lines.Children.Add(first);
+        if (DueOf(details) is { } due)
+        {
+            var late = !delivered && due < DateOnly.FromDateTime(DateTime.Today);
+            lines.Children.Add(new TextBlock { Text = $"Due {DueText(due)}", Foreground = (Brush)Application.Current.FindResource(late ? "Danger" : "TextMuted"), FontSize = 12.5, Margin = new Thickness(15, 2, 0, 0) });
+        }
 
         var tags = database.ListAssetTags(projectId).Where(tag => details.Tags?.Contains(tag.Id) == true).ToList();
         if (tags.Count > 0)
@@ -276,6 +281,88 @@ public partial class MainWindow
         rows.Children.Add(ownerButton);
         rows.Children.Add(ownerList);
 
+        // The day it's to be delivered by, which makes it a task, picked from a month that opens under it.
+        var due = DueOf(details);
+        var dueButton = DropButton("Deliver by", out var dueShown);
+        var dueList = OpenUnder();
+        var month = new DateOnly((due ?? Today).Year, (due ?? Today).Month, 1);
+
+        void ShowDue()
+        {
+            dueShown.Text = due is { } day ? DueText(day) : "No date";
+            dueShown.Foreground = (Brush)FindResource(due is null ? "TextMuted" : "TextStrong");
+        }
+        void PickDue(DateOnly? day)
+        {
+            due = day;
+            ShowDue();
+            dueList.Visibility = Visibility.Collapsed;
+            dueButton.Focus();
+        }
+        void ShowMonth()
+        {
+            Button Step(string arrow, string name, int by)
+            {
+                var step = TextButton(arrow, () =>
+                {
+                    month = month.AddMonths(by);
+                    ShowMonth();
+                });
+                AutomationProperties.SetName(step, name);
+                return step;
+            }
+            var back = Step("‹", "Month before", -1);
+            var next = Step("›", "Month after", 1);
+            var header = new DockPanel { Margin = new Thickness(0, 0, 0, 4) };
+            DockPanel.SetDock(back, Dock.Left);
+            DockPanel.SetDock(next, Dock.Right);
+            header.Children.Add(back);
+            header.Children.Add(next);
+            header.Children.Add(new TextBlock { Text = month.ToString("MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture), FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextStrong"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
+
+            // The week starts as this PC's calendar starts it.
+            var firstDay = System.Globalization.CultureInfo.CurrentCulture.DateTimeFormat.FirstDayOfWeek;
+            var days = new UniformGrid { Columns = 7 };
+            for (var i = 0; i < 7; i++)
+            {
+                var weekday = (DayOfWeek)(((int)firstDay + i) % 7);
+                days.Children.Add(new TextBlock { Text = System.Globalization.CultureInfo.InvariantCulture.DateTimeFormat.GetShortestDayName(weekday), FontSize = 11, Foreground = (Brush)FindResource("TextMuted"), HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 0, 0, 4) });
+            }
+            for (var i = 0; i < ((int)month.DayOfWeek - (int)firstDay + 7) % 7; i++) days.Children.Add(new Border());
+            for (var day = month; day.Month == month.Month; day = day.AddDays(1))
+            {
+                var thisDay = day;
+                var chosen = thisDay == due;
+                var number = new TextBlock { Text = thisDay.Day.ToString(), HorizontalAlignment = HorizontalAlignment.Center, Foreground = (Brush)FindResource(chosen ? "ContentBackground" : thisDay == Today ? "Accent" : "TextNormal"), FontWeight = chosen || thisDay == Today ? FontWeights.Bold : FontWeights.Normal };
+                var pick = new Button
+                {
+                    Style = (Style)FindResource("HeaderButton"),
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    Content = new Border { Background = chosen ? (Brush)FindResource("Accent") : Brushes.Transparent, CornerRadius = new CornerRadius(4), Padding = new Thickness(0, 1, 0, 1), Child = number },
+                };
+                AutomationProperties.SetName(pick, thisDay.ToString("dddd d MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture) + (chosen ? ", chosen" : ""));
+                pick.Click += (_, _) => PickDue(thisDay);
+                days.Children.Add(pick);
+            }
+
+            var none = TextButton("No date", () => PickDue(null));
+            none.HorizontalAlignment = HorizontalAlignment.Left;
+            none.Margin = new Thickness(0, 4, 0, 0);
+            dueList.Child = new StackPanel { Children = { header, days, none } };
+        }
+        dueButton.Click += (_, _) =>
+        {
+            var opening = dueList.Visibility != Visibility.Visible;
+            dueList.Visibility = opening ? Visibility.Visible : Visibility.Collapsed;
+            if (!opening) return;
+            month = new DateOnly((due ?? Today).Year, (due ?? Today).Month, 1);
+            ShowMonth();
+        };
+        ShowDue();
+        rows.Children.Add(FormLabel("Deliver by", above: 12));
+        rows.Children.Add(dueButton);
+        rows.Children.Add(dueList);
+
         // Its tags, ticked in a list of the project's that opens under it, which can turn into the tag editor.
         var tagsButton = DropButton("Tags", out var tagsShown);
         var tagsList = OpenUnder();
@@ -365,8 +452,8 @@ public partial class MainWindow
             // Only tags that are still there.
             var stillThere = _database.ListAssetTags(project.Id).Select(tag => tag.Id).ToHashSet();
             var tags = chosenTags.Where(stillThere.Contains).Order(StringComparer.Ordinal).ToArray();
-            var changed = new AssetDetails((string?)(type.SelectedItem as ComboBoxItem)?.Tag, owner, tags.Length > 0 ? tags : null);
-            var same = changed.Type == details.Type && changed.Owner == details.Owner && tags.SequenceEqual((details.Tags ?? []).Where(stillThere.Contains).Order(StringComparer.Ordinal));
+            var changed = new AssetDetails((string?)(type.SelectedItem as ComboBoxItem)?.Tag, owner, tags.Length > 0 ? tags : null, due?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
+            var same = changed.Type == details.Type && changed.Owner == details.Owner && changed.Due == details.Due && tags.SequenceEqual((details.Tags ?? []).Where(stillThere.Contains).Order(StringComparer.Ordinal));
 
             saved = true;
             asked.IsOpen = false;
@@ -401,6 +488,11 @@ public partial class MainWindow
             {
                 ownerList.Visibility = Visibility.Collapsed;
                 ownerButton.Focus();
+            }
+            else if (dueList.IsKeyboardFocusWithin)
+            {
+                dueList.Visibility = Visibility.Collapsed;
+                dueButton.Focus();
             }
             else if (tagsList.IsKeyboardFocusWithin)
             {

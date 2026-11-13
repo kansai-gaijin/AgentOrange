@@ -18,8 +18,11 @@ public sealed record Stage(string Id, string Name, double Order);
 /// </summary>
 public sealed record BoardCard(string Id, string Board, string Name, double Order);
 
-/// <summary>What an asset is, the card it belongs to if any, and the ids of the project's tags it has.</summary>
-public sealed record AssetDetails(string? Type = null, string? Owner = null, string[]? Tags = null);
+/// <summary>
+/// What an asset is, the card it belongs to if any, the ids of the project's tags it has, and the
+/// day it's to be delivered by, as yyyy-MM-dd on the calendar. One with a day is a task.
+/// </summary>
+public sealed record AssetDetails(string? Type = null, string? Owner = null, string[]? Tags = null, string? Due = null);
 
 /// <summary>
 /// The file that makes an asset delivered: where it is in the project's folder, which goes to other

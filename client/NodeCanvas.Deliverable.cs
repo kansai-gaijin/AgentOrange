@@ -89,7 +89,7 @@ internal sealed partial class NodeCanvas
         }
 
         var said = given is null ? "Click to choose the file in the project's folder"
-            : here ? $"{SizeOf(given.Size)} · {given.At.LocalDateTime:d MMM yyyy}"
+            : here ? $"{SizeOf(given.Size)} · {given.At.LocalDateTime.ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture)}"
             : "Not on this PC yet. It comes with the project's repo.";
         rows.Children.Add(new StackPanel
         {

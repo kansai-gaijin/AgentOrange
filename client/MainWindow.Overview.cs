@@ -109,7 +109,7 @@ public partial class MainWindow
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Center,
-            Children = { ProgressTile("Tasks done", 0), ProgressTile("Assets delivered", AssetsDelivered(project)) },
+            Children = { TasksTile(project), ProgressTile("Assets delivered", AssetsDelivered(project).ToString()) },
         });
 
         var sections = new WrapPanel { Margin = new Thickness(0, 28, 0, 24), HorizontalAlignment = HorizontalAlignment.Center };
@@ -274,7 +274,22 @@ public partial class MainWindow
     private int AssetsDelivered(Project project) =>
         _database.ListCards(project.Id, _database.ProjectStage(project.Id), AssetsPart).Count(card => _database.GetAssetDeliverable(card.Id) is not null);
 
-    private Border ProgressTile(string label, int count) => new()
+    // How many of the project's tasks are done, out of how many, and the way to the Tasks page.
+    private Button TasksTile(Project project)
+    {
+        var tasks = ProjectTasks(project);
+        var tile = ProgressTile("Tasks done", tasks.Count(task => task.Done).ToString(), tasks.Count > 0 ? $" of {tasks.Count}" : null);
+        var button = new Button { Style = (Style)FindResource("ProjectCard"), Content = tile, Width = double.NaN, Margin = new Thickness(0) };
+        AutomationProperties.SetName(button, "Tasks");
+        void ShowActive() => tile.BorderBrush = (Brush)FindResource(button.IsMouseOver || button.IsKeyboardFocusWithin ? "Accent" : "Line");
+        button.MouseEnter += (_, _) => ShowActive();
+        button.MouseLeave += (_, _) => ShowActive();
+        button.IsKeyboardFocusWithinChanged += (_, _) => ShowActive();
+        button.Click += (_, _) => OpenTasks(project);
+        return button;
+    }
+
+    private Border ProgressTile(string label, string count, string? outOf = null) => new()
     {
         BorderBrush = (Brush)FindResource("Line"),
         BorderThickness = new Thickness(1),
@@ -286,7 +301,14 @@ public partial class MainWindow
         {
             Children =
             {
-                new TextBlock { Text = count.ToString(), FontSize = 30, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextStrong") },
+                new TextBlock
+                {
+                    Inlines =
+                    {
+                        new System.Windows.Documents.Run(count) { FontSize = 30, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextStrong") },
+                        new System.Windows.Documents.Run(outOf ?? "") { FontSize = 15, Foreground = (Brush)FindResource("TextMuted") },
+                    },
+                },
                 new TextBlock { Text = label, FontSize = 13, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(0, 2, 0, 0) },
             },
         },
@@ -323,6 +345,11 @@ public partial class MainWindow
 
     private void AddSectionPage(StackPanel body, Project project, string name)
     {
+        if (name == TasksPage)
+        {
+            AddTasksPage(body, project);
+            return;
+        }
         if (BoardSections.Contains(name))
         {
             AddBoard(body, project, name);
