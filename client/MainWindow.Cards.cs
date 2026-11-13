@@ -18,6 +18,8 @@ public partial class MainWindow
     // What one card is called on each page, and the shape of its picture: people stand tall, places lie wide.
     private static readonly Dictionary<string, (string One, double Width, double Height)> CardPages = new()
     {
+        // A story is its beats, in the order they're dragged into.
+        ["Story"] = ("beat", 264, 164),
         ["Characters"] = ("character", 184, 244),
         ["Levels"] = ("level", 264, 164),
         ["Mechanics"] = ("mechanic", 264, 164),

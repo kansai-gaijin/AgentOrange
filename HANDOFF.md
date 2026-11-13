@@ -58,8 +58,8 @@ Everything is merged and pushed. Nothing is waiting on any branch.
   - Progress tiles for Tasks done and Assets delivered.
   - Section cards for Overview (the board once called GDD), Story, Characters, Levels, Assets, Mechanics and References.
 - **Section pages:** no title, and a back button that returns to the project page.
-  - **Overview, Story:** a node board each.
-  - **Characters, Levels, Mechanics:** pages of cards, each card with a board of its own.
+  - **Overview:** a node board.
+  - **Story, Characters, Levels, Mechanics:** pages of cards (story beats, characters and so on), each card with a picture and a board of its own.
   - **Assets, References:** still empty.
 - **Node boards (`client/NodeCanvas*.cs`):**
   - Nodes are added the way Blender does it: Shift+A opens a list, and the node lands at the cursor. Node types are built **one at a time, in the order the user picks**.

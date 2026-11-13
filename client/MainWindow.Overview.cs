@@ -14,7 +14,7 @@ public partial class MainWindow
     private static readonly string[] ProjectSections = ["Overview", "Story", "Characters", "Levels", "Assets", "Mechanics", "References"];
 
     // The parts that are one node board, rather than a page of cards that each have their own.
-    private static readonly HashSet<string> BoardSections = ["Overview", "Story"];
+    private static readonly HashSet<string> BoardSections = ["Overview"];
 
     // Where a part's board is kept. Overview was called GDD when its boards were first made.
     private static string BoardPart(string name) => name == "Overview" ? "gdd" : name.ToLowerInvariant();
