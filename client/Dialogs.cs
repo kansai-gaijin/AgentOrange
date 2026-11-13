@@ -40,12 +40,12 @@ internal static class Dialogs
         return System.Windows.MessageBox.Show(message, "Agent Orange", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning, System.Windows.MessageBoxResult.No) == System.Windows.MessageBoxResult.Yes;
     }
 
-    public static string? PickFile(string title, string filter)
+    public static string? PickFile(string title, string filter, string? startIn = null)
     {
 #if DEBUG
         if (Headless.Active) return Headless.NextAnswer();
 #endif
-        var dialog = new OpenFileDialog { Title = title, RestoreDirectory = true, Filter = filter };
+        var dialog = new OpenFileDialog { Title = title, RestoreDirectory = true, Filter = filter, InitialDirectory = startIn ?? "" };
         return dialog.ShowDialog() == true ? dialog.FileName : null;
     }
 }

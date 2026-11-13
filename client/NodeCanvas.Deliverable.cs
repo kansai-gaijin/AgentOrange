@@ -11,13 +11,14 @@ namespace AgentOrange;
 /// there from the first time the board is opened, and can be moved but never deleted. Only a
 /// person fills it, by double-clicking it and choosing the file.
 ///
-/// The file is kept in the project's folder, so it goes to other PCs with the project's repo.
-/// One already in the folder stays where it is, and any other is copied into its assets folder.
+/// It's a file the game itself uses, already in the project's folder, such as the .uasset Unreal
+/// makes when something's imported. Nothing is copied: the deliverable only says which file it is,
+/// and the file goes to other PCs with the project's repo. Choosing one opens where the project's
+/// engine keeps its assets.
 /// </summary>
 internal sealed partial class NodeCanvas
 {
     private const string DeliverableKind = "deliverable";
-    private const string DeliverablesFolder = "assets";
     private const double DeliverableWidth = 240;
     private const double DeliverablePreviewHeight = 140;
 
@@ -62,7 +63,7 @@ internal sealed partial class NodeCanvas
             });
         }
 
-        var said = given is null ? "Double-click to choose the file"
+        var said = given is null ? "Double-click to choose the file the game uses"
             : here ? $"{SizeOf(given.Size)} · {given.At.LocalDateTime:d MMM yyyy}"
             : "Not on this PC yet. It comes with the project's repo.";
         rows.Children.Add(new StackPanel
@@ -99,48 +100,66 @@ internal sealed partial class NodeCanvas
         return picture;
     }
 
-    // Asks for the file, and keeps it in the project's folder.
+    // Where an engine keeps the files a game uses, the kinds of file they are, and how to say where
+    // that is. A repo often keeps the game one folder down, next to its docs or tools.
+    private static (string StartIn, string Filter, string Place) DeliverablePlace(string folder, string? engine)
+    {
+        const string AnyFile = "All files|*.*";
+        string? GameFolder(string marker)
+        {
+            try
+            {
+                return new[] { folder }.Concat(Directory.EnumerateDirectories(folder).Where(path => !Path.GetFileName(path).StartsWith('.')))
+                    .FirstOrDefault(place => Directory.EnumerateFileSystemEntries(place, marker).Any());
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                return null;
+            }
+        }
+        string Inside(string? game, string sub) => game is not null && Directory.Exists(Path.Combine(game, sub)) ? Path.Combine(game, sub) : game ?? folder;
+
+        return engine switch
+        {
+            "Unreal Engine" => (Inside(GameFolder("*.uproject"), "Content"), $"Unreal assets|*.uasset;*.umap|{AnyFile}", "in the game's Content folder, such as the .uasset made when it was imported"),
+            "Unity" => (Inside(GameFolder("ProjectSettings"), "Assets"), AnyFile, "in the game's Assets folder"),
+            "Godot" => (GameFolder("project.godot") ?? folder, AnyFile, "in the Godot project"),
+            _ => (folder, AnyFile, "in the project's folder"),
+        };
+    }
+
+    // Asks which of the project's files it is. Nothing is copied.
     private void FillDeliverable()
     {
         if (AssetCardId is not { } cardId) return;
         if (_database.GetProjectFolder(_projectId) is not { } folder || !Directory.Exists(folder))
         {
-            Dialogs.Notify("This project needs its folder on this PC first, as the deliverable is kept in it.");
+            Dialogs.Notify("This project needs its folder on this PC first, as the deliverable is one of the files in it.");
             return;
         }
-        if (Dialogs.PickFile("Choose the deliverable", "All files|*.*") is not { } picked) return;
+        var engine = _database.ListProjects().FirstOrDefault(project => project.Id == _projectId)?.Engine;
+        var (startIn, filter, place) = DeliverablePlace(folder, engine);
+        if (Dialogs.PickFile("Choose the deliverable", filter, startIn) is not { } picked) return;
+
+        var inFolder = Path.GetRelativePath(folder, picked);
+        if (inFolder.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(inFolder))
+        {
+            Dialogs.Notify($"Choose the file the game uses, {place}.\n\n{Path.GetFileName(picked)} isn't in this project's folder, and nothing is copied into it.");
+            return;
+        }
 
         try
         {
-            var inFolder = Path.GetRelativePath(folder, picked);
-            if (inFolder.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(inFolder))
-            {
-                var into = Path.Combine(folder, DeliverablesFolder);
-                Directory.CreateDirectory(into);
-                var copy = FreePath(into, Path.GetFileName(picked));
-                File.Copy(picked, copy);
-                inFolder = Path.GetRelativePath(folder, copy);
-            }
-
-            var kept = Path.Combine(folder, inFolder);
             string sha256;
-            using (var stream = File.OpenRead(kept)) sha256 = Convert.ToHexString(SHA256.HashData(stream));
-            _database.SetAssetDeliverable(cardId, new AssetDeliverable(inFolder.Replace('\\', '/'), new FileInfo(kept).Length, sha256, DateTimeOffset.UtcNow));
+            using (var stream = File.OpenRead(picked)) sha256 = Convert.ToHexString(SHA256.HashData(stream));
+            _database.SetAssetDeliverable(cardId, new AssetDeliverable(inFolder.Replace('\\', '/'), new FileInfo(picked).Length, sha256, DateTimeOffset.UtcNow));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
-            Dialogs.Notify($"{Path.GetFileName(picked)} couldn't be kept in the project's folder.\n\n{error.Message}");
+            Dialogs.Notify($"{Path.GetFileName(picked)} couldn't be read.\n\n{error.Message}");
             return;
         }
         _changed();
         Reload();
-    }
-
-    // The name, or the name with a number after it when one's already taken.
-    private static string FreePath(string folder, string name)
-    {
-        var path = Path.Combine(folder, name);
-        for (var number = 2; File.Exists(path); number++) path = Path.Combine(folder, $"{Path.GetFileNameWithoutExtension(name)} ({number}){Path.GetExtension(name)}");
-        return path;
     }
 }
