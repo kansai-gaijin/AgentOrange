@@ -100,6 +100,7 @@ public sealed class AgentConversation
     private string? _startedWith; // The model and effort it was started with.
     private readonly Dictionary<string, AgentItem> _byId = [];
     private string? _messageId; // The assistant message being streamed.
+    private readonly HashSet<string> _confirmed = []; // Streamed text the whole message has since been read for.
 
     public static AgentConversation? Load(string file)
     {
@@ -107,6 +108,10 @@ public sealed class AgentConversation
         {
             var loaded = JsonSerializer.Deserialize<AgentConversation>(File.ReadAllText(file), JsonOptions);
             if (loaded is null) return null;
+
+            // Older versions could keep a reply twice, once as streamed and once whole.
+            loaded.Items.RemoveAll(item => item.Kind == AgentItemKind.Assistant && loaded.Items.Any(other => !ReferenceEquals(other, item)
+                && other.Kind == AgentItemKind.Assistant && other.Text == item.Text && SameMessage(other.Id, item.Id) && loaded.Items.IndexOf(other) < loaded.Items.IndexOf(item)));
             foreach (var item in loaded.Items)
             {
                 loaded._byId[item.Id] = item;
@@ -438,9 +443,13 @@ public sealed class AgentConversation
             if (content[index] is not JsonObject part) continue;
             switch (Str(part, "type"))
             {
+                // Claude Code sends each part of a message as a message of its own, so a part's place here
+                // isn't its place in the stream (a thinking part streams first, for one). Streamed text is
+                // matched up in order instead: the first of this message's not yet confirmed.
                 case "text" when Str(part, "text") is { } text:
-                    var id = TextId(messageId, JsonValue.Create(index));
-                    if (_byId.TryGetValue(id, out var known))
+                    var prefix = $"{messageId}:text:";
+                    var known = Items.FirstOrDefault(item => item.Kind == AgentItemKind.Assistant && item.Id.StartsWith(prefix, StringComparison.Ordinal) && _confirmed.Add(item.Id));
+                    if (known is not null)
                     {
                         known.Text = text;
                         known.Streaming = false;
@@ -448,6 +457,8 @@ public sealed class AgentConversation
                     }
                     else if (text.Trim().Length > 0)
                     {
+                        var id = $"{messageId}:text:said{_confirmed.Count}";
+                        _confirmed.Add(id);
                         Add(new AgentItem { Id = id, Kind = AgentItemKind.Assistant, Text = text });
                     }
                     break;
@@ -564,6 +575,12 @@ public sealed class AgentConversation
     }
 
     private static string TextId(string? messageId, JsonNode? index) => $"{messageId}:text:{index}";
+
+    private static bool SameMessage(string one, string other)
+    {
+        var at = one.IndexOf(":text:", StringComparison.Ordinal);
+        return at > 0 && string.CompareOrdinal(one, 0, other, 0, at + 6) == 0;
+    }
 
     private static string NewId() => Guid.NewGuid().ToString("N");
 
