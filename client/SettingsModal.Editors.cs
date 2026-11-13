@@ -244,6 +244,7 @@ public partial class SettingsModal
         };
     }
 
+    // A session starts the relay of every MCP it has set up as soon as it opens, used or not.
     private static (string Label, bool Good) EditorMcpLabel(EditorStatus status)
     {
         var holder = status.McpHolder is null ? "" : $" ({status.McpHolder})";
@@ -254,7 +255,7 @@ public partial class SettingsModal
             McpState.PortOpen => ($"MCP port open{holder}", true),
             McpState.NotMcp => ($"Something else on that address{holder}", false),
             McpState.NotRunning => ("MCP not running", false),
-            McpState.Relay when status.Relays > 0 => (status.Relays == 1 ? "1 agent using its MCP" : $"{status.Relays} agents using its MCP", status.Instances.Count > 0),
+            McpState.Relay when status.Relays > 0 => (status.Relays == 1 ? "Relay started by 1 agent session" : $"Relay started by {status.Relays} agent sessions", status.Instances.Count > 0),
             McpState.Relay => ("MCP through its relay, which agents start", true),
             _ => ("No MCP set", false),
         };
