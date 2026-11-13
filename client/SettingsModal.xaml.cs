@@ -105,6 +105,7 @@ public partial class SettingsModal : UserControl
             [
                 new("Providers", "", AgentProvidersPage),
                 new("Approvals", "", ApprovalsPage, () => SaveApprovals(DefaultApprovals)),
+                new("Skills", "", SkillsPage),
                 new("Third Party", "", ThirdPartyPage),
             ]),
             ("Editors",
@@ -309,6 +310,24 @@ public partial class SettingsModal : UserControl
                 Row("Agents can start editors", "Let an agent open an editor that isn't running.", startEditors),
                 Row("Paid generation", "Every paid run needs a fresh yes.", Toggle(true, enabled: false))),
         ];
+    }
+
+    // Read from the folder each time the page opens, as skills are added by putting files there.
+    private UIElement[] SkillsPage()
+    {
+        var folder = AgentSkills.FolderIn(Folders.AgentFolder);
+        var open = ActionButton("Open folder");
+        open.Click += (_, _) => OpenInExplorer(folder);
+
+        var elements = new List<UIElement>
+        {
+            Card(Row("Agent Orange's skills", "Every agent session loads these, whichever provider it uses, and never the skills installed for a provider elsewhere on this PC. Each skill is a folder here with a SKILL.md in it.", open)),
+        };
+
+        var skills = AgentSkills.List(Folders.AgentFolder);
+        elements.Add(Section(skills.Count == 0 ? "No skills yet" : $"{skills.Count} skill{(skills.Count == 1 ? "" : "s")}"));
+        if (skills.Count > 0) elements.Add(Card(skills.Select(skill => (FrameworkElement)Row(skill.Name, skill.Description.Length > 0 ? skill.Description : "No description.")).ToArray()));
+        return elements.ToArray();
     }
 
     private UIElement[] ThirdPartyPage() =>
