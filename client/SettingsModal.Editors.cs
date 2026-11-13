@@ -254,6 +254,7 @@ public partial class SettingsModal
             McpState.PortOpen => ($"MCP port open{holder}", true),
             McpState.NotMcp => ($"Something else on that address{holder}", false),
             McpState.NotRunning => ("MCP not running", false),
+            McpState.Relay when status.Relays > 0 => (status.Relays == 1 ? "1 agent using its MCP" : $"{status.Relays} agents using its MCP", status.Instances.Count > 0),
             McpState.Relay => ("MCP through its relay, which agents start", true),
             _ => ("No MCP set", false),
         };

@@ -30,7 +30,8 @@ public sealed record EditorSettings(string ProgramPath, McpKind Kind, string Add
 
 public sealed record EditorInstance(int ProcessId, string WindowTitle, bool HoldsMcp);
 
-public sealed record EditorStatus(bool ProgramFound, IReadOnlyList<EditorInstance> Instances, McpState Mcp, string? McpHolder);
+/// <summary>Relays is how many copies are running as its MCP relay for an agent, which aren't the program being open.</summary>
+public sealed record EditorStatus(bool ProgramFound, IReadOnlyList<EditorInstance> Instances, McpState Mcp, string? McpHolder, int Relays = 0);
 
 /// <summary>
 /// Keeps track of every engine and tool: how many copies are open, and whether
@@ -231,8 +232,15 @@ public sealed partial class EditorMonitor
             }
 
             var instances = FindInstances(current.ProgramPath, owner);
+
+            // A relay is the same program started with its relay arguments, by an agent.
+            var relays = 0;
+            if (current.Kind == McpKind.Relay && current.Address.Length > 0)
+            {
+                relays = instances.RemoveAll(instance => CommandLineOf(instance.ProcessId) is { } line && EndsWithArguments(line, current.Address));
+            }
             var holder = owner >= 0 && instances.All(instance => instance.ProcessId != owner) ? ProcessName(owner) : null;
-            statuses[editor.Id] = new EditorStatus(File.Exists(current.ProgramPath), instances, state, holder);
+            statuses[editor.Id] = new EditorStatus(File.Exists(current.ProgramPath), instances, state, holder, relays);
         }
 
         return (statuses, handshakes);
@@ -328,7 +336,53 @@ public sealed partial class EditorMonitor
     }
 
     private static bool Same(EditorStatus a, EditorStatus b) =>
-        a.ProgramFound == b.ProgramFound && a.Mcp == b.Mcp && a.McpHolder == b.McpHolder && a.Instances.SequenceEqual(b.Instances);
+        a.ProgramFound == b.ProgramFound && a.Mcp == b.Mcp && a.McpHolder == b.McpHolder && a.Relays == b.Relays && a.Instances.SequenceEqual(b.Instances);
+
+    // Its program can be quoted or not, so only what comes after it is compared.
+    private static bool EndsWithArguments(string commandLine, string arguments) =>
+        commandLine.TrimEnd().EndsWith(" " + arguments.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private const int CommandLineInformation = 60;
+
+    /// <summary>How a process was started, or null if Windows won't say, such as for another user's.</summary>
+    private static string? CommandLineOf(int processId)
+    {
+        const int queryLimitedInformation = 0x1000;
+        var handle = OpenProcess(queryLimitedInformation, false, processId);
+        if (handle == IntPtr.Zero) return null;
+        try
+        {
+            NtQueryInformationProcess(handle, CommandLineInformation, IntPtr.Zero, 0, out var size);
+            if (size <= 0 || size > 1 << 20) return null;
+            var buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                if (NtQueryInformationProcess(handle, CommandLineInformation, buffer, size, out _) != 0) return null;
+
+                // A UNICODE_STRING: its length in bytes, then a pointer to the text.
+                var length = Marshal.ReadInt16(buffer);
+                var text = Marshal.ReadIntPtr(buffer, IntPtr.Size);
+                return length > 0 && text != IntPtr.Zero ? Marshal.PtrToStringUni(text, length / 2) : null;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(int access, bool inherit, int processId);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtQueryInformationProcess(IntPtr process, int infoClass, IntPtr info, int length, out int returned);
 
     private static string SettingKey(EditorDefinition editor) => $"editor:{editor.Id}";
 
