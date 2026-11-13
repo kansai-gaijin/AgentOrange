@@ -72,6 +72,10 @@ public sealed class AgentConversation
     /// <summary>The agent program's own name for the conversation, which picks it back up after a restart.</summary>
     public string? SessionId { get; set; }
 
+    /// <summary>The model and how hard it thinks, or null for the provider's own choice. A change takes effect from the next message.</summary>
+    public string? Model { get; set; }
+    public string? Effort { get; set; }
+
     public DateTimeOffset Updated { get; set; } = DateTimeOffset.UtcNow;
     public List<AgentItem> Items { get; init; } = [];
 
@@ -80,6 +84,7 @@ public sealed class AgentConversation
 
     [JsonIgnore] public string? Folder { get; set; }
     [JsonIgnore] public bool IsWorking { get; private set; }
+    [JsonIgnore] public DateTimeOffset WorkingSince { get; private set; }
     [JsonIgnore] public bool IsWaiting => Items.Any(item => item.RequestState == AgentRequestState.Waiting && item.Kind is AgentItemKind.Approval or AgentItemKind.Question);
 
     /// <summary>On the window's thread: an item was added or changed.</summary>
@@ -90,6 +95,9 @@ public sealed class AgentConversation
 
     private Process? _process;
     private bool _stopping;
+    private bool _restarting; // Ended so the next message starts it with what's changed, which says nothing.
+    private int _turns; // Messages sent that it hasn't finished with, as one sent while it works waits its turn.
+    private string? _startedWith; // The model and effort it was started with.
     private readonly Dictionary<string, AgentItem> _byId = [];
     private string? _messageId; // The assistant message being streamed.
 
@@ -144,6 +152,7 @@ public sealed class AgentConversation
         Add(new AgentItem { Id = NewId(), Kind = AgentItemKind.User, Text = text, View = viewLabel });
         if (Title.Length == 0) Title = text.Length > 60 ? text[..60].TrimEnd() + "…" : text;
 
+        if (_process is not null && _startedWith != $"{Model}|{Effort}") Restart();
         if (_process is null && !Start(prepare)) return;
 
         // Nothing typed can close the block early or pass for one.
@@ -155,6 +164,7 @@ public sealed class AgentConversation
             ["message"] = new JsonObject { ["role"] = "user", ["content"] = prompt },
             ["parent_tool_use_id"] = null,
         });
+        _turns++;
         SetWorking(true);
     }
 
@@ -176,6 +186,8 @@ public sealed class AgentConversation
         var arguments = "-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool=stdio"
             + " --permission-mode acceptEdits --setting-sources project,local --strict-mcp-config"
             + $" --mcp-config \"{setup.McpConfig}\" --plugin-dir \"{setup.SkillsPlugin}\" --append-system-prompt-file \"{setup.Briefing}\"{allowed}"
+            + (Model is { Length: > 0 } model ? $" --model {model}" : "")
+            + (Effort is { Length: > 0 } effort ? $" --effort {effort}" : "")
             + (SessionId is null ? "" : $" --resume {SessionId}");
 
         Process? process;
@@ -197,6 +209,8 @@ public sealed class AgentConversation
         ProviderId = setup.Provider.Id;
         _process = process;
         _stopping = false;
+        _restarting = false;
+        _startedWith = $"{Model}|{Effort}";
         ChildProcesses.Track(process);
         _ = ReadAsync(process);
         return true;
@@ -215,7 +229,11 @@ public sealed class AgentConversation
             // Its pipes close under it when it's stopped partway.
         }
 
-        if (_process != process) return;
+        if (_process != process)
+        {
+            process.Dispose();
+            return;
+        }
         _process = null;
         process.Dispose();
         foreach (var item in Items.Where(item => item.RequestState == AgentRequestState.Waiting && item.Kind is AgentItemKind.Approval or AgentItemKind.Question).ToList())
@@ -224,7 +242,11 @@ public sealed class AgentConversation
             ItemChanged?.Invoke(item);
         }
         EndStreaming();
-        if (IsWorking && !_stopping)
+        if (_restarting)
+        {
+            _restarting = false;
+        }
+        else if (IsWorking && !_stopping)
         {
             var detail = (await errors).Trim();
             Problem(detail.Length > 0 ? $"The agent stopped: {Shortened(detail, 600)}" : "The agent stopped without finishing.");
@@ -233,6 +255,7 @@ public sealed class AgentConversation
         {
             Notice("Stopped.");
         }
+        _turns = 0;
         SetWorking(false);
     }
 
@@ -241,7 +264,10 @@ public sealed class AgentConversation
     {
         if (_process is not { } process || !IsWorking) return;
         _stopping = true;
-        Write(new JsonObject { ["type"] = "control_request", ["request_id"] = NewId(), ["request"] = new JsonObject { ["subtype"] = "interrupt" } });
+
+        // Messages waiting their turn go too, so only the one it's on is left to finish.
+        _turns = Math.Min(_turns, 1);
+        Write(new JsonObject { ["type"] = "control_request", ["request_id"] = NewId(), ["request"] = new JsonObject { ["subtype"] = "interrupt", ["cancel_queued"] = true } });
 
         await Task.Delay(StopWaitsFor);
         if (_process == process && IsWorking) End();
@@ -252,6 +278,22 @@ public sealed class AgentConversation
     {
         if (_process is not { } process) return;
         _stopping = true;
+        try
+        {
+            process.Kill(entireProcessTree: true);
+        }
+        catch (Exception error) when (error is InvalidOperationException or Win32Exception)
+        {
+            // Already gone.
+        }
+    }
+
+    // Ended without a word, so the message about to be sent starts it the new way, picking the conversation back up.
+    private void Restart()
+    {
+        if (_process is not { } process) return;
+        _restarting = true;
+        _process = null;
         try
         {
             process.Kill(entireProcessTree: true);
@@ -351,7 +393,8 @@ public sealed class AgentConversation
                 EndStreaming();
                 if (json["is_error"]?.GetValueKind() == JsonValueKind.True && !_stopping) Problem(Str(json, "result") is { Length: > 0 } reason ? reason : "The agent stopped with an error.");
                 _stopping = false;
-                SetWorking(false);
+                _turns = Math.Max(0, _turns - 1);
+                SetWorking(_turns > 0);
                 break;
         }
     }
@@ -362,6 +405,10 @@ public sealed class AgentConversation
         {
             case "message_start":
                 _messageId = Str(streamed["message"] as JsonObject, "id");
+                break;
+            case "content_block_start" when streamed["content_block"] is JsonObject started && Str(started, "type") == "tool_use"
+                && Str(started, "name") is { } toolName && toolName != "AskUserQuestion" && Str(started, "id") is { } toolId && !_byId.ContainsKey(toolId):
+                Add(new AgentItem { Id = toolId, Kind = AgentItemKind.Tool, Tool = toolName, Text = DescribeTool(toolName, null) });
                 break;
             case "content_block_start" when streamed["content_block"] is JsonObject block && Str(block, "type") == "text":
                 var item = new AgentItem { Id = TextId(_messageId, streamed["index"]), Kind = AgentItemKind.Assistant, Text = Str(block, "text") ?? "", Streaming = true };
@@ -406,8 +453,16 @@ public sealed class AgentConversation
                     break;
 
                 // Its questions for the person come as a request of their own.
-                case "tool_use" when Str(part, "name") is { } name && name != "AskUserQuestion" && Str(part, "id") is { } toolId && !_byId.ContainsKey(toolId):
-                    Add(new AgentItem { Id = toolId, Kind = AgentItemKind.Tool, Tool = name, Text = DescribeTool(name, part["input"] as JsonObject) });
+                case "tool_use" when Str(part, "name") is { } name && name != "AskUserQuestion" && Str(part, "id") is { } toolId:
+                    if (_byId.TryGetValue(toolId, out var started))
+                    {
+                        started.Text = DescribeTool(name, part["input"] as JsonObject);
+                        ItemChanged?.Invoke(started);
+                    }
+                    else
+                    {
+                        Add(new AgentItem { Id = toolId, Kind = AgentItemKind.Tool, Tool = name, Text = DescribeTool(name, part["input"] as JsonObject) });
+                    }
                     break;
             }
         }
@@ -504,6 +559,7 @@ public sealed class AgentConversation
     {
         if (IsWorking == working) return;
         IsWorking = working;
+        if (working) WorkingSince = DateTimeOffset.UtcNow;
         StateChanged?.Invoke();
     }
 

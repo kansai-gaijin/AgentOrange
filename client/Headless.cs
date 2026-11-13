@@ -26,7 +26,8 @@ namespace AgentOrange;
 ///   click "Button"      set 0 "text"       password "text"     select "Radio"
 ///   choose 0 "Item"     answer "path"      wait "text"         waitgone "text"
 ///   has "text"          say "note"         texts               shot name
-///   sleep 500
+///   sleep 500           window "Title"     (the window the next lines act on, by its title)
+///   scroll top          scroll end         (every scrolling area in the window)
 /// </summary>
 internal static partial class Headless
 {
@@ -76,6 +77,13 @@ internal static partial class Headless
 
     public static void Attach(Window window)
     {
+        KeepOffScreen(window);
+        window.Loaded += async (_, _) => await RunAsync(window);
+    }
+
+    /// <summary>Another window the app opens, kept off the screen and from taking focus as the main one is.</summary>
+    public static void KeepOffScreen(Window window)
+    {
         window.WindowStartupLocation = WindowStartupLocation.Manual;
         window.Left = -32000;
         window.Top = -32000;
@@ -86,7 +94,6 @@ internal static partial class Headless
             var handle = new WindowInteropHelper(window).Handle;
             SetWindowLongPtrW(handle, ExStyleIndex, GetWindowLongPtrW(handle, ExStyleIndex) | NoActivate | ToolWindow);
         };
-        window.Loaded += async (_, _) => await RunAsync(window);
     }
 
     private static async Task RunAsync(Window window)
@@ -95,11 +102,17 @@ internal static partial class Headless
         try
         {
             await Task.Delay(500);
+            var target = window;
             foreach (var line in await File.ReadAllLinesAsync(_script))
             {
                 var parts = Tokens().Matches(line).Select(match => match.Groups[1].Success ? match.Groups[1].Value : match.Value).ToArray();
                 if (parts.Length == 0 || parts[0].StartsWith('#')) continue;
-                await RunCommandAsync(window, parts);
+                if (parts[0] == "window")
+                {
+                    target = await UntilThereAsync(window, () => Application.Current.Windows.OfType<Window>().FirstOrDefault(each => each.Title == parts[1] && each.IsLoaded), $"the window {parts[1]}");
+                    continue;
+                }
+                await RunCommandAsync(target, parts);
             }
         }
         catch (Exception error)
@@ -164,6 +177,13 @@ internal static partial class Headless
                 break;
             case "sleep":
                 await Task.Delay(int.Parse(parts[1]));
+                break;
+            case "scroll":
+                foreach (var area in Visible<ScrollViewer>(window))
+                {
+                    if (parts[1] == "top") area.ScrollToTop();
+                    else area.ScrollToEnd();
+                }
                 break;
             default:
                 throw new InvalidOperationException($"Unknown command: {parts[0]}");

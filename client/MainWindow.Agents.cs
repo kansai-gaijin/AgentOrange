@@ -127,6 +127,9 @@ public partial class MainWindow
         {
             _agentsWindow = new AgentsWindow(this) { Icon = Icon };
             _agentsWindow.Closed += (_, _) => _agentsWindow = null;
+#if DEBUG
+            if (Headless.Active) Headless.KeepOffScreen(_agentsWindow);
+#endif
             _agentsWindow.Show();
             return;
         }
