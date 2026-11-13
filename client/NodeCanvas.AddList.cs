@@ -22,7 +22,7 @@ internal sealed partial class NodeCanvas
     [
         (TitleKind, "Title", PrimitivesGroup),
         (TextKind, "Rich Text", PrimitivesGroup),
-        (ImageKind, "Image", null),
+        (ImageKind, "Image", PrimitivesGroup),
     ];
 
     private void OpenAddList()
