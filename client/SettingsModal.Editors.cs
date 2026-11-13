@@ -13,6 +13,7 @@ public partial class SettingsModal
 {
     private const string HttpChoice = "Standard MCP (HTTP)";
     private const string PortChoice = "Port only";
+    private const string RelayChoice = "Relay program";
 
     private UIElement[] EnginesPage() => EditorPage(engines: true);
 
@@ -41,16 +42,20 @@ public partial class SettingsModal
         if (Editors.IsSetUp(editor)) return FullEditorSection(editor, refreshers);
 
         var host = new StackPanel();
-        var setUp = ActionButton("Set up");
-        setUp.Click += (_, _) =>
+        void ShowFull()
         {
             host.Children.Clear();
             var refreshAt = refreshers.Count;
             foreach (var element in FullEditorSection(editor, refreshers)) host.Children.Add(element);
             foreach (var refresh in refreshers.Skip(refreshAt)) refresh();
-        };
+        }
+        var setUp = ActionButton("Set up");
+        setUp.Click += (_, _) => ShowFull();
         host.Children.Add(Section(editor.Name));
-        host.Children.Add(Card(Row("Not set up", $"Only needed if you use {editor.Name} on this PC.", setUp)));
+
+        var rows = new List<FrameworkElement> { Row("Not set up", $"Only needed if you use {editor.Name} on this PC.", setUp) };
+        if (editor.Repo is not null) rows.Add(InstallRow(editor, ShowFull));
+        host.Children.Add(Card(rows.ToArray()));
         return [host];
     }
 
@@ -67,13 +72,13 @@ public partial class SettingsModal
         var kind = new ComboBox
         {
             Style = (Style)FindResource("Choice"),
-            ItemsSource = new[] { HttpChoice, PortChoice },
-            SelectedItem = settings.Kind == McpKind.Http ? HttpChoice : PortChoice,
+            ItemsSource = new[] { HttpChoice, PortChoice, RelayChoice },
+            SelectedItem = settings.Kind switch { McpKind.Http => HttpChoice, McpKind.Port => PortChoice, _ => RelayChoice },
         };
 
         void Apply()
         {
-            var chosenKind = (string)kind.SelectedItem == HttpChoice ? McpKind.Http : McpKind.Port;
+            var chosenKind = (string)kind.SelectedItem switch { HttpChoice => McpKind.Http, PortChoice => McpKind.Port, _ => McpKind.Relay };
             if (!EditorMonitor.TryCleanAddress(chosenKind, address.Text, out var cleaned))
             {
                 ShowProblem(problem, chosenKind == McpKind.Http
@@ -117,16 +122,78 @@ public partial class SettingsModal
             Children = { Row("Status", null, statusHost), copies },
         };
 
+        var rows = new List<FrameworkElement>
+        {
+            statusRow,
+            Row("Program", $"The {editor.Name} program file.", program, browse),
+            Row("MCP type", "How to reach its MCP. A relay is the program started again by agents, which passes their calls to the open copy.", kind),
+            Row("MCP address", "On this PC. For a relay, the arguments that start it.", address),
+        };
+
+        // Once it's installed from its releases, the program setting follows it there.
+        if (editor.Repo is not null) rows.Add(InstallRow(editor, () =>
+        {
+            var installed = System.IO.Path.Combine(editor.InstallFolder, editor.ProgramFile!);
+            if (System.IO.File.Exists(program.Text.Trim())) return;
+            program.Text = installed;
+            Apply();
+        }));
+
         return
         [
             Section(editor.Name),
-            Card(
-                statusRow,
-                Row("Program", $"The {editor.Name} program file.", program, browse),
-                Row("MCP type", "How to reach its MCP.", kind),
-                Row("MCP address", "On this PC.", address)),
+            Card(rows.ToArray()),
             problem,
         ];
+    }
+
+    // Installs the tool from the newest release of its repo, or updates it to that. Asking GitHub
+    // takes a moment, so the row says what's installed first and fills in the rest.
+    private Grid InstallRow(EditorDefinition editor, Action installed)
+    {
+        var button = ActionButton("Install");
+        button.IsEnabled = false;
+        var detail = new TextBlock { FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(0, 3, 0, 0), TextWrapping = TextWrapping.Wrap };
+        var row = Row(ToolInstaller.InstalledVersion(editor) is null ? "Install from GitHub" : "Updates", null, button);
+        ((StackPanel)row.Children[0]).Children.Add(detail);
+        ToolRelease? latest = null;
+
+        void Show()
+        {
+            var have = ToolInstaller.InstalledVersion(editor);
+            var haveText = have switch { null => "Not installed here.", "" => "Installed here, from somewhere else.", _ => $"Installed: {have}." };
+            detail.Text = latest is null ? $"{haveText} Checking {editor.Repo}…" : $"{haveText} Newest: {latest.Tag}.";
+            button.Content = have is null ? "Install" : have == latest?.Tag ? "Up to date" : "Update";
+            button.IsEnabled = latest is not null && have != latest.Tag;
+        }
+
+        async Task CheckAsync()
+        {
+            Show();
+            var (release, trouble) = await GitTools.LatestReleaseAsync(editor.Repo!);
+            latest = release;
+            Show();
+            if (trouble is not null) detail.Text = $"{detail.Text.Replace($" Checking {editor.Repo}…", "")} {trouble}";
+        }
+
+        button.Click += async (_, _) =>
+        {
+            if (latest is not { } release) return;
+            button.IsEnabled = false;
+            var problem = await ToolInstaller.InstallAsync(editor, release, step => detail.Text = step);
+            Show();
+            if (problem is not null)
+            {
+                detail.Text = problem;
+                button.IsEnabled = true;
+                return;
+            }
+            installed();
+            _ = Editors.CheckNowAsync();
+        };
+
+        _ = CheckAsync();
+        return row;
     }
 
     private void ShowEditorStatus(EditorDefinition editor, ContentControl statusHost, StackPanel copies)
@@ -187,6 +254,7 @@ public partial class SettingsModal
             McpState.PortOpen => ($"MCP port open{holder}", true),
             McpState.NotMcp => ($"Something else on that address{holder}", false),
             McpState.NotRunning => ("MCP not running", false),
+            McpState.Relay => ("MCP through its relay, which agents start", true),
             _ => ("No MCP set", false),
         };
     }

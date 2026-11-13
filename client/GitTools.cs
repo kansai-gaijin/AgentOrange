@@ -444,7 +444,8 @@ public static partial class GitTools
         var isCreate = arguments is ["repo", "create", ..];
 
         // Before a clone can be called finished, on what can be a very large repo and a cold disk.
-        var readsWholeRepo = arguments is ["grep", ..];
+        // A tool's build can be hundreds of megabytes on a slow line.
+        var readsWholeRepo = arguments is ["grep", ..] or ["release", "download", ..];
         using var timeout = new CancellationTokenSource(isClone ? Timeout.InfiniteTimeSpan : isCreate ? CreateTimeout : readsWholeRepo ? WholeRepoTimeout : CommandTimeout);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancel);
 

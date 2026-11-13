@@ -10,12 +10,21 @@ using System.Windows.Threading;
 
 namespace AgentOrange;
 
-/// <summary>Standard MCP over HTTP, or a program that only offers a port on this PC.</summary>
-public enum McpKind { Http, Port }
+/// <summary>
+/// Standard MCP over HTTP, a program that only offers a port on this PC, or a relay: the program
+/// itself started again with the address as its arguments, which agents run and which passes their
+/// calls on to the copy that's open. Nothing listens for a relay, so there's nothing to check.
+/// </summary>
+public enum McpKind { Http, Port, Relay }
 
-public enum McpState { NotSet, NotRunning, Connected, NeedsLogin, PortOpen, NotMcp }
+public enum McpState { NotSet, NotRunning, Connected, NeedsLogin, PortOpen, NotMcp, Relay }
 
-public sealed record EditorDefinition(string Id, string Name, bool IsEngine, McpKind DefaultKind, string DefaultAddress);
+/// <summary>Repo is the GitHub repo whose releases it's installed and updated from, and ProgramFile the program in them.</summary>
+public sealed record EditorDefinition(string Id, string Name, bool IsEngine, McpKind DefaultKind, string DefaultAddress, string? Repo = null, string? ProgramFile = null)
+{
+    /// <summary>Where a copy installed from its releases goes, the way per-user installs usually do.</summary>
+    public string InstallFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", Name);
+}
 
 public sealed record EditorSettings(string ProgramPath, McpKind Kind, string Address);
 
@@ -41,7 +50,9 @@ public sealed partial class EditorMonitor
         new("godot", "Godot", true, McpKind.Http, "http://127.0.0.1:8645/mcp"),
         new("unity", "Unity", true, McpKind.Http, "http://127.0.0.1:8080/mcp"), // MCP for Unity's own default.
         new("blender", "Blender", false, McpKind.Port, "127.0.0.1:9876"),
-        new("aseprite", "Aseprite", false, McpKind.Http, "http://127.0.0.1:8650/mcp"),
+        new("aseprite", "Aseprite", false, McpKind.Http, "http://127.0.0.1:8650/mcp", "kansai-gaijin/aseprite", "aseprite.exe"),
+        new("armorpaint", "ArmorPaint", false, McpKind.Relay, "--mcp", "kansai-gaijin/armorpaint", "ArmorPaint.exe"),
+        new("material-maker", "Material Maker", false, McpKind.Http, "http://127.0.0.1:8790/mcp", "kansai-gaijin/material-maker", "material_maker.exe"),
     ];
 
     private readonly LocalDatabase _database;
@@ -86,7 +97,7 @@ public sealed partial class EditorMonitor
                 AppLog.Write($"Skipped unreadable settings for {editor.Id}: {error.Message}");
             }
         }
-        return new EditorSettings(FindProgram(editor.Id) ?? "", editor.DefaultKind, editor.DefaultAddress);
+        return new EditorSettings(FindProgram(editor) ?? "", editor.DefaultKind, editor.DefaultAddress);
     }
 
     public void Save(EditorDefinition editor, EditorSettings settings)
@@ -111,7 +122,7 @@ public sealed partial class EditorMonitor
     {
         var text = input.Trim();
         address = text;
-        if (text.Length == 0) return true;
+        if (text.Length == 0 || kind == McpKind.Relay) return true; // A relay's are just its arguments.
 
         if (kind == McpKind.Http)
         {
@@ -137,10 +148,13 @@ public sealed partial class EditorMonitor
 
     public static int PortOf(McpKind kind, string address)
     {
-        if (address.Length == 0) return -1;
+        if (address.Length == 0 || kind == McpKind.Relay) return -1;
         var text = kind == McpKind.Http ? address : $"tcp://{address}";
         return Uri.TryCreate(text, UriKind.Absolute, out var uri) ? uri.Port : -1;
     }
+
+    /// <summary>Looks again now, such as once a tool's been installed.</summary>
+    public Task CheckNowAsync() => CheckAsync();
 
     private async Task CheckAsync()
     {
@@ -191,7 +205,7 @@ public sealed partial class EditorMonitor
             var port = PortOf(current.Kind, current.Address);
             var owner = port > 0 && listeners.TryGetValue(port, out var id) ? id : -1;
 
-            var state = McpState.NotSet;
+            var state = current.Kind == McpKind.Relay ? McpState.Relay : McpState.NotSet;
             if (port > 0)
             {
                 if (owner < 0)
@@ -319,8 +333,11 @@ public sealed partial class EditorMonitor
     private static string SettingKey(EditorDefinition editor) => $"editor:{editor.Id}";
 
     // Usual install locations. People can point at anything else.
-    private static string? FindProgram(string id)
+    private static string? FindProgram(EditorDefinition editor)
     {
+        // One installed from its releases, by the app.
+        if (editor.ProgramFile is { } file && File.Exists(Path.Combine(editor.InstallFolder, file))) return Path.Combine(editor.InstallFolder, file);
+        var id = editor.Id;
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
         var steam = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Steam", "steamapps", "common");
 
