@@ -141,7 +141,8 @@ internal sealed partial class NodeCanvas : Border
             IsHitTestVisible = false,
             Visibility = Visibility.Collapsed,
         };
-        Child = new Grid { Children = { _world, _hint, _band, _toolbar } };
+        _deliverable = NewDeliverableBlock();
+        Child = new Grid { Children = { _world, _hint, _band, _toolbar, _deliverable } };
 
         MouseLeftButtonDown += Pressed;
         MouseMove += Moved;
@@ -174,7 +175,15 @@ internal sealed partial class NodeCanvas : Border
 
         foreach (var (id, text) in _database.ListProjectRecords(LocalDatabase.NodesCollection, _projectId))
         {
-            if (Parse<NodeData>(text) is { } data && data.Board == _board) AddNodeView(id, data);
+            if (Parse<NodeData>(text) is not { } data || data.Board != _board) continue;
+
+            // A deliverable was a node for a while, before it was the block in the corner.
+            if (data.Kind == DeliverableKind)
+            {
+                _database.SaveRecord(LocalDatabase.NodesCollection, id, "", deleted: true);
+                continue;
+            }
+            AddNodeView(id, data);
         }
         foreach (var (id, text) in _database.ListProjectRecords(LocalDatabase.NodeLinksCollection, _projectId))
         {
@@ -182,7 +191,7 @@ internal sealed partial class NodeCanvas : Border
             if (Parse<LinkData>(text) is { } data && data.Board == _board && _nodes.ContainsKey(data.From) && _nodes.ContainsKey(data.To)) AddLinkView(id, data);
         }
 
-        EnsureDeliverable();
+        ShowDeliverable();
         _selection.RemoveWhere(id => !_nodes.ContainsKey(id) && !_links.ContainsKey(id));
         ShowSelection();
         _hint.Visibility = _nodes.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -204,7 +213,7 @@ internal sealed partial class NodeCanvas : Border
     private string NewId() => $"{_projectId}:{Guid.NewGuid():N}";
 
     // Every kind but a Title node shows its edges.
-    private static bool HasBorder(NodeData data) => data.Kind == TextKind || data.Kind == DeliverableKind || ReferenceTo(data.Kind) is not null;
+    private static bool HasBorder(NodeData data) => data.Kind == TextKind || ReferenceTo(data.Kind) is not null;
 
     // Nodes
 
@@ -213,8 +222,7 @@ internal sealed partial class NodeCanvas : Border
         var isText = data.Kind == TextKind;
         var isImage = data.Kind == ImageKind;
         var reference = ReferenceTo(data.Kind);
-        var isDeliverable = data.Kind == DeliverableKind;
-        var inside = new Border { Padding = isImage || reference is not null || isDeliverable ? new Thickness(0) : new Thickness(10, isText ? 12 : 6, 10, 12) };
+        var inside = new Border { Padding = isImage || reference is not null ? new Thickness(0) : new Thickness(10, isText ? 12 : 6, 10, 12) };
         var parts = new Grid { Children = { inside } };
         var box = new Border
         {
@@ -226,7 +234,7 @@ internal sealed partial class NodeCanvas : Border
             CornerRadius = new CornerRadius(8),
             Child = parts,
         };
-        var view = new NodeView { Id = id, Data = data, Box = box, Inside = inside, Pins = isText || isImage || reference is not null || isDeliverable ? [TopPin, BottomPin] : [BottomPin] };
+        var view = new NodeView { Id = id, Data = data, Box = box, Inside = inside, Pins = isText || isImage || reference is not null ? [TopPin, BottomPin] : [BottomPin] };
         box.Tag = view;
 
         if (isText)
@@ -240,10 +248,6 @@ internal sealed partial class NodeCanvas : Border
         else if (reference is { } to)
         {
             AddReferenceParts(view, to);
-        }
-        else if (isDeliverable)
-        {
-            AddDeliverableParts(view);
         }
         else
         {
@@ -447,12 +451,6 @@ internal sealed partial class NodeCanvas : Border
         if (node.Picture is not null)
         {
             ReplaceImage(node);
-            return;
-        }
-
-        if (node.Data.Kind == DeliverableKind)
-        {
-            FillDeliverable();
             return;
         }
 
@@ -666,10 +664,6 @@ internal sealed partial class NodeCanvas : Border
             if (_links.TryGetValue(id, out var onlyLink))
             {
                 RemoveLink(onlyLink);
-            }
-            else if (_nodes.TryGetValue(id, out var kept) && kept.Data.Kind == DeliverableKind)
-            {
-                // An asset's deliverable stays, as it's what says whether the asset is done.
             }
             else if (_nodes.Remove(id, out var node))
             {
