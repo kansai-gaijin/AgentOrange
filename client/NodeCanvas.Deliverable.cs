@@ -11,10 +11,9 @@ namespace AgentOrange;
 /// there from the first time the board is opened, and can be moved but never deleted. Only a
 /// person fills it, by double-clicking it and choosing the file.
 ///
-/// It's a file the game itself uses, already in the project's folder, such as the .uasset Unreal
-/// makes when something's imported. Nothing is copied: the deliverable only says which file it is,
-/// and the file goes to other PCs with the project's repo. Choosing one opens where the project's
-/// engine keeps its assets.
+/// It's any file already in the project's folder, such as the .uasset Unreal makes when something's
+/// imported. Nothing is copied: the deliverable only says which file it is, and the file goes to
+/// other PCs with the project's repo.
 /// </summary>
 internal sealed partial class NodeCanvas
 {
@@ -100,35 +99,7 @@ internal sealed partial class NodeCanvas
         return picture;
     }
 
-    // Where an engine keeps the files a game uses, the kinds of file they are, and how to say where
-    // that is. A repo often keeps the game one folder down, next to its docs or tools.
-    private static (string StartIn, string Filter, string Place) DeliverablePlace(string folder, string? engine)
-    {
-        const string AnyFile = "All files|*.*";
-        string? GameFolder(string marker)
-        {
-            try
-            {
-                return new[] { folder }.Concat(Directory.EnumerateDirectories(folder).Where(path => !Path.GetFileName(path).StartsWith('.')))
-                    .FirstOrDefault(place => Directory.EnumerateFileSystemEntries(place, marker).Any());
-            }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-            {
-                return null;
-            }
-        }
-        string Inside(string? game, string sub) => game is not null && Directory.Exists(Path.Combine(game, sub)) ? Path.Combine(game, sub) : game ?? folder;
-
-        return engine switch
-        {
-            "Unreal Engine" => (Inside(GameFolder("*.uproject"), "Content"), $"Unreal assets|*.uasset;*.umap|{AnyFile}", "in the game's Content folder, such as the .uasset made when it was imported"),
-            "Unity" => (Inside(GameFolder("ProjectSettings"), "Assets"), AnyFile, "in the game's Assets folder"),
-            "Godot" => (GameFolder("project.godot") ?? folder, AnyFile, "in the Godot project"),
-            _ => (folder, AnyFile, "in the project's folder"),
-        };
-    }
-
-    // Asks which of the project's files it is. Nothing is copied.
+    // Asks which of the project's files it is: any kind, anywhere in its folder. Nothing is copied.
     private void FillDeliverable()
     {
         if (AssetCardId is not { } cardId) return;
@@ -137,14 +108,12 @@ internal sealed partial class NodeCanvas
             Dialogs.Notify("This project needs its folder on this PC first, as the deliverable is one of the files in it.");
             return;
         }
-        var engine = _database.ListProjects().FirstOrDefault(project => project.Id == _projectId)?.Engine;
-        var (startIn, filter, place) = DeliverablePlace(folder, engine);
-        if (Dialogs.PickFile("Choose the deliverable", filter, startIn) is not { } picked) return;
+        if (Dialogs.PickFile("Choose the deliverable", "All files|*.*", folder) is not { } picked) return;
 
         var inFolder = Path.GetRelativePath(folder, picked);
         if (inFolder.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(inFolder))
         {
-            Dialogs.Notify($"Choose the file the game uses, {place}.\n\n{Path.GetFileName(picked)} isn't in this project's folder, and nothing is copied into it.");
+            Dialogs.Notify($"Choose a file in the project's folder.\n\n{Path.GetFileName(picked)} isn't in it, and nothing is copied into it.");
             return;
         }
 
