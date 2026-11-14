@@ -14,6 +14,12 @@ public static class AgentIcons
 {
     private static readonly Dictionary<string, Geometry> Lines = new()
     {
+        ["maximize-2"] = Geometry.Parse("M 15 3 h 6 v 6 M 21 3 l -7 7 M 3 21 l 7 -7 M 9 21 H 3 v -6"),
+        ["minimize-2"] = Geometry.Parse("M 14 10 l 7 -7 M 20 10 h -6 V 4 M 3 21 l 7 -7 M 4 14 h 6 v 6"),
+        ["pilcrow"] = Geometry.Parse("M 13 4 v 16 M 17 4 v 16 M 19 4 H 9.5 a 4.5 4.5 0 0 0 0 9 H 13"),
+        ["file-plus"] = Geometry.Parse("M 15 2 H 6 a 2 2 0 0 0 -2 2 v 16 a 2 2 0 0 0 2 2 h 12 a 2 2 0 0 0 2 -2 V 7 Z M 14 2 v 4 a 2 2 0 0 0 2 2 h 4 M 9 15 h 6 M 12 18 v -6"),
+        ["file-minus"] = Geometry.Parse("M 15 2 H 6 a 2 2 0 0 0 -2 2 v 16 a 2 2 0 0 0 2 2 h 12 a 2 2 0 0 0 2 -2 V 7 Z M 14 2 v 4 a 2 2 0 0 0 2 2 h 4 M 9 15 h 6"),
+        ["file-symlink"] = Geometry.Parse("M 4 11 V 4 a 2 2 0 0 1 2 -2 h 9 l 5 5 v 13 a 2 2 0 0 1 -2 2 h -5 M 14 2 v 4 a 2 2 0 0 0 2 2 h 4 M 10 18 l 3 -3 -3 -3 M 4 15 h 9"),
         ["panel-left"] = Geometry.Parse("M 5 3 h 14 a 2 2 0 0 1 2 2 v 14 a 2 2 0 0 1 -2 2 h -14 a 2 2 0 0 1 -2 -2 v -14 a 2 2 0 0 1 2 -2 Z M 9 3 v 18"),
         ["panel-left-close"] = Geometry.Parse("M 5 3 h 14 a 2 2 0 0 1 2 2 v 14 a 2 2 0 0 1 -2 2 h -14 a 2 2 0 0 1 -2 -2 v -14 a 2 2 0 0 1 2 -2 Z M 9 3 v 18 M 16 15 l -3 -3 3 -3"),
         ["chevron-left"] = Geometry.Parse("M 15 18 l -6 -6 6 -6"),

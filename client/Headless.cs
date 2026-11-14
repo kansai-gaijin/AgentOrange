@@ -131,7 +131,9 @@ internal static partial class Headless
         switch (parts[0])
         {
             case "click":
-                (await FindButtonAsync(window, parts[1])).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                var clicked = await FindButtonAsync(window, parts[1]);
+                if (clicked is ToggleButton toggle) toggle.IsChecked = toggle.IsChecked != true; // As a click flips it.
+                else clicked.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 break;
             case "set":
                 var field = await UntilThereAsync(window, () => Visible<TextBox>(window).ElementAtOrDefault(int.Parse(parts[1])), $"field {parts[1]}");
@@ -194,8 +196,8 @@ internal static partial class Headless
     }
 
     // A card's settings button is hidden until hovered, and there's no mouse here.
-    private static Task<Button> FindButtonAsync(Window window, string name) =>
-        UntilThereAsync(window, () => Descendants(window).OfType<Button>().LastOrDefault(candidate =>
+    private static Task<ButtonBase> FindButtonAsync(Window window, string name) =>
+        UntilThereAsync(window, () => Descendants(window).OfType<ButtonBase>().Where(candidate => candidate is Button or ToggleButton).LastOrDefault(candidate =>
             candidate.IsEnabled
             && Matches(candidate, name)
             && (candidate.IsVisible || (candidate.Visibility == Visibility.Hidden && VisualTreeHelper.GetParent(candidate) is UIElement { IsVisible: true }))), name);

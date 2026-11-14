@@ -65,10 +65,29 @@ public static partial class GitTools
         return changes;
     }
 
-    /// <summary>One file's changes between two checkpoints, as a unified diff.</summary>
-    public static async Task<string> DiffBetweenAsync(string folder, string before, string after, string? path = null)
+    /// <summary>The changes between two checkpoints (or one file's), as a unified diff.</summary>
+    public static async Task<string> DiffBetweenAsync(string folder, string before, string after, string? path = null, bool ignoreWhitespace = false)
     {
         string[] scope = path is null ? [] : ["--", path];
-        return await RunAsync("git", folder, ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "-M", before, after, .. scope]) is { ExitCode: 0 } diff ? diff.Output : "";
+        return await Patch(folder, ignoreWhitespace, [before, after, .. scope]);
+    }
+
+    /// <summary>T3's "Changes": everything since the branch left the default branch, committed or not.</summary>
+    public static async Task<string> BranchDiffAsync(string folder, bool ignoreWhitespace)
+    {
+        var state = await RepoStateAsync(folder, fetch: false);
+        if ((state.DefaultBranch ?? state.Upstream) is not { } baseRef) return await UncommittedDiffAsync(folder, ignoreWhitespace);
+        return await RunAsync("git", folder, "merge-base", "HEAD", baseRef) is { ExitCode: 0 } mergeBase
+            ? await Patch(folder, ignoreWhitespace, [mergeBase.Output.Trim()])
+            : "";
+    }
+
+    /// <summary>T3's "Uncommitted": what isn't committed yet.</summary>
+    public static Task<string> UncommittedDiffAsync(string folder, bool ignoreWhitespace) => Patch(folder, ignoreWhitespace, ["HEAD"]);
+
+    private static async Task<string> Patch(string folder, bool ignoreWhitespace, string[] what)
+    {
+        string[] space = ignoreWhitespace ? ["-w"] : [];
+        return await RunAsync("git", folder, ["-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "-M", .. space, .. what]) is { ExitCode: 0 } diff ? diff.Output : "";
     }
 }

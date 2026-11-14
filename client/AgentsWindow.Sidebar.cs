@@ -69,7 +69,7 @@ public sealed partial class AgentsWindow
         if (_sideColumn is null || _sidePanel is null) return;
         _sideColumn.Width = new GridLength(_sidebar.Open ? Math.Clamp(_sidebar.Width, SidebarMin, MostSidebar()) : 0);
         _sidePanel.Visibility = _sidebar.Open ? Visibility.Visible : Visibility.Collapsed;
-        if (_headerBar is not null) _headerBar.Padding = new Thickness(_sidebar.Open ? 20 : 52, 0, 150, 0);
+        ShowHeaderRoom();
     }
 
     private void ToggleSidebar()

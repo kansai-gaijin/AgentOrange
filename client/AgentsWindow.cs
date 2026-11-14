@@ -295,10 +295,11 @@ public sealed partial class AgentsWindow : Window
         conversationArea.Children.Add(timelineArea);
 
         var layout = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(SidebarWidth) }, new ColumnDefinition() } };
-        Grid.SetColumn(conversationArea, 1);
+        var chat = BuildRightPanel(conversationArea);
+        Grid.SetColumn(chat, 1);
         layout.Children.Add(sideEdge);
         BuildSidebarEdge(layout, sideEdge, layout.ColumnDefinitions[0]);
-        layout.Children.Add(conversationArea);
+        layout.Children.Add(chat);
 
         var caption = CaptionButtons();
         Grid.SetColumnSpan(caption, 2);

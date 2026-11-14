@@ -53,8 +53,8 @@ public sealed partial class AgentsWindow
 
     private void BuildDetailsParts(Grid layout)
     {
-        Grid.SetColumn(_detailsLayer, 1);
-        layout.Children.Add(_detailsLayer);
+        // In the chat's column, under its header, as T3 anchors it there.
+        _chatAndPanel.Children.Add(_detailsLayer);
         _detailsLayer.PreviewKeyDown += (_, key) =>
         {
             if (key.Key != Key.Escape || key.Handled) return;
@@ -290,7 +290,7 @@ public sealed partial class AgentsWindow
                 version.Children.Add(pr);
             }
             version.Children.Add(GitActionsRow(conversation, layers, folder, state, run));
-            version.Children.Add(ChangesRow(state));
+            version.Children.Add(ChangesRow(state, () => ShowDiffPanel(conversation, null, null, branch: true)));
         }
         body.Children.Add(new Border { BorderBrush = Rule65, BorderThickness = new Thickness(0, 1, 0, 0), Child = version });
     }
@@ -691,7 +691,7 @@ public sealed partial class AgentsWindow
     }
 
     // Changes: what's changed since the default branch, or what isn't committed yet when there's none.
-    private static FrameworkElement ChangesRow(RepoState? state)
+    private static FrameworkElement ChangesRow(RepoState? state, Action open)
     {
         var line = new DockPanel();
         var counts = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 0, 0, 0) };
@@ -709,7 +709,7 @@ public sealed partial class AgentsWindow
         detail.ToolTip = detail.Text;
         words.Children.Add(detail);
         line.Children.Add(IconRow(RowIcon("file-diff"), words));
-        return PanelButton(line, () => { }, "Changes");
+        return PanelButton(line, open, "Changes");
     }
 
     // As T3 shortens them: 999, 1.2k, 3m.

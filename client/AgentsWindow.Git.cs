@@ -265,7 +265,14 @@ public sealed partial class AgentsWindow
     {
         _dialogs.Children.Clear();
         var dim = new Border { Background = new SolidColorBrush(shade ?? Color.FromArgb(0x80, 0x00, 0x00, 0x00)) };
-        dim.MouseLeftButtonUp += (_, _) => CloseDialog();
+        // A click that began on it, so the release of the click that opened the dialog doesn't close it.
+        var pressedHere = false;
+        dim.MouseLeftButtonDown += (_, _) => pressedHere = true;
+        dim.MouseLeftButtonUp += (_, _) =>
+        {
+            if (pressedHere) CloseDialog();
+            pressedHere = false;
+        };
         _dialogs.Children.Add(dim);
         _dialogs.Children.Add(card);
         _dialogs.Visibility = Visibility.Visible;

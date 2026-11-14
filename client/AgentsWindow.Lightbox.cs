@@ -195,9 +195,12 @@ public sealed partial class AgentsWindow
 
         // Clicking anything but the picture, its caption or the buttons closes it.
         var surface = new Grid { Background = Brushes.Transparent, Margin = new Thickness(ActualWidth * 0.04, 24, ActualWidth * 0.04, 24), Children = { box } };
+        var pressedOutside = false;
+        surface.MouseLeftButtonDown += (_, press) => pressedOutside = press.OriginalSource == surface || press.OriginalSource == box;
         surface.MouseLeftButtonUp += (_, click) =>
         {
-            if (click.OriginalSource == surface || click.OriginalSource == box) CloseDialog();
+            if (pressedOutside && (click.OriginalSource == surface || click.OriginalSource == box)) CloseDialog();
+            pressedOutside = false;
         };
         stack.MouseLeftButtonUp += (_, click) => click.Handled = true;
 

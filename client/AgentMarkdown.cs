@@ -396,8 +396,11 @@ internal sealed partial class AgentMarkdown
                 ToolTip = tip,
             };
             image.Loaded += (_, _) => image.Clip = new RectangleGeometry(new Rect(0, 0, image.ActualWidth, image.ActualHeight), 7, 7);
-            frame.MouseLeftButtonUp += (_, _) =>
+            // Taken before the reply's text box can take the press for selecting words.
+            frame.PreviewMouseLeftButtonDown += (_, press) =>
             {
+                press.Handled = true;
+
                 // T3's gallery is every picture in the same reply.
                 var gallery = _source.Split('\n').Select(each => ImageLine().Match(each.Trim())).Where(each => each.Success).Select(each => (PicturePath(each), each.Groups["alt"].Value)).ToList();
                 Preview?.Invoke(gallery, Math.Max(0, gallery.FindIndex(each => each.Item1 == path)));
