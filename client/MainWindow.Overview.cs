@@ -277,8 +277,8 @@ public partial class MainWindow
     // How many of the project's tasks are done, out of how many, and the way to the Tasks page.
     private Button TasksTile(Project project)
     {
-        var tasks = ProjectTasks(project);
-        var tile = ProgressTile("Tasks done", tasks.Count(task => task.Done).ToString(), tasks.Count > 0 ? $" of {tasks.Count}" : null);
+        var (done, all) = TaskCounts(project);
+        var tile = ProgressTile("Tasks done", done.ToString(), all > 0 ? $" of {all}" : null);
         var button = new Button { Style = (Style)FindResource("ProjectCard"), Content = tile, Width = double.NaN, Margin = new Thickness(0) };
         AutomationProperties.SetName(button, "Tasks");
         void ShowActive() => tile.BorderBrush = (Brush)FindResource(button.IsMouseOver || button.IsKeyboardFocusWithin ? "Accent" : "Line");

@@ -44,7 +44,22 @@ public partial class MainWindow
         }
         else
         {
-            said.AppendLine(section.Name == TasksPage ? "Page: Tasks, the assets with a date to deliver them by." : $"Page: {section.Name}, a board.");
+            if (section.Name == TasksPage)
+            {
+                said.AppendLine("Page: Tasks, in the stage the project is at: tasks people made, by milestone, and assets with a date to deliver them by.");
+                var stageNow = _database.ProjectStage(project.Id);
+                var tasks = _database.ListTasks(project.Id, stageNow);
+                foreach (var (milestoneId, milestone) in _database.ListMilestones(project.Id, stageNow))
+                {
+                    said.AppendLine($"Milestone \"{milestone.Name}\"{(milestone.Goal is { } goal ? $", for: {goal}" : "")}{(milestone.DoneWhen is { } doneWhen ? $"; done when: {doneWhen}" : "")}");
+                    foreach (var (_, task) in tasks.Where(each => each.Task.Milestone == milestoneId)) said.AppendLine($"  [{(task.Done ? "x" : " ")}] {task.Title}{(task.Due is { } due ? $" (by {due})" : "")}");
+                }
+                foreach (var (_, task) in tasks.Where(each => each.Task.Milestone is null)) said.AppendLine($"  [{(task.Done ? "x" : " ")}] {task.Title}{(task.Due is { } due ? $" (by {due})" : "")}");
+            }
+            else
+            {
+                said.AppendLine($"Page: {section.Name}, a board.");
+            }
         }
 
         if (OpenBoard(project) is { } board) said.AppendLine($"On the board (board key {board.BoardKey}):\n{board.Describe()}");

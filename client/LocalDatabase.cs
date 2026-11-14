@@ -25,6 +25,15 @@ public sealed record BoardCard(string Id, string Board, string Name, double Orde
 public sealed record AssetDetails(string? Type = null, string? Owner = null, string[]? Tags = null, string? Due = null);
 
 /// <summary>
+/// A task someone made, in a stage of a project: what's to be done, with notes, a day to have it done
+/// by and a milestone if it has them. Ticked off by hand. Order is its place among its milestone's.
+/// </summary>
+public sealed record ProjectTask(string Stage, string Title, string? Notes = null, string? Due = null, bool Done = false, string? Milestone = null, double Order = 0);
+
+/// <summary>A milestone in a stage: what it's for, and what has to be true for it to be done.</summary>
+public sealed record Milestone(string Stage, string Name, string? Goal = null, string? DoneWhen = null, double Order = 0);
+
+/// <summary>
 /// The game's technical targets, such as its frame rate and platforms: settings of the game rather
 /// than design to lay out on a board. Each is written as the person likes, and empty until decided.
 /// </summary>
@@ -90,6 +99,8 @@ public sealed class LocalDatabase
     private const string ImagesCollection = "project_images";
     private const string EnginesCollection = "project_engines";
     private const string GameSettingsCollection = "game_settings";
+    private const string TasksCollection = "tasks";
+    private const string MilestonesCollection = "milestones";
 
     // Edits to a project, one record per field, so two PCs changing different things both
     // count. The project's own record is only written to create or delete it, so an edit made
@@ -441,6 +452,57 @@ public sealed class LocalDatabase
         catch (JsonException)
         {
             return new GameSettings(); // It arrived from another PC and can't be read.
+        }
+    }
+
+    /// <summary>The tasks people made in a stage, each with its id, in their order.</summary>
+    public List<(string Id, ProjectTask Task)> ListTasks(string projectId, string stage) =>
+        [.. ReadAll<ProjectTask>(TasksCollection, projectId).Where(each => each.Data.Stage == stage).OrderBy(each => each.Data.Order).ThenBy(each => each.Data.Title, StringComparer.CurrentCultureIgnoreCase).Select(each => (each.Id, each.Data))];
+
+    /// <summary>Adds one when it has no id yet, and returns its id.</summary>
+    public string SaveTask(string projectId, string? id, ProjectTask task)
+    {
+        id ??= $"{projectId}:{Guid.NewGuid():N}";
+        SaveRecord(TasksCollection, id, JsonSerializer.Serialize(task, JsonOptions));
+        return id;
+    }
+
+    public void DeleteTask(string id) => SaveRecord(TasksCollection, id, "", deleted: true);
+
+    public List<(string Id, Milestone Milestone)> ListMilestones(string projectId, string stage) =>
+        [.. ReadAll<Milestone>(MilestonesCollection, projectId).Where(each => each.Data.Stage == stage).OrderBy(each => each.Data.Order).Select(each => (each.Id, each.Data))];
+
+    public string SaveMilestone(string projectId, string? id, Milestone milestone)
+    {
+        id ??= $"{projectId}:{Guid.NewGuid():N}";
+        SaveRecord(MilestonesCollection, id, JsonSerializer.Serialize(milestone, JsonOptions));
+        return id;
+    }
+
+    /// <summary>Its tasks stay, without a milestone.</summary>
+    public void DeleteMilestone(string projectId, string id)
+    {
+        foreach (var (taskId, task) in ReadAll<ProjectTask>(TasksCollection, projectId).Where(each => each.Data.Milestone == id))
+        {
+            SaveTask(projectId, taskId, task with { Milestone = null });
+        }
+        SaveRecord(MilestonesCollection, id, "", deleted: true);
+    }
+
+    // Records that arrive from another PC and can't be read are left out.
+    private IEnumerable<(string Id, T Data)> ReadAll<T>(string collection, string projectId) where T : class
+    {
+        foreach (var (id, text) in ListProjectRecords(collection, projectId))
+        {
+            T? data = null;
+            try
+            {
+                data = JsonSerializer.Deserialize<T>(text, JsonOptions);
+            }
+            catch (JsonException)
+            {
+            }
+            if (data is not null) yield return (id, data);
         }
     }
 
@@ -1220,7 +1282,7 @@ public sealed class LocalDatabase
     private static string? ProjectIdOf(SyncChange change) => change.Collection switch
     {
         ProjectsCollection or EnginesCollection or GameSettingsCollection => change.Id,
-        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection or AssetDetailsCollection or AssetTagsCollection or AssetDeliverablesCollection => change.Id.Split(':')[0],
+        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection or AssetDetailsCollection or AssetTagsCollection or AssetDeliverablesCollection or TasksCollection or MilestonesCollection => change.Id.Split(':')[0],
         _ => null,
     };
 

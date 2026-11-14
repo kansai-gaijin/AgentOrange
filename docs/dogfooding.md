@@ -3,6 +3,23 @@
 What got in the way while using Agent Orange to make the games, and what was done about it. Newest first.
 Anything not fixed on the spot is a GitHub issue, not a line here.
 
+## 2026-11-15 · Animal Planet: tasks people make, and the implementation plan as milestones
+
+Tasks were only assets with a date to deliver them by, so there was no way to add one by hand, and
+the GDD's implementation plan sat in a document though it's a list of work. The user: "things like
+this should be tasks".
+
+- **Tasks people make** (`tasks`): what's to be done, notes, a day to have it done by, a milestone,
+  and a tick. Per stage, like asset tasks, which stay as they were.
+- **Milestones** (`milestones`): a name, what it's for, and "done when", holding their tasks, with
+  progress. Deleting one keeps its tasks.
+- **The Tasks page** shows them by milestone, then other tasks, then assets to deliver; or by date,
+  where tasks keep their milestone order and say which milestone they're in. The overview's Tasks
+  done tile counts both kinds. Agents on the Tasks page are told every milestone and task.
+- **The implementation plan** went in through the forms: Priority 0 to 11 and Release Readiness, 13
+  milestones and 134 tasks. Its document is now only the development principles.
+- The asset form's date picker is shared by both forms now.
+
 ## 2026-11-15 · Animal Planet: a lean Overview, frames, undo and game settings
 
 The user found the Overview "super bloated": every Overview article of the GDD had been put on it,
