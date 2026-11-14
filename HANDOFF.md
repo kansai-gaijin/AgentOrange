@@ -87,6 +87,16 @@ Everything is merged and pushed. Nothing is waiting on any branch.
     - **Permission mode per conversation:** Ask first, Edit freely (the default), Plan only, Full access. Changed live with `set_permission_mode`, except Full access, which Claude Code only takes at launch, so it restarts with it from the next message. Plan mode's ExitPlanMode shows as a plan card with Go ahead / Keep planning.
     - **Also:** the agent's own to-do list (TodoWrite) shows above the box, ticked off as it goes; Always allow (the request's own permission suggestions, for the session); "making room in its memory" and retry notices.
   - Not built yet: Agent Orange's own MCP server, so the agent can read and change boards, cards and assets (next).
+- **Third Party (Settings › Agents › Third Party, `client/SettingsModal.ThirdParty.cs`, `client/ThirdParty*.cs`):** the services workflow nodes will use. None is required.
+  - **3D:** Tripo, Tencent Hunyuan 3D, Meshy.
+  - **Images:** the OpenAI API, OpenAI with ChatGPT (through a Codex login's plan), Google Gemini (Nano Banana).
+  - **Sound and music:** ElevenLabs.
+  - **Midjourney and Suno** are listed but can't be connected, because neither has a public API and their terms forbid automating them.
+  - **Each service:** its key, a free Check call (a balance or model list), and toggles for what it's used for (3D models, Images, Sound effects, Music, Voice).
+  - **First choice** picks the service a workflow uses for each job.
+  - **Keys:** they stay on this PC, DPAPI-encrypted in the local settings table. They never sync and never reach agents.
+  - **API research** for building the nodes is in `docs/third-party/`.
+  - **Not yet checked with real keys:** none of the checks, including the Tencent TC3 signer.
 - **Tool forks:**
   - Settings › Editors › Tools installs and updates the user's forks from each fork's newest GitHub release, through the gh CLI login, into `%LOCALAPPDATA%\Programs\<Name>`.
   - The forks: `kansai-gaijin/armorpaint`, `kansai-gaijin/aseprite` and `kansai-gaijin/material-maker`, each with MCP added.
@@ -102,4 +112,4 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 - Ask the user what's next. The likely options are the next node type for the boards, the Assets or References pages, or getting Animal Planet's GDD going.
 - Keep it to one small visible piece at a time.
 
-**Open issues:** #9 (Third Party settings page is a mock), #20 (wider check of a folder's Git settings before agents run Git there), #21 (releases aren't signed), #89 (Codex providers for agents: sessions, MCP and skills).
+**Open issues:** #9 (Third Party keys not yet tried with real ones), #20 (wider check of a folder's Git settings before agents run Git there), #21 (releases aren't signed), #89 (Codex providers for agents: sessions, MCP and skills).

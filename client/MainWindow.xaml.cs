@@ -21,6 +21,7 @@ public partial class MainWindow : Window
 
     private readonly UpdateManager _updates = new(new SimpleWebSource(UpdateFeedUrl));
     private readonly LocalDatabase _database;
+    private ThirdParty _services = null!; // The image, 3D and audio services workflows can use.
     private readonly ServerConnection _server;
     private readonly DeviceSession _devices;
     private readonly SyncEngine _sync;
@@ -99,6 +100,7 @@ public partial class MainWindow : Window
         Settings.Folders = folders;
         Settings.Database = _database;
         Settings.Providers = new AgentProviders(_database, folders.AgentFolder);
+        Settings.Services = _services = new ThirdParty(_database);
         Settings.Editors = new EditorMonitor(_database);
         Settings.AppVersion = _updates.IsInstalled ? _updates.CurrentVersion?.ToString() ?? "Unknown" : "Dev build";
         Settings.CheckForUpdates = CheckForUpdatesFromSettingsAsync;

@@ -12,7 +12,7 @@ using static AgentOrange.Ui;
 
 namespace AgentOrange;
 
-/// <summary>The settings screen. Third Party is still a placeholder, until there are keys to test with.</summary>
+/// <summary>The settings screen.</summary>
 public partial class SettingsModal : UserControl
 {
     private readonly record struct Page(string Name, string Icon, Func<UIElement[]> Build, Action? Reset = null);
@@ -329,19 +329,6 @@ public partial class SettingsModal : UserControl
         if (skills.Count > 0) elements.Add(Card(skills.Select(skill => (FrameworkElement)Row(skill.Name, skill.Description.Length > 0 ? skill.Description : "No description.")).ToArray()));
         return elements.ToArray();
     }
-
-    private UIElement[] ThirdPartyPage() =>
-    [
-        Section("Image"),
-        Card(
-            Row("OpenAI", "Image generation. Keys stay on the server and never reach agents.", Status("Key saved", true), ActionButton("Change key"))),
-        Section("3D"),
-        Card(
-            Row("Tencent Hunyuan 3D", "Image to 3D model generation.", Status("No key", false), ActionButton("Add key"))),
-        Section("More"),
-        Card(
-            Row("Add a provider", "Connect another generation service.", ActionButton("Add"))),
-    ];
 
     private UIElement[] ServerPage()
     {
