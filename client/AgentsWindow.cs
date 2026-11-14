@@ -89,6 +89,8 @@ public sealed partial class AgentsWindow : Window
         public AgentMarkdown? Reply { get; set; }
         public bool IsTurnLine { get; init; }
         public TextBlock? TurnWords { get; set; }
+        public FrameworkElement? Meta { get; set; }
+        public bool WasStreaming { get; set; }
     }
 
     public AgentsWindow(MainWindow main)
@@ -834,7 +836,7 @@ public sealed partial class AgentsWindow : Window
         var at = _timeline.Children.IndexOf(segment.Element);
         var item = segment.Items[0];
         // A reply redraws only its words, unless the turn's changed-files card has come or gone under it.
-        if (segment.Kind == AgentItemKind.Assistant && segment.Reply is { } reply && (item.Changes is { Count: > 0 }) == (segment.Element is StackPanel))
+        if (segment.Kind == AgentItemKind.Assistant && segment.Reply is { } reply && segment.Element is StackPanel shown && (item.Changes is { Count: > 0 }) == shown.Children.Count > 2 && item.Streaming == segment.WasStreaming)
         {
             reply.Show(item.Text);
             return;
@@ -850,6 +852,7 @@ public sealed partial class AgentsWindow : Window
             AgentItemKind.Plan => PlanCard(item),
             AgentItemKind.Problem => Problem(item.Text),
             AgentItemKind.Handoff => HandoffRow(item.From, item.To, pending: false),
+            AgentItemKind.Fork => ForkRow(item),
             _ => Notice(item.Text),
         };
         segment.Element.Visibility = visibility;
@@ -909,10 +912,17 @@ public sealed partial class AgentsWindow : Window
             foreach (var reply in inTurn.Where(segment => segment.Kind == AgentItemKind.Assistant))
             {
                 if (reply.Element is FrameworkElement shown) shown.Margin = new Thickness(0, 0, 0, reply == lastReply ? 16 : 8);
+
+                // T3 keeps the meta row showing under a finished turn's last reply.
+                if (reply.Meta is { } meta)
+                {
+                    meta.Tag = reply == lastReply && !current;
+                    meta.Opacity = meta.Tag is true ? 1 : 0;
+                }
             }
-            var hideable = inTurn.Where(segment => segment != answer && !NeedsPerson(segment) && segment.Kind is not (AgentItemKind.Problem or AgentItemKind.Handoff)).ToList();
+            var hideable = inTurn.Where(segment => segment != answer && !NeedsPerson(segment) && segment.Kind is not (AgentItemKind.Problem or AgentItemKind.Handoff or AgentItemKind.Fork)).ToList();
             var started = line.Items[0].At;
-            var ended = inTurn.Where(segment => segment.Kind != AgentItemKind.Handoff).SelectMany(segment => segment.Items).Select(item => item.At).DefaultIfEmpty(started).Max();
+            var ended = inTurn.Where(segment => segment.Kind is not (AgentItemKind.Handoff or AgentItemKind.Fork)).SelectMany(segment => segment.Items).Select(item => item.At).DefaultIfEmpty(started).Max();
             var element = (Border)line.Element;
             var button = (Button)element.Child;
             var chevron = (FrameworkElement)((StackPanel)button.Content).Children[1];
@@ -1033,12 +1043,24 @@ public sealed partial class AgentsWindow : Window
             Inter, Ocean.Mono, 14, 22.75) { Rule = Ocean.Border60, Hover = Ocean.Accent });
         reply.View.SelectionBrush = Ocean.Focus;
         reply.Preview = ShowLightbox;
+        reply.PictureMenu = PictureMenu;
+        segment.WasStreaming = item.Streaming;
         reply.Show(item.Text);
         segment.Reply = reply;
         // T3: px-1 py-0.5, with 8 under it, or 16 under a turn's last one (set as turns are laid out).
         var words = new Border { Padding = new Thickness(4, 2, 4, 2), Child = reply.View };
-        if (item.Changes is not { Count: > 0 } || _open is not { } conversation) return new Border { Margin = new Thickness(0, 0, 0, 8), Child = words };
-        return new StackPanel { Margin = new Thickness(0, 0, 0, 8), Children = { words, ChangesCard(conversation, item) } };
+        if (_open is not { } conversation) return new Border { Margin = new Thickness(0, 0, 0, 8), Child = words };
+
+        // T3's order: the words, the turn's changed files, then the copy, fork and time row.
+        var whole = new StackPanel { Margin = new Thickness(0, 0, 0, 8), Background = Brushes.Transparent, Children = { words } };
+        if (item.Changes is { Count: > 0 }) whole.Children.Add(ChangesCard(conversation, item));
+        var meta = ReplyMeta(conversation, item);
+        meta.Margin = new Thickness(4, 6, 4, 0);
+        segment.Meta = meta;
+        whole.Children.Add(meta);
+        whole.MouseEnter += (_, _) => meta.Opacity = 1;
+        whole.MouseLeave += (_, _) => meta.Opacity = meta.Tag is true ? 1 : 0;
+        return whole;
     }
 
     // Work, as T3 Code's work log: a 24 px row with a 16 px icon in the secondary colour.

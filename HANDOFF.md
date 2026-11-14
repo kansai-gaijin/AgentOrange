@@ -100,6 +100,7 @@ Everything is merged and pushed. Nothing is waiting on any branch.
     - **Sidebar, from T3** (`client/AgentsWindow.Sidebar.cs`): drag its edge to resize (208 to window less 640, double-click resets), Ctrl+B or the top-left button tucks it away, all saved in `<agent folder>/sidebar.json`. The Settled section follows the conversations (pushed to the bottom when short), collapsed by default, 10 then "Show 25 more". New conversations are drafts, not listed until something's sent.
     - **Lightbox, from T3** (`client/AgentsWindow.Lightbox.cs`): pictures in replies open over a 75% black window, fitted, with caption, close, Previous/Next, click-to-zoom 2×, Ctrl+scroll to 8×, drag to pan, and T3's keys.
     - **Turn changes** (`client/GitTools.Checkpoints.cs`, `client/AgentsWindow.Changes.cs`): a checkpoint tree (through a separate index) when a turn starts and ends; the changes go on the turn's last reply and show as T3's changed-files card. Its diff panel (`client/AgentsWindow.Diff.cs`, from T3's): a right panel with T3's "Diff" tab and maximize, its scope picker (Changes, Uncommitted, Latest turn, each turn), totals, refresh, collapse/expand all, wrap and hide-whitespace, and each file collapsible with T3's line colours, gutter bars and "N unmodified lines". 540 px wide to begin with, resizable and remembered per conversation; Ctrl+D toggles it, Ctrl+W closes it. The thread details Changes row opens it on the branch. Not yet copied: T3's split layout, file tree, commit scopes, ref picker and expanding hidden lines.
+    - **Reply meta and forks, from T3** (`client/AgentsWindow.Meta.cs`): under each reply, Copy message, "Fork from this response" and the time (always shown under a turn's last reply). A fork is a new conversation with everything up to that reply, carried to its agent with its first message; each side has a row opening the other. Right-clicking a picture offers Copy full path, Save image and Copy image.
     - **Still to copy from T3:** subagents and Lineage, the row's right-click menu and pinning, and the diff panel's split layout, file tree, commit scopes and ref picker. Specs from T3's code were written up in this session; reread T3's bundles for each (see the copy rule below).
     - **Also:** the agent's own to-do list (TodoWrite) shows above the box, ticked off as it goes; Always allow (the request's own permission suggestions, for the session); "making room in its memory" and retry notices.
   - Not built yet: Agent Orange's own MCP server, so the agent can read and change boards, cards and assets (next).
@@ -129,7 +130,7 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 - The agents window's popups and tooltips, which headless captures can't show.
 - Each Third Party service's Check, once they have keys (#9).
 
-**Next:**
+**Next:** the user said the agents window is ready for dogfooding (2026-11-15). Start making the three games through Agent Orange, beginning with Animal Planet, and build what's missing as it's found.
 - Ask the user what's next. The likely options:
   - Agent Orange's own MCP server, so agents can read and change boards, cards and assets. This was planned as the next big piece.
   - Workflows, with nodes for the Third Party services (`docs/third-party/`).

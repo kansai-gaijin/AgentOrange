@@ -8,7 +8,7 @@ using System.Text.Json.Serialization;
 namespace AgentOrange;
 
 // Saved as numbers, so new kinds only ever go on the end.
-public enum AgentItemKind { User, Assistant, Tool, Approval, Question, Notice, Problem, Plan, Handoff, Reasoning }
+public enum AgentItemKind { User, Assistant, Tool, Approval, Question, Notice, Problem, Plan, Handoff, Reasoning, Fork }
 
 /// <summary>Where a conversation went on from or to: a login, and the model it had picked (null for the login's own choice).</summary>
 public sealed record AgentEndpoint(string ProviderId, string Login, bool Claude, string? Model);
@@ -57,6 +57,10 @@ public sealed class AgentItem
     public List<TurnChange>? Changes { get; set; }
     public string? CheckpointBefore { get; set; }
     public string? CheckpointAfter { get; set; }
+
+    /// <summary>A fork: the other conversation, and whether this one was forked from it ("from") or to it ("to").</summary>
+    public string? ForkConversation { get; set; }
+    public string? ForkDirection { get; set; }
 
     /// <summary>A handoff: the login and model it went on from, and the one it went on with.</summary>
     public AgentEndpoint? From { get; set; }
@@ -865,6 +869,30 @@ public sealed partial class AgentConversation
     }
 
     private static string ThinkingId(string? messageId, JsonNode? index) => $"{messageId}:thinking:{index}";
+
+    /// <summary>
+    /// T3 Code's "Fork from this response": the conversation up to and including that reply, in a
+    /// new conversation of its own, which carries it to its agent with its first message. Each
+    /// gets a row saying where the other is.
+    /// </summary>
+    public void ForkInto(AgentConversation fork, AgentItem upTo)
+    {
+        var end = Items.IndexOf(upTo);
+        foreach (var item in Items.Take(end + 1).Where(item => item.Kind is not (AgentItemKind.Fork or AgentItemKind.Handoff)))
+        {
+            fork.Items.Add(JsonSerializer.Deserialize<AgentItem>(JsonSerializer.Serialize(item, JsonOptions), JsonOptions)!);
+        }
+        fork.Title = Title;
+        fork.ProviderId = ProviderId;
+        fork.Model = Model;
+        fork.Effort = Effort;
+        fork.PermissionMode = PermissionMode;
+        fork.NeedsHandoff = true;
+        fork.Add(new AgentItem { Id = NewId(), Kind = AgentItemKind.Fork, ForkConversation = Id, ForkDirection = "from" });
+        Add(new AgentItem { Id = NewId(), Kind = AgentItemKind.Fork, ForkConversation = fork.Id, ForkDirection = "to" });
+        StateChanged?.Invoke();
+        fork.StateChanged?.Invoke();
+    }
 
     // The whole message, after its parts streamed in. Whatever the stream missed is filled in here.
     private void ReadAssistant(JsonObject message)

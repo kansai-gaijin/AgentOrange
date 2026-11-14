@@ -396,6 +396,12 @@ internal sealed partial class AgentMarkdown
                 ToolTip = tip,
             };
             image.Loaded += (_, _) => image.Clip = new RectangleGeometry(new Rect(0, 0, image.ActualWidth, image.ActualHeight), 7, 7);
+            frame.PreviewMouseRightButtonUp += (_, press) =>
+            {
+                press.Handled = true;
+                PictureMenu?.Invoke(path, frame);
+            };
+
             // Taken before the reply's text box can take the press for selecting words.
             frame.PreviewMouseLeftButtonDown += (_, press) =>
             {
@@ -420,6 +426,9 @@ internal sealed partial class AgentMarkdown
         if (Uri.TryCreate(path, UriKind.Absolute, out var address) && address.IsFile) path = address.LocalPath;
         return path.Replace('/', System.IO.Path.DirectorySeparatorChar);
     }
+
+    /// <summary>T3's menu on a picture: Copy full path, Save image, Copy image.</summary>
+    public Action<string, UIElement>? PictureMenu { get; set; }
 
     /// <summary>Opens a picture in T3's lightbox, with the reply's other pictures beside it.</summary>
     public Action<IReadOnlyList<(string Path, string Alt)>, int>? Preview { get; set; }

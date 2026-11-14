@@ -14,6 +14,7 @@ public static class AgentIcons
 {
     private static readonly Dictionary<string, Geometry> Lines = new()
     {
+        ["git-fork"] = Geometry.Parse("M 9 18 a 3 3 0 1 0 6 0 a 3 3 0 1 0 -6 0 M 3 6 a 3 3 0 1 0 6 0 a 3 3 0 1 0 -6 0 M 15 6 a 3 3 0 1 0 6 0 a 3 3 0 1 0 -6 0 M 18 9 v 2 c 0 .6 -.4 1 -1 1 H 7 c -.6 0 -1 -.4 -1 -1 V 9 M 12 12 v 3"),
         ["maximize-2"] = Geometry.Parse("M 15 3 h 6 v 6 M 21 3 l -7 7 M 3 21 l 7 -7 M 9 21 H 3 v -6"),
         ["minimize-2"] = Geometry.Parse("M 14 10 l 7 -7 M 20 10 h -6 V 4 M 3 21 l 7 -7 M 4 14 h 6 v 6"),
         ["pilcrow"] = Geometry.Parse("M 13 4 v 16 M 17 4 v 16 M 19 4 H 9.5 a 4.5 4.5 0 0 0 0 9 H 13"),

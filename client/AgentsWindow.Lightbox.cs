@@ -155,6 +155,11 @@ public sealed partial class AgentsWindow
             Zoom(zoom > 1 ? 1 : 2, release.GetPosition(region));
             release.Handled = true;
         };
+        region.PreviewMouseRightButtonUp += (_, press) =>
+        {
+            press.Handled = true;
+            PictureMenu(pictures[index].Path, region);
+        };
         region.PreviewMouseWheel += (_, wheel) =>
         {
             if (Keyboard.Modifiers != ModifierKeys.Control) return;
