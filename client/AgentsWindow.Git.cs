@@ -272,6 +272,39 @@ public sealed partial class AgentsWindow
         if (_details is { } details) details.IsOpen = false;
     }
 
+    // T3's media preview: the picture as large as fits, over the dimmed window, closed by a click or Escape.
+    private void PreviewPicture(string path)
+    {
+        try
+        {
+            var picture = new System.Windows.Media.Imaging.BitmapImage();
+            picture.BeginInit();
+            picture.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+            picture.UriSource = new Uri(path);
+            picture.EndInit();
+            picture.Freeze();
+            var image = new Image { Source = picture, Stretch = Stretch.Uniform, Margin = new Thickness(48), Cursor = Cursors.Hand };
+            image.MouseLeftButtonUp += (_, _) => CloseDialog();
+            AutomationProperties.SetName(image, $"Preview of {System.IO.Path.GetFileName(path)}");
+            ShowDialog(image);
+            _dialogs.Focusable = true;
+            _dialogs.PreviewKeyDown += CloseOnEscape;
+            Keyboard.Focus(_dialogs);
+        }
+        catch (Exception error) when (error is System.IO.IOException or NotSupportedException or UriFormatException)
+        {
+            Toast("Image unavailable", error.Message, error: true);
+        }
+    }
+
+    private void CloseOnEscape(object sender, KeyEventArgs key)
+    {
+        if (key.Key != Key.Escape) return;
+        key.Handled = true;
+        _dialogs.PreviewKeyDown -= CloseOnEscape;
+        CloseDialog();
+    }
+
     private void CloseDialog()
     {
         _dialogs.Children.Clear();

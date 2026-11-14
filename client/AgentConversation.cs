@@ -8,7 +8,7 @@ using System.Text.Json.Serialization;
 namespace AgentOrange;
 
 // Saved as numbers, so new kinds only ever go on the end.
-public enum AgentItemKind { User, Assistant, Tool, Approval, Question, Notice, Problem, Plan, Handoff }
+public enum AgentItemKind { User, Assistant, Tool, Approval, Question, Notice, Problem, Plan, Handoff, Reasoning }
 
 /// <summary>Where a conversation went on from or to: a login, and the model it had picked (null for the login's own choice).</summary>
 public sealed record AgentEndpoint(string ProviderId, string Login, bool Claude, string? Model);
@@ -824,6 +824,21 @@ public sealed partial class AgentConversation
                 && Str(started, "name") is { } toolName && toolName is not "AskUserQuestion" and not "ExitPlanMode" && Str(started, "id") is { } toolId && !_byId.ContainsKey(toolId):
                 Add(new AgentItem { Id = toolId, Kind = AgentItemKind.Tool, Tool = toolName, Text = DescribeTool(toolName, null) });
                 break;
+            case "content_block_start" when streamed["content_block"] is JsonObject thought && Str(thought, "type") == "thinking":
+                var thinking = new AgentItem { Id = ThinkingId(_messageId, streamed["index"]), Kind = AgentItemKind.Reasoning, Text = Str(thought, "thinking") ?? "", Streaming = true };
+                if (!_byId.ContainsKey(thinking.Id)) Add(thinking);
+                break;
+            case "content_block_delta" when streamed["delta"] is JsonObject thinkingDelta && Str(thinkingDelta, "type") == "thinking_delta":
+                if (_byId.TryGetValue(ThinkingId(_messageId, streamed["index"]), out var deeper))
+                {
+                    deeper.Text += Str(thinkingDelta, "thinking");
+                    ItemChanged?.Invoke(deeper);
+                }
+                break;
+            case "content_block_stop" when _byId.TryGetValue(ThinkingId(_messageId, streamed["index"]), out var thought):
+                thought.Streaming = false;
+                ItemChanged?.Invoke(thought);
+                break;
             case "content_block_start" when streamed["content_block"] is JsonObject block && Str(block, "type") == "text":
                 var item = new AgentItem { Id = TextId(_messageId, streamed["index"]), Kind = AgentItemKind.Assistant, Text = Str(block, "text") ?? "", Streaming = true };
                 if (!_byId.ContainsKey(item.Id)) Add(item);
@@ -841,6 +856,8 @@ public sealed partial class AgentConversation
                 break;
         }
     }
+
+    private static string ThinkingId(string? messageId, JsonNode? index) => $"{messageId}:thinking:{index}";
 
     // The whole message, after its parts streamed in. Whatever the stream missed is filled in here.
     private void ReadAssistant(JsonObject message)
@@ -869,6 +886,24 @@ public sealed partial class AgentConversation
                         var id = $"{messageId}:text:said{_confirmed.Count}";
                         _confirmed.Add(id);
                         Add(new AgentItem { Id = id, Kind = AgentItemKind.Assistant, Text = text });
+                    }
+                    break;
+
+                // Its thinking, matched up with what streamed in the same way as its words.
+                case "thinking" when Str(part, "thinking") is { } thinking:
+                    var thoughtPrefix = $"{messageId}:thinking:";
+                    var streamedThought = Items.FirstOrDefault(item => item.Kind == AgentItemKind.Reasoning && item.Id.StartsWith(thoughtPrefix, StringComparison.Ordinal) && _confirmed.Add(item.Id));
+                    if (streamedThought is not null)
+                    {
+                        if (thinking.Length > 0) streamedThought.Text = thinking;
+                        streamedThought.Streaming = false;
+                        ItemChanged?.Invoke(streamedThought);
+                    }
+                    else if (thinking.Trim().Length > 0)
+                    {
+                        var id = $"{thoughtPrefix}said{_confirmed.Count}";
+                        _confirmed.Add(id);
+                        Add(new AgentItem { Id = id, Kind = AgentItemKind.Reasoning, Text = thinking });
                     }
                     break;
 

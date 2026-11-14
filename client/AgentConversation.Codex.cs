@@ -33,6 +33,7 @@ public sealed partial class AgentConversation
     private string? _codexTurn;
     private string? _codexFailure; // Why the turn is failing, from its error notice, said once the turn ends.
     private bool _codexLimited;
+    private readonly List<string> _codexImages = []; // Pictures made this turn, saved where Codex put them.
 
     private bool StartCodex(Setup setup)
     {
@@ -354,6 +355,12 @@ public sealed partial class AgentConversation
                 growing.Text += Str(parameters, "delta");
                 ItemChanged?.Invoke(growing);
                 break;
+            case "item/reasoning/summaryTextDelta" when Str(parameters, "itemId") is { } reasoningId:
+                CodexThought($"{reasoningId}:summary:{parameters["summaryIndex"]}", Str(parameters, "delta"), done: false);
+                break;
+            case "item/reasoning/textDelta" when Str(parameters, "itemId") is { } reasoningId:
+                CodexThought($"{reasoningId}:content:{parameters["contentIndex"]}", Str(parameters, "delta"), done: false);
+                break;
             case "item/started" when parameters["item"] is JsonObject item:
                 ReadCodexItem(item, done: false);
                 break;
@@ -418,6 +425,20 @@ public sealed partial class AgentConversation
     private void EndCodexTurn(JsonObject turn)
     {
         EndStreaming();
+        if (_codexImages.Count > 0)
+        {
+            var embeds = string.Join("\n\n", _codexImages.Select(path => $"![](<{path.Replace('\\', '/')}>)"));
+            _codexImages.Clear();
+            if (Items.LastOrDefault(item => item.Kind is AgentItemKind.Assistant or AgentItemKind.User) is { Kind: AgentItemKind.Assistant } answer)
+            {
+                answer.Text = $"{answer.Text.TrimEnd()}\n\n{embeds}";
+                ItemChanged?.Invoke(answer);
+            }
+            else
+            {
+                Add(new AgentItem { Id = NewId(), Kind = AgentItemKind.Assistant, Text = embeds });
+            }
+        }
         Retrying = null;
         _codexTurn = null;
         var status = Str(turn, "status");
@@ -477,7 +498,8 @@ public sealed partial class AgentConversation
                 }
                 break;
             case "commandExecution":
-                CodexTool(id, "Bash", $"Bash  {Str(item, "command")}", item, done, Str(item, "aggregatedOutput"));
+                // The command as T3 shows it: on its own, with the backslashes Codex escapes in it as they are.
+                CodexTool(id, "Bash", (Str(item, "command") ?? "").Replace(@"\\", @"\"), item, done, Str(item, "aggregatedOutput"));
                 break;
             case "fileChange":
                 var paths = (item["changes"] as JsonArray ?? []).OfType<JsonObject>().Select(change => Str(change, "path")).OfType<string>().ToList();
@@ -496,10 +518,41 @@ public sealed partial class AgentConversation
             case "imageView":
                 CodexTool(id, "Read", $"Read  {Str(item, "path")}", item, done, null);
                 break;
+            case "reasoning" when done:
+                foreach (var (part, stream) in new[] { (item["summary"] as JsonArray, "summary"), (item["content"] as JsonArray, "content") })
+                {
+                    for (var index = 0; part is not null && index < part.Count; index++)
+                    {
+                        var words = part[index] is JsonValue plain && plain.TryGetValue<string>(out var spoken) ? spoken : Str(part[index] as JsonObject, "text");
+                        if (words is { Length: > 0 }) CodexThought($"{id}:{stream}:{index}", words, done: true, whole: true);
+                    }
+                }
+                foreach (var still in Items.Where(each => each.Kind == AgentItemKind.Reasoning && each.Streaming && each.Id.StartsWith($"{id}:", StringComparison.Ordinal)).ToList())
+                {
+                    still.Streaming = false;
+                    ItemChanged?.Invoke(still);
+                }
+                break;
+            case "imageGeneration" when done && Str(item, "savedPath") is { Length: > 0 } saved:
+                _codexImages.Add(saved);
+                break;
             case "contextCompaction" when done:
                 Notice("Made room in its memory, summing up what came before.");
                 break;
         }
+    }
+
+    private void CodexThought(string id, string? words, bool done, bool whole = false)
+    {
+        if (!_byId.TryGetValue(id, out var thought))
+        {
+            if (words is not { Length: > 0 }) return;
+            thought = new AgentItem { Id = id, Kind = AgentItemKind.Reasoning, Streaming = !done };
+            Add(thought);
+        }
+        thought.Text = whole ? words ?? thought.Text : thought.Text + words;
+        thought.Streaming = !done;
+        ItemChanged?.Invoke(thought);
     }
 
     private void CodexTool(string id, string name, string text, JsonObject item, bool done, string? output)

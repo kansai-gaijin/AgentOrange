@@ -827,7 +827,7 @@ public sealed partial class AgentsWindow : Window
     private void Append(AgentItem item, HashSet<Segment> redraw)
     {
         if (_segments.Count == 0 && _timeline.Children.Count > 0) _timeline.Children.Clear(); // The welcome.
-        if (item.Kind == AgentItemKind.Tool && _segments.LastOrDefault() is { Kind: AgentItemKind.Tool, IsTurnLine: false } tools)
+        if (item.Kind is AgentItemKind.Tool or AgentItemKind.Reasoning && _segments.LastOrDefault() is { Kind: AgentItemKind.Tool, IsTurnLine: false } tools)
         {
             tools.Items.Add(item);
             _segmentOf[item.Id] = tools;
@@ -835,7 +835,7 @@ public sealed partial class AgentsWindow : Window
             return;
         }
 
-        var segment = new Segment { Kind = item.Kind };
+        var segment = new Segment { Kind = item.Kind == AgentItemKind.Reasoning ? AgentItemKind.Tool : item.Kind };
         segment.Items.Add(item);
         _segments.Add(segment);
         _segmentOf[item.Id] = segment;
@@ -926,6 +926,11 @@ public sealed partial class AgentsWindow : Window
             if (line is null) return;
             var current = line == lastTurn && _open.IsWorking;
             var answer = current ? null : inTurn.LastOrDefault(segment => segment.Kind == AgentItemKind.Assistant);
+            var lastReply = inTurn.LastOrDefault(segment => segment.Kind == AgentItemKind.Assistant);
+            foreach (var reply in inTurn.Where(segment => segment.Kind == AgentItemKind.Assistant))
+            {
+                if (reply.Element is FrameworkElement shown) shown.Margin = new Thickness(0, 0, 0, reply == lastReply ? 16 : 8);
+            }
             var hideable = inTurn.Where(segment => segment != answer && !NeedsPerson(segment) && segment.Kind is not (AgentItemKind.Problem or AgentItemKind.Handoff)).ToList();
             var started = line.Items[0].At;
             var ended = inTurn.Where(segment => segment.Kind != AgentItemKind.Handoff).SelectMany(segment => segment.Items).Select(item => item.At).DefaultIfEmpty(started).Max();
@@ -1048,9 +1053,11 @@ public sealed partial class AgentsWindow : Window
             Ocean.Body, Ocean.Foreground, Ocean.MutedText, Ocean.Foreground, Ocean.CodeBack, Ocean.InlineCode, Ocean.Border, Ocean.Info,
             Inter, Ocean.Mono, 14, 22.75) { Rule = Ocean.Border60, Hover = Ocean.Accent });
         reply.View.SelectionBrush = Ocean.Focus;
+        reply.Preview = PreviewPicture;
         reply.Show(item.Text);
         segment.Reply = reply;
-        return new Border { Margin = new Thickness(4, 2, 4, 10), Child = reply.View };
+        // T3: px-1 py-0.5, with 8 under it, or 16 under a turn's last one (set as turns are laid out).
+        return new Border { Padding = new Thickness(4, 2, 4, 2), Margin = new Thickness(0, 0, 0, 8), Child = reply.View };
     }
 
     // Work, as T3 Code's work log: a 24 px row with a 16 px icon in the secondary colour.
@@ -1107,12 +1114,21 @@ public sealed partial class AgentsWindow : Window
         var working = _open?.IsWorking == true && segment == _segments.LastOrDefault(each => !each.IsTurnLine);
         var opened = _openGroups.Contains(segment) || working;
         var group = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+        var tools = segment.Items.Where(each => each.Kind == AgentItemKind.Tool).ToList();
+
+        // T3: a single entry stays a row of its own; a run of them is one line that opens.
+        if (!working && segment.Items.Count == 1)
+        {
+            group.Children.Add(ToolLine(segment, segment.Items[0], working: false));
+            return group;
+        }
         if (!working)
         {
-            var failed = segment.Items.Count(tool => tool.ToolState == AgentToolState.Failed);
-            var kinds = segment.Items.Select(tool => ToolIcon(tool.Tool)).Distinct().ToList();
+            var failed = tools.Count(tool => tool.ToolState == AgentToolState.Failed);
+            var kinds = tools.Select(tool => ToolIcon(tool.Tool)).Distinct().ToList();
             var summary = Summary(segment.Items) + (failed > 0 ? $", {failed} failed" : "");
-            group.Children.Add(WorkRow(kinds.Count == 1 ? kinds[0] : "hammer", summary, Ocean.Secondary, () =>
+            var icon = tools.Count == 0 ? "brain" : kinds.Count == 1 ? kinds[0] : "hammer";
+            group.Children.Add(WorkRow(icon, summary, Ocean.Secondary, () =>
             {
                 if (!_openGroups.Remove(segment)) _openGroups.Add(segment);
                 Draw(segment);
@@ -1120,13 +1136,32 @@ public sealed partial class AgentsWindow : Window
         }
         if (!opened) return group;
         var list = new StackPanel { Margin = new Thickness(working ? 0 : 12, 0, 0, 0) };
-        foreach (var tool in segment.Items) list.Children.Add(ToolLine(segment, tool, working));
+        foreach (var item in segment.Items)
+        {
+            // While it works, its newest thought shows as words above a "Thinking" line, as T3's live row.
+            if (working && item.Kind == AgentItemKind.Reasoning && item.Streaming && item == segment.Items[^1])
+            {
+                var thought = Ocean.Wrapped(Flatten(item.Text), Ocean.MutedText, 14, 22.75);
+                thought.MaxHeight = 22.75 * 4;
+                thought.TextTrimming = TextTrimming.CharacterEllipsis;
+                thought.Margin = new Thickness(4, 0, 4, 4);
+                if (item.Text.Trim().Length > 0) list.Children.Add(thought);
+                list.Children.Add(WorkRow("brain", "Thinking", Ocean.Secondary, live: true));
+                continue;
+            }
+            list.Children.Add(ToolLine(segment, item, working));
+        }
         group.Children.Add(list);
         return group;
     }
 
+    // Reasoning as one line of plain words: T3 flattens its markdown into a single truncated line.
+    private static string Flatten(string markdown) =>
+        System.Text.RegularExpressions.Regex.Replace(System.Text.RegularExpressions.Regex.Replace(markdown, @"[*_`#>\[\]]|\((https?://[^)]*)\)", ""), @"\s+", " ").Trim();
+
     private FrameworkElement ToolLine(Segment segment, AgentItem tool, bool working)
     {
+        if (tool.Kind == AgentItemKind.Reasoning) return ThoughtLine(segment, tool);
         var running = working && tool.ToolState == AgentToolState.Running;
         var failed = tool.ToolState == AgentToolState.Failed;
         var words = tool.Text.Replace("  ", " ");
@@ -1154,35 +1189,60 @@ public sealed partial class AgentsWindow : Window
         return new StackPanel { Children = { row, new Border { Margin = new Thickness(32, 2, 0, 6), Padding = new Thickness(0, 0, 0, 8), Child = output } } };
     }
 
-    // Such as "Read 3 files, ran 2 commands", from the two kinds of tool used most.
-    private static string Summary(List<AgentItem> tools)
+    // T3's reasoning row: the brain and the thought on one line; opened, "Thought" (or "Thinking"
+    // while it's still coming) with the whole of it below, at most 384 high.
+    private FrameworkElement ThoughtLine(Segment segment, AgentItem thought)
+    {
+        var opened = _openTools.Contains(thought.Id);
+        var row = WorkRow("brain", opened ? (thought.Streaming ? "Thinking" : "Thought") : Flatten(thought.Text), Ocean.Secondary, () =>
+        {
+            if (!_openTools.Remove(thought.Id)) _openTools.Add(thought.Id);
+            Draw(segment);
+        }, live: thought.Streaming && opened, chevron: true, opened: opened);
+        if (!opened) return row;
+        var reply = new AgentMarkdown(new AgentMarkdown.Look(
+            Ocean.MutedText, Ocean.Body, Ocean.MutedText, Ocean.Foreground, Ocean.CodeBack, Ocean.InlineCode, Ocean.Border, Ocean.Info,
+            Inter, Ocean.Mono, 14, 22.75) { Rule = Ocean.Border60, Hover = Ocean.Accent });
+        reply.View.SelectionBrush = Ocean.Focus;
+        reply.Show(thought.Text);
+        var scroll = new ScrollViewer { MaxHeight = 384, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = reply.View, Margin = new Thickness(28, 4, 2, 6) };
+        return new StackPanel { Children = { row, scroll } };
+    }
+
+    // T3's summary of a run of work, leaving its thinking out: "Ran 3 commands and read 1 file",
+    // "Ran 2 commands, read 1 file, and performed 1 other action", or "Thought (×3)" when it only thought.
+    private static string Summary(List<AgentItem> items)
     {
         static string KindOf(string name) => name switch
         {
-            "Read" => "read",
-            "Edit" or "MultiEdit" or "Write" or "NotebookEdit" => "edit",
-            "Bash" or "PowerShell" => "command",
-            "Grep" or "Glob" => "search",
+            "Bash" or "PowerShell" or "BashOutput" => "command",
+            "Read" or "NotebookRead" => "read",
+            "Edit" or "MultiEdit" or "Write" or "NotebookEdit" => "change",
             "WebFetch" or "WebSearch" => "web",
-            "TodoWrite" => "plan",
-            _ when name.StartsWith("mcp__", StringComparison.Ordinal) && name.Split("__") is [_, var server, ..] => $"mcp:{server}",
-            _ => $"other:{name}",
+            _ => "tool",
         };
+        static string Plural(int count, string one, string many) => count == 1 ? one : many;
         static string Said(string kind, int count) => kind switch
         {
-            "read" => count == 1 ? "read a file" : $"read {count} files",
-            "edit" => count == 1 ? "edited a file" : $"made {count} edits",
-            "command" => count == 1 ? "ran a command" : $"ran {count} commands",
-            "search" => count == 1 ? "searched once" : $"searched {count} times",
-            "web" => count == 1 ? "looked something up" : $"looked {count} things up",
-            "plan" => "updated its plan",
-            _ when kind.StartsWith("mcp:", StringComparison.Ordinal) => $"used {kind[4..]}{(count == 1 ? "" : $" {count} times")}",
-            _ => $"used {kind[6..]}{(count == 1 ? "" : $" {count} times")}",
+            "command" => $"ran {count} {Plural(count, "command", "commands")}",
+            "read" => $"read {count} {Plural(count, "file", "files")}",
+            "change" => $"changed {count} {Plural(count, "file", "files")}",
+            "web" => $"searched the web {count} {Plural(count, "time", "times")}",
+            _ => $"used {count} {Plural(count, "tool", "tools")}",
         };
 
-        var kinds = tools.GroupBy(tool => KindOf(tool.Tool ?? "")).OrderByDescending(kind => kind.Count()).ToList();
-        var said = string.Join(", ", kinds.Take(2).Select(kind => Said(kind.Key, kind.Count())));
-        if (kinds.Count > 2) said += $" and {kinds.Skip(2).Sum(kind => kind.Count())} more";
+        var tools = items.Where(item => item.Kind == AgentItemKind.Tool).ToList();
+        if (tools.Count == 0)
+        {
+            var thoughts = items.Count(item => item.Kind == AgentItemKind.Reasoning);
+            return thoughts > 1 ? $"Thought (×{thoughts})" : "Thought";
+        }
+        var kinds = tools.GroupBy(tool => KindOf(tool.Tool ?? "")).Select(kind => (kind.Key, Count: kind.Count())).ToList();
+        var parts = kinds.Take(2).Select(kind => Said(kind.Key, kind.Count)).ToList();
+        var others = kinds.Skip(2).Sum(kind => kind.Count);
+        var said = others > 0
+            ? $"{string.Join(", ", parts)}, and performed {others} other {Plural(others, "action", "actions")}"
+            : string.Join(" and ", parts);
         return char.ToUpperInvariant(said[0]) + said[1..];
     }
 
