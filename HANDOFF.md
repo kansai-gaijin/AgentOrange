@@ -36,7 +36,7 @@ This phase is about **using Agent Orange to make three small, complete, original
 - **No council loops.** Fix things directly. If there's a review, get all its findings in one pass.
 - **Windows:** the app must allow several windows open at once.
 - **The agent files folder:** load agent tools and skills from `~/.agent-orange` (`~/.agent-orange-dev` for dev builds). Never load them from a provider's login folder, which is shared with the user's own Claude Code, Codex and T3 setups.
-- **Look and feel:** the user dislikes the current look and colors. Leave the restyle alone until they bring it up.
+- **Look and feel:** the agents window copies T3 Code's look, because the user asked for exactly that; check T3's source before changing it. The user dislikes the rest of the app's look and colors, but leave that restyle alone until they bring it up.
 
 ## Running the dev build
 
@@ -47,7 +47,7 @@ dotnet watch --project client --non-interactive
 - **Data:** the dev build keeps its data in `%APPDATA%\AgentOrange-Dev`, separate from the installed app. On a new PC, point the dev build at the same server as the installed app (Settings) so no data is lost.
 - **Hot reload:** `client/HotReload.cs` redraws the page after each change. Adding new files makes `dotnet watch` restart the window, so warn the user first.
 
-## Where we left off (2026-11-13)
+## Where we left off (2026-11-15)
 
 Everything is merged and pushed. Nothing is waiting on any branch.
 
@@ -108,8 +108,18 @@ Everything is merged and pushed. Nothing is waiting on any branch.
   - **Not checked yet:** no real session has run with this. Claude Code's docs don't fully confirm that `--setting-sources project,local` keeps out every user skill and plugin. Check what a session actually sees once agent sessions come back. Codex needs the same treatment (#89).
 - **Agent chat:** the old chat box on the project page (`client/AgentSession.cs`, `client/MainWindow.Agent.cs`) is no longer shown. The code is kept for when agent work starts.
 
+**Waiting on the user to try live:**
+- A real Codex conversation (only checked without a prompt so far).
+- The Ctrl+Alt+S screenshot hotkey.
+- The agents window's popups and tooltips, which headless captures can't show.
+- Each Third Party service's Check, once they have keys (#9).
+
 **Next:**
-- Ask the user what's next. The likely options are the next node type for the boards, the Assets or References pages, or getting Animal Planet's GDD going.
+- Ask the user what's next. The likely options:
+  - Agent Orange's own MCP server, so agents can read and change boards, cards and assets. This was planned as the next big piece.
+  - Workflows, with nodes for the Third Party services (`docs/third-party/`).
+  - The next node type for the boards, the Assets or References pages, or getting Animal Planet's GDD going.
 - Keep it to one small visible piece at a time.
+- **Running the dev build from Claude Code:** a background command stops after two hours at most, so tell the user when `dotnet watch` stops rather than restarting it in a loop.
 
 **Open issues:** #9 (Third Party keys not yet tried with real ones), #20 (wider check of a folder's Git settings before agents run Git there), #21 (releases aren't signed), #89 (Codex providers for agents: sessions, MCP and skills).
