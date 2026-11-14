@@ -108,6 +108,19 @@ public partial class MainWindow
         return null;
     }
 
+    /// <summary>The project's folder on this PC, if it has one.</summary>
+    internal string? ProjectFolder(string projectId) =>
+        _database.GetProjectFolder(projectId) is { } folder && Directory.Exists(folder) ? folder : null;
+
+    /// <summary>The project's folder, once its own Git settings are allowed, as Git runs whatever they say to. Otherwise why not.</summary>
+    internal async Task<(string? Folder, string? Problem)> GitFolderAsync(string projectId)
+    {
+        if (ProjectFolder(projectId) is not { } folder) return (null, "This project has no folder on this PC yet. Set one up on its project page.");
+        var runnable = await GitTools.FolderRunnableSettingsAsync(folder);
+        if (runnable is null || !GitTools.AreAllowed(folder, runnable)) return (null, "This folder's own Git settings need allowing first, on the project's page.");
+        return (folder, null);
+    }
+
     internal AgentConversation.Setup PrepareAgent(AgentConversation conversation)
     {
         var agentFolder = Settings.Folders.AgentFolder;

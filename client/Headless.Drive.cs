@@ -18,7 +18,7 @@ namespace AgentOrange;
 /// the screen. tools/drive.ps1 sends a batch and prints what came back.
 ///
 /// Besides the script commands: windows (what's open), names (what can be clicked), key Enter|Escape|
-/// Down|Up|Tab (to what has focus), hover "Name", focus N (the Nth text box).
+/// Down|Up|Tab (to what has focus), hover "Name", focus N (the Nth text box), close (every open menu).
 /// </summary>
 internal static partial class Headless
 {
@@ -129,6 +129,19 @@ internal static partial class Headless
                 var target = await UntilThereAsync(_driveTarget!, () => Descendants(_driveTarget!).OfType<FrameworkElement>().LastOrDefault(element => element.IsVisible
                     && (AutomationProperties.GetName(element) == parts[1] || element is ContentControl control && Matches(control, parts[1]))), parts[1]);
                 target.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, Environment.TickCount) { RoutedEvent = Mouse.MouseEnterEvent });
+                return true;
+            case "close":
+                // Every menu open over the app's windows, so none is left on the person's screen.
+                var closed = 0;
+                foreach (var window in PresentationSource.CurrentSources.OfType<System.Windows.Interop.HwndSource>().ToList())
+                {
+                    if (window.RootVisual is FrameworkElement { Parent: Popup { IsOpen: true } popup })
+                    {
+                        popup.IsOpen = false;
+                        closed++;
+                    }
+                }
+                say($"closed {closed}");
                 return true;
             case "focus":
                 var field = await UntilThereAsync(_driveTarget!, () => Visible<TextBox>(_driveTarget!).ElementAtOrDefault(int.Parse(parts[1])), $"field {parts[1]}");

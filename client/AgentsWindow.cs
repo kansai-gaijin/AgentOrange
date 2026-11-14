@@ -164,6 +164,7 @@ public sealed partial class AgentsWindow : Window
 
         var usage = Ocean.IconButton("chart-no-axes-column", ShowUsagePage, "Usage", 32, 16, Ocean.SidebarIcon, Ocean.RowHover);
         var footer = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 4, 8, 8), Children = { usage } };
+        BuildRowParts(footer);
 
         var sideScroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = _list, Padding = new Thickness(8, 4, 8, 4) };
         var side = new DockPanel { Background = Ocean.Sidebar };
@@ -185,6 +186,7 @@ public sealed partial class AgentsWindow : Window
         headerRow.Children.Add(_headerTools);
         headerRow.Children.Add(_crumbs);
         var header = new Border { Height = TopBar, Padding = new Thickness(20, 0, 150, 0), Background = Ocean.Canvas, Child = headerRow };
+        _headerBar = header;
 
         var earlier = Ocean.Ghost(Ocean.Text("Show earlier messages", Ocean.MutedText, 12, FontWeights.Medium), () =>
         {
@@ -304,6 +306,7 @@ public sealed partial class AgentsWindow : Window
         layout.Children.Add(caption);
         Grid.SetColumnSpan(_overlay, 2);
         layout.Children.Add(_overlay);
+        BuildDetailsParts(layout);
         Content = layout;
         StateChanged += (_, _) => layout.Margin = WindowState == WindowState.Maximized ? new Thickness(7) : new Thickness(0);
 
@@ -409,7 +412,7 @@ public sealed partial class AgentsWindow : Window
         if (gone < TimeSpan.FromMinutes(1)) return "now";
         if (gone < TimeSpan.FromHours(1)) return $"{(int)gone.TotalMinutes}m";
         if (gone < TimeSpan.FromDays(1)) return $"{(int)gone.TotalHours}h";
-        return gone < TimeSpan.FromDays(7) ? $"{(int)gone.TotalDays}d" : when.LocalDateTime.ToString("d MMM", System.Globalization.CultureInfo.InvariantCulture);
+        return $"{(int)gone.TotalDays}d";
     }
 
     // As T3 Code says how long: 5s, 2m 05s, 1h 03m.
@@ -473,7 +476,10 @@ public sealed partial class AgentsWindow : Window
             none.Margin = new Thickness(10, 8, 10, 0);
             _list.Children.Add(none);
         }
-        foreach (var conversation in active) _list.Children.Add(ConversationRow(conversation));
+        _statusSlots.Clear();
+        _rowOrder.Clear();
+        _rowOrder.AddRange(active);
+        for (var index = 0; index < active.Count; index++) _list.Children.Add(ConversationRow(active[index], index));
 
         // Settled ones: a header at the bottom that opens to their rows.
         _settledList.Children.Clear();
@@ -507,47 +513,6 @@ public sealed partial class AgentsWindow : Window
         _settledList.Children.Add(toggle);
     }
 
-    // T3 Code's thread row: the project on the first line with what it's doing on the right, the title under it.
-    private FrameworkElement ConversationRow(AgentConversation conversation)
-    {
-        var name = conversation.Title.Length > 0 ? conversation.Title : "New conversation";
-        var selected = conversation == _open;
-        var project = _main.ProjectName(conversation.ProjectId);
-
-        var first = new DockPanel { Height = 20 };
-        var mark = Monogram(project, 16);
-        mark.Margin = new Thickness(0, 0, 6, 0);
-        DockPanel.SetDock(mark, Dock.Left);
-        var state = new ContentControl { Content = ConversationState(conversation), Tag = conversation, VerticalAlignment = VerticalAlignment.Center };
-        DockPanel.SetDock(state, Dock.Right);
-        first.Children.Add(mark);
-        first.Children.Add(state);
-        first.Children.Add(Ocean.Text(project, Ocean.Secondary, 12));
-
-        var second = new DockPanel { Margin = new Thickness(0, 4, 0, 0) };
-        var glyph = AgentIcons.Provider(IsClaude(conversation), 14, Ocean.Foreground);
-        glyph.Opacity = 0.6;
-        glyph.Margin = new Thickness(6, 0, 0, 0);
-        DockPanel.SetDock(glyph, Dock.Right);
-        second.Children.Add(glyph);
-        second.Children.Add(Ocean.Text(name, Ocean.Foreground, 14, FontWeights.Medium));
-
-        var content = new StackPanel { Children = { first, second } };
-        var button = Ocean.Ghost(content, () => Show(conversation), 6, new Thickness(10, 8, 10, 8), Ocean.RowHover, selected ? Ocean.RowActive : null);
-        button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
-        button.Margin = new Thickness(0, 2, 0, 2);
-        button.ToolTip = ConversationTip(conversation, name, project);
-        ToolTipService.SetPlacement(button, PlacementMode.Right);
-        ToolTipService.SetInitialShowDelay(button, 600);
-        AutomationProperties.SetName(button, $"{name}, {project}");
-        button.MouseRightButtonUp += (_, click) =>
-        {
-            click.Handled = true;
-            OfferActions(button, conversation);
-        };
-        return button;
-    }
-
     // Its hover card: the title, the project and the model.
     private FrameworkElement ConversationTip(AgentConversation conversation, string name, string project)
     {
@@ -569,64 +534,6 @@ public sealed partial class AgentsWindow : Window
                 Row(glyph, model),
             },
         };
-    }
-
-    private FrameworkElement SettledRow(AgentConversation conversation)
-    {
-        var name = conversation.Title.Length > 0 ? conversation.Title : "New conversation";
-        var mark = Monogram(_main.ProjectName(conversation.ProjectId), 16);
-        mark.Opacity = 0.4;
-        mark.Margin = new Thickness(0, 0, 10, 0);
-        var words = Ocean.Text(name, conversation == _open ? Ocean.Foreground : new SolidColorBrush(Color.FromArgb(0xB3, 0x8D, 0x8F, 0x97)), 14);
-        var row = new DockPanel();
-        DockPanel.SetDock(mark, Dock.Left);
-        row.Children.Add(mark);
-        row.Children.Add(words);
-        var button = Ocean.Ghost(row, () => Show(conversation), 6, new Thickness(10, 0, 10, 0), Ocean.RowHover, conversation == _open ? Ocean.RowActive : null);
-        button.Height = 36;
-        button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
-        button.MouseEnter += (_, _) => mark.Opacity = 1;
-        button.MouseLeave += (_, _) => mark.Opacity = 0.4;
-        button.MouseRightButtonUp += (_, click) =>
-        {
-            click.Handled = true;
-            OfferActions(button, conversation);
-        };
-        AutomationProperties.SetName(button, $"{name}, settled");
-        return button;
-    }
-
-    // What a conversation's doing, as T3 Code's thread status: an icon and a word in the colour of the state.
-    private FrameworkElement ConversationState(AgentConversation conversation)
-    {
-        FrameworkElement Status(string icon, string words, Brush brush, string? after = null)
-        {
-            var row = Ocean.IconText(icon, words, brush, 12, 16, FontWeights.Medium, 4);
-            if (after is not null) row.Children.Add(Ocean.Text($" {after}", brush, 12, FontWeights.Medium));
-            return row;
-        }
-        if (conversation.IsLimited && !conversation.IsWorking)
-        {
-            var resets = _main.ResumesAt(conversation);
-            return Status("alarm-clock", resets is { } at && conversation.ResumeAtReset ? When(at).Replace("tomorrow ", "") : "Out", Ocean.Warning);
-        }
-        if (conversation.IsWaiting) return Status("shield-question", "Needs you", Ocean.Warning);
-        if (conversation.IsWorking) return Status("circle-dashed", "Working", Ocean.Info, Took(DateTimeOffset.UtcNow - conversation.WorkingSince));
-        if (conversation.Unseen && conversation.Items.LastOrDefault()?.Kind == AgentItemKind.Problem) return Status("circle-alert", "Failed", Ocean.Error);
-        if (conversation.Unseen) return Status("circle-check", "Done", Ocean.Success);
-        return Ocean.Text(Ago(conversation.Updated), Ocean.Secondary, 12);
-    }
-
-    // Each second: the rows' states, so "Working 12s" counts.
-    private void ShowConversationStates()
-    {
-        foreach (var row in _list.Children.OfType<Button>())
-        {
-            if (row.Content is StackPanel { Children: [DockPanel first, ..] } && first.Children.OfType<ContentControl>().FirstOrDefault() is { Tag: AgentConversation conversation } state)
-            {
-                state.Content = ConversationState(conversation);
-            }
-        }
     }
 
     private void OfferActions(UIElement by, AgentConversation conversation)
@@ -726,6 +633,7 @@ public sealed partial class AgentsWindow : Window
     // The breadcrumb, as T3 Code's: the project, a slash, and the conversation's title.
     private void ShowHeader()
     {
+        if (_gitPanelOpen) return; // Redrawn once it closes.
         _crumbs.Children.Clear();
         _headerTools.Children.Clear();
         if (_open is not { } conversation)
@@ -743,13 +651,10 @@ public sealed partial class AgentsWindow : Window
         _crumbs.Children.Add(Ocean.Text("  /  ", Ocean.Secondary, 14));
         _crumbs.Children.Add(Ocean.Text(conversation.Title.Length > 0 ? conversation.Title : "New conversation", Ocean.Foreground, 14, FontWeights.Medium));
 
-        var settle = Ocean.IconButton(conversation.Settled ? "refresh-cw" : "check", () =>
-        {
-            if (!conversation.Settle(!conversation.Settled)) ShowNote("Stop it, or answer what it's asking, before settling it.");
-            ShowHeader();
-            ShowConversations();
-        }, conversation.Settled ? "Unsettle: take it back out of the settled ones" : "Settle: done with it, so put it away and end its agent", 28, 16, Ocean.MutedText);
-        _headerTools.Children.Add(settle);
+        // T3 Code's thread details toggle.
+        _headerTools.Children.Add(DetailsToggle());
+
+
     }
 
     private void ShowSees() => _sees.Text = _main.ViewLabel();

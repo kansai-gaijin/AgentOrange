@@ -114,10 +114,12 @@ internal static class Ocean
         return button;
     }
 
-    public static ControlTemplate Template(double radius, Brush hover, Brush? pressed = null)
+    public static ControlTemplate Template(double radius, Brush hover, Brush? pressed = null) => Template(new CornerRadius(radius), hover, pressed);
+
+    public static ControlTemplate Template(CornerRadius corners, Brush hover, Brush? pressed = null)
     {
         var face = new FrameworkElementFactory(typeof(System.Windows.Controls.Border), "Face");
-        face.SetValue(System.Windows.Controls.Border.CornerRadiusProperty, new CornerRadius(radius));
+        face.SetValue(System.Windows.Controls.Border.CornerRadiusProperty, corners);
         face.SetValue(System.Windows.Controls.Border.BackgroundProperty, new TemplateBindingExtension(System.Windows.Controls.Control.BackgroundProperty));
         face.SetValue(System.Windows.Controls.Border.BorderBrushProperty, new TemplateBindingExtension(System.Windows.Controls.Control.BorderBrushProperty));
         face.SetValue(System.Windows.Controls.Border.BorderThicknessProperty, new TemplateBindingExtension(System.Windows.Controls.Control.BorderThicknessProperty));
@@ -212,6 +214,20 @@ internal static class Ocean
 
     /// <summary>A pop-up in T3 Code's frosted glass, as its menus and popovers are.</summary>
     public static Popup Menu(UIElement by, PlacementMode placement, UIElement content, double minWidth = 160, double offset = 6)
+    {
+        var menu = NewMenu(by, placement, content, minWidth, offset);
+
+        // Escape closes it, as it does T3 Code's, from wherever in it has focus.
+        menu.Child.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key != System.Windows.Input.Key.Escape || e.Handled) return;
+            menu.IsOpen = false;
+            e.Handled = true;
+        };
+        return menu;
+    }
+
+    private static Popup NewMenu(UIElement by, PlacementMode placement, UIElement content, double minWidth, double offset)
     {
         return new Popup
         {
