@@ -162,7 +162,7 @@ public sealed partial class AgentsWindow
         };
         region.PreviewMouseWheel += (_, wheel) =>
         {
-            if (Keyboard.Modifiers != ModifierKeys.Control) return;
+            if (KeyState.Modifiers != ModifierKeys.Control) return;
             wheel.Handled = true;
             Zoom(zoom * Math.Exp(wheel.Delta / 120.0 * 100 * 0.01), wheel.GetPosition(region));
         };

@@ -155,6 +155,9 @@ internal static partial class Headless
             case "answer":
                 Answers.Enqueue(parts[1]);
                 break;
+            case "wait" when parts.Length < 2:
+                await Task.Delay(500);
+                break;
             case "wait":
                 await WaitForAsync(window, parts[1], true);
                 break;

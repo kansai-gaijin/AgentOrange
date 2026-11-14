@@ -120,6 +120,7 @@ internal sealed partial class NodeCanvas : Border
         ClipToBounds = true;
         Focusable = true;
         FocusVisualStyle = null;
+        System.Windows.Automation.AutomationProperties.SetName(this, "Board");
         _world.RenderTransform = _view;
         _hint = new TextBlock
         {
@@ -294,8 +295,36 @@ internal sealed partial class NodeCanvas : Border
         Canvas.SetTop(box, data.Y);
         _world.Children.Add(box);
         _nodes[id] = view;
+        NameNode(view);
         return view;
     }
+
+    // What a screen reader says it is: its title, a Rich Text node's first line, or the card it stands for.
+    private void NameNode(NodeView view)
+    {
+        string name;
+        if (view.Rich is { } rich)
+        {
+            var words = new TextRange(rich.Document.ContentStart, rich.Document.ContentEnd).Text.Trim();
+            name = words.Length == 0 ? "Empty text" : words.Split('\n')[0].Trim();
+        }
+        else if (view.Picture is not null) name = "Picture";
+        else if (ReferenceTo(view.Data.Kind) is { } to) name = ReferencedCard(view.Data, to) is { } card ? MainWindow.CardName(card, MainWindow.CardPages.Keys.First(each => each.ToLowerInvariant() == to.Part)) : $"Choose a {to.One}";
+        else name = view.Data.Title.Length > 0 ? view.Data.Title : Untitled;
+        System.Windows.Automation.AutomationProperties.SetName(view.Box, name);
+    }
+
+#if DEBUG
+    /// <summary>For the dev build's drive tool, which can't click at a place: selects the node whose name starts so.</summary>
+    internal bool SelectNamed(string name)
+    {
+        var found = _nodes.Values.FirstOrDefault(view => System.Windows.Automation.AutomationProperties.GetName(view.Box).StartsWith(name, StringComparison.OrdinalIgnoreCase));
+        if (found is null) return false;
+        Select(found.Id);
+        Focus();
+        return true;
+    }
+#endif
 
     private void AddTextParts(NodeView view, Grid parts)
     {
@@ -337,21 +366,26 @@ internal sealed partial class NodeCanvas : Border
         {
             if (pressed.Key == Key.Escape)
             {
+                // Finishes, keeping the words, as there can be a lot of them to lose. Ctrl+Z still takes them back first.
                 pressed.Handled = true;
-                StopEditing(keep: false);
+                StopEditing(keep: true);
                 Focus();
             }
-            else if (pressed.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None)
+            else if (pressed.Key == Key.Enter && KeyState.Modifiers == ModifierKeys.None)
             {
                 pressed.Handled = EnterPressed(rich);
             }
-            else if (pressed.Key == Key.K && Keyboard.Modifiers == ModifierKeys.Control)
+            else if (pressed.Key == Key.K && KeyState.Modifiers == ModifierKeys.Control)
             {
                 pressed.Handled = true;
                 AskForLink(rich);
             }
         };
         rich.PreviewTextInput += (_, typed) => SpaceTyped(rich, typed);
+        DataObject.AddPastingHandler(rich, (_, pasting) =>
+        {
+            if (_editing == view) PasteMarkdown(view, rich, pasting);
+        });
         rich.TextChanged += (_, _) =>
         {
             // After the change is over, as the words can't be changed again from inside it.
@@ -430,6 +464,7 @@ internal sealed partial class NodeCanvas : Border
 
     private void SaveNode(NodeView node)
     {
+        NameNode(node);
         _database.SaveRecord(LocalDatabase.NodesCollection, node.Id, JsonSerializer.Serialize(node.Data, JsonOptions));
         _changed();
     }
@@ -733,7 +768,7 @@ internal sealed partial class NodeCanvas : Border
 
         _dragging = false;
         _held = node;
-        _adding = (Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) != 0;
+        _adding = (KeyState.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) != 0;
         if (node is not null && press.OriginalSource is FrameworkElement { Tag: string part } && part.StartsWith(ResizePart, StringComparison.Ordinal))
         {
             Select(node.Id);
@@ -803,7 +838,7 @@ internal sealed partial class NodeCanvas : Border
         _held = null;
         press.Handled = true;
 
-        if (press.ChangedButton == MouseButton.Right && Keyboard.Modifiers == ModifierKeys.Control)
+        if (press.ChangedButton == MouseButton.Right && KeyState.Modifiers == ModifierKeys.Control)
         {
             _gesture = Gesture.Cut;
             _cut = new Polyline { Stroke = (Brush)FindResource("Danger"), StrokeThickness = 2, StrokeDashArray = [3, 2], IsHitTestVisible = false, Points = [_pressedAtInWorld] };
@@ -930,16 +965,34 @@ internal sealed partial class NodeCanvas : Border
         PlaceToolbar();
     }
 
+    // Home, as in Blender: every node in view, no bigger than they really are.
+    private void FrameAll()
+    {
+        if (_nodes.Count == 0 || ActualWidth <= 0 || ActualHeight <= 0) return;
+        var all = Rect.Empty;
+        foreach (var node in _nodes.Values) all.Union(new Rect(node.Data.X, node.Data.Y, node.Box.ActualWidth, node.Box.ActualHeight));
+        const double margin = 40;
+        var zoom = Math.Clamp(Math.Min((ActualWidth - 2 * margin) / Math.Max(all.Width, 1), (ActualHeight - 2 * margin) / Math.Max(all.Height, 1)), SmallestZoom, 1);
+        var view = Matrix.Identity;
+        view.Scale(zoom, zoom);
+        // Too big to fit even zoomed out, so it shows where they start, as a page would, not their middle.
+        var across = all.Width * zoom > ActualWidth - 2 * margin ? margin - all.X * zoom : ActualWidth / 2 - (all.X + all.Width / 2) * zoom;
+        var down = all.Height * zoom > ActualHeight - 2 * margin ? margin - all.Y * zoom : ActualHeight / 2 - (all.Y + all.Height / 2) * zoom;
+        view.Translate(across, down);
+        _view.Matrix = view;
+        PlaceToolbar();
+    }
+
     private void KeyPressed(object sender, KeyEventArgs pressed)
     {
         if (_editing is not null) return;
 
-        if (pressed.Key == Key.A && Keyboard.Modifiers == ModifierKeys.Shift)
+        if (pressed.Key == Key.A && KeyState.Modifiers == ModifierKeys.Shift)
         {
             OpenAddList();
             pressed.Handled = true;
         }
-        else if (pressed.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control)
+        else if (pressed.Key == Key.V && KeyState.Modifiers == ModifierKeys.Control)
         {
             pressed.Handled = PasteImage();
         }
@@ -948,7 +1001,7 @@ internal sealed partial class NodeCanvas : Border
             DeleteSelected();
             pressed.Handled = true;
         }
-        else if (pressed.Key == Key.A && Keyboard.Modifiers == ModifierKeys.None)
+        else if (pressed.Key == Key.A && KeyState.Modifiers == ModifierKeys.None)
         {
             _selection.UnionWith(_nodes.Keys);
             ShowSelection();
@@ -957,6 +1010,11 @@ internal sealed partial class NodeCanvas : Border
         else if (pressed.Key == Key.Escape)
         {
             Select(null);
+            pressed.Handled = true;
+        }
+        else if (pressed.Key == Key.Home)
+        {
+            FrameAll();
             pressed.Handled = true;
         }
         else if (pressed.Key == Key.F2 && _selection.Count == 1 && _nodes.TryGetValue(_selection.First(), out var node))

@@ -160,6 +160,7 @@ internal sealed partial class NodeCanvas
         }
 
         _toolbar.Visibility = Visibility.Visible;
+        _toolbar.Margin = new Thickness(0); // Or its last place would count as part of its size.
         _toolbar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var size = _toolbar.DesiredSize;
         var top = _view.Matrix.Transform(new Point(node.Data.X, node.Data.Y));
@@ -475,7 +476,7 @@ internal sealed partial class NodeCanvas
     {
         var point = press.GetPosition(rich);
 
-        if (Keyboard.Modifiers == ModifierKeys.Control)
+        if (KeyState.Modifiers == ModifierKeys.Control)
         {
             if (LinkAt(rich.GetPositionFromPoint(point, false)) is not { NavigateUri: { } address } || WebAddress(address.ToString()) is not { } web) return false;
             try

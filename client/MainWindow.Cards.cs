@@ -268,7 +268,7 @@ public partial class MainWindow
         tile.PreviewKeyDown += (_, pressed) =>
         {
             if (!ReferenceEquals(pressed.OriginalSource, tile)) return;
-            var step = reorderable && Keyboard.Modifiers == ModifierKeys.Control ? pressed.Key switch { Key.Left => -1, Key.Right => 1, _ => 0 } : 0;
+            var step = reorderable && KeyState.Modifiers == ModifierKeys.Control ? pressed.Key switch { Key.Left => -1, Key.Right => 1, _ => 0 } : 0;
             if (step != 0)
             {
                 var order = grid.Children.OfType<Button>().Select(other => other.Tag).OfType<BoardCard>().ToList();
@@ -289,7 +289,7 @@ public partial class MainWindow
             {
                 DeleteCard(project, card, one);
             }
-            else if (pressed.Key == Key.Apps || (pressed.Key == Key.F10 && Keyboard.Modifiers == ModifierKeys.Shift))
+            else if (pressed.Key == Key.Apps || (pressed.Key == Key.F10 && KeyState.Modifiers == ModifierKeys.Shift))
             {
                 OpenMenu(atMouse: false);
             }
@@ -437,6 +437,7 @@ public partial class MainWindow
         var problem = ProblemText();
         problem.Margin = new Thickness(0, 6, 0, 0);
         var name = Field(now);
+        name.Width = double.NaN; // The whole row, in line with its title and button, not the style's own width.
         name.MaxLength = LocalDatabase.LongestCardName;
         AutomationProperties.SetName(name, title);
 

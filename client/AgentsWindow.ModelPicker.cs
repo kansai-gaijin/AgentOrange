@@ -423,7 +423,7 @@ public sealed partial class AgentsWindow
         // Keys, as in T3 Code: up and down move through the models, Enter picks, Ctrl+1 to 9 pick straight away.
         layout.PreviewKeyDown += (_, e) =>
         {
-            if (Keyboard.Modifiers == ModifierKeys.Control && e.Key is >= Key.D1 and <= Key.D9 && e.Key - Key.D1 < shown.Count)
+            if (KeyState.Modifiers == ModifierKeys.Control && e.Key is >= Key.D1 and <= Key.D9 && e.Key - Key.D1 < shown.Count)
             {
                 e.Handled = true;
                 Pick(shown[e.Key - Key.D1]);

@@ -76,12 +76,12 @@ public sealed partial class AgentsWindow
         // Ctrl+Shift+B toggles the panel, Ctrl+O opens the project in the favourite app.
         PreviewKeyDown += (_, key) =>
         {
-            if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && key.Key == Key.B)
+            if (KeyState.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && key.Key == Key.B)
             {
                 key.Handled = true;
                 ToggleDetails();
             }
-            else if (Keyboard.Modifiers == ModifierKeys.Control && key.Key == Key.O && _open is { } open && _main.ProjectFolder(open.ProjectId) is { } folder)
+            else if (KeyState.Modifiers == ModifierKeys.Control && key.Key == Key.O && _open is { } open && _main.ProjectFolder(open.ProjectId) is { } folder)
             {
                 key.Handled = true;
                 OpenIn(FavoriteOpener(), folder);

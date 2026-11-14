@@ -82,7 +82,9 @@ internal static partial class Headless
             }
             catch (Exception error)
             {
-                Say($"FAILED at {line}: {error.Message}");
+                // Where in the app it went wrong, as the message alone rarely says.
+                var where = error.StackTrace?.Split('\n').FirstOrDefault(frame => frame.Contains("AgentOrange.", StringComparison.Ordinal))?.Trim();
+                Say($"FAILED at {line}: {error.Message}{(where is null ? "" : $" ({where})")}");
                 break;
             }
         }
@@ -116,14 +118,40 @@ internal static partial class Headless
                 say(string.Join(" | ", names));
                 return true;
             case "key":
-                var key = Enum.Parse<Key>(parts[1], ignoreCase: true);
+                // A key, or a shortcut such as Shift+A or Ctrl+V, with Shift, Ctrl and Alt held only while it's sent.
+                var keyParts = parts[1].Split('+');
+                var key = Enum.Parse<Key>(keyParts[^1], ignoreCase: true);
+                var held = ModifierKeys.None;
+                foreach (var modifier in keyParts[..^1]) held |= Enum.Parse<ModifierKeys>(modifier.Equals("Ctrl", StringComparison.OrdinalIgnoreCase) ? "Control" : modifier, ignoreCase: true);
                 var focused = Keyboard.FocusedElement as UIElement
                     ?? Descendants(_driveTarget!).OfType<TextBox>().FirstOrDefault(box => box.IsVisible)
                     ?? (UIElement)_driveTarget!;
                 if (PresentationSource.FromVisual(focused) is not { } source) throw new InvalidOperationException("Nothing to send keys to.");
-                var down = new KeyEventArgs(Keyboard.PrimaryDevice, source, Environment.TickCount, key) { RoutedEvent = Keyboard.PreviewKeyDownEvent };
-                focused.RaiseEvent(down);
-                if (!down.Handled) focused.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, source, Environment.TickCount, key) { RoutedEvent = Keyboard.KeyDownEvent });
+                KeyState.Held = held;
+                try
+                {
+                    var down = new KeyEventArgs(Keyboard.PrimaryDevice, source, Environment.TickCount, key) { RoutedEvent = Keyboard.PreviewKeyDownEvent };
+                    focused.RaiseEvent(down);
+                    var up = new KeyEventArgs(Keyboard.PrimaryDevice, source, Environment.TickCount, key) { RoutedEvent = Keyboard.KeyDownEvent };
+                    if (!down.Handled) focused.RaiseEvent(up);
+
+                    // Text boxes take these through command bindings, which read the real keyboard.
+                    RoutedUICommand? command = held != ModifierKeys.Control || down.Handled || up.Handled ? null : key switch
+                    {
+                        Key.V => ApplicationCommands.Paste,
+                        Key.C => ApplicationCommands.Copy,
+                        Key.X => ApplicationCommands.Cut,
+                        Key.A => ApplicationCommands.SelectAll,
+                        Key.Z => ApplicationCommands.Undo,
+                        Key.Y => ApplicationCommands.Redo,
+                        _ => null,
+                    };
+                    if (command?.CanExecute(null, focused) == true) command.Execute(null, focused);
+                }
+                finally
+                {
+                    KeyState.Held = null;
+                }
                 return true;
             case "hover":
                 var target = await UntilThereAsync(_driveTarget!, () => Descendants(_driveTarget!).OfType<FrameworkElement>().LastOrDefault(element => element.IsVisible
@@ -154,9 +182,32 @@ internal static partial class Headless
                     if (!first.Handled) pressedOn.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = bubble });
                 }
                 return true;
+            case "focus" when !int.TryParse(parts[1], out _):
+                // focus "Board": what has that name, such as a board, so keys go to it.
+                Keyboard.Focus(await UntilThereAsync(_driveTarget!, () => Descendants(_driveTarget!).OfType<FrameworkElement>().LastOrDefault(element => element.IsVisible && AutomationProperties.GetName(element) == parts[1]), parts[1]));
+                return true;
             case "focus":
                 var field = await UntilThereAsync(_driveTarget!, () => Visible<TextBox>(_driveTarget!).ElementAtOrDefault(int.Parse(parts[1])), $"field {parts[1]}");
                 Keyboard.Focus(field);
+                return true;
+            case "select":
+                // select "Name": the node on the open board whose name starts so, as a click on it would.
+                var board = Descendants(_driveTarget!).OfType<NodeCanvas>().FirstOrDefault(each => each.IsVisible) ?? throw new InvalidOperationException("No board is open.");
+                if (!board.SelectNamed(parts[1])) throw new InvalidOperationException($"No node on the board is called {parts[1]}.");
+                return true;
+            case "focused":
+                // What keys go to: its kind and name, and the window it's in.
+                var has = Keyboard.FocusedElement as DependencyObject;
+                say(has is null ? "nothing" : $"{has.GetType().Name} \"{(has is FrameworkElement shown ? AutomationProperties.GetName(shown) : "")}\" in {Window.GetWindow(has)?.Title ?? "a popup"}");
+                return true;
+            case "pick":
+                // pick "Web" "Unreal": in the drop-down showing Web (or named Web), choose Unreal.
+                static string ItemText(object? item) => item is ContentControl { Content: var content } ? content?.ToString() ?? "" : item?.ToString() ?? "";
+                var combo = await UntilThereAsync(_driveTarget!, () => Visible<ComboBox>(_driveTarget!).FirstOrDefault(box =>
+                    AutomationProperties.GetName(box) == parts[1] || ItemText(box.SelectedItem) == parts[1]), $"a drop-down showing {parts[1]}");
+                var choice = combo.Items.Cast<object>().FirstOrDefault(item => ItemText(item) == parts[2])
+                    ?? throw new InvalidOperationException($"{parts[1]} has no {parts[2]}. It has: {string.Join(", ", combo.Items.Cast<object>().Select(ItemText))}");
+                combo.SelectedItem = choice;
                 return true;
             default:
                 return false;

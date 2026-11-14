@@ -1,0 +1,53 @@
+# Dogfooding log
+
+What got in the way while using Agent Orange to make the games, and what was done about it. Newest first.
+Anything not fixed on the spot is a GitHub issue, not a line here.
+
+## 2026-11-15 · Animal Planet: bringing the GDD in
+
+Animal Planet became the Unreal Engine game (it was the web game). Its design was a 2,500-line Markdown
+GDD in the repo (`docs/GDD.md`, v2.5). It was brought in by hand, through the app, without an agent:
+one card per topic and one Rich Text node per GDD section, every one of the 105 sections placed once.
+
+- **Overview board:** the document's header and conventions, sections 1 to 3, then a node for each of
+  Parts IX (69 to 75) to XIV and the version status. The Player reference node already there was kept.
+- **Story (6 beats):** Starting Experience, The Ancient Civilization, Story Delivery, Puzzles, Narrative
+  Journal and Artifacts, First Public Release Narrative.
+- **Characters (3):** Player (the card that was there), Talking Animal Residents, Original Fantasy Wildlife.
+- **Levels (7):** Universe Structure, Spherical Planet Design, Wilderness Planets, Home Biomes, Temperate
+  Forest, Desert, Tropical Island.
+- **Mechanics (20):** from Spherical Movement and Camera to Online Play and Offline Simulation.
+- **Assets:** none. The GDD names no specific assets yet.
+
+What went wrong, and the fix:
+
+- **An agent couldn't do it.** Asked to bring the GDD in, it said it had no way to write to Agent Orange's
+  pages. Agent Orange's own MCP server is still to build.
+- **Pasted Markdown stayed raw.** A Rich Text node only turned Markdown into formatting as it was typed.
+  Pasting now converts it: headings, bullet and numbered lists, tick boxes, tables, bold, italic,
+  struck, code, links, and two-space line breaks (`NodeCanvas.Markdown.cs`). A long paste or a table
+  widens a new node to 560 px.
+- **Escape threw away a Rich Text node's edit,** a whole pasted section with it. Escape now finishes and
+  keeps the words, as in Miro and Figma. A node's one-line name still takes Escape as cancel.
+- **The text bar sat far from its node,** at the bottom left. It measured itself with its old margin
+  counted in.
+- **Nodes added from the keyboard landed on top of each other** in the middle of the board. They now
+  go in free space to the right, brought into view.
+- **The real mouse decided where a node went,** even with the window covered, as only the board's
+  bounds were checked. It now has to be over the board itself.
+- **No way to see a whole board.** Home frames every node, as in Blender, from the top left when
+  they're too big to fit.
+- **Keys went nowhere after the add list closed** without a choice. Focus now goes back to the board.
+- **The project's folder showed only the start of its path,** the same for every project. It now shows the end.
+- **The name box in "New mechanic" and the like** sat out of line with its label and button.
+- Nodes have names for screen readers: a title, a Rich Text node's first line, or the card it stands for.
+
+For driving the dev build (`tools/drive.ps1`):
+
+- It failed in Windows PowerShell 5.1, which has no `PipeOptions.CurrentUserOnly`. The app's end of the
+  pipe still only lets this Windows account in.
+- New: `key Shift+A`, `key Ctrl+V` (shortcuts, with Ctrl+V/C/X/A/Z/Y run as the keyboard would),
+  `pick "Web" "Unreal Engine"` (drop-downs), `focus "Board"` (by name), `select "Name"` (a node on the
+  open board), `focused` (where keys go), bare `wait` (half a second). Failures say where in the app.
+- Hot reload sometimes misses a changed method, and never runs new static fields' initialisers.
+  Restart `dotnet watch` when a change doesn't show.

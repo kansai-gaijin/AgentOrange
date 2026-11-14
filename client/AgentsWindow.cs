@@ -315,14 +315,14 @@ public sealed partial class AgentsWindow : Window
         _input.PreviewKeyDown += (_, pressed) =>
         {
             // A picture or files on the clipboard go with the message, rather than in as words.
-            if (pressed.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control && PasteAttachments())
+            if (pressed.Key == Key.V && KeyState.Modifiers == ModifierKeys.Control && PasteAttachments())
             {
                 pressed.Handled = true;
                 return;
             }
 
             // Enter sends, and Shift+Enter starts a new line.
-            if (pressed.Key != Key.Enter || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) return;
+            if (pressed.Key != Key.Enter || KeyState.Modifiers.HasFlag(ModifierKeys.Shift)) return;
             pressed.Handled = true;
             if (_input.Text.Trim().Length > 0 || _pending.Count > 0) SendOrStop();
         };

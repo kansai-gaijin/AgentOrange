@@ -53,7 +53,7 @@ public sealed partial class AgentsWindow
                 _jumpTimer.Start();
                 return;
             }
-            if (Keyboard.Modifiers != ModifierKeys.Control) return;
+            if (KeyState.Modifiers != ModifierKeys.Control) return;
             if (key.Key is >= Key.D1 and <= Key.D9 && key.Key - Key.D1 < _rowOrder.Count)
             {
                 key.Handled = true;

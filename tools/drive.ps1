@@ -4,7 +4,11 @@
 # Pictures are saved in %TEMP%\AgentOrange-Drive and the reply gives each one's path.
 param([Parameter(ValueFromRemainingArguments = $true)][string[]] $Commands)
 
-$pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', 'AgentOrange-Drive', [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::CurrentUserOnly)
+# Windows PowerShell 5.1 runs on .NET Framework, which has no CurrentUserOnly. The app's end of the
+# pipe is CurrentUserOnly either way, so only this Windows account can connect.
+$options = [System.IO.Pipes.PipeOptions]::None
+if ([enum]::GetNames([System.IO.Pipes.PipeOptions]) -contains 'CurrentUserOnly') { $options = [System.IO.Pipes.PipeOptions]'CurrentUserOnly' }
+$pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', 'AgentOrange-Drive', [System.IO.Pipes.PipeDirection]::InOut, $options)
 try {
     $pipe.Connect(5000)
 } catch {

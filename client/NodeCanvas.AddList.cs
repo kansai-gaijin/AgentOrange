@@ -34,6 +34,33 @@ internal sealed partial class NodeCanvas
     // An asset's own board: a card on the Assets page. Its stage, the page, then the card.
     private bool IsAssetBoard => _board.Split('/') is [_, "assets", _];
 
+    // To the right of whatever's there, along the same line, and moved into view if that's off the board.
+    private Point FreeSpotNear(Point where)
+    {
+        const double gap = 40;
+        for (var tries = 0; tries < 500; tries++)
+        {
+            var wanted = new Rect(where.X - 80, where.Y - 27, TextWidth, 60);
+            var inTheWay = _nodes.Values.Select(node => new Rect(node.Data.X, node.Data.Y, node.Box.ActualWidth, node.Box.ActualHeight))
+                .Where(taken => { var room = taken; room.Inflate(gap / 2, gap / 2); return room.IntersectsWith(wanted); })
+                .ToList();
+            if (inTheWay.Count == 0) break;
+            where.X = inTheWay.Max(taken => taken.Right) + gap + 80;
+        }
+
+        var onScreen = _view.Matrix.Transform(where);
+        if (onScreen.X < 0 || onScreen.X > ActualWidth - TextWidth || onScreen.Y < 0 || onScreen.Y > ActualHeight)
+        {
+            var view = _view.Matrix;
+            // Only as far as it has to, so a row stays a row.
+            var across = onScreen.X < 0 || onScreen.X > ActualWidth - TextWidth ? ActualWidth / 3 - onScreen.X : 0;
+            var down = onScreen.Y < 0 || onScreen.Y > ActualHeight ? ActualHeight / 3 - onScreen.Y : 0;
+            view.Translate(across, down);
+            _view.Matrix = view;
+        }
+        return where;
+    }
+
     private void OpenAddList()
     {
         // An asset's board doesn't take reference nodes.
@@ -41,8 +68,12 @@ internal sealed partial class NodeCanvas
 
         // Where the mouse is, or the middle if it's somewhere else, such as when Tab got here.
         var mouse = Mouse.GetPosition(this);
-        var over = new Rect(0, 0, ActualWidth, ActualHeight).Contains(mouse);
+        // Over the board itself, not only within its bounds, as another window can be in front of it.
+        var over = IsMouseOver && new Rect(0, 0, ActualWidth, ActualHeight).Contains(mouse);
         var where = ToWorld(over ? mouse : new Point(ActualWidth / 2, ActualHeight / 2));
+
+        // Without the mouse to say where, the middle can already have a node, which the new one would cover.
+        if (!over) where = FreeSpotNear(where);
 
         Brush muted = (Brush)FindResource("TextMuted");
         Border Panel(UIElement child) => MenuPanel(child);
@@ -212,6 +243,11 @@ internal sealed partial class NodeCanvas
         ShowGroups();
         // After the key that opened it is done with, so it isn't typed into the search.
         list.Opened += (_, _) => Dispatcher.BeginInvoke(() => search.Focus(), DispatcherPriority.Input);
+        // However it closes, keys go back to the board, not to a list no longer there.
+        list.Closed += (_, _) =>
+        {
+            if (Keyboard.FocusedElement is DependencyObject focused && list.Child.IsAncestorOf(focused)) Focus();
+        };
         list.IsOpen = true;
     }
 

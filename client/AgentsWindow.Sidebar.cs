@@ -217,7 +217,7 @@ public sealed partial class AgentsWindow
         side.IsVisibleChanged += (_, _) => toggle.Content = AgentIcons.Line(_sidebar.Open ? "panel-left-close" : "panel-left", 16, Ocean.SidebarIcon);
         PreviewKeyDown += (_, key) =>
         {
-            if (Keyboard.Modifiers != ModifierKeys.Control || key.Key != Key.B) return;
+            if (KeyState.Modifiers != ModifierKeys.Control || key.Key != Key.B) return;
             key.Handled = true;
             ToggleSidebar();
         };

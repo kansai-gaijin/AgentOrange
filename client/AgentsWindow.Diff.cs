@@ -83,7 +83,7 @@ public sealed partial class AgentsWindow
         // Ctrl+D toggles the diff, Ctrl+W closes the panel.
         PreviewKeyDown += (_, key) =>
         {
-            if (Keyboard.Modifiers != ModifierKeys.Control || Keyboard.FocusedElement is TextBox) return;
+            if (KeyState.Modifiers != ModifierKeys.Control || Keyboard.FocusedElement is TextBox) return;
             if (key.Key == Key.D && _open is { } open)
             {
                 key.Handled = true;

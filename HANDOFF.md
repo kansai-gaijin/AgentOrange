@@ -14,7 +14,8 @@ A Windows desktop app (WPF, .NET 10, in `client/`) for making games with AI agen
 
 This phase is about **using Agent Orange to make three small, complete, original games**: a 2D Godot game, a 3D Unreal game and a web game. The agents are the app's user. A game may be made only *through* Agent Orange. When the app can't do something the game needs, stop the game work and build that feature, so the gaps become the roadmap. Normal tools are fine for building Agent Orange itself.
 
-- **Game 1 is the web game, now 3D.** Its project in the app is **Animal Planet**. In the user's words: "a really simple game where you are a cute 3d character.. and you walk around on a 3d mini-globe.. kind of like 動物の森 but you are on a tiny globe". The user created the project themselves.
+- **Animal Planet is the Unreal Engine game** (the user changed it from the web game on 2026-11-15). In the user's words: "a really simple game where you are a cute 3d character.. and you walk around on a 3d mini-globe.. kind of like 動物の森 but you are on a tiny globe". The user created the project themselves. Its design, the GDD in its repo (`docs/GDD.md`, v2.5, far bigger than "really simple"), is now on its pages in Agent Orange: see `docs/dogfooding.md`.
+- **Log every struggle** in `docs/dogfooding.md`, with what was done about it, and fix as you go. Use the app as a person would, not through agents unless the user says so ("do not use agent for this" for the GDD import).
 - **Who decides what:**
   - The user owns game design and the app's direction.
   - Ordinary product and technical calls are yours, so make them and build instead of asking.
@@ -25,7 +26,7 @@ This phase is about **using Agent Orange to make three small, complete, original
 - **No automated tests of any kind until v1.** No test suites or scripted test runs.
 - **Drive the open dev app yourself** with `tools/drive.ps1`, so you see each change instead of asking the user to look. The user asked for this: "you should be able to drive the dev app completely.. while its open".
   - It works inside the app over a pipe that only this Windows account can open (`client/Headless.Drive.cs`, debug builds only). It never uses the real mouse or keyboard and never captures the screen.
-  - Commands are the headless script's (`click "Name"`, `set N "text"`, `wait`, `texts`, `shot name`, `scroll`, `window "Title"`), plus `windows`, `names` (what can be clicked), `key Escape|Enter|Down|Up`, `hover "Name"`, `focus N`, `press "Name"` (a click on something that isn't a button, such as a picture, sent as a real click arrives: preview events first) and `close` (shuts every open menu).
+  - Commands are the headless script's (`click "Name"`, `set N "text"`, `wait "text"` or a bare `wait`, `sleep ms`, `texts`, `shot name`, `scroll`, `window "Title"`), plus `windows`, `names` (what can be clicked), `key Escape|Enter|Home|…` and shortcuts such as `key Shift+A` or `key Ctrl+V`, `hover "Name"`, `focus N` (the Nth text box) or `focus "Board"` (by name), `focused` (where keys go), `pick "Shown" "Item"` (a drop-down), `select "Name"` (a node on the open board, by the start of its name), `press "Name"` (a click on something that isn't a button, such as a picture, sent as a real click arrives: preview events first) and `close` (shuts every open menu).
   - `click` also flips toggle buttons, such as a diff file's header. Real mouse gestures (dragging an edge, zooming a picture) can't be driven, so ask the user to try those.
   - For example: `./tools/drive.ps1 'click Agents' 'window Agents' names 'shot agents'`. Pictures are drawn from the windows, with any open popups, into `%TEMP%\AgentOrange-Drive`.
   - Close any popup you open. Headless mode (`AgentOrange.exe --headless <data> <script> <out>`) is still there for runs that need their own data.
@@ -77,7 +78,8 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 - **Node boards (`client/NodeCanvas*.cs`):**
   - Nodes are added the way Blender does it: Shift+A opens a list, and the node lands at the cursor. Node types are built **one at a time, in the order the user picks**.
   - Title node: no border or background, pin at the bottom.
-  - Rich Text node: a button bar, Markdown as it's typed, height you can drag.
+  - Rich Text node: a button bar, Markdown as it's typed or pasted (`client/NodeCanvas.Markdown.cs`: headings, lists, tick boxes, tables, marks, links), height you can drag. Escape finishes and keeps the words.
+  - Home frames every node (from the top left when they don't fit). Nodes added without the mouse over the board go in free space to the right.
   - Image node: from a file, a paste or a drop, resizable.
   - Multi-select to move nodes together, and cutting links by dragging across them.
   - The add list (`client/NodeCanvas.AddList.cs`) is searchable, with groups: Primitives (Title, Rich Text, Image) and References (Story Beat, Character, Level, Mechanic, Asset). A reference node stands for one card in the board's stage (`client/NodeCanvas.References.cs`). Once its card is picked it never changes: double-clicking opens that card's board, and another card needs a new node. Asset boards don't offer References. On a story beat's, character's, level's or mechanic's board, the Asset node lists only the assets that belong to it, and typing a new name adds an asset that already belongs to it.
@@ -137,7 +139,7 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 - A turn that changes files, to see its changed-files card and open its diff.
 - Each Third Party service's Check, once they have keys (#9). The user plans to add an OpenAI key first.
 
-**Next: dogfooding.** The user said (2026-11-15) that once the reply meta, forks and picture menu were done, "we are ready to start dogfooding". They are, so start there:
+**Dogfooding has started (2026-11-15).** First goal done: Animal Planet's GDD is in Agent Orange, brought in by hand through the app, with the fixes that needed (Markdown pasting, Home to frame a board, and more; see `docs/dogfooding.md`). Keys sent by the drive tool go wherever keyboard focus is in the background window, so use `focus "Board"` before board shortcuts. Earlier plan:
 - Make the three games only through Agent Orange, beginning with **Animal Planet**: work in its project, through agent conversations in the agents window, with the agents driving the tools.
 - When Agent Orange can't do something the game needs, stop and build that feature, one small visible piece at a time. Likely early gaps: Agent Orange's own MCP server (so agents can read and change boards, cards and assets), and workflows with nodes for the Third Party services (`docs/third-party/`).
 - The user owns the game's design, so ask them what they want Animal Planet to be before an agent designs it.

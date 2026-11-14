@@ -195,7 +195,7 @@ public partial class MainWindow
         // Reordering has to work without a mouse too.
         card.PreviewKeyDown += (_, e) =>
         {
-            if (Keyboard.Modifiers != ModifierKeys.Control) return;
+            if (KeyState.Modifiers != ModifierKeys.Control) return;
             var step = e.Key switch { Key.Left => -1, Key.Right => 1, Key.Up => -CardsPerRow(card), Key.Down => CardsPerRow(card), _ => 0 };
             if (step == 0) return;
             e.Handled = true;

@@ -134,6 +134,10 @@ public partial class ProjectSettingsModal : UserControl
         folder.Width = 140;
         folder.IsReadOnly = true;
         folder.ToolTip = folder.Text.Length > 0 ? folder.Text : null;
+
+        // Too narrow for the whole path, so it shows the end, where the folder's own name is.
+        folder.Loaded += (_, _) => folder.ScrollToHorizontalOffset(double.MaxValue);
+        folder.TextChanged += (_, _) => folder.ScrollToHorizontalOffset(double.MaxValue);
         _folderField = folder;
         SaveOnLeave(repo, project.RepoUrl, value => SaveRepo(projectId, value));
 
