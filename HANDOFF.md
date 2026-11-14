@@ -79,6 +79,8 @@ Everything is merged and pushed. Nothing is waiting on any branch.
   - Nodes are added the way Blender does it: Shift+A opens a list, and the node lands at the cursor. Node types are built **one at a time, in the order the user picks**.
   - Title node: no border or background, pin at the bottom.
   - Rich Text node: a button bar, Markdown as it's typed or pasted (`client/NodeCanvas.Markdown.cs`: headings, lists, tick boxes, tables, marks, links), height you can drag. Escape finishes and keeps the words.
+  - Undo and redo per board (Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y, 30 steps, `client/NodeCanvas.Undo.cs`), kept while the app runs. Frames group nodes (Ctrl+J or Shift+A › Frame, `client/NodeCanvas.Frames.cs`): what's wholly inside moves with the frame. Document nodes (`client/NodeCanvas.Document.cs`) point at a file in the project's folder and show its headings.
+  - Technical targets are game settings in Project settings (`GameSettings`, collection `game_settings`), not nodes: the user's rule. They're told to agents in the view block.
   - Home frames every node (from the top left when they don't fit). Nodes added without the mouse over the board go in free space to the right.
   - Image node: from a file, a paste or a drop, resizable.
   - Multi-select to move nodes together, and cutting links by dragging across them.

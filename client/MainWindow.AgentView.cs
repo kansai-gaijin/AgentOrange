@@ -23,6 +23,8 @@ public partial class MainWindow
         var stage = _database.ProjectStages(project.Id).FirstOrDefault(each => each.Id == stageId)?.Name ?? stageId;
         said.AppendLine($"Project: \"{project.Name}\" (id {project.Id}), made with {project.Engine}{(project.GameType.Length > 0 ? $", a {project.GameType} game" : "")}, at its {stage} stage.");
         if (_database.GetProjectFolder(project.Id) is { } folder) said.AppendLine($"Its folder on this PC: {folder}");
+        var settings = _database.GetGameSettings(project.Id).Named().Where(each => each.Value.Length > 0).ToList();
+        if (settings.Count > 0) said.AppendLine($"Game settings (in its project settings): {string.Join("; ", settings.Select(each => $"{each.Name}: {each.Value}"))}.");
 
         if (_openSection is not { } section || section.ProjectId != project.Id)
         {

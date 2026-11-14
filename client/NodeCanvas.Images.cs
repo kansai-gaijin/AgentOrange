@@ -111,6 +111,7 @@ internal sealed partial class NodeCanvas
         var width = Math.Clamp(Math.Min(ImageWidth, picture.PixelWidth), SmallestImage, WidestImage);
         var id = NewId();
         var stored = Convert.ToBase64String(image);
+        Changing();
         _database.SaveRecord(LocalDatabase.NodeImagesCollection, id, stored);
         _storedPictures[id] = stored;
         _pictures[id] = (stored, picture);
@@ -133,6 +134,7 @@ internal sealed partial class NodeCanvas
         }
 
         var stored = Convert.ToBase64String(image);
+        Changing();
         _database.SaveRecord(LocalDatabase.NodeImagesCollection, node.Id, stored);
         _storedPictures[node.Id] = stored;
         _pictures[node.Id] = (stored, picture);
@@ -146,6 +148,7 @@ internal sealed partial class NodeCanvas
 
     private void ForgetPicture(string id)
     {
+        Changing();
         _database.SaveRecord(LocalDatabase.NodeImagesCollection, id, "", deleted: true);
         _storedPictures.Remove(id);
         _pictures.Remove(id);

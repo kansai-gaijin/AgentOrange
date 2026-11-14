@@ -3,6 +3,32 @@
 What got in the way while using Agent Orange to make the games, and what was done about it. Newest first.
 Anything not fixed on the spot is a GitHub issue, not a line here.
 
+## 2026-11-15 · Animal Planet: a lean Overview, frames, undo and game settings
+
+The user found the Overview "super bloated": every Overview article of the GDD had been put on it,
+unread. Read properly, most of them aren't an overview. The user rearranged the top themselves
+(vision, pillars, target experience, starting experience) and that was kept. The rest went:
+
+- **Open Decision Register:** onto the cards it's about, as tick-box lists under each picture
+  (Multiplayer and Visitors, Farming, the wildlife, the residents, The Universe, the Ancient Civilization).
+- **Consolidated Decision Register and Version 2.5 Status:** dropped, as they repeat the cards.
+- **Story:** two beats on the Story page.
+- **Production, release scope, risks and the implementation plan:** Markdown documents in the game's
+  folder (`docs/production/`), shown on the Overview as Document nodes in a "Production" frame. They're
+  long reference text, read rather than laid out, and agents working in the repo read them directly.
+- **Technical targets** such as the frame rate: the user said these "belong as game settings". Project
+  settings now has a Game settings section (platforms, frame rate, resolution, minimum hardware,
+  online, players, input, languages, session length), synced, and told to agents with every message.
+
+Built for it, as the user asked or the work needed:
+
+- **Undo and redo** on boards: Ctrl+Z, and Ctrl+Shift+Z or Ctrl+Y, 30 steps per board.
+- **Frames** to group nodes, as in Blender: Ctrl+J around what's selected, or Shift+A › Frame. What's
+  inside a frame moves with it.
+- **Document node** (Shift+A › Document): one of the project's files, shown by its title and headings,
+  opened with a double-click.
+- Drive tool: `select` takes several names, and `selectat X Y` picks by place.
+
 ## 2026-11-15 · Animal Planet: the GDD again, the right one, done properly
 
 The first import (below) used the wrong GDD: v2.5 on `main`. The current one is a restructured GDD

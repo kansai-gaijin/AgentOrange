@@ -193,7 +193,16 @@ internal static partial class Headless
             case "select":
                 // select "Name": the node on the open board whose name starts so, as a click on it would.
                 var board = Descendants(_driveTarget!).OfType<NodeCanvas>().FirstOrDefault(each => each.IsVisible) ?? throw new InvalidOperationException("No board is open.");
-                if (!board.SelectNamed(parts[1])) throw new InvalidOperationException($"No node on the board is called {parts[1]}.");
+                // select "A" "B": several, as Shift and a click on each would.
+                for (var named = 1; named < parts.Length; named++)
+                {
+                    if (!board.SelectNamed(parts[named], add: named > 1)) throw new InvalidOperationException($"No node on the board is called {parts[named]}.");
+                }
+                return true;
+            case "selectat":
+                // selectat X Y: what a click at that place on the board selects.
+                var clicked = Descendants(_driveTarget!).OfType<NodeCanvas>().FirstOrDefault(each => each.IsVisible) ?? throw new InvalidOperationException("No board is open.");
+                if (!clicked.SelectAt(double.Parse(parts[1]), double.Parse(parts[2]))) throw new InvalidOperationException($"No node at {parts[1]}, {parts[2]}.");
                 return true;
             case "nodes":
                 // Each node on the open board: where it is, its size and its name.

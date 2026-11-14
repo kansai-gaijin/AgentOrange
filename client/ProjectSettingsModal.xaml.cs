@@ -226,6 +226,8 @@ public partial class ProjectSettingsModal : UserControl
                     Row("Game type", null, gameType),
                     Row("Repo URL", null, repo),
                     Row("Folder on this PC", "Doesn't sync, because it's different on each PC.", folder, browse, disconnect)),
+                Section("Game settings"),
+                GameSettingsCard(projectId),
                 Section("Images"),
                 Card(
                     ImageRow(projectId, "Thumbnail", "Shown on the project list.", ProjectImageKind.Thumbnail, 44, 66),
@@ -559,6 +561,40 @@ public partial class ProjectSettingsModal : UserControl
     {
         if (_invalidFields.Count > 0) ShowProblem(_problem, _invalidFields.Values.First());
         else _problem.Visibility = Visibility.Collapsed;
+    }
+
+    // The game's technical targets, each saved on leaving it, as the name is. They sync, and agents are told them.
+    private Border GameSettingsCard(string projectId)
+    {
+        var now = _database.GetGameSettings(projectId);
+        (string Name, string? Hint, string Value, Func<GameSettings, string, GameSettings> Set)[] settings =
+        [
+            ("Platforms", "Where it's released, such as Windows, consoles or the web.", now.Platforms, (all, value) => all with { Platforms = value }),
+            ("Target frame rate", "Such as 60 FPS, or 30 to 60 with quality settings.", now.FrameRate, (all, value) => all with { FrameRate = value }),
+            ("Target resolution", null, now.Resolution, (all, value) => all with { Resolution = value }),
+            ("Minimum hardware", null, now.MinimumHardware, (all, value) => all with { MinimumHardware = value }),
+            ("Online", "Online only, offline, or both.", now.Online, (all, value) => all with { Online = value }),
+            ("Players", "Such as single-player, or 2 to 4 together.", now.Players, (all, value) => all with { Players = value }),
+            ("Input", "Such as keyboard and mouse, or a controller.", now.Input, (all, value) => all with { Input = value }),
+            ("Languages", null, now.Languages, (all, value) => all with { Languages = value }),
+            ("Session length", "How long a typical sitting is.", now.SessionLength, (all, value) => all with { SessionLength = value }),
+        ];
+
+        var rows = new List<FrameworkElement>();
+        foreach (var (name, hint, value, set) in settings)
+        {
+            var field = Field(value);
+            field.Width = 300;
+            System.Windows.Automation.AutomationProperties.SetName(field, name);
+            SaveOnLeave(field, value, typed =>
+            {
+                _database.SetGameSettings(projectId, set(_database.GetGameSettings(projectId), typed));
+                Changed?.Invoke();
+                return Task.FromResult<string?>(null);
+            });
+            rows.Add(Row(name, hint, field));
+        }
+        return Card([.. rows]);
     }
 
     private void SaveOnLeave(TextBox field, string initial, Func<string, Task<string?>> save)

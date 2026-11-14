@@ -25,6 +25,36 @@ public sealed record BoardCard(string Id, string Board, string Name, double Orde
 public sealed record AssetDetails(string? Type = null, string? Owner = null, string[]? Tags = null, string? Due = null);
 
 /// <summary>
+/// The game's technical targets, such as its frame rate and platforms: settings of the game rather
+/// than design to lay out on a board. Each is written as the person likes, and empty until decided.
+/// </summary>
+public sealed record GameSettings(
+    string Platforms = "",
+    string FrameRate = "",
+    string Resolution = "",
+    string MinimumHardware = "",
+    string Online = "",
+    string Players = "",
+    string Input = "",
+    string Languages = "",
+    string SessionLength = "")
+{
+    /// <summary>Each setting's name, and what it's set to.</summary>
+    public IEnumerable<(string Name, string Value)> Named() =>
+    [
+        ("Platforms", Platforms),
+        ("Target frame rate", FrameRate),
+        ("Target resolution", Resolution),
+        ("Minimum hardware", MinimumHardware),
+        ("Online", Online),
+        ("Players", Players),
+        ("Input", Input),
+        ("Languages", Languages),
+        ("Session length", SessionLength),
+    ];
+}
+
+/// <summary>
 /// The file that makes an asset delivered: where it is in the project's folder, which goes to other
 /// PCs with the project's repo, and what it was when it was given, so a changed file can be told apart.
 /// Only a person gives it, never an agent.
@@ -59,6 +89,7 @@ public sealed class LocalDatabase
     private const string SettingsCollection = "settings";
     private const string ImagesCollection = "project_images";
     private const string EnginesCollection = "project_engines";
+    private const string GameSettingsCollection = "game_settings";
 
     // Edits to a project, one record per field, so two PCs changing different things both
     // count. The project's own record is only written to create or delete it, so an edit made
@@ -399,6 +430,22 @@ public sealed class LocalDatabase
 
     public void SetAssetDetails(string cardId, AssetDetails details) =>
         SaveRecord(AssetDetailsCollection, cardId, JsonSerializer.Serialize(details, JsonOptions));
+
+    public GameSettings GetGameSettings(string projectId)
+    {
+        if (GetRecord(GameSettingsCollection, projectId) is not { Length: > 0 } stored) return new GameSettings();
+        try
+        {
+            return JsonSerializer.Deserialize<GameSettings>(stored, JsonOptions) ?? new GameSettings();
+        }
+        catch (JsonException)
+        {
+            return new GameSettings(); // It arrived from another PC and can't be read.
+        }
+    }
+
+    public void SetGameSettings(string projectId, GameSettings settings) =>
+        SaveRecord(GameSettingsCollection, projectId, JsonSerializer.Serialize(settings, JsonOptions));
 
     /// <summary>An asset's deliverable, or null until a person gives it one.</summary>
     public AssetDeliverable? GetAssetDeliverable(string cardId)
@@ -869,6 +916,7 @@ public sealed class LocalDatabase
                 if (GetRecord(ImagesCollection, ImageId(projectId, kind)) is not null) SetProjectImage(projectId, kind, null);
             }
             if (GetRecord(EnginesCollection, projectId) is not null) SaveRecord(EnginesCollection, projectId, "", deleted: true);
+            if (GetRecord(GameSettingsCollection, projectId) is not null) SaveRecord(GameSettingsCollection, projectId, "", deleted: true);
 
             // An edit made elsewhere can still arrive after the delete, which wins.
             foreach (var field in ProjectFields)
@@ -1171,7 +1219,7 @@ public sealed class LocalDatabase
     // Project ids have no colons, and what belongs to one is named after it, then a colon.
     private static string? ProjectIdOf(SyncChange change) => change.Collection switch
     {
-        ProjectsCollection or EnginesCollection => change.Id,
+        ProjectsCollection or EnginesCollection or GameSettingsCollection => change.Id,
         FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection or AssetDetailsCollection or AssetTagsCollection or AssetDeliverablesCollection => change.Id.Split(':')[0],
         _ => null,
     };

@@ -45,6 +45,8 @@ internal sealed partial class NodeCanvas
         {
             TextKind => $"Rich Text node: {Shortened(node.Rich is { } rich ? new TextRange(rich.Document.ContentStart, rich.Document.ContentEnd).Text : "")}",
             ImageKind => "Image node",
+            FrameKind => $"Frame \"{(node.Data.Title.Length > 0 ? node.Data.Title : "(unnamed)")}\", grouping what's inside it",
+            DocumentKind => $"Document node: the file {node.Data.Title} in the project's folder, titled \"{DocumentName(node.Data)}\"",
             _ => $"Title node: {(node.Data.Title.Length > 0 ? node.Data.Title : "(untitled)")}",
         };
     }

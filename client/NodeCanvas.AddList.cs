@@ -24,6 +24,8 @@ internal sealed partial class NodeCanvas
         (TitleKind, "Title", PrimitivesGroup),
         (TextKind, "Rich Text", PrimitivesGroup),
         (ImageKind, "Image", PrimitivesGroup),
+        (DocumentKind, "Document", PrimitivesGroup),
+        (FrameKind, "Frame", PrimitivesGroup),
         (BeatReferenceKind, "Story Beat", ReferencesGroup),
         (CharacterReferenceKind, "Character", ReferencesGroup),
         (LevelReferenceKind, "Level", ReferencesGroup),

@@ -217,7 +217,7 @@ internal sealed partial class NodeCanvas : Border
     private string NewId() => $"{_projectId}:{Guid.NewGuid():N}";
 
     // Every kind but a Title node shows its edges.
-    private static bool HasBorder(NodeData data) => data.Kind == TextKind || ReferenceTo(data.Kind) is not null;
+    private static bool HasBorder(NodeData data) => data.Kind is TextKind or DocumentKind or FrameKind || ReferenceTo(data.Kind) is not null;
 
     // Nodes
 
@@ -238,12 +238,22 @@ internal sealed partial class NodeCanvas : Border
             CornerRadius = new CornerRadius(8),
             Child = parts,
         };
-        var view = new NodeView { Id = id, Data = data, Box = box, Inside = inside, Pins = isText || isImage || reference is not null ? [TopPin, BottomPin] : [BottomPin] };
+        var isDocument = data.Kind == DocumentKind;
+        var isFrame = data.Kind == FrameKind;
+        var view = new NodeView { Id = id, Data = data, Box = box, Inside = inside, Pins = isFrame ? [] : isText || isImage || isDocument || reference is not null ? [TopPin, BottomPin] : [BottomPin] };
         box.Tag = view;
 
-        if (isText)
+        if (isFrame)
+        {
+            AddFrameParts(view, parts);
+        }
+        else if (isText)
         {
             AddTextParts(view, parts);
+        }
+        else if (isDocument)
+        {
+            AddDocumentParts(view);
         }
         else if (isImage)
         {
@@ -309,6 +319,8 @@ internal sealed partial class NodeCanvas : Border
             name = words.Length == 0 ? "Empty text" : words.Split('\n')[0].Trim();
         }
         else if (view.Picture is not null) name = "Picture";
+        else if (view.Data.Kind == DocumentKind) name = DocumentName(view.Data);
+        else if (IsFrame(view)) name = view.Data.Title.Length > 0 ? $"Frame: {view.Data.Title}" : "Frame";
         else if (ReferenceTo(view.Data.Kind) is { } to) name = ReferencedCard(view.Data, to) is { } card ? MainWindow.CardName(card, MainWindow.CardPages.Keys.First(each => each.ToLowerInvariant() == to.Part)) : $"Choose a {to.One}";
         else name = view.Data.Title.Length > 0 ? view.Data.Title : Untitled;
         System.Windows.Automation.AutomationProperties.SetName(view.Box, name);
@@ -325,9 +337,13 @@ internal sealed partial class NodeCanvas : Border
     /// <summary>For the drive tool, which can't drag: what dragging the selected node there does.</summary>
     internal void MoveSelected(double x, double y)
     {
-        foreach (var node in _selection.Where(_nodes.ContainsKey).Select(id => _nodes[id]))
+        // The first selected goes there, and the rest, with what frames carry, by as much.
+        var selected = _selection.Where(_nodes.ContainsKey).Select(id => _nodes[id]).ToList();
+        if (selected.Count == 0) return;
+        var (byX, byY) = (Math.Round(x) - selected[0].Data.X, Math.Round(y) - selected[0].Data.Y);
+        foreach (var node in CarriedBy(selected).ToList())
         {
-            node.Data = node.Data with { X = Math.Round(x), Y = Math.Round(y) };
+            node.Data = node.Data with { X = node.Data.X + byX, Y = node.Data.Y + byY };
             Canvas.SetLeft(node.Box, node.Data.X);
             Canvas.SetTop(node.Box, node.Data.Y);
             PlaceLinksOf(node);
@@ -355,9 +371,23 @@ internal sealed partial class NodeCanvas : Border
     }
 
     /// <summary>For the dev build's drive tool, which can't click at a place: selects the node whose name starts so.</summary>
-    internal bool SelectNamed(string name)
+    internal bool SelectNamed(string name, bool add = false)
     {
         var found = _nodes.Values.FirstOrDefault(view => System.Windows.Automation.AutomationProperties.GetName(view.Box).StartsWith(name, StringComparison.OrdinalIgnoreCase));
+        if (found is null) return false;
+        if (add) Toggle(found.Id);
+        else Select(found.Id);
+        Focus();
+        return true;
+    }
+
+    /// <summary>For the drive tool: selects what a click at that place on the board would, a node before the frame it's in.</summary>
+    internal bool SelectAt(double x, double y)
+    {
+        var at = new Point(x, y);
+        // Just after the board is drawn again, a node's size isn't known yet, but its corner is.
+        var found = _nodes.Values.Where(view => new Rect(view.Data.X, view.Data.Y, Math.Max(view.Box.ActualWidth, 20), Math.Max(view.Box.ActualHeight, 20)).Contains(at))
+            .OrderBy(view => IsFrame(view) ? 1 : 0).FirstOrDefault();
         if (found is null) return false;
         Select(found.Id);
         Focus();
@@ -504,6 +534,7 @@ internal sealed partial class NodeCanvas : Border
     private void SaveNode(NodeView node)
     {
         NameNode(node);
+        Changing();
         _database.SaveRecord(LocalDatabase.NodesCollection, node.Id, JsonSerializer.Serialize(node.Data, JsonOptions));
         _changed();
     }
@@ -515,8 +546,14 @@ internal sealed partial class NodeCanvas : Border
             AddImageFromFile(where);
             return;
         }
+        if (kind == DocumentKind)
+        {
+            AddDocumentFromFile(where);
+            return;
+        }
 
-        var node = AddNodeView(NewId(), new NodeData(_board, Math.Round(where.X - 80), Math.Round(where.Y - 27), "", kind, kind == TextKind ? TextWidth : null));
+        var node = AddNodeView(NewId(), new NodeData(_board, Math.Round(where.X - 80), Math.Round(where.Y - 27), "", kind,
+            kind == TextKind ? TextWidth : kind == FrameKind ? FrameWidth : null, Height: kind == FrameKind ? FrameHeight : null));
         _hint.Visibility = Visibility.Collapsed;
         SaveNode(node);
         Select(node.Id);
@@ -528,6 +565,11 @@ internal sealed partial class NodeCanvas : Border
         if (node.Picture is not null)
         {
             ReplaceImage(node);
+            return;
+        }
+        if (node.Data.Kind == DocumentKind)
+        {
+            OpenDocument(node);
             return;
         }
 
@@ -660,6 +702,7 @@ internal sealed partial class NodeCanvas : Border
         _selection.Remove(link.Id);
         _world.Children.Remove(link.Line);
         _world.Children.Remove(link.Hit);
+        Changing();
         _database.SaveRecord(LocalDatabase.NodeLinksCollection, link.Id, "", deleted: true);
     }
 
@@ -704,6 +747,7 @@ internal sealed partial class NodeCanvas : Border
         var id = NewId();
         var data = new LinkData(_board, from.Id, to.Id, fromPin, toPin);
         AddLinkView(id, data);
+        Changing();
         _database.SaveRecord(LocalDatabase.NodeLinksCollection, id, JsonSerializer.Serialize(data, JsonOptions));
         _changed();
     }
@@ -751,6 +795,7 @@ internal sealed partial class NodeCanvas : Border
             else if (_nodes.Remove(id, out var node))
             {
                 _world.Children.Remove(node.Box);
+                Changing();
                 _database.SaveRecord(LocalDatabase.NodesCollection, id, "", deleted: true);
                 if (node.Picture is not null) ForgetPicture(id);
                 foreach (var link in _links.Values.Where(link => link.Data.From == id || link.Data.To == id).ToList()) RemoveLink(link);
@@ -782,7 +827,7 @@ internal sealed partial class NodeCanvas : Border
 
     // A little past its edges counts, as its pins stick out.
     private NodeView? NodeAt(Point inWorld) =>
-        _nodes.Values.LastOrDefault(node => new Rect(node.Data.X - 8, node.Data.Y - 8, node.Box.ActualWidth + 16, node.Box.ActualHeight + 16).Contains(inWorld));
+        _nodes.Values.LastOrDefault(node => !IsFrame(node) && new Rect(node.Data.X - 8, node.Data.Y - 8, node.Box.ActualWidth + 16, node.Box.ActualHeight + 16).Contains(inWorld));
 
     private void Pressed(object sender, MouseButtonEventArgs press)
     {
@@ -843,9 +888,10 @@ internal sealed partial class NodeCanvas : Border
 
             _gesture = Gesture.Move;
             _movedFrom.Clear();
-            foreach (var id in _selection)
+            // A frame takes what's in it along.
+            foreach (var moved in CarriedBy(_selection.Where(_nodes.ContainsKey).Select(id => _nodes[id])))
             {
-                if (_nodes.TryGetValue(id, out var moved)) _movedFrom[moved] = new Point(moved.Data.X, moved.Data.Y);
+                _movedFrom[moved] = new Point(moved.Data.X, moved.Data.Y);
             }
         }
         else if (link is not null)
@@ -922,13 +968,13 @@ internal sealed partial class NodeCanvas : Border
             case Gesture.Resize when _held is { } resized:
                 if (_heldEdge != ResizePart + "-h")
                 {
-                    var width = Math.Clamp(Math.Round(_heldFrom.X + inWorld.X - _pressedAtInWorld.X), NarrowestText, WidestText);
+                    var width = Math.Clamp(Math.Round(_heldFrom.X + inWorld.X - _pressedAtInWorld.X), NarrowestText, IsFrame(resized) ? LargestFrame : WidestText);
                     resized.Data = resized.Data with { Width = width };
                     resized.Box.Width = width;
                 }
                 if (_heldEdge != ResizePart + "-w")
                 {
-                    var height = Math.Clamp(Math.Round(_heldFrom.Y + inWorld.Y - _pressedAtInWorld.Y), ShortestText, TallestText);
+                    var height = Math.Clamp(Math.Round(_heldFrom.Y + inWorld.Y - _pressedAtInWorld.Y), ShortestText, IsFrame(resized) ? LargestFrame : TallestText);
                     resized.Data = resized.Data with { Height = height };
                     resized.Box.MinHeight = height;
                 }
@@ -945,7 +991,10 @@ internal sealed partial class NodeCanvas : Border
                 var area = new Rect(_pressedAtInWorld, inWorld);
                 _selection.Clear();
                 _selection.UnionWith(_selectionBefore);
-                foreach (var inside in _nodes.Values.Where(one => area.IntersectsWith(new Rect(one.Data.X, one.Data.Y, one.Box.ActualWidth, one.Box.ActualHeight)))) _selection.Add(inside.Id);
+                // A frame only when wholly inside, or touching one would take everything in it.
+                foreach (var inside in _nodes.Values.Where(one => IsFrame(one)
+                    ? area.Contains(new Rect(one.Data.X, one.Data.Y, one.Box.ActualWidth, one.Box.ActualHeight))
+                    : area.IntersectsWith(new Rect(one.Data.X, one.Data.Y, one.Box.ActualWidth, one.Box.ActualHeight)))) _selection.Add(inside.Id);
                 ShowSelection();
                 break;
             case Gesture.Cut when _cut is { } cutting:
@@ -978,6 +1027,7 @@ internal sealed partial class NodeCanvas : Border
         {
             if (dragged)
             {
+                Changing();
                 foreach (var moved in _movedFrom.Keys) _database.SaveRecord(LocalDatabase.NodesCollection, moved.Id, JsonSerializer.Serialize(moved.Data, JsonOptions));
                 _changed();
             }
@@ -1049,6 +1099,21 @@ internal sealed partial class NodeCanvas : Border
         else if (pressed.Key == Key.Escape)
         {
             Select(null);
+            pressed.Handled = true;
+        }
+        else if (pressed.Key == Key.Z && KeyState.Modifiers == ModifierKeys.Control)
+        {
+            Undo(back: true);
+            pressed.Handled = true;
+        }
+        else if ((pressed.Key == Key.Z && KeyState.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) || (pressed.Key == Key.Y && KeyState.Modifiers == ModifierKeys.Control))
+        {
+            Undo(back: false);
+            pressed.Handled = true;
+        }
+        else if (pressed.Key == Key.J && KeyState.Modifiers == ModifierKeys.Control)
+        {
+            FrameSelected();
             pressed.Handled = true;
         }
         else if (pressed.Key == Key.Home)
