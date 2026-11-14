@@ -22,7 +22,12 @@ This phase is about **using Agent Orange to make three small, complete, original
 ## How to work (the user's rules)
 
 - **Tiny visible pieces.** Work in a running dev build so the user sees each change. Don't grill the user with questions or mock up the whole app.
-- **No automated tests of any kind until v1.** If a check really can't be avoided, use headless mode (`AgentOrange.exe --headless <data> <script> <out>`, debug builds only). Never touch, capture or take over the user's screen or dev window.
+- **No automated tests of any kind until v1.** No test suites or scripted test runs.
+- **Drive the open dev app yourself** with `tools/drive.ps1`, so you see each change instead of asking the user to look. The user asked for this: "you should be able to drive the dev app completely.. while its open".
+  - It works inside the app over a pipe that only this Windows account can open (`client/Headless.Drive.cs`, debug builds only). It never uses the real mouse or keyboard and never captures the screen.
+  - Commands are the headless script's (`click "Name"`, `set N "text"`, `wait`, `texts`, `shot name`, `scroll`, `window "Title"`), plus `windows`, `names` (what can be clicked), `key Escape|Enter|Down|Up`, `hover "Name"` and `focus N`.
+  - For example: `./tools/drive.ps1 'click Agents' 'window Agents' names 'shot agents'`. Pictures are drawn from the windows, with any open popups, into `%TEMP%\AgentOrange-Drive`.
+  - Close any popup you open. Headless mode (`AgentOrange.exe --headless <data> <script> <out>`) is still there for runs that need their own data.
 - **Pushing:**
   - Push to `main` without asking.
   - Every push ships a release (Velopack, mandatory updates), so batch small edits.
@@ -85,6 +90,8 @@ Everything is merged and pushed. Nothing is waiting on any branch.
     - **Settle:** puts a finished conversation on a "Settled" shelf at the bottom of its project and ends its program. Writing to it takes it back out. Refused while it works or waits on the person.
     - **Logins:** with more than one Claude Code provider, a pill switches a conversation's login. Claude Code's session file is copied into the new login folder so `--resume` carries everything. Without it, the conversation so far goes with the next message as an `<agent-orange-handoff>` block.
     - **Permission mode per conversation:** Ask first, Edit freely (the default), Plan only, Full access. Changed live with `set_permission_mode`, except Full access, which Claude Code only takes at launch, so it restarts with it from the next message. Plan mode's ExitPlanMode shows as a plan card with Go ahead / Keep planning.
+    - **Model picker** (`client/AgentsWindow.ModelPicker.cs`, from T3's ProviderModelPicker): logins down the left with Favorites on top and a badge per login when a kind has several, the login's models with a search box, Ctrl+1 to 9 and a favourite star, a Reasoning column with each model's default marked, and a footer with the permission mode. Picking another login's model switches login, so there's no separate login control. The mode shows by the send button only when it isn't Edit freely. Favourites are in `<agent folder>/model-favorites.json`. Codex logins list their models when the agents window opens (with the usage check), not only once a conversation starts.
+    - **Context handoff rows:** a switch of login shows "Context handoff pending" (old login and model → new) under the timeline, and becomes a "Context handoff" row before the next message, never folded into a turn.
     - **Also:** the agent's own to-do list (TodoWrite) shows above the box, ticked off as it goes; Always allow (the request's own permission suggestions, for the session); "making room in its memory" and retry notices.
   - Not built yet: Agent Orange's own MCP server, so the agent can read and change boards, cards and assets (next).
 - **Third Party (Settings › Agents › Third Party, `client/SettingsModal.ThirdParty.cs`, `client/ThirdParty*.cs`):** the services workflow nodes will use. None is required.
@@ -109,7 +116,6 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 - **Agent chat:** the old chat box on the project page (`client/AgentSession.cs`, `client/MainWindow.Agent.cs`) is no longer shown. The code is kept for when agent work starts.
 
 **Waiting on the user to try live:**
-- A real Codex conversation (only checked without a prompt so far).
 - The Ctrl+Alt+S screenshot hotkey.
 - The agents window's popups and tooltips, which headless captures can't show.
 - Each Third Party service's Check, once they have keys (#9).

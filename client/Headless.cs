@@ -34,7 +34,7 @@ internal static partial class Headless
     private const int ExStyleIndex = -20;
     private const int NoActivate = 0x08000000;
     private const int ToolWindow = 0x00000080;
-    private static readonly TimeSpan WaitLimit = TimeSpan.FromSeconds(60);
+    private static TimeSpan WaitLimit = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan RunLimit = TimeSpan.FromMinutes(5);
 
     private static readonly Queue<string> Answers = new();
@@ -112,7 +112,7 @@ internal static partial class Headless
                     target = await UntilThereAsync(window, () => Application.Current.Windows.OfType<Window>().FirstOrDefault(each => each.Title == parts[1] && each.IsLoaded), $"the window {parts[1]}");
                     continue;
                 }
-                await RunCommandAsync(target, parts);
+                await RunCommandAsync(target, parts, line => _log?.WriteLine(line), _output);
             }
         }
         catch (Exception error)
@@ -126,7 +126,7 @@ internal static partial class Headless
         Application.Current.Shutdown(failed ? 1 : 0);
     }
 
-    private static async Task RunCommandAsync(Window window, string[] parts)
+    private static async Task RunCommandAsync(Window window, string[] parts, Action<string> say, string output)
     {
         switch (parts[0])
         {
@@ -160,20 +160,22 @@ internal static partial class Headless
                 await WaitForAsync(window, parts[1], false);
                 break;
             case "has":
-                _log?.WriteLine($"{parts[1]}: {(Texts(window).Any(text => text.Contains(parts[1], StringComparison.Ordinal)) ? "yes" : "NO")}");
+                say($"{parts[1]}: {(Texts(window).Any(text => text.Contains(parts[1], StringComparison.Ordinal)) ? "yes" : "NO")}");
                 break;
             case "say":
-                _log?.WriteLine(parts[1]);
+                say(parts[1]);
                 break;
             case "last":
-                _log?.WriteLine(Texts(window).LastOrDefault() ?? "");
+                say(Texts(window).LastOrDefault() ?? "");
                 break;
             case "texts":
-                _log?.WriteLine(string.Join(" | ", Texts(window)));
+                say(string.Join(" | ", Texts(window)));
                 break;
             case "shot":
                 await Task.Delay(150);
-                SaveImage(window, Path.Combine(_output, $"{parts[1]}.png"));
+                var shot = Path.Combine(output, $"{parts[1]}.png");
+                SaveImage(window, shot);
+                say(shot);
                 break;
             case "sleep":
                 await Task.Delay(int.Parse(parts[1]));
@@ -251,32 +253,51 @@ internal static partial class Headless
         }
     }
 
-    // Drawn from the window itself, so nothing on the real screen is ever captured.
+    // Drawn from the window itself, so nothing on the real screen is ever captured. Menus open over
+    // it are small windows of their own, so each is drawn where it sits, and the picture grows to fit.
     private static void SaveImage(Window window, string path)
     {
         window.UpdateLayout();
         var content = (FrameworkElement)window.Content;
         var size = new Size(content.ActualWidth, content.ActualHeight);
+        var layers = new List<(Visual Visual, Rect Bounds)> { (content, new Rect(size)) };
+        if (PresentationSource.FromVisual(content) is HwndSource own && own.CompositionTarget is { } target)
+        {
+            var origin = content.PointToScreen(new Point(0, 0));
+            foreach (var source in PresentationSource.CurrentSources.OfType<HwndSource>())
+            {
+                if (source == own || source.RootVisual is not FrameworkElement over || over is Window || !over.IsVisible) continue;
+                var at = over.PointToScreen(new Point(0, 0));
+                var offset = target.TransformFromDevice.Transform(new Point(at.X - origin.X, at.Y - origin.Y));
+                layers.Add((over, new Rect(offset, new Size(over.ActualWidth, over.ActualHeight))));
+            }
+        }
+        var bounds = layers.Select(layer => layer.Bounds).Aggregate(Rect.Union);
 
         var drawing = new DrawingVisual();
         using (var context = drawing.RenderOpen())
         {
+            context.PushTransform(new TranslateTransform(-bounds.X, -bounds.Y));
+            context.DrawRectangle(Brushes.Black, null, bounds);
             context.DrawRectangle(window.Background, null, new Rect(size));
-
-            // Measured from the window's corner. Left to itself, a brush crops to whatever was
-            // painted and stretches that, which loses the margins of a nearly empty screen.
-            var brush = new VisualBrush(content)
+            foreach (var (visual, place) in layers)
             {
-                ViewboxUnits = BrushMappingMode.Absolute,
-                Viewbox = new Rect(size),
-                Stretch = Stretch.None,
-                AlignmentX = AlignmentX.Left,
-                AlignmentY = AlignmentY.Top,
-            };
-            context.DrawRectangle(brush, null, new Rect(size));
+                // Measured from each one's corner. Left to itself, a brush crops to whatever was
+                // painted and stretches that, which loses the margins of a nearly empty screen.
+                var brush = new VisualBrush(visual)
+                {
+                    ViewboxUnits = BrushMappingMode.Absolute,
+                    Viewbox = new Rect(place.Size),
+                    Stretch = Stretch.None,
+                    AlignmentX = AlignmentX.Left,
+                    AlignmentY = AlignmentY.Top,
+                };
+                context.DrawRectangle(brush, null, place);
+            }
+            context.Pop();
         }
 
-        var bitmap = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32);
+        var bitmap = new RenderTargetBitmap((int)Math.Ceiling(bounds.Width), (int)Math.Ceiling(bounds.Height), 96, 96, PixelFormats.Pbgra32);
         bitmap.Render(drawing);
 
         var encoder = new PngBitmapEncoder();

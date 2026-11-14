@@ -15,6 +15,8 @@ public static class AgentIcons
     private static readonly Dictionary<string, Geometry> Lines = new()
     {
         ["alarm-clock"] = Geometry.Parse("M 4 13 a 8 8 0 1 0 16 0 a 8 8 0 1 0 -16 0 M 12 9 v 4 l 2 2 M 5 3 2 6 M 22 6 l -3 -3 M 6.38 18.7 4 21 M 17.64 18.67 20 21"),
+        ["arrow-right-left"] = Geometry.Parse("M 16 3 l 4 4 -4 4 M 20 7 H 4 M 8 21 l -4 -4 4 -4 M 4 17 h 16"),
+        ["arrow-right"] = Geometry.Parse("M 5 12 h 14 M 12 5 l 7 7 -7 7"),
         ["arrow-up"] = Geometry.Parse("M 5 12 l 7 -7 7 7 M 12 19 V 5"),
         ["bot"] = Geometry.Parse("M 12 8 V 4 H 8 M 6 8 h 12 a 2 2 0 0 1 2 2 v 8 a 2 2 0 0 1 -2 2 h -12 a 2 2 0 0 1 -2 -2 v -8 a 2 2 0 0 1 2 -2 Z M 2 14 h 2 M 20 14 h 2 M 15 13 v 2 M 9 13 v 2"),
         ["brain"] = Geometry.Parse("M 12 5 a 3 3 0 1 0 -5.997 .125 4 4 0 0 0 -2.526 5.77 4 4 0 0 0 .556 6.588 A 4 4 0 1 0 12 18 Z M 12 5 a 3 3 0 1 1 5.997 .125 4 4 0 0 1 2.526 5.77 4 4 0 0 1 -.556 6.588 A 4 4 0 1 1 12 18 Z M 15 13 a 4.5 4.5 0 0 1 -3 -4 4.5 4.5 0 0 1 -3 4 M 17.599 6.5 a 3 3 0 0 0 .399 -1.375 M 6.003 5.125 A 3 3 0 0 0 6.401 6.5 M 3.477 10.896 a 4 4 0 0 1 .585 -.396 M 19.938 10.5 a 4 4 0 0 1 .585 .396 M 6 18 a 4 4 0 0 1 -1.967 -.516 M 19.967 17.484 A 4 4 0 0 1 18 18"),
@@ -22,6 +24,7 @@ public static class AgentIcons
         ["chart-no-axes-column"] = Geometry.Parse("M 18 20 L 18 10 M 12 20 L 12 4 M 6 20 L 6 14"),
         ["check"] = Geometry.Parse("M 20 6 9 17 l -5 -5"),
         ["chevron-down"] = Geometry.Parse("M 6 9 l 6 6 6 -6"),
+        ["chevron-up"] = Geometry.Parse("M 18 15 l -6 -6 -6 6"),
         ["chevron-right"] = Geometry.Parse("M 9 18 l 6 -6 -6 -6"),
         ["circle-alert"] = Geometry.Parse("M 2 12 a 10 10 0 1 0 20 0 a 10 10 0 1 0 -20 0 M 12 8 L 12 12 M 12 16 L 12.01 16"),
         ["circle-check"] = Geometry.Parse("M 2 12 a 10 10 0 1 0 20 0 a 10 10 0 1 0 -20 0 M 9 12 l 2 2 4 -4"),
@@ -49,6 +52,7 @@ public static class AgentIcons
         ["pencil"] = Geometry.Parse("M 21.174 6.812 a 1 1 0 0 0 -3.986 -3.987 L 3.842 16.174 a 2 2 0 0 0 -.5 .83 l -1.321 4.352 a .5 .5 0 0 0 .623 .622 l 4.353 -1.32 a 2 2 0 0 0 .83 -.497 z M 15 5 l 4 4"),
         ["plus"] = Geometry.Parse("M 5 12 h 14 M 12 5 v 14"),
         ["refresh-cw"] = Geometry.Parse("M 3 12 a 9 9 0 0 1 9 -9 9.75 9.75 0 0 1 6.74 2.74 L 21 8 M 21 3 v 5 h -5 M 21 12 a 9 9 0 0 1 -9 9 9.75 9.75 0 0 1 -6.74 -2.74 L 3 16 M 8 16 H 3 v 5"),
+        ["star"] = Geometry.Parse("M 11.525 2.295 a .53 .53 0 0 1 .95 0 l 2.31 4.679 a 2.123 2.123 0 0 0 1.595 1.16 l 5.166 .756 a .53 .53 0 0 1 .294 .904 l -3.736 3.638 a 2.123 2.123 0 0 0 -.611 1.878 l .882 5.14 a .53 .53 0 0 1 -.771 .56 l -4.618 -2.428 a 2.122 2.122 0 0 0 -1.973 0 L 6.396 21.01 a .53 .53 0 0 1 -.77 -.56 l .881 -5.139 a 2.122 2.122 0 0 0 -.611 -1.879 L 2.16 9.795 a .53 .53 0 0 1 .294 -.906 l 5.165 -.755 a 2.122 2.122 0 0 0 1.597 -1.16 z"),
         ["search"] = Geometry.Parse("M 3 11 a 8 8 0 1 0 16 0 a 8 8 0 1 0 -16 0 M 21 21 l -4.3 -4.3"),
         ["shield-question"] = Geometry.Parse("M 20 13 c 0 5 -3.5 7.5 -7.66 8.95 a 1 1 0 0 1 -.67 -.01 C 7.5 20.5 4 18 4 13 V 6 a 1 1 0 0 1 1 -1 c 2 0 4.5 -1.2 6.24 -2.72 a 1.17 1.17 0 0 1 1.52 0 C 14.51 3.81 17 5 19 5 a 1 1 0 0 1 1 1 z M 9.1 9 a 3 3 0 0 1 5.82 1 c 0 2 -3 3 -3 3 M 12 17 h .01"),
         ["shield"] = Geometry.Parse("M 20 13 c 0 5 -3.5 7.5 -7.66 8.95 a 1 1 0 0 1 -.67 -.01 C 7.5 20.5 4 18 4 13 V 6 a 1 1 0 0 1 1 -1 c 2 0 4.5 -1.2 6.24 -2.72 a 1.17 1.17 0 0 1 1.52 0 C 14.51 3.81 17 5 19 5 a 1 1 0 0 1 1 1 z"),
@@ -78,11 +82,12 @@ public static class AgentIcons
     }
 
     /// <summary>A Lucide icon, stroked as T3 Code strokes them (1.75 wide, or 2 where it says stroke-2), with round ends.</summary>
-    public static FrameworkElement Line(string name, double size, Brush brush, double stroke = 1.75)
+    public static FrameworkElement Line(string name, double size, Brush brush, double stroke = 1.75, Brush? fill = null)
     {
         var path = new Path
         {
             Data = Lines.TryGetValue(name, out var geometry) ? geometry : Lines["circle"],
+            Fill = fill,
             Stroke = brush,
             StrokeThickness = stroke,
             StrokeStartLineCap = PenLineCap.Round,

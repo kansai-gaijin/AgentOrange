@@ -8,7 +8,10 @@ using System.Text.Json.Serialization;
 namespace AgentOrange;
 
 // Saved as numbers, so new kinds only ever go on the end.
-public enum AgentItemKind { User, Assistant, Tool, Approval, Question, Notice, Problem, Plan }
+public enum AgentItemKind { User, Assistant, Tool, Approval, Question, Notice, Problem, Plan, Handoff }
+
+/// <summary>Where a conversation went on from or to: a login, and the model it had picked (null for the login's own choice).</summary>
+public sealed record AgentEndpoint(string ProviderId, string Login, bool Claude, string? Model);
 
 public enum AgentToolState { Running, Done, Failed }
 
@@ -49,6 +52,10 @@ public sealed class AgentItem
 
     /// <summary>A message Agent Orange sent for the person, such as going on once a usage limit reset.</summary>
     public bool Automatic { get; set; }
+
+    /// <summary>A handoff: the login and model it went on from, and the one it went on with.</summary>
+    public AgentEndpoint? From { get; set; }
+    public AgentEndpoint? To { get; set; }
 
     [JsonIgnore] public bool Streaming { get; set; }
 
@@ -203,6 +210,12 @@ public sealed partial class AgentConversation
         Settled = false;
         SettledAt = null;
         IsLimited = false;
+        if (PendingFrom is { } from && PendingTo is { } to)
+        {
+            Add(new AgentItem { Id = NewId(), Kind = AgentItemKind.Handoff, From = from, To = to with { Model = Model } });
+        }
+        PendingFrom = null;
+        PendingTo = null;
         Add(new AgentItem { Id = NewId(), Kind = AgentItemKind.User, Text = text, View = viewLabel, Attachments = attachments.Count == 0 ? null : [.. attachments], Automatic = automatic });
         var named = text.Length > 0 ? text : attachments.Any(attachment => attachment.IsImage) ? "A picture" : $"About {attachments.FirstOrDefault()?.Name}";
         if (Title.Length == 0) Title = named.Length > 60 ? named[..60].TrimEnd() + "…" : named;
@@ -412,10 +425,17 @@ public sealed partial class AgentConversation
     public bool NeedsHandoff { get; set; }
 
     /// <summary>
+    /// A switch of login not yet sent with: where it was before the first switch, and where it's going,
+    /// shown as T3 Code's "Context handoff pending" until the next message makes it a row of its own.
+    /// </summary>
+    public AgentEndpoint? PendingFrom { get; set; }
+    public AgentEndpoint? PendingTo { get; set; }
+
+    /// <summary>
     /// Goes on with another login of the same kind, such as a second subscription when one runs out.
-    /// Claude Code keeps each conversation as a file in its login folder, so that file is copied to
-    /// the new login's, and it picks up with everything as it was. Without it, the conversation so far
-    /// is written out and goes with the next message.
+    /// Claude Code and Codex keep each conversation as a file in their login folder, so that file is
+    /// copied to the new login's, and it picks up with everything as it was. Without it, the
+    /// conversation so far is written out and goes with the next message.
     /// </summary>
     public void SwitchProvider(AgentProvider from, AgentProvider to)
     {
@@ -424,13 +444,20 @@ public sealed partial class AgentConversation
         ProviderId = to.Id;
         if (SessionId is { } session && CarrySession(from.LoginFolder, to.LoginFolder, session))
         {
-            Notice($"Switched to {to.Label}. It picks up with everything said so far.");
+            // Picked up as it was.
         }
         else if (Items.Any(item => item.Kind is AgentItemKind.User or AgentItemKind.Assistant))
         {
             SessionId = null;
             NeedsHandoff = true;
-            Notice($"Switched to {to.Label}. What was said so far goes with your next message.");
+        }
+
+        // Only a conversation that's said something has anything to hand over. Back where it began, there's no handoff.
+        if (Items.Any(item => item.Kind == AgentItemKind.User))
+        {
+            PendingFrom ??= new AgentEndpoint(from.Id, from.Label, from.Kind != ProviderKind.Codex, Model);
+            PendingTo = new AgentEndpoint(to.Id, to.Label, to.Kind != ProviderKind.Codex, Model);
+            if (PendingFrom.ProviderId == to.Id) PendingFrom = PendingTo = null;
         }
         StateChanged?.Invoke();
     }

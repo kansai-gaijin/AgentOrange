@@ -36,6 +36,7 @@ public partial class MainWindow : Window
         InitializeComponent();
 #if DEBUG
         if (Headless.Active) Headless.Attach(this);
+        else Headless.Drive(this);
 #endif
         VersionLabel.Text = _updates.IsInstalled ? $"v{_updates.CurrentVersion}" : "dev build";
 

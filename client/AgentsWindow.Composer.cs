@@ -215,6 +215,7 @@ public sealed partial class AgentsWindow
     private void ShowControls()
     {
         _controls.Children.Clear();
+        ShowPendingHandoff();
         if (_open is not { } conversation) return;
 
         // How full its memory is, as a ring.
@@ -230,32 +231,25 @@ public sealed partial class AgentsWindow
             _controls.Children.Add(ring);
         }
 
-        var mode = Permissions.FirstOrDefault(each => each.Id == conversation.PermissionMode);
-        if (mode.Id is null) mode = Permissions[1];
-        var risky = mode.Id == "bypassPermissions";
-        var modeRow = Ocean.IconText(mode.Icon, mode.Name, risky ? Ocean.Error : Ocean.Soft, 14, 16, FontWeights.Medium);
-        ((FrameworkElement)modeRow.Children[0]).Opacity = risky ? 1 : 0.8;
-        _controls.Children.Add(ComposerControl(modeRow, () => PickPermission(_controls.Children[^1]), mode.Meaning));
-
-        var logins = _main.AgentLogins(conversation);
-        var login = _main.AgentProviderFor(conversation);
-        if (logins.Count > 1 && login is not null)
+        // As T3 Code: the mode shows here only when it isn't the usual one. It's always in the model picker's footer.
+        var mode = ModeOf(conversation);
+        if (mode.Id != "acceptEdits")
         {
-            var loginRow = Ocean.IconText("user-round", login.Label, Ocean.Soft, 14, 16, FontWeights.Medium);
-            var loginControl = ComposerControl(loginRow, () => { }, conversation.IsWorking ? "Switch logins once it's done" : "Which login it works with");
-            loginControl.Click += (_, _) => PickLogin(loginControl);
-            loginControl.IsEnabled = !conversation.IsWorking;
-            _controls.Children.Add(loginControl);
+            var risky = mode.Id == "bypassPermissions";
+            var modeRow = Ocean.IconText(mode.Icon, mode.Name, risky ? Ocean.Error : Ocean.Soft, 14, 16, FontWeights.Medium);
+            ((FrameworkElement)modeRow.Children[0]).Opacity = risky ? 1 : 0.8;
+            _controls.Children.Add(ComposerControl(modeRow, () => PickPermission(_controls.Children[^1]), mode.Meaning));
         }
 
         // The model and how hard it thinks, as one control: "✳ Opus 5.5 High".
         var model = ModelChoices(conversation).FirstOrDefault(each => each.Id == conversation.Model).Name ?? conversation.Model ?? "Default model";
-        var effort = EffortChoices(conversation).FirstOrDefault(each => each.Id == conversation.Effort).Name;
-        var glyph = AgentIcons.Provider(IsClaude(conversation), 16, Ocean.Foreground);
+        var login = _main.AgentProviderFor(conversation);
+        var effort = login is null ? conversation.Effort : EffortsFor(login, conversation.Model).FirstOrDefault(each => each.Id == conversation.Effort).Name ?? conversation.Effort;
+        var glyph = ProviderMark(login, IsClaude(conversation), 16, Ocean.Composer);
         glyph.Margin = new Thickness(0, 0, 6, 0);
         var modelRow = new StackPanel { Orientation = Orientation.Horizontal, Children = { glyph, Ocean.Text(model, Ocean.Soft, 14, FontWeights.Medium) } };
         if (conversation.Effort is not null) modelRow.Children.Add(Ocean.Text($" {effort}", Ocean.MutedText, 14, FontWeights.Medium));
-        var modelControl = ComposerControl(modelRow, () => { }, "Model and effort, from the next message");
+        var modelControl = ComposerControl(modelRow, () => { }, login is null ? "Model and effort, from the next message" : $"{login.Label}: model and effort, from the next message");
         modelControl.Click += (_, _) => PickModel(modelControl);
         _controls.Children.Add(modelControl);
     }
@@ -289,16 +283,6 @@ public sealed partial class AgentsWindow
         return [(null, "Default model"), .. listed.Select(model => ((string?)model.Id, model.Name))];
     }
 
-    private (string? Id, string Name)[] EffortChoices(AgentConversation conversation)
-    {
-        if (IsClaude(conversation)) return Efforts;
-        var listed = _main.AgentProviderFor(conversation) is { } login && AgentConversation.CodexModels.TryGetValue(login.Id, out var models)
-            ? models.FirstOrDefault(model => model.Id == conversation.Model) ?? models.FirstOrDefault(model => model.IsDefault)
-            : null;
-        var efforts = listed?.Efforts is { Count: > 0 } offered ? offered : ["minimal", "low", "medium", "high", "xhigh"];
-        return [(null, "Default"), .. efforts.Select(effort => ((string?)effort, Efforts.FirstOrDefault(each => each.Id == effort).Name ?? char.ToUpperInvariant(effort[0]) + effort[1..]))];
-    }
-
     private static FrameworkElement Tick(bool on)
     {
         var tick = AgentIcons.Line("check", 14, on ? Ocean.Foreground : Brushes.Transparent);
@@ -306,69 +290,21 @@ public sealed partial class AgentsWindow
         return tick;
     }
 
-    // T3 Code's model picker: the models, and how hard it thinks in a column beside them.
-    private void PickModel(UIElement by)
+    private static (string Id, string Name, string Icon, string Meaning) ModeOf(AgentConversation conversation)
     {
-        if (_open is not { } conversation) return;
-        Popup? menu = null;
-        var models = new StackPanel { MinWidth = 200 };
-        models.Children.Add(new TextBlock { Text = "Model", Foreground = Ocean.MutedText, FontSize = 12, FontWeight = FontWeights.Medium, Margin = new Thickness(8, 4, 8, 4) });
-        foreach (var (id, name) in ModelChoices(conversation))
-        {
-            var row = new DockPanel();
-            var tick = Tick(id == conversation.Model);
-            DockPanel.SetDock(tick, Dock.Right);
-            row.Children.Add(tick);
-            var glyph = AgentIcons.Provider(IsClaude(conversation), 16, Ocean.Foreground);
-            glyph.Margin = new Thickness(0, 0, 8, 0);
-            glyph.Opacity = id is null ? 0.5 : 1;
-            row.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Children = { glyph, Ocean.Text(name, Ocean.Foreground, 14) } });
-            models.Children.Add(Ocean.MenuRow(row, () =>
-            {
-                conversation.Model = id;
-                menu!.IsOpen = false;
-                ShowControls();
-            }));
-        }
-        var efforts = new StackPanel { Width = 192 };
-        efforts.Children.Add(new TextBlock { Text = "Effort", Foreground = Ocean.MutedText, FontSize = 12, FontWeight = FontWeights.Medium, Margin = new Thickness(8, 4, 8, 4) });
-        foreach (var (id, name) in EffortChoices(conversation))
-        {
-            var row = new DockPanel();
-            var tick = Tick(id == conversation.Effort);
-            DockPanel.SetDock(tick, Dock.Right);
-            row.Children.Add(tick);
-            row.Children.Add(Ocean.Text(name, Ocean.Foreground, 14));
-            var button = Ocean.MenuRow(row, () =>
-            {
-                conversation.Effort = id;
-                menu!.IsOpen = false;
-                ShowControls();
-            });
-            button.MinHeight = 32;
-            efforts.Children.Add(button);
-        }
-        var column = new Border
-        {
-            BorderBrush = Ocean.Border70,
-            BorderThickness = new Thickness(1, 0, 0, 0),
-            Background = new SolidColorBrush(Color.FromArgb(0x66, 0x23, 0x35, 0x44)),
-            Margin = new Thickness(4, -4, -4, -4),
-            Padding = new Thickness(4),
-            Child = efforts,
-        };
-        var both = new Grid { ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto } } };
-        Grid.SetColumn(column, 1);
-        both.Children.Add(models);
-        both.Children.Add(column);
-        var foot = new TextBlock { Text = "Takes effect from the next message.", Foreground = Ocean.MutedText, FontSize = 11, Margin = new Thickness(8, 8, 8, 2) };
-        menu = Ocean.Menu(by, PlacementMode.Top, new StackPanel { Children = { both, foot } });
-        menu.IsOpen = true;
+        var mode = Permissions.FirstOrDefault(each => each.Id == conversation.PermissionMode);
+        return mode.Id is null ? Permissions[1] : mode;
     }
 
     private void PickPermission(UIElement by)
     {
-        if (_open is not { } conversation) return;
+        if (PermissionMenu(by, null) is { } menu) menu.IsOpen = true;
+    }
+
+    /// <summary>The modes as a menu over what opened it, which says when one's picked.</summary>
+    private Popup? PermissionMenu(UIElement by, Action? picked)
+    {
+        if (_open is not { } conversation) return null;
         Popup? menu = null;
         var rows = new StackPanel { Width = 300 };
         foreach (var (id, name, icon, meaning) in Permissions)
@@ -388,44 +324,12 @@ public sealed partial class AgentsWindow
                 menu!.IsOpen = false;
                 conversation.SetPermissionMode(id);
                 ShowControls();
+                picked?.Invoke();
             }));
         }
         rows.Children.Add(new TextBlock { Text = "Takes effect straight away, even while it works.", Foreground = Ocean.MutedText, FontSize = 11, Margin = new Thickness(8, 6, 8, 2) });
         menu = Ocean.Menu(by, PlacementMode.Top, rows);
-        menu.IsOpen = true;
-    }
-
-    private void PickLogin(UIElement by)
-    {
-        if (_open is not { } conversation) return;
-        var current = _main.AgentProviderFor(conversation);
-        var rows = new StackPanel { MinWidth = 220 };
-        Popup? menu = null;
-        foreach (var login in _main.AgentLogins(conversation))
-        {
-            var row = new DockPanel();
-            var tick = Tick(login.Id == current?.Id);
-            DockPanel.SetDock(tick, Dock.Right);
-            row.Children.Add(tick);
-            var name = new StackPanel { Children = { Ocean.Text(login.Label, Ocean.Foreground, 14) } };
-            if (_main.Usage.For(login.Id).FirstOrDefault(limit => limit.Kind is "five_hour" or "primary") is { Used: { } used })
-            {
-                name.Children.Add(Ocean.Text(_main.Usage.BlockedUntil(login.Id) is { } until && until > DateTimeOffset.UtcNow ? $"Ran out, resets {When(until)}" : $"Session {100 - used:0}% left", Ocean.MutedText, 12));
-            }
-            row.Children.Add(name);
-            var button = Ocean.MenuRow(row, () =>
-            {
-                menu!.IsOpen = false;
-                _main.SwitchLogin(conversation, login);
-                ShowControls();
-                ShowUsage();
-            });
-            button.Padding = new Thickness(8, 4, 8, 4);
-            rows.Children.Add(button);
-        }
-        rows.Children.Add(new TextBlock { Text = "It goes on with everything said so far.", Foreground = Ocean.MutedText, FontSize = 11, Margin = new Thickness(8, 6, 8, 2) });
-        menu = Ocean.Menu(by, PlacementMode.Top, rows);
-        menu.IsOpen = true;
+        return menu;
     }
 
     // Its questions, docked on top of the box as T3 Code's user input panel: a radio for each choice,

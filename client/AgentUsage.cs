@@ -200,21 +200,30 @@ public sealed class AgentUsage
                 ["params"] = new JsonObject { ["clientInfo"] = new JsonObject { ["name"] = "Agent Orange", ["title"] = "Agent Orange", ["version"] = "1" }, ["capabilities"] = new JsonObject() },
             });
 
+            // Its models are asked for too, so the picker has them before any conversation starts Codex.
             using var waiting = new CancellationTokenSource(ProbeWaitsFor);
-            while (await process.StandardOutput.ReadLineAsync(waiting.Token) is { } line)
+            bool limitsDone = false, modelsDone = false;
+            while (!(limitsDone && modelsDone) && await process.StandardOutput.ReadLineAsync(waiting.Token) is { } line)
             {
                 if (JsonNode.Parse(line) is not JsonObject reply || reply["id"] is not JsonValue id || reply["method"] is not null) continue;
-                if (id.GetValue<long>() == 1)
-                {
-                    await Send(new JsonObject { ["method"] = "initialized" });
-                    await Send(new JsonObject { ["id"] = 2, ["method"] = "account/rateLimits/read" });
-                    continue;
-                }
-                if (id.GetValue<long>() != 2) continue;
                 var result = reply["result"] as JsonObject;
-                var snapshot = result?["rateLimitsByLimitId"]?["codex"] as JsonObject ?? result?["rateLimits"] as JsonObject;
-                Update(provider.Id, FromCodex(snapshot), complete: true);
-                break;
+                switch (id.GetValue<long>())
+                {
+                    case 1:
+                        await Send(new JsonObject { ["method"] = "initialized" });
+                        await Send(new JsonObject { ["id"] = 2, ["method"] = "account/rateLimits/read" });
+                        await Send(new JsonObject { ["id"] = 3, ["method"] = "model/list", ["params"] = new JsonObject() });
+                        break;
+                    case 2:
+                        limitsDone = true;
+                        var snapshot = result?["rateLimitsByLimitId"]?["codex"] as JsonObject ?? result?["rateLimits"] as JsonObject;
+                        Update(provider.Id, FromCodex(snapshot), complete: true);
+                        break;
+                    case 3:
+                        modelsDone = true;
+                        if (AgentConversation.TakeCodexModels(provider.Id, result)) Changed?.Invoke();
+                        break;
+                }
             }
         }
         catch (Exception error) when (error is Win32Exception or IOException or InvalidOperationException or OperationCanceledException or System.Text.Json.JsonException or UnauthorizedAccessException)

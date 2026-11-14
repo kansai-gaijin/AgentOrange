@@ -7,7 +7,7 @@ using System.Text.Json.Nodes;
 namespace AgentOrange;
 
 /// <summary>A model Codex offers, with the efforts it takes.</summary>
-public sealed record CodexModel(string Id, string Name, bool IsDefault, IReadOnlyList<string> Efforts);
+public sealed record CodexModel(string Id, string Name, bool IsDefault, IReadOnlyList<string> Efforts, string? DefaultEffort);
 
 /// <summary>
 /// Codex, driven as T3 Code drives it: "codex app-server", one long-lived program speaking JSON-RPC
@@ -93,16 +93,24 @@ public sealed partial class AgentConversation
     {
         Rpc("model/list", new JsonObject(), (result, _) =>
         {
-            if (result?["data"] is not JsonArray models) return;
-            CodexModels[provider] = [.. models.OfType<JsonObject>()
-                .Where(model => model["hidden"]?.GetValueKind() != JsonValueKind.True && Str(model, "model") is not null)
-                .Select(model => new CodexModel(
-                    Str(model, "model")!,
-                    Str(model, "displayName") ?? Str(model, "model")!,
-                    model["isDefault"]?.GetValueKind() == JsonValueKind.True,
-                    [.. (model["supportedReasoningEfforts"] as JsonArray ?? []).OfType<JsonObject>().Select(effort => Str(effort, "reasoningEffort")).OfType<string>()]))];
+            if (!TakeCodexModels(provider, result)) return;
             StateChanged?.Invoke();
         });
+    }
+
+    /// <summary>Keeps a login's models from model/list's reply. False when it didn't list any.</summary>
+    public static bool TakeCodexModels(string provider, JsonObject? result)
+    {
+        if (result?["data"] is not JsonArray models) return false;
+        CodexModels[provider] = [.. models.OfType<JsonObject>()
+            .Where(model => model["hidden"]?.GetValueKind() != JsonValueKind.True && Str(model, "model") is not null)
+            .Select(model => new CodexModel(
+                Str(model, "model")!,
+                Str(model, "displayName") ?? Str(model, "model")!,
+                model["isDefault"]?.GetValueKind() == JsonValueKind.True,
+                [.. (model["supportedReasoningEfforts"] as JsonArray ?? []).OfType<JsonObject>().Select(effort => Str(effort, "reasoningEffort")).OfType<string>()],
+                Str(model, "defaultReasoningEffort")))];
+        return true;
     }
 
     // The thread: new, or the conversation's own picked back up after a restart.

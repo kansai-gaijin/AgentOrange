@@ -34,6 +34,7 @@ public sealed partial class AgentsWindow
     private void UsageChanged()
     {
         ShowUsage();
+        ShowControls(); // A Codex login's models may have come with it.
         if (_overlay.Visibility == Visibility.Visible) ShowUsagePage();
     }
 

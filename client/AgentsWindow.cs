@@ -34,8 +34,6 @@ public sealed partial class AgentsWindow : Window
 
     private static readonly (string? Id, string Name)[] Models =
         [(null, "Default model"), ("claude-opus-5-5", "Opus 5.5"), ("claude-sonnet-5-5", "Sonnet 5.5"), ("claude-fable-5-2", "Fable 5.2"), ("claude-haiku-5-5", "Haiku 5.5")];
-    private static readonly (string? Id, string Name)[] Efforts =
-        [(null, "Default"), ("low", "Low"), ("medium", "Medium"), ("high", "High"), ("xhigh", "Extra high"), ("max", "Max")];
 
     // Claude Code's own permission modes, in the words the person sees.
     private static readonly (string Id, string Name, string Icon, string Meaning)[] Permissions =
@@ -51,6 +49,7 @@ public sealed partial class AgentsWindow : Window
     private readonly StackPanel _settledList = new();
     private readonly TextBox _search;
     private readonly StackPanel _timeline = new();
+    private readonly Border _pendingHandoff = new() { Visibility = Visibility.Collapsed, Margin = new Thickness(48, 0, 48, 0) };
     private readonly Border _earlier = new();
     private readonly ScrollViewer _scroll;
     private readonly Button _jump;
@@ -200,7 +199,7 @@ public sealed partial class AgentsWindow : Window
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Content = new StackPanel { MaxWidth = ColumnWidth + 96, Margin = new Thickness(0, 16, 0, 24), Children = { _earlier, _timeline } },
+            Content = new StackPanel { MaxWidth = ColumnWidth + 96, Margin = new Thickness(0, 16, 0, 24), Children = { _earlier, _timeline, _pendingHandoff } },
         };
         _timeline.Margin = new Thickness(48, 0, 48, 0);
 
@@ -966,6 +965,7 @@ public sealed partial class AgentsWindow : Window
             AgentItemKind.Question => AskedRow(item),
             AgentItemKind.Plan => PlanCard(item),
             AgentItemKind.Problem => Problem(item.Text),
+            AgentItemKind.Handoff => HandoffRow(item.From, item.To, pending: false),
             _ => Notice(item.Text),
         };
         segment.Element.Visibility = visibility;
@@ -1021,9 +1021,9 @@ public sealed partial class AgentsWindow : Window
             if (line is null) return;
             var current = line == lastTurn && _open.IsWorking;
             var answer = current ? null : inTurn.LastOrDefault(segment => segment.Kind == AgentItemKind.Assistant);
-            var hideable = inTurn.Where(segment => segment != answer && !NeedsPerson(segment) && segment.Kind != AgentItemKind.Problem).ToList();
+            var hideable = inTurn.Where(segment => segment != answer && !NeedsPerson(segment) && segment.Kind is not (AgentItemKind.Problem or AgentItemKind.Handoff)).ToList();
             var started = line.Items[0].At;
-            var ended = inTurn.SelectMany(segment => segment.Items).Select(item => item.At).DefaultIfEmpty(started).Max();
+            var ended = inTurn.Where(segment => segment.Kind != AgentItemKind.Handoff).SelectMany(segment => segment.Items).Select(item => item.At).DefaultIfEmpty(started).Max();
             var element = (Border)line.Element;
             var button = (Button)element.Child;
             var chevron = (FrameworkElement)((StackPanel)button.Content).Children[1];
@@ -1291,6 +1291,82 @@ public sealed partial class AgentsWindow : Window
         row.Children.Add(icon);
         row.Children.Add(Ocean.Wrapped(text, Ocean.Error, 14));
         return row;
+    }
+
+    // T3 Code's context handoff row: a line either side of "Context handoff", and the login and model
+    // it went on from, an arrow, and the one it went on with. "pending" until the next message is sent.
+    private FrameworkElement HandoffRow(AgentEndpoint? from, AgentEndpoint? to, bool pending)
+    {
+        var middle = new WrapPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 4, 8, 4) };
+        var icon = AgentIcons.Line("arrow-right-left", 12, Ocean.MutedText);
+        icon.Margin = new Thickness(0, 0, 8, 0);
+        icon.VerticalAlignment = VerticalAlignment.Center;
+        middle.Children.Add(icon);
+        middle.Children.Add(Ocean.Text(pending ? "Context handoff pending" : "Context handoff", Ocean.MutedText, 11, FontWeights.Medium));
+        var chips = new WrapPanel { Opacity = 0.7, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        if (from is not null)
+        {
+            chips.Children.Add(EndpointChip(from));
+            var arrow = AgentIcons.Line("arrow-right", 12, Ocean.MutedText);
+            arrow.Margin = new Thickness(6, 0, 6, 0);
+            arrow.VerticalAlignment = VerticalAlignment.Center;
+            chips.Children.Add(arrow);
+        }
+        if (to is not null) chips.Children.Add(EndpointChip(to));
+        middle.Children.Add(chips);
+
+        var row = new Grid { Margin = new Thickness(0, 8, 0, 8) };
+        row.ColumnDefinitions.Add(new ColumnDefinition());
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition());
+        var left = new Border { Height = 1, Background = Ocean.Border70, VerticalAlignment = VerticalAlignment.Center };
+        var right = new Border { Height = 1, Background = Ocean.Border70, VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(middle, 1);
+        Grid.SetColumn(right, 2);
+        row.Children.Add(left);
+        row.Children.Add(middle);
+        row.Children.Add(right);
+        AutomationProperties.SetName(row, $"{(pending ? "Context handoff pending" : "Context handoff")}{(from is null ? "" : $" from {from.Login}, {ModelName(from)}")}{(to is null ? "" : $" to {to.Login}, {ModelName(to)}")}");
+        return row;
+    }
+
+    private FrameworkElement EndpointChip(AgentEndpoint endpoint)
+    {
+        var glyph = AgentIcons.Provider(endpoint.Claude, 12, Ocean.Foreground);
+        glyph.Margin = new Thickness(0, 0, 6, 0);
+        var model = ModelName(endpoint);
+        return new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = Brushes.Transparent,
+            ToolTip = $"{endpoint.Login} · {model}",
+            Children = { glyph, Ocean.Text($"{endpoint.Login} · {model}", Ocean.MutedText, 11, FontWeights.Medium) },
+        };
+    }
+
+    // A model's own name: Claude's from the list, Codex's as its login listed them, its default when none was picked.
+    private static string ModelName(AgentEndpoint endpoint)
+    {
+        if (endpoint.Claude) return Models.FirstOrDefault(each => each.Id == endpoint.Model).Name ?? endpoint.Model ?? "Default model";
+        var listed = AgentConversation.CodexModels.TryGetValue(endpoint.ProviderId, out var models) ? models : [];
+        var model = endpoint.Model is null ? listed.FirstOrDefault(each => each.IsDefault) : listed.FirstOrDefault(each => each.Id == endpoint.Model);
+        return model?.Name ?? endpoint.Model ?? "Default model";
+    }
+
+    // Under the timeline, before the next message: the switch of login it'll carry everything across.
+    private void ShowPendingHandoff()
+    {
+        if (_open is { PendingFrom: { } from, PendingTo: { } to } conversation)
+        {
+            _pendingHandoff.Child = HandoffRow(from, to with { Model = conversation.Model }, pending: true);
+            _pendingHandoff.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            _pendingHandoff.Child = null;
+            _pendingHandoff.Visibility = Visibility.Collapsed;
+        }
     }
 
     private FrameworkElement Notice(string text)

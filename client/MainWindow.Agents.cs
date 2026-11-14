@@ -202,6 +202,8 @@ public partial class MainWindow
     }
 
     /// <summary>Where pictures sent to agents are kept, on this PC only.</summary>
+    internal string AgentFolder => Settings.Folders.AgentFolder;
+
     internal string AttachmentsFolder => Path.Combine(Settings.Folders.AgentFolder, "attachments");
 
     internal string? ProjectFolderOf(AgentConversation conversation) => _database.GetProjectFolder(conversation.ProjectId);
