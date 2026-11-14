@@ -143,6 +143,12 @@ internal static partial class Headless
                 }
                 say($"closed {closed}");
                 return true;
+            case "press":
+                // Something clickable that isn't a button, such as a picture: pressed and let go, as a click.
+                var pressedOn = await UntilThereAsync(_driveTarget!, () => Descendants(_driveTarget!).OfType<FrameworkElement>().LastOrDefault(element => element.IsVisible && AutomationProperties.GetName(element) == parts[1]), parts[1]);
+                pressedOn.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonDownEvent });
+                pressedOn.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonUpEvent });
+                return true;
             case "focus":
                 var field = await UntilThereAsync(_driveTarget!, () => Visible<TextBox>(_driveTarget!).ElementAtOrDefault(int.Parse(parts[1])), $"field {parts[1]}");
                 Keyboard.Focus(field);

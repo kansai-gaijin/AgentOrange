@@ -261,48 +261,15 @@ public sealed partial class AgentsWindow
 
     // Dialogs, over the whole window, as T3's: a glass card on a dimmed window.
 
-    private void ShowDialog(UIElement card)
+    private void ShowDialog(UIElement card, Color? shade = null)
     {
         _dialogs.Children.Clear();
-        var shade = new Border { Background = new SolidColorBrush(Color.FromArgb(0x80, 0x00, 0x00, 0x00)) };
-        shade.MouseLeftButtonUp += (_, _) => CloseDialog();
-        _dialogs.Children.Add(shade);
+        var dim = new Border { Background = new SolidColorBrush(shade ?? Color.FromArgb(0x80, 0x00, 0x00, 0x00)) };
+        dim.MouseLeftButtonUp += (_, _) => CloseDialog();
+        _dialogs.Children.Add(dim);
         _dialogs.Children.Add(card);
         _dialogs.Visibility = Visibility.Visible;
         CloseDetails();
-    }
-
-    // T3's media preview: the picture as large as fits, over the dimmed window, closed by a click or Escape.
-    private void PreviewPicture(string path)
-    {
-        try
-        {
-            var picture = new System.Windows.Media.Imaging.BitmapImage();
-            picture.BeginInit();
-            picture.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
-            picture.UriSource = new Uri(path);
-            picture.EndInit();
-            picture.Freeze();
-            var image = new Image { Source = picture, Stretch = Stretch.Uniform, Margin = new Thickness(48), Cursor = Cursors.Hand };
-            image.MouseLeftButtonUp += (_, _) => CloseDialog();
-            AutomationProperties.SetName(image, $"Preview of {System.IO.Path.GetFileName(path)}");
-            ShowDialog(image);
-            _dialogs.Focusable = true;
-            _dialogs.PreviewKeyDown += CloseOnEscape;
-            Keyboard.Focus(_dialogs);
-        }
-        catch (Exception error) when (error is System.IO.IOException or NotSupportedException or UriFormatException)
-        {
-            Toast("Image unavailable", error.Message, error: true);
-        }
-    }
-
-    private void CloseOnEscape(object sender, KeyEventArgs key)
-    {
-        if (key.Key != Key.Escape) return;
-        key.Handled = true;
-        _dialogs.PreviewKeyDown -= CloseOnEscape;
-        CloseDialog();
     }
 
     private void CloseDialog()

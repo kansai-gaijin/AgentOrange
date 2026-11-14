@@ -58,8 +58,11 @@ internal sealed partial class AgentMarkdown
         System.Windows.Automation.AutomationProperties.SetName(View, "The agent's reply");
     }
 
+    private string _source = "";
+
     public void Show(string markdown)
     {
+        _source = markdown;
         var chunks = Chunks(markdown.Trim());
         var same = 0;
         while (same < chunks.Count && same < _drawn.Count && _drawn[same].Source == chunks[same]) same++;
@@ -366,9 +369,7 @@ internal sealed partial class AgentMarkdown
     {
         var found = ImageLine().Match(line.Trim());
         if (!found.Success) return null;
-        var path = found.Groups["path"].Value.Trim().Trim('<', '>');
-        if (Uri.TryCreate(path, UriKind.Absolute, out var address) && address.IsFile) path = address.LocalPath;
-        path = path.Replace('/', System.IO.Path.DirectorySeparatorChar);
+        var path = PicturePath(found);
         if (!System.IO.File.Exists(path))
         {
             return new Paragraph(new Run("Image unavailable") { Foreground = _look.Muted }) { Margin = Spaced };
@@ -395,7 +396,12 @@ internal sealed partial class AgentMarkdown
                 ToolTip = tip,
             };
             image.Loaded += (_, _) => image.Clip = new RectangleGeometry(new Rect(0, 0, image.ActualWidth, image.ActualHeight), 7, 7);
-            frame.MouseLeftButtonUp += (_, _) => Preview?.Invoke(path);
+            frame.MouseLeftButtonUp += (_, _) =>
+            {
+                // T3's gallery is every picture in the same reply.
+                var gallery = _source.Split('\n').Select(each => ImageLine().Match(each.Trim())).Where(each => each.Success).Select(each => (PicturePath(each), each.Groups["alt"].Value)).ToList();
+                Preview?.Invoke(gallery, Math.Max(0, gallery.FindIndex(each => each.Item1 == path)));
+            };
             System.Windows.Automation.AutomationProperties.SetName(frame, tip);
             return new BlockUIContainer(frame) { Margin = Spaced };
         }
@@ -405,8 +411,15 @@ internal sealed partial class AgentMarkdown
         }
     }
 
-    /// <summary>Opens a picture larger, as T3's media preview does.</summary>
-    public Action<string>? Preview { get; set; }
+    private static string PicturePath(System.Text.RegularExpressions.Match found)
+    {
+        var path = found.Groups["path"].Value.Trim().Trim('<', '>');
+        if (Uri.TryCreate(path, UriKind.Absolute, out var address) && address.IsFile) path = address.LocalPath;
+        return path.Replace('/', System.IO.Path.DirectorySeparatorChar);
+    }
+
+    /// <summary>Opens a picture in T3's lightbox, with the reply's other pictures beside it.</summary>
+    public Action<IReadOnlyList<(string Path, string Alt)>, int>? Preview { get; set; }
 
     // A button that's only its content, with a rounded wash on hover.
     internal static ControlTemplate FlatButton(Brush? hover)

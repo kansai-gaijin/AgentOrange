@@ -14,6 +14,11 @@ public static class AgentIcons
 {
     private static readonly Dictionary<string, Geometry> Lines = new()
     {
+        ["panel-left"] = Geometry.Parse("M 5 3 h 14 a 2 2 0 0 1 2 2 v 14 a 2 2 0 0 1 -2 2 h -14 a 2 2 0 0 1 -2 -2 v -14 a 2 2 0 0 1 2 -2 Z M 9 3 v 18"),
+        ["panel-left-close"] = Geometry.Parse("M 5 3 h 14 a 2 2 0 0 1 2 2 v 14 a 2 2 0 0 1 -2 2 h -14 a 2 2 0 0 1 -2 -2 v -14 a 2 2 0 0 1 2 -2 Z M 9 3 v 18 M 16 15 l -3 -3 3 -3"),
+        ["chevron-left"] = Geometry.Parse("M 15 18 l -6 -6 6 -6"),
+        ["chevrons-up-down"] = Geometry.Parse("M 7 15 l 5 5 5 -5 M 7 9 l 5 -5 5 5"),
+        ["chevrons-down-up"] = Geometry.Parse("M 7 20 l 5 -5 5 5 M 7 4 l 5 5 5 -5"),
         ["text-wrap"] = Geometry.Parse("M 3 6 h 18 M 3 12 h 15 a 3 3 0 1 1 0 6 h -4 M 16 16 l -2 2 2 2 M 3 18 h 7"),
         ["circle-dot-dashed"] = Geometry.Parse("M 10.1 2.18 a 9.93 9.93 0 0 1 3.8 0 M 17.6 3.71 a 9.95 9.95 0 0 1 2.69 2.7 M 21.82 10.1 a 9.93 9.93 0 0 1 0 3.8 M 20.29 17.6 a 9.95 9.95 0 0 1 -2.7 2.69 M 13.9 21.82 a 9.94 9.94 0 0 1 -3.8 0 M 6.4 20.29 a 9.95 9.95 0 0 1 -2.69 -2.7 M 2.18 13.9 a 9.93 9.93 0 0 1 0 -3.8 M 3.71 6.4 a 9.95 9.95 0 0 1 2.7 -2.69 M 11 12 a 1 1 0 1 0 2 0 a 1 1 0 1 0 -2 0"),
         ["undo-2"] = Geometry.Parse("M 9 14 L 4 9 l 5 -5 M 4 9 h 10.5 a 5.5 5.5 0 0 1 5.5 5.5 a 5.5 5.5 0 0 1 -5.5 5.5 H 11"),

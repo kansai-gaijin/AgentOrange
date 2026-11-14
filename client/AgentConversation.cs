@@ -53,6 +53,11 @@ public sealed class AgentItem
     /// <summary>A message Agent Orange sent for the person, such as going on once a usage limit reset.</summary>
     public bool Automatic { get; set; }
 
+    /// <summary>A turn's last reply: the files the turn changed, and the checkpoints before and after it, as T3 Code keeps them.</summary>
+    public List<TurnChange>? Changes { get; set; }
+    public string? CheckpointBefore { get; set; }
+    public string? CheckpointAfter { get; set; }
+
     /// <summary>A handoff: the login and model it went on from, and the one it went on with.</summary>
     public AgentEndpoint? From { get; set; }
     public AgentEndpoint? To { get; set; }
@@ -218,6 +223,8 @@ public sealed partial class AgentConversation
         PendingTo = null;
         Add(new AgentItem { Id = NewId(), Kind = AgentItemKind.User, Text = text, View = viewLabel, Attachments = attachments.Count == 0 ? null : [.. attachments], Automatic = automatic });
         var named = text.Length > 0 ? text : attachments.Any(attachment => attachment.IsImage) ? "A picture" : $"About {attachments.FirstOrDefault()?.Name}";
+        // One line, as T3's titles are.
+        named = System.Text.RegularExpressions.Regex.Replace(named, @"\s+", " ").Trim();
         if (Title.Length == 0) Title = named.Length > 60 ? named[..60].TrimEnd() + "…" : named;
 
         // Codex takes the model, effort and permissions with each turn, so only Claude Code starts again for them.
@@ -1026,6 +1033,41 @@ public sealed partial class AgentConversation
         IsWorking = working;
         if (working) WorkingSince = DateTimeOffset.UtcNow;
         StateChanged?.Invoke();
+
+        // T3's checkpoints: the folder as it was when the work began, and as it is when it ends.
+        if (Folder is not { } folder) return;
+        if (working)
+        {
+            _checkpoint = Task.Run(() => GitTools.CheckpointAsync(folder));
+            return;
+        }
+        if (_checkpoint is { } started)
+        {
+            _checkpoint = null;
+            _ = RecordChangesAsync(folder, started);
+        }
+    }
+
+    private Task<string?>? _checkpoint;
+
+    // What the work changed, on the last thing it said, for the changed-files card under it.
+    private async Task RecordChangesAsync(string folder, Task<string?> started)
+    {
+        var before = await started;
+        var after = await Task.Run(() => GitTools.CheckpointAsync(folder));
+        if (before is null || after is null) return;
+        var changes = await Task.Run(() => GitTools.ChangesBetweenAsync(folder, before, after));
+        if (changes.Count == 0) return;
+        await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+        {
+            var lastUser = Items.FindLastIndex(item => item.Kind == AgentItemKind.User);
+            if (Items.Skip(lastUser + 1).LastOrDefault(item => item.Kind == AgentItemKind.Assistant) is not { } reply) return;
+            reply.Changes = changes;
+            reply.CheckpointBefore = before;
+            reply.CheckpointAfter = after;
+            ItemChanged?.Invoke(reply);
+            StateChanged?.Invoke(); // Which saves it.
+        });
     }
 
     private static string TextId(string? messageId, JsonNode? index) => $"{messageId}:text:{index}";

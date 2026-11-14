@@ -120,7 +120,7 @@ public sealed partial class AgentsWindow
 
     private FrameworkElement ConversationRow(AgentConversation conversation, int index)
     {
-        var name = conversation.Title.Length > 0 ? conversation.Title : "New conversation";
+        var name = conversation.Title.Length > 0 ? OneLine(conversation.Title) : "New conversation";
         var selected = conversation == _open;
         var project = _main.ProjectName(conversation.ProjectId);
         var login = _main.AgentProviderFor(conversation);
@@ -224,6 +224,9 @@ public sealed partial class AgentsWindow
         return button;
     }
 
+    // Titles kept from before they were made one line.
+    private static string OneLine(string text) => System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
+
     private static void Recolor(Button button, Brush brush)
     {
         if (button.Content is not StackPanel row) return;
@@ -272,7 +275,7 @@ public sealed partial class AgentsWindow
     // T3's slim settled row: dim until the mouse is over it, when the time gives way to Un-settle.
     private FrameworkElement SettledRow(AgentConversation conversation)
     {
-        var name = conversation.Title.Length > 0 ? conversation.Title : "New conversation";
+        var name = conversation.Title.Length > 0 ? OneLine(conversation.Title) : "New conversation";
         var mark = Monogram(_main.ProjectName(conversation.ProjectId), 16);
         mark.Opacity = 0.4;
         mark.Margin = new Thickness(0, 0, 10, 0);

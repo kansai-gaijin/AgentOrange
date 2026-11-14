@@ -118,8 +118,9 @@ public sealed partial class AgentsWindow : Window
             UseAeroCaptionButtons = false,
         });
 
-        // Down the side.
-        var brand = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) };
+        // Down the side. The name sits right of T3's sidebar toggle.
+        LoadSidebar();
+        var brand = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(52, 0, 0, 0) };
         brand.Children.Add(Ocean.Text("Agent", Ocean.Foreground, 14, FontWeights.Medium));
         brand.Children.Add(Ocean.Text(" Orange", Ocean.MutedText, 14, FontWeights.Medium));
         var top = new Grid { Height = TopBar, Children = { brand } };
@@ -166,18 +167,15 @@ public sealed partial class AgentsWindow : Window
         var footer = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 4, 8, 8), Children = { usage } };
         BuildRowParts(footer);
 
-        var sideScroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = _list, Padding = new Thickness(8, 4, 8, 4) };
+        var sideScroll = BuildList();
         var side = new DockPanel { Background = Ocean.Sidebar };
         DockPanel.SetDock(top, Dock.Top);
         DockPanel.SetDock(searchLine, Dock.Top);
         DockPanel.SetDock(footer, Dock.Bottom);
-        DockPanel.SetDock(_settledList, Dock.Bottom);
         side.Children.Add(top);
         side.Children.Add(searchLine);
         side.Children.Add(footer);
-        side.Children.Add(_settledList);
         side.Children.Add(sideScroll);
-        _settledList.Margin = new Thickness(8, 0, 8, 0);
         var sideEdge = new Border { BorderBrush = Ocean.SidebarDivider, BorderThickness = new Thickness(0, 0, 1, 0), Child = side };
 
         // The open conversation's bar: where it is, and what can be done with it.
@@ -299,6 +297,7 @@ public sealed partial class AgentsWindow : Window
         var layout = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(SidebarWidth) }, new ColumnDefinition() } };
         Grid.SetColumn(conversationArea, 1);
         layout.Children.Add(sideEdge);
+        BuildSidebarEdge(layout, sideEdge, layout.ColumnDefinitions[0]);
         layout.Children.Add(conversationArea);
 
         var caption = CaptionButtons();
@@ -485,36 +484,7 @@ public sealed partial class AgentsWindow : Window
         _rowOrder.AddRange(active);
         for (var index = 0; index < active.Count; index++) _list.Children.Add(ConversationRow(active[index], index));
 
-        // Settled ones: a header at the bottom that opens to their rows.
-        _settledList.Children.Clear();
-        var settled = conversations.Where(each => each.Settled).OrderByDescending(each => each.SettledAt ?? each.Updated).ToList();
-        var header = new DockPanel();
-        var chevron = AgentIcons.Line("chevron-down", 12, Ocean.SidebarMuted);
-        chevron.RenderTransformOrigin = new Point(0.5, 0.5);
-        chevron.RenderTransform = new RotateTransform(_showSettled ? 0 : -90);
-        chevron.Margin = new Thickness(6, 0, 0, 0);
-        DockPanel.SetDock(chevron, Dock.Right);
-        var count = Ocean.Text($"{settled.Count}", Ocean.SidebarMuted, 12);
-        DockPanel.SetDock(count, Dock.Right);
-        header.Children.Add(chevron);
-        header.Children.Add(count);
-        header.Children.Add(Ocean.Text("Settled", Ocean.SidebarMuted, 12, FontWeights.Medium));
-        var toggle = Ocean.Ghost(header, () =>
-        {
-            _showSettled = !_showSettled;
-            ShowConversations();
-        }, 6, new Thickness(8, 0, 8, 0), Ocean.RowHover);
-        toggle.Height = 32;
-        toggle.HorizontalContentAlignment = HorizontalAlignment.Stretch;
-        toggle.Margin = new Thickness(2, 0, 2, 0);
-        AutomationProperties.SetName(toggle, $"Settled, {settled.Count}, {(_showSettled ? "showing" : "click to show")}");
-        if (_showSettled)
-        {
-            var rows = new StackPanel();
-            foreach (var conversation in settled) rows.Children.Add(SettledRow(conversation));
-            _settledList.Children.Add(new ScrollViewer { MaxHeight = 220, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = rows });
-        }
-        _settledList.Children.Add(toggle);
+        ShowSettledShelf([.. conversations.Where(each => each.Settled).OrderByDescending(each => each.SettledAt ?? each.Updated)]);
     }
 
     // Its hover card: the title, the project and the model.
@@ -656,7 +626,7 @@ public sealed partial class AgentsWindow : Window
         _crumbs.Children.Add(mark);
         _crumbs.Children.Add(projectName);
         _crumbs.Children.Add(Ocean.Text("  /  ", Ocean.Secondary, 14));
-        _crumbs.Children.Add(Ocean.Text(conversation.Title.Length > 0 ? conversation.Title : "New conversation", Ocean.Foreground, 14, FontWeights.Medium));
+        _crumbs.Children.Add(Ocean.Text(conversation.Title.Length > 0 ? OneLine(conversation.Title) : "New conversation", Ocean.Foreground, 14, FontWeights.Medium));
 
         // T3 Code's thread details toggle.
         _headerTools.Children.Add(DetailsToggle());
@@ -862,7 +832,8 @@ public sealed partial class AgentsWindow : Window
         if (segment.IsTurnLine) return;
         var at = _timeline.Children.IndexOf(segment.Element);
         var item = segment.Items[0];
-        if (segment.Kind == AgentItemKind.Assistant && segment.Reply is { } reply)
+        // A reply redraws only its words, unless the turn's changed-files card has come or gone under it.
+        if (segment.Kind == AgentItemKind.Assistant && segment.Reply is { } reply && (item.Changes is { Count: > 0 }) == (segment.Element is StackPanel))
         {
             reply.Show(item.Text);
             return;
@@ -1060,11 +1031,13 @@ public sealed partial class AgentsWindow : Window
             Ocean.Body, Ocean.Foreground, Ocean.MutedText, Ocean.Foreground, Ocean.CodeBack, Ocean.InlineCode, Ocean.Border, Ocean.Info,
             Inter, Ocean.Mono, 14, 22.75) { Rule = Ocean.Border60, Hover = Ocean.Accent });
         reply.View.SelectionBrush = Ocean.Focus;
-        reply.Preview = PreviewPicture;
+        reply.Preview = ShowLightbox;
         reply.Show(item.Text);
         segment.Reply = reply;
         // T3: px-1 py-0.5, with 8 under it, or 16 under a turn's last one (set as turns are laid out).
-        return new Border { Padding = new Thickness(4, 2, 4, 2), Margin = new Thickness(0, 0, 0, 8), Child = reply.View };
+        var words = new Border { Padding = new Thickness(4, 2, 4, 2), Child = reply.View };
+        if (item.Changes is not { Count: > 0 } || _open is not { } conversation) return new Border { Margin = new Thickness(0, 0, 0, 8), Child = words };
+        return new StackPanel { Margin = new Thickness(0, 0, 0, 8), Children = { words, ChangesCard(conversation, item) } };
     }
 
     // Work, as T3 Code's work log: a 24 px row with a 16 px icon in the secondary colour.
