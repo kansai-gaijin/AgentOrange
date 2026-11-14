@@ -36,9 +36,8 @@ public sealed partial class AgentsWindow
     private Border? _headerBar;
     private readonly Grid _dialogs = new() { Visibility = Visibility.Collapsed };
     private readonly StackPanel _toasts = new() { HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(16), Width = 356 };
-    private Popup? _details;
+    private readonly Border _detailsLayer = new() { Visibility = Visibility.Collapsed, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, TopBar - 4, 12, 0) };
     private Action? _redrawDetails;
-    private bool _gitPanelOpen; // The header isn't redrawn under the panel, as that would take away what it hangs from.
 
     // A git action under way, or just finished, as T3's panel shows it.
     private sealed class GitRun
@@ -54,6 +53,14 @@ public sealed partial class AgentsWindow
 
     private void BuildDetailsParts(Grid layout)
     {
+        Grid.SetColumn(_detailsLayer, 1);
+        layout.Children.Add(_detailsLayer);
+        _detailsLayer.PreviewKeyDown += (_, key) =>
+        {
+            if (key.Key != Key.Escape || key.Handled) return;
+            key.Handled = true;
+            CloseDetails();
+        };
         Grid.SetColumnSpan(_dialogs, 2);
         layout.Children.Add(_dialogs);
         Grid.SetColumnSpan(_toasts, 2);
@@ -95,7 +102,7 @@ public sealed partial class AgentsWindow
     // The header's thread details button: T3's square-menu toggle, pressed while the panel is open.
     private FrameworkElement DetailsToggle()
     {
-        var pressed = _details?.IsOpen == true;
+        var pressed = DetailsOpen;
         var button = Ocean.Ghost(AgentIcons.Line("square-menu", 16, Ocean.Foreground), ToggleDetails, 8, null, Ocean.Accent, pressed ? Ocean.Accent : null);
         button.Width = 28;
         button.Height = 28;
@@ -107,61 +114,47 @@ public sealed partial class AgentsWindow
         return button;
     }
 
+    // T3's panel is a toggle: it stays open until its button (or Ctrl+Shift+B, or Escape) closes it,
+    // sitting in the window under the header's right end, so it never floats over other apps.
+    private bool DetailsOpen => _detailsLayer.Visibility == Visibility.Visible;
+
+    private void CloseDetails()
+    {
+        if (!DetailsOpen) return;
+        _detailsLayer.Visibility = Visibility.Collapsed;
+        _detailsLayer.Child = null;
+        _redrawDetails = null;
+        ShowHeader();
+    }
+
     private void ToggleDetails()
     {
-        if (_details?.IsOpen == true)
+        if (DetailsOpen)
         {
-            _details.IsOpen = false;
+            CloseDetails();
             return;
         }
-        if (_open is not { } conversation || _headerBar is null) return;
+        if (_open is null) return;
         var layers = new Grid { Width = DetailsWidth };
-        var card = new Border
+        _detailsLayer.Child = new Border
         {
             Background = Ocean.Glass,
             BorderBrush = Ocean.GlassBorder,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(16),
-            Margin = new Thickness(8),
             Effect = new System.Windows.Media.Effects.DropShadowEffect { Color = Colors.Black, BlurRadius = 32, ShadowDepth = 10, Direction = 270, Opacity = 0.55 },
             Child = layers,
         };
-        var popup = new Popup
+        void Redraw()
         {
-            PlacementTarget = _headerBar,
-            Placement = PlacementMode.Custom,
-            CustomPopupPlacementCallback = (popupSize, targetSize, _) => [new CustomPopupPlacement(new Point(targetSize.Width - popupSize.Width - 4, targetSize.Height - 8), PopupPrimaryAxis.Horizontal)],
-            StaysOpen = false,
-            AllowsTransparency = true,
-            PopupAnimation = PopupAnimation.Fade,
-            Child = card,
-        };
-        card.PreviewKeyDown += (_, key) =>
-        {
-            if (key.Key != Key.Escape || key.Handled) return;
-            popup.IsOpen = false;
-            key.Handled = true;
-        };
-        _details = popup;
-        _gitPanelOpen = true;
-        void Redraw() => DrawDetails(conversation, layers);
+            // Always about the open conversation, which can change while it's open.
+            if (_open is { } open) DrawDetails(open, layers);
+        }
         _redrawDetails = Redraw;
-        popup.Closed += (_, _) =>
-        {
-            _gitPanelOpen = false;
-            _redrawDetails = null;
-            ShowHeader();
-        };
         Redraw();
-        popup.IsOpen = true;
-        ShowHeaderToggle(true);
-        _ = RefreshRepoAsync(conversation.ProjectId, fetch: true);
-    }
-
-    // Only the toggle's pressed look changes while it's open; the rest of the header stays put.
-    private void ShowHeaderToggle(bool pressed)
-    {
-        if (_headerTools.Children.OfType<Button>().FirstOrDefault(each => AutomationProperties.GetName(each) == "Toggle thread details panel") is { } toggle) toggle.Background = pressed ? Ocean.Accent : Brushes.Transparent;
+        _detailsLayer.Visibility = Visibility.Visible;
+        ShowHeader();
+        _ = RefreshRepoAsync(_open.ProjectId, fetch: true);
     }
 
     // T3's Cw button in panel mode: 32 high, 8 round, 13 px medium words at 80%, a wash under the mouse.
@@ -362,7 +355,7 @@ public sealed partial class AgentsWindow
         var favorite = FavoriteOpener();
         var primary = PanelButton(IconRow(OpenerIcon(favorite), RowText($"Open in {favorite.Label}")), () =>
         {
-            if (_details is { } details) details.IsOpen = false;
+            CloseDetails();
             OpenIn(favorite, folder);
         }, $"Open in {favorite.Label}");
         Button? chooser = null;

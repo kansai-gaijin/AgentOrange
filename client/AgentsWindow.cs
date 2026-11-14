@@ -467,7 +467,11 @@ public sealed partial class AgentsWindow : Window
         bool Matches(AgentConversation conversation) => search.Length == 0
             || conversation.Title.Contains(search, StringComparison.OrdinalIgnoreCase)
             || _main.ProjectName(conversation.ProjectId).Contains(search, StringComparison.OrdinalIgnoreCase);
-        var conversations = _main.Conversations.Where(Matches).ToList();
+        foreach (var empty in _main.Conversations.Where(each => each != _open && IsDraft(each)).ToList())
+        {
+            _main.DeleteConversation(empty); // A draft left behind, which T3 would never have listed.
+        }
+        var conversations = _main.Conversations.Where(each => !IsDraft(each) && Matches(each)).ToList();
 
         var active = conversations.Where(each => !each.Settled).OrderByDescending(each => each.Updated).ToList();
         if (active.Count == 0)
@@ -607,9 +611,13 @@ public sealed partial class AgentsWindow : Window
         _open.StateChanged += WorkingChanged;
     }
 
+    // Nothing has been said or sent in it yet, so it is only a draft, as T3 treats a new thread.
+    private static bool IsDraft(AgentConversation conversation) => conversation.Items.Count == 0 && !conversation.IsWorking;
+
     private void Show(AgentConversation? conversation)
     {
         Watch(conversation);
+        _redrawDetails?.Invoke();
         _turnsShown = TurnsAtATime;
         _openTools.Clear();
         _openGroups.Clear();
@@ -633,7 +641,6 @@ public sealed partial class AgentsWindow : Window
     // The breadcrumb, as T3 Code's: the project, a slash, and the conversation's title.
     private void ShowHeader()
     {
-        if (_gitPanelOpen) return; // Redrawn once it closes.
         _crumbs.Children.Clear();
         _headerTools.Children.Clear();
         if (_open is not { } conversation)

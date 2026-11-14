@@ -269,7 +269,7 @@ public sealed partial class AgentsWindow
         _dialogs.Children.Add(shade);
         _dialogs.Children.Add(card);
         _dialogs.Visibility = Visibility.Visible;
-        if (_details is { } details) details.IsOpen = false;
+        CloseDetails();
     }
 
     // T3's media preview: the picture as large as fits, over the dimmed window, closed by a click or Escape.

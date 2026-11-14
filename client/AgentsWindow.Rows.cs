@@ -98,7 +98,7 @@ public sealed partial class AgentsWindow
         if (_open == conversation) Show(next is not null && next != conversation ? next : _main.NewConversation(_main.AgentProjects().First(project => project.Id == conversation.ProjectId)));
 
         // "Settled, ⟲ Ctrl+Z to undo", for five seconds.
-        _justSettled = _undoTimer?.IsEnabled == true ? [.. _justSettled, conversation] : [conversation];
+        _justSettled = _undoTimer?.IsEnabled == true ? [.. _justSettled.Where(each => each != conversation), conversation] : [conversation];
         _undoNote.Children.Clear();
         _undoNote.Children.Add(Ocean.Text(_justSettled.Count > 1 ? $"Settled {_justSettled.Count}, " : "Settled, ", Ocean.MutedText, 11));
         var undo = AgentIcons.Line("undo-2", 12, Ocean.MutedText);
