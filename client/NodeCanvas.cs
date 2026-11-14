@@ -315,6 +315,45 @@ internal sealed partial class NodeCanvas : Border
     }
 
 #if DEBUG
+    /// <summary>For the drive tool: where on the board a node added next goes, as the mouse would say. Null for no mouse.</summary>
+    internal static Point? DrivePointer;
+
+    /// <summary>For the drive tool: each node's name and where it is on the board, a line each.</summary>
+    internal IEnumerable<string> DescribeNodes() => _nodes.Values.OrderBy(view => view.Data.Y).ThenBy(view => view.Data.X).Select(view =>
+        $"{(_selection.Contains(view.Id) ? "*" : "")}{view.Data.X:0},{view.Data.Y:0} {view.Box.ActualWidth:0}x{view.Box.ActualHeight:0} {System.Windows.Automation.AutomationProperties.GetName(view.Box)}");
+
+    /// <summary>For the drive tool, which can't drag: what dragging the selected node there does.</summary>
+    internal void MoveSelected(double x, double y)
+    {
+        foreach (var node in _selection.Where(_nodes.ContainsKey).Select(id => _nodes[id]))
+        {
+            node.Data = node.Data with { X = Math.Round(x), Y = Math.Round(y) };
+            Canvas.SetLeft(node.Box, node.Data.X);
+            Canvas.SetTop(node.Box, node.Data.Y);
+            PlaceLinksOf(node);
+            SaveNode(node);
+        }
+    }
+
+    /// <summary>For the drive tool, which can't drag: what dragging the selected node's right edge to that width does.</summary>
+    internal void SizeSelected(double width)
+    {
+        foreach (var node in _selection.Where(_nodes.ContainsKey).Select(id => _nodes[id]))
+        {
+            if (node.Picture is not null)
+            {
+                node.Data = node.Data with { Width = Math.Clamp(Math.Round(width), SmallestImage, WidestImage) };
+                SizeImage(node, node.Data.Width!.Value);
+            }
+            else if (node.Rich is not null)
+            {
+                node.Data = node.Data with { Width = Math.Clamp(Math.Round(width), NarrowestText, WidestText) };
+                node.Box.Width = node.Data.Width!.Value;
+            }
+            SaveNode(node);
+        }
+    }
+
     /// <summary>For the dev build's drive tool, which can't click at a place: selects the node whose name starts so.</summary>
     internal bool SelectNamed(string name)
     {

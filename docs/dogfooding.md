@@ -3,7 +3,36 @@
 What got in the way while using Agent Orange to make the games, and what was done about it. Newest first.
 Anything not fixed on the spot is a GitHub issue, not a line here.
 
-## 2026-11-15 · Animal Planet: bringing the GDD in
+## 2026-11-15 · Animal Planet: the GDD again, the right one, done properly
+
+The first import (below) used the wrong GDD: v2.5 on `main`. The current one is a restructured GDD
+with 44 pieces of concept art, published as a page and "structured for import as Overview, Levels,
+Mechanics and Characters cards". Its branch was never pushed, so it came from the page. The first
+import was also lazy: one text dump per section, no pictures, nothing laid out. It was all deleted,
+except the user's own Player card and Player reference node, and done again:
+
+- **A card per article** on Levels (8), Mechanics (27) and Characters (4: the user's Player card took
+  Player Character Customization). Each card's picture is its concept art.
+- **Each card's board:** the concept art as an Image node on the left, and the article split at its
+  `###` sub-topics, one Rich Text node each, in columns beside it. A sub-topic over 45 lines splits
+  at its `####` headings.
+- **Overview board:** the title and key art at the top beside the Player reference, then a row per
+  article: a Title node, its picture if it has one, and its sub-topics in up to four columns.
+- **Story:** empty. The GDD keeps its story on the Overview.
+
+What went wrong, and the fix:
+
+- **Pasting a picture had the same real-mouse bug** as adding a node: it went where the mouse was,
+  even with the window covered. It now needs the mouse over the board itself.
+- **The drive tool couldn't answer dialogs** in the live app. A card's delete confirmation and picture
+  picker would have opened real dialogs on the person's screen. `answer "..."` now answers the next
+  one, and the real dialog opens only when nothing was queued.
+- New for driving: `point X Y` (where a node added next goes, as the mouse would say), `move X Y` and
+  `size W` (the selected node, as dragging would), `nodes` (each node's place, size and name).
+- **Opening a project sometimes waited over a minute** on "Checking the repo…". A timed run took 7 s,
+  4 of them GitHub's access check. Not reproduced: issue #91.
+
+## 2026-11-15 · Animal Planet: bringing the GDD in (the wrong one)
 
 Animal Planet became the Unreal Engine game (it was the web game). Its design was a 2,500-line Markdown
 GDD in the repo (`docs/GDD.md`, v2.5). It was brought in by hand, through the app, without an agent:

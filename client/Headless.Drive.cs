@@ -195,6 +195,21 @@ internal static partial class Headless
                 var board = Descendants(_driveTarget!).OfType<NodeCanvas>().FirstOrDefault(each => each.IsVisible) ?? throw new InvalidOperationException("No board is open.");
                 if (!board.SelectNamed(parts[1])) throw new InvalidOperationException($"No node on the board is called {parts[1]}.");
                 return true;
+            case "nodes":
+                // Each node on the open board: where it is, its size and its name.
+                var listed = Descendants(_driveTarget!).OfType<NodeCanvas>().FirstOrDefault(each => each.IsVisible) ?? throw new InvalidOperationException("No board is open.");
+                foreach (var each in listed.DescribeNodes()) say(each);
+                return true;
+            case "move" or "size":
+                // move X Y, or size W: the selected node, as dragging it or its edge would.
+                var dragged = Descendants(_driveTarget!).OfType<NodeCanvas>().FirstOrDefault(each => each.IsVisible) ?? throw new InvalidOperationException("No board is open.");
+                if (parts[0] == "move") dragged.MoveSelected(double.Parse(parts[1]), double.Parse(parts[2]));
+                else dragged.SizeSelected(double.Parse(parts[1]));
+                return true;
+            case "point":
+                // point X Y: where on the board the next node goes, as the mouse would say. "point off" for no mouse.
+                NodeCanvas.DrivePointer = parts[1] == "off" ? null : new Point(double.Parse(parts[1]), double.Parse(parts[2]));
+                return true;
             case "focused":
                 // What keys go to: its kind and name, and the window it's in.
                 var has = Keyboard.FocusedElement as DependencyObject;

@@ -152,10 +152,14 @@ internal sealed partial class NodeCanvas
     }
 
     // Where the mouse is, or the middle if it's somewhere else.
+    // Over the board itself, not only within its bounds, as another window can be in front of it.
     private Point MouseInWorld()
     {
+#if DEBUG
+        if (DrivePointer is { } pointed) return pointed;
+#endif
         var mouse = Mouse.GetPosition(this);
-        return ToWorld(new Rect(0, 0, ActualWidth, ActualHeight).Contains(mouse) ? mouse : new Point(ActualWidth / 2, ActualHeight / 2));
+        return ToWorld(IsMouseOver && new Rect(0, 0, ActualWidth, ActualHeight).Contains(mouse) ? mouse : new Point(ActualWidth / 2, ActualHeight / 2));
     }
 
     private static bool IsImageFile(string path) => ImageEndings.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);

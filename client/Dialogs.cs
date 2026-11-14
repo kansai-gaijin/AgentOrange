@@ -8,7 +8,7 @@ internal static class Dialogs
     public static string? PickFolder(string title, string? initialFolder = null)
     {
 #if DEBUG
-        if (Headless.Active) return Headless.NextAnswer();
+        if (Headless.Answering) return Headless.NextAnswer();
 #endif
         var dialog = new OpenFolderDialog { Title = title };
         if (initialFolder is not null) dialog.InitialDirectory = initialFolder;
@@ -31,7 +31,7 @@ internal static class Dialogs
     public static bool Confirm(string message)
     {
 #if DEBUG
-        if (Headless.Active)
+        if (Headless.Answering)
         {
             Headless.Say(message);
             return Headless.NextAnswer() == "yes";
@@ -43,7 +43,7 @@ internal static class Dialogs
     public static string? PickFile(string title, string filter, string? startIn = null)
     {
 #if DEBUG
-        if (Headless.Active) return Headless.NextAnswer();
+        if (Headless.Answering) return Headless.NextAnswer();
 #endif
         var dialog = new OpenFileDialog { Title = title, RestoreDirectory = true, Filter = filter, InitialDirectory = startIn ?? "" };
         return dialog.ShowDialog() == true ? dialog.FileName : null;

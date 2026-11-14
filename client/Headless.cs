@@ -75,6 +75,12 @@ internal static partial class Headless
     /// <summary>What a file or folder dialog would have returned. Null is the same as Cancel.</summary>
     public static string? NextAnswer() => Answers.TryDequeue(out var answer) ? answer : null;
 
+    /// <summary>
+    /// The drive tool said beforehand what the next dialog should get, so the live dev app answers
+    /// that instead of showing a real dialog on the person's screen.
+    /// </summary>
+    public static bool Answering => Active || Answers.Count > 0;
+
     public static void Attach(Window window)
     {
         KeepOffScreen(window);

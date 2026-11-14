@@ -74,6 +74,10 @@ internal sealed partial class NodeCanvas
 
         // Without the mouse to say where, the middle can already have a node, which the new one would cover.
         if (!over) where = FreeSpotNear(where);
+#if DEBUG
+        // The dev build's drive tool, which points where the person would with the mouse.
+        if (DrivePointer is { } pointed) where = pointed;
+#endif
 
         Brush muted = (Brush)FindResource("TextMuted");
         Border Panel(UIElement child) => MenuPanel(child);
