@@ -42,13 +42,18 @@ internal sealed class DocumentPage : Grid
         ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(250) });
         ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        // The side: the board, then the document's headings.
-        var boardButton = Ui.TextButton(onBoard > 0 ? $"Board · {onBoard} {(onBoard == 1 ? "node" : "nodes")}" : "Board", showBoard);
-        boardButton.HorizontalAlignment = HorizontalAlignment.Left;
-        boardButton.ToolTip = "Its node board, for what's better laid out than written, such as workflows.";
+        // The side: a picture to add, the board, then the document's headings.
+        var addPicture = Ui.TextButton("Add picture", PickPicture);
+        addPicture.HorizontalAlignment = HorizontalAlignment.Left;
+        addPicture.ToolTip = "Goes in under where you're writing. Pasting a picture, or dropping picture files on the page, does it too.";
+        _boardButton = Ui.TextButton(BoardLabel(onBoard), showBoard);
+        _boardButton.HorizontalAlignment = HorizontalAlignment.Left;
+        _boardButton.ToolTip = "Its node board, for what's better laid out than written, such as workflows.";
         var side = new DockPanel { Margin = new Thickness(28, 24, 12, 24) };
-        DockPanel.SetDock(boardButton, Dock.Top);
-        side.Children.Add(boardButton);
+        DockPanel.SetDock(addPicture, Dock.Top);
+        side.Children.Add(addPicture);
+        DockPanel.SetDock(_boardButton, Dock.Top);
+        side.Children.Add(_boardButton);
         var contents = new TextBlock { Text = "CONTENTS", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(7, 22, 0, 6) };
         DockPanel.SetDock(contents, Dock.Top);
         side.Children.Add(contents);
@@ -98,8 +103,79 @@ internal sealed class DocumentPage : Grid
         _editor.PreviewTextInput += SpaceTyped;
         _editor.PreviewKeyDown += EnterAfterHeading;
         DataObject.AddPastingHandler(_editor, PasteMarkdown);
+        _editor.AllowDrop = true;
+        _editor.PreviewDragOver += (_, drag) =>
+        {
+            if (PictureFiles(drag.Data).Count == 0) return;
+            drag.Effects = DragDropEffects.Copy;
+            drag.Handled = true;
+        };
+        _editor.PreviewDrop += (_, drop) =>
+        {
+            var files = PictureFiles(drop.Data);
+            if (files.Count == 0) return;
+            drop.Handled = true;
+            if (_editor.GetPositionFromPoint(drop.GetPosition(_editor), snapToText: true) is { } at) _editor.CaretPosition = at;
+            foreach (var file in files) AddPicture(ProjectImages.PrepareForBoard(file));
+        };
 
         ShowOutline();
+    }
+
+    private readonly Button _boardButton;
+
+    private static string BoardLabel(int onBoard) => onBoard > 0 ? $"Board · {onBoard} {(onBoard == 1 ? "node" : "nodes")}" : "Board";
+
+    /// <summary>Whether someone is writing in it, which drawing the page again would interrupt.</summary>
+    public bool IsEditing => _editor.IsKeyboardFocusWithin;
+
+    /// <summary>Opened again: what's stored now, if it changed elsewhere, such as on another PC or by an agent.</summary>
+    public void ShowLatest(string markdown, int onBoard)
+    {
+        _boardButton.Content = BoardLabel(onBoard);
+        if (IsEditing || markdown == _saved) return;
+        _saved = markdown;
+        _formatting = true;
+        _editor.Document = NewDocument(markdown);
+        _formatting = false;
+        ShowOutline();
+    }
+
+    // Pictures
+
+    private static readonly string[] PictureEndings = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"];
+
+    private static List<string> PictureFiles(IDataObject data) =>
+        data.GetData(DataFormats.FileDrop) is string[] files ? [.. files.Where(file => PictureEndings.Contains(Path.GetExtension(file).ToLowerInvariant()))] : [];
+
+    private void PickPicture()
+    {
+        if (Dialogs.PickFile("Choose a picture", "Pictures|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff") is { } file) AddPicture(ProjectImages.PrepareForBoard(file));
+    }
+
+    // Kept with the project's documents, and put in under the block being written in.
+    private void AddPicture(byte[]? picture)
+    {
+        if (picture is null)
+        {
+            Dialogs.Notify("That couldn't be used as a picture.");
+            return;
+        }
+        var id = _database.AddDocumentPicture(_projectId, picture);
+        var block = MarkdownText.PictureBlock($"picture:{id}", "", ProjectImages.ToImage(picture), Look);
+        block.Margin = Look.BlockMargin;
+        if (OuterBlock(_editor.CaretPosition) is { } at) _editor.Document.Blocks.InsertAfter(at, block);
+        else _editor.Document.Blocks.Add(block);
+        _editor.CaretPosition = block.ElementEnd;
+        Save();
+    }
+
+    // The block at the document's own level that holds a place in it, such as a whole list rather than an item in it.
+    private Block? OuterBlock(TextPointer at)
+    {
+        DependencyObject? holder = at.Paragraph ?? at.Parent as DependencyObject;
+        while (holder is TextElement element && element.Parent is not FlowDocument) holder = element.Parent;
+        return holder is Block block && _editor.Document.Blocks.Contains(block) ? block : null;
     }
 
     /// <summary>The words as they stand, for agents and saving.</summary>
@@ -223,6 +299,19 @@ internal sealed class DocumentPage : Grid
     // Markdown pasted in comes in as what it means.
     private void PasteMarkdown(object sender, DataObjectPastingEventArgs pasting)
     {
+        // Picture files copied in Explorer, or a copied picture, go in as pictures.
+        if (PictureFiles(pasting.SourceDataObject) is { Count: > 0 } files)
+        {
+            pasting.CancelCommand();
+            foreach (var file in files) AddPicture(ProjectImages.PrepareForBoard(file));
+            return;
+        }
+        if (pasting.SourceDataObject.GetDataPresent(DataFormats.Bitmap) && Clipboard.ContainsImage() && Clipboard.GetImage() is { } copied)
+        {
+            pasting.CancelCommand();
+            AddPicture(ProjectImages.PrepareForBoard(copied, keepSeeThrough: false));
+            return;
+        }
         if (pasting.SourceDataObject.GetData(DataFormats.UnicodeText, true) is not string text || !MarkdownText.LooksLikeMarkdown(text)) return;
         pasting.CancelCommand();
         var made = new FlowDocument { FontFamily = _editor.Document.FontFamily, FontSize = Look.Text, Foreground = _editor.Foreground, TextAlignment = TextAlignment.Left };

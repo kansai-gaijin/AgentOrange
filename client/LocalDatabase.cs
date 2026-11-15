@@ -416,6 +416,16 @@ public sealed class LocalDatabase
     public void DeleteCard(string projectId, BoardCard card)
     {
         DeleteBoards(projectId, CardBoardKey(card));
+
+        // Its document, and the pictures in it, which nothing else uses.
+        if (GetDocument(projectId, CardBoardKey(card)) is { } document)
+        {
+            foreach (System.Text.RegularExpressions.Match picture in System.Text.RegularExpressions.Regex.Matches(document, @"\]\(picture:([^)\s]+)\)"))
+            {
+                SaveRecord(DocumentPicturesCollection, picture.Groups[1].Value, "", deleted: true);
+            }
+            SaveRecord(DocumentsCollection, $"{projectId}:{CardBoardKey(card)}", "", deleted: true);
+        }
         SaveRecord(CardsCollection, card.Id, "", deleted: true);
         DeleteCardExtras(card.Id);
     }

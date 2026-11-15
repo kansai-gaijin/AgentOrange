@@ -12,6 +12,10 @@ public partial class MainWindow
     // Drawing the page again would otherwise send someone using the keyboard back to the start.
     private void RenderProjectKeepingFocus(Project project)
     {
+        // Someone writing in a document: drawing it again under them would take their place in it.
+        // Their own changes are already what's shown, and anyone else's show once they've moved on.
+        if (_openDocument is { IsVisible: true, IsEditing: true }) return;
+
         static IEnumerable<Button> Buttons(DependencyObject root)
         {
             for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)

@@ -92,6 +92,7 @@ public partial class MainWindow
     internal void RedrawAfterCodeChange()
     {
         _boards.Clear(); // And boards would keep the code they were made with.
+        _documents.Clear(); // The same for documents.
         _cards.Clear(); // Kept cards would keep what they did before the change.
         RefreshProjects();
         if (_openProject is { } open) RenderProject(open);

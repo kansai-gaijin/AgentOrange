@@ -44,6 +44,20 @@ public partial class MainWindow
         // The whole page, edge to edge, under the header.
         body.MaxWidth = double.PositiveInfinity;
         body.Margin = new Thickness(0);
+        var height = Math.Max(240, ProjectView.ActualHeight - HeroHeight(project));
+
+        // The same page as before, if it's open again, so it keeps where it was scrolled to, taking
+        // in what changed elsewhere, such as on another PC or by an agent.
+        if (_documents.TryGetValue(boardKey, out var kept))
+        {
+            (kept.Parent as Panel)?.Children.Remove(kept);
+            kept.ShowLatest(markdown, board.NodeCount);
+            kept.Height = height;
+            _openDocument = kept;
+            body.Children.Add(kept);
+            return;
+        }
+
         var page = new DocumentPage(
             _database,
             project.Id,
@@ -59,13 +73,15 @@ public partial class MainWindow
                 RedrawProject(project);
             })
         {
-            Height = Math.Max(240, ProjectView.ActualHeight - HeroHeight(project)),
+            Height = height,
         };
+        _documents[boardKey] = page;
         _openDocument = page;
         body.Children.Add(page);
     }
 
     private DocumentPage? _openDocument;
+    private readonly Dictionary<string, DocumentPage> _documents = [];
 
     // The first time: what's on the board, written out in reading order, and the board emptied into a backup.
     private string WriteBoardAsDocument(Project project, NodeCanvas board, string boardKey, BoardCard? card)
