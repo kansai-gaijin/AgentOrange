@@ -328,7 +328,7 @@ public partial class SettingsModal : UserControl
 
         var elements = new List<UIElement>
         {
-            Card(Row("Agent Orange's skills", "Every agent session loads these, whichever provider it uses, and never the skills installed for a provider elsewhere on this PC. Each skill is a folder here with a SKILL.md in it.", open)),
+            Card(Row("Agent Orange's skills", "Every agent session loads these, whichever provider it uses, and never the skills installed for a provider elsewhere on this PC. Some come with Agent Orange. Add your own as folders here, each with a SKILL.md in it; one of yours with the same name as one that comes with it is used instead.", open)),
         };
 
         List<SkillUse> uses;
@@ -348,7 +348,7 @@ public partial class SettingsModal : UserControl
             var used = byName.TryGetValue(skill.Name, out var times) ? times : [];
             // Its first sentence, as some of Unreal's go on to list every phrase they're for.
             var said = skill.Description.IndexOf(". ", StringComparison.Ordinal) is var stop and > 0 ? skill.Description[..(stop + 1)] : skill.Description;
-            return Row(skill.Name, said.Length > 0 ? said : "No description.", UsedText(used));
+            return Row(skill.Name, $"{(skill.BuiltIn ? "Comes with Agent Orange. " : "")}{(said.Length > 0 ? said : "No description.")}", UsedText(used));
         }
 
         var skills = AgentSkills.List(Folders.AgentFolder);

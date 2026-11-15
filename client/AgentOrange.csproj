@@ -30,6 +30,8 @@
     <!-- Inter, as T3 Code uses, under the SIL Open Font License (Assets\Fonts\Inter-LICENSE.txt, which ships with it). -->
     <Resource Include="Assets\Fonts\*.ttf" />
     <Content Include="Assets\Fonts\Inter-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The skills that come with Agent Orange, which agent sessions load (AgentSkills.BuiltInFolder). -->
+    <Content Include="Skills\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- Velopack has to run before WPF starts, so Program.cs owns Main instead of App.xaml. -->

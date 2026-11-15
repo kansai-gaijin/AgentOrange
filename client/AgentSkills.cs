@@ -8,7 +8,7 @@ namespace AgentOrange;
 /// it's in, who it comes from (Agent Orange, or such as Unreal Engine 5.9), and, for one that isn't
 /// Agent Orange's own, what the session's copy of it says about where its files are.
 /// </summary>
-public sealed record AgentSkill(string Name, string Description, string Folder, string From = AgentSkills.OwnSource, string? Note = null)
+public sealed record AgentSkill(string Name, string Description, string Folder, string From = AgentSkills.OwnSource, string? Note = null, bool BuiltIn = false)
 {
     public string File => Path.Combine(Folder, "SKILL.md");
 }
@@ -33,8 +33,22 @@ public static partial class AgentSkills
         return folder;
     }
 
-    public static List<AgentSkill> List(string agentFolder) =>
-        [.. Directory.EnumerateDirectories(FolderIn(agentFolder)).Order(StringComparer.OrdinalIgnoreCase).Select(folder => Read(folder)).OfType<AgentSkill>()];
+    /// <summary>The skills that come with Agent Orange, beside its program (client/Skills in its source).</summary>
+    public static string BuiltInFolder => Path.Combine(AppContext.BaseDirectory, "Skills");
+
+    /// <summary>The person's own, then those that come with Agent Orange, less any of theirs replaces by name.</summary>
+    public static List<AgentSkill> List(string agentFolder)
+    {
+        List<AgentSkill> skills = [.. Directory.EnumerateDirectories(FolderIn(agentFolder)).Order(StringComparer.OrdinalIgnoreCase).Select(folder => Read(folder)).OfType<AgentSkill>()];
+        if (Directory.Exists(BuiltInFolder))
+        {
+            foreach (var builtIn in Directory.EnumerateDirectories(BuiltInFolder).Order(StringComparer.OrdinalIgnoreCase).Select(folder => Read(folder)).OfType<AgentSkill>())
+            {
+                if (!skills.Any(own => own.Name == builtIn.Name)) skills.Add(builtIn with { BuiltIn = true });
+            }
+        }
+        return skills;
+    }
 
     /// <summary>The skill in a folder, by the front matter at the top of its SKILL.md, or null when it has none.</summary>
     public static AgentSkill? Read(string folder, string from = OwnSource)
@@ -94,6 +108,19 @@ public static partial class AgentSkills
             var to = Path.Combine(plugin, "skills", Path.GetRelativePath(from, file));
             Directory.CreateDirectory(Path.GetDirectoryName(to)!);
             System.IO.File.Copy(file, to);
+        }
+
+        // Those that come with Agent Orange, where the person hasn't one of the same name.
+        foreach (var builtIn in List(agentFolder).Where(skill => skill.BuiltIn))
+        {
+            var into = Path.Combine(plugin, "skills", Path.GetFileName(builtIn.Folder));
+            if (Directory.Exists(into)) continue;
+            foreach (var file in Directory.EnumerateFiles(builtIn.Folder, "*", SearchOption.AllDirectories))
+            {
+                var to = Path.Combine(into, Path.GetRelativePath(builtIn.Folder, file));
+                Directory.CreateDirectory(Path.GetDirectoryName(to)!);
+                System.IO.File.Copy(file, to);
+            }
         }
 
         foreach (var skill in others)
