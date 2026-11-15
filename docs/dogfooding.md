@@ -3,6 +3,23 @@
 What got in the way while using Agent Orange to make the games, and what was done about it. Newest first.
 Anything not fixed on the spot is a GitHub issue, not a line here.
 
+## 2026-11-15 · Animal Planet: the first real commit and push through Agent Orange
+
+The new production documents were committed and pushed to the game repo with the agents window's git
+actions, their first use on a real repo. What went wrong:
+
+- **The written commit message was about nothing.** It was generated from `git diff HEAD`, which
+  leaves out new files, so it guessed, and added "nothing is staged yet… stage them before you
+  commit" to the message. Now the changes are staged first and the message is written from the
+  staged patch, as T3 Code does. That commit was undone locally (never pushed) and made again.
+- **The commit used this PC's personal email.** Agent Orange's commits now use the GitHub account's
+  no-reply address when Git isn't set up with one, as a repo can be made public later.
+- **The default-branch dialog cut "Abort" off** when its buttons didn't fit. Its footer now wraps,
+  with Abort at the left, as T3's does (not yet seen with the dialog open).
+- Left as T3 Code has them, for now: on main, the main action offers "Commit, push & PR" and "Push &
+  create PR", a pull request from main into main; the Changes row counts no new files (+0 −0); and
+  the menu closes if the window loses focus between choosing it and picking from it.
+
 ## 2026-11-15 · Animal Planet: tasks people make, and the implementation plan as milestones
 
 Tasks were only assets with a date to deliver them by, so there was no way to add one by hand, and

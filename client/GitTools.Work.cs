@@ -209,15 +209,36 @@ public static partial class GitTools
     }
 
     /// <summary>What's about to be committed, for writing its message: the files and the patch, cut short as T3 Code does.</summary>
+    // Staged first, as T3 Code does, as the commit is about to be made: without it, new files aren't
+    // in the patch at all, and the message is written about nothing.
     public static async Task<(string Files, string Patch)> CommitContextAsync(string folder, IReadOnlyList<string>? only)
     {
         string[] scope = only is { Count: > 0 } ? ["--", .. only] : [];
-        var names = await RunAsync("git", folder, ["-c", "core.quotepath=false", "diff", "HEAD", "--name-status", .. scope]);
-        var patch = await RunAsync("git", folder, ["diff", "HEAD", "--no-color", "--no-ext-diff", "--no-textconv", "--patch", "--minimal", .. scope]);
+        await RunAsync("git", folder, ["add", "-A", .. scope]);
+        var names = await RunAsync("git", folder, ["-c", "core.quotepath=false", "diff", "--cached", "--name-status", .. scope]);
+        var patch = await RunAsync("git", folder, ["diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", "--patch", "--minimal", .. scope]);
         return (Cut(names?.Output, 8000), Cut(patch?.Output, 50000));
     }
 
     private static string Cut(string? text, int most) => text is null ? "" : text.Length > most ? text[..most] : text;
+
+    private static string? _noReplyEmail;
+
+    /// <summary>
+    /// The GitHub account's no-reply address, when the folder would otherwise commit under another
+    /// one, such as a personal email set for all of Git on this PC. A commit's email goes wherever
+    /// the repo does, and a private repo can be made public later. Null to commit as Git is set up.
+    /// </summary>
+    private static async Task<string?> NoReplyEmailAsync(string folder)
+    {
+        var configured = (await RunAsync("git", folder, "config", "user.email"))?.Output.Trim() ?? "";
+        if (configured.EndsWith("@users.noreply.github.com", StringComparison.OrdinalIgnoreCase)) return null;
+        if (_noReplyEmail is not null) return _noReplyEmail;
+        if (await RunAsync("gh", folder, "api", "user", "--jq", ".id, .login") is not { ExitCode: 0 } user) return null;
+        var parts = user.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 2 || !long.TryParse(parts[0], out var id)) return null;
+        return _noReplyEmail = $"{id}+{parts[1]}@users.noreply.github.com";
+    }
 
     /// <summary>Commits the changes, only the files given when some are left out. The value is the new commit's short id.</summary>
     public static async Task<GitResult> CommitAsync(string folder, string subject, string body, IReadOnlyList<string>? only)
@@ -226,7 +247,8 @@ public static partial class GitTools
         var added = await GitStepAsync(folder, "Couldn't add the changes", ["add", "-A", .. scope]);
         if (!added.Worked) return added;
         string[] message = body.Trim().Length > 0 ? ["-m", subject, "-m", body.Trim()] : ["-m", subject];
-        var made = await GitStepAsync(folder, "Couldn't commit", ["commit", "--quiet", .. message, .. scope]);
+        string[] identity = await NoReplyEmailAsync(folder) is { } noReply ? ["-c", $"user.email={noReply}"] : [];
+        var made = await GitStepAsync(folder, "Couldn't commit", [.. identity, "commit", "--quiet", .. message, .. scope]);
         if (!made.Worked) return made;
         return await RunAsync("git", folder, "rev-parse", "--short", "HEAD") is { ExitCode: 0 } head ? new GitResult(true, head.Output.Trim()) : new GitResult(true, "");
     }

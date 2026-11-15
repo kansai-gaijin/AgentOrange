@@ -285,7 +285,12 @@ public sealed partial class AgentsWindow
         _dialogs.Visibility = Visibility.Collapsed;
     }
 
-    private static Border DialogCard(double maxWidth, string title, string description, UIElement? panel, Action close, params UIElement[] buttons)
+    private static Border DialogCard(double maxWidth, string title, string description, UIElement? panel, Action close, params UIElement[] buttons) =>
+        DialogCard(maxWidth, title, description, panel, close, firstOnLeft: false, buttons);
+
+    // T3's footer wraps its buttons when they don't fit, and can keep the first at the left, as its
+    // default-branch dialog does with Abort (sm:mr-auto).
+    private static Border DialogCard(double maxWidth, string title, string description, UIElement? panel, Action close, bool firstOnLeft, params UIElement[] buttons)
     {
         var closer = Ocean.IconButton("x", close, "Close", 28, 16, Ocean.MutedText);
         closer.HorizontalAlignment = HorizontalAlignment.Right;
@@ -297,12 +302,22 @@ public sealed partial class AgentsWindow
         var said = Ocean.Wrapped(description, Ocean.MutedText, 14, 20);
         said.Margin = new Thickness(0, 8, 0, 0);
         header.Children.Add(said);
-        var footer = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(24, 16, 24, 16) };
-        foreach (var button in buttons)
+        var footer = new DockPanel { Margin = new Thickness(24, 16, 16, 16), LastChildFill = true };
+        var rest = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right };
+        for (var at = 0; at < buttons.Length; at++)
         {
-            if (button is FrameworkElement each) each.Margin = new Thickness(8, 0, 0, 0);
-            footer.Children.Add(button);
+            if (buttons[at] is FrameworkElement each) each.Margin = new Thickness(0, 4, 8, 4);
+            if (at == 0 && firstOnLeft)
+            {
+                DockPanel.SetDock(buttons[at], Dock.Left);
+                footer.Children.Add(buttons[at]);
+            }
+            else
+            {
+                rest.Children.Add(buttons[at]);
+            }
         }
+        footer.Children.Add(rest);
         var stack = new StackPanel { Children = { header } };
         if (panel is not null) stack.Children.Add(panel);
         stack.Children.Add(footer);
@@ -568,6 +583,6 @@ public sealed partial class AgentsWindow
             CloseDialog();
             _ = RunGitActionAsync(conversation, folder, action, message, featureBranch: true, only);
         }, primary: true, enabled: hasChanges);
-        ShowDialog(DialogCard(576, title, description, note, CloseDialog, abort, proceed, feature));
+        ShowDialog(DialogCard(576, title, description, note, CloseDialog, firstOnLeft: true, abort, proceed, feature));
     }
 }
