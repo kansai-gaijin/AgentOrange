@@ -1421,9 +1421,15 @@ public sealed partial class AgentsWindow : Window
             text.TextDecorations = null;
             if (!strong) text.Foreground = Ocean.MutedText;
         };
-        text.MouseLeftButtonUp += (_, _) => click();
-        AutomationProperties.SetName(text, words);
-        return text;
+        // A real button around the words, looking just as they do, so the keyboard and screen
+        // readers can answer an approval too, not only the mouse.
+        var template = new ControlTemplate(typeof(Button)) { VisualTree = new FrameworkElementFactory(typeof(ContentPresenter)) };
+        var button = new Button { Content = text, Template = template, Cursor = Cursors.Hand, ToolTip = tip, Focusable = true, IsTabStop = true };
+        button.Click += (_, _) => click();
+        button.GotKeyboardFocus += (_, _) => text.TextDecorations = TextDecorations.Underline;
+        button.LostKeyboardFocus += (_, _) => text.TextDecorations = null;
+        AutomationProperties.SetName(button, words);
+        return button;
     }
 
     // Its questions are answered above the box; here, a line for each once it's asked.

@@ -43,6 +43,8 @@ public static class AgentBriefing
 
             Agent Orange's MCP server, "agent-orange", reads and changes the project: get_project to start, read_card for a card's document (its design), list_tasks, search, and write_card, add_task and update_task to keep them current as you work. Use them rather than guessing at the design, and write down what gets settled.
 
+            The creative tools set up on this PC (such as Blender, Aseprite, ArmorPaint and Material Maker) are reached through it too: list_tools says which are open, open_tool opens one in the project's folder, tool_tools says what it can do, and use_tool uses it. Use these rather than starting the programs yourself.
+
             ## What the person is looking at
 
             Each message from the person starts with an <agent-orange-view> block describing what Agent Orange's main window is showing them right then: the project, its stage and folder, the page, the card, and the nodes on the board, with what's selected. When they say "this", "here" or "the selected one", it means what that block describes. The block is written by Agent Orange, not typed by the person.

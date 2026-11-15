@@ -18,7 +18,7 @@ public partial class MainWindow
 
     private void StartMcpServer()
     {
-        _mcp = new McpServer((projectId, method, parameters) => Dispatcher.InvokeAsync(() => McpAnswer(projectId, method, parameters)).Task);
+        _mcp = new McpServer((projectId, method, parameters) => Dispatcher.InvokeAsync(() => McpAnswerAsync(projectId, method, parameters)).Task.Unwrap());
         _mcp.Start();
     }
 
@@ -28,7 +28,7 @@ public partial class MainWindow
         + "Keep it current as you work: tick tasks you finish with update_task, add tasks you find with add_task, and write what you settle into the card's document with write_card. "
         + "Settle nothing that's the person's to decide: ask them, then write it down. Never mark an asset as delivered.";
 
-    private JsonNode? McpAnswer(string projectId, string method, JsonNode? parameters) => method switch
+    private async Task<JsonNode?> McpAnswerAsync(string projectId, string method, JsonNode? parameters) => method switch
     {
         "initialize" => new JsonObject
         {
@@ -39,11 +39,11 @@ public partial class MainWindow
         },
         "ping" => new JsonObject(),
         "tools/list" => new JsonObject { ["tools"] = new JsonArray([.. McpTools.Select(tool => (JsonNode)tool.Describe())]) },
-        "tools/call" => McpCall(projectId, parameters?["name"]?.GetValue<string>() ?? "", parameters?["arguments"] as JsonObject ?? []),
+        "tools/call" => await McpCallAsync(projectId, parameters?["name"]?.GetValue<string>() ?? "", parameters?["arguments"] as JsonObject ?? []),
         _ => throw new McpException(-32601, $"Agent Orange doesn't know {method}."),
     };
 
-    private sealed record McpTool(string Name, string Description, JsonObject Properties, string[] Required, Func<Project, JsonObject, object> Run)
+    private sealed record McpTool(string Name, string Description, JsonObject Properties, string[] Required, Func<Project, JsonObject, object> Run, Func<Project, JsonObject, Task<object>>? RunAsync = null)
     {
         public JsonObject Describe() => new()
         {
@@ -82,9 +82,20 @@ public partial class MainWindow
             new JsonObject { ["text"] = Text("What to find. Not case-sensitive.") }, ["text"], (project, given) => Search(project, Required(given, "text"))),
         new("read_picture", "A picture from a document, given as ![](picture:id) in its Markdown, to look at.",
             new JsonObject { ["id"] = Text("What follows picture: in the document.") }, ["id"], (project, given) => ReadPicture(Required(given, "id"))),
+
+        // The creative tools, such as Blender, Aseprite, ArmorPaint and Material Maker.
+        new("list_tools", "The creative tools set up on this PC, such as Blender, Aseprite, ArmorPaint and Material Maker, and whether each is open and its MCP answers.",
+            [], [], (_, _) => "", (project, _) => ListToolsForAgentAsync(project)),
+        new("open_tool", "Opens a creative tool in the project's folder, if it isn't open, and waits until its MCP answers. Then tool_tools and use_tool can use it.",
+            new JsonObject { ["tool"] = Text("The tool's name, such as Blender or Aseprite.") }, ["tool"], (_, _) => "", OpenToolForAgentAsync),
+        new("tool_tools", "What an open creative tool can do: its own tools, with their arguments, for use_tool.",
+            new JsonObject { ["tool"] = Text("The tool's name.") }, ["tool"], (_, _) => "", ToolToolsAsync),
+        new("use_tool", "Uses one of an open creative tool's own tools, as tool_tools lists them, and gives back what it gave, pictures included.",
+            new JsonObject { ["tool"] = Text("The tool's name, such as Blender."), ["name"] = Text("Its tool to use, from tool_tools."), ["arguments"] = new JsonObject { ["type"] = "object", ["description"] = "That tool's arguments." } },
+            ["tool", "name"], (_, _) => "", UseToolAsync),
     ];
 
-    private JsonObject McpCall(string projectId, string name, JsonObject given)
+    private async Task<JsonObject> McpCallAsync(string projectId, string name, JsonObject given)
     {
         if (McpTools.FirstOrDefault(tool => tool.Name == name) is not { } tool) throw new McpException(-32602, $"There's no tool called {name}.");
         if (_database.ListProjects().FirstOrDefault(project => project.Id == projectId) is not { } project)
@@ -93,7 +104,7 @@ public partial class MainWindow
         }
         try
         {
-            var result = tool.Run(project, given);
+            var result = tool.RunAsync is { } runAsync ? await runAsync(project, given) : tool.Run(project, given);
             return result is JsonObject made ? made : ToolResult(result.ToString() ?? "");
         }
         catch (McpException error)

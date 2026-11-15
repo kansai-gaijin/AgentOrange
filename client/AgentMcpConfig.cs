@@ -14,6 +14,36 @@ public static class AgentMcpConfig
 {
     private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
 
+    // The program agents start as Agent Orange's MCP relay. A dev build runs it from a copy of
+    // itself, as its own files are rebuilt while agents run, and a relay running from them locks them.
+    private static string RelayProgram(string agentFolder)
+    {
+#if DEBUG
+        var copy = Path.Combine(agentFolder, "mcp-relay");
+        var built = Path.Combine(AppContext.BaseDirectory, "AgentOrange.dll");
+        var copied = Path.Combine(copy, "AgentOrange.dll");
+        if (!File.Exists(copied) || File.GetLastWriteTimeUtc(copied) != File.GetLastWriteTimeUtc(built))
+        {
+            try
+            {
+                foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory, "*", SearchOption.AllDirectories))
+                {
+                    var to = Path.Combine(copy, Path.GetRelativePath(AppContext.BaseDirectory, file));
+                    Directory.CreateDirectory(Path.GetDirectoryName(to)!);
+                    File.Copy(file, to, overwrite: true);
+                }
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                // A relay is running from the copy. The one there does the same job.
+            }
+        }
+        return Path.Combine(copy, "AgentOrange.exe");
+#else
+        return Path.Combine(AppContext.BaseDirectory, "AgentOrange.exe");
+#endif
+    }
+
     public static string Write(EditorMonitor editors, string agentFolder, string? projectId = null)
     {
         var servers = new JsonObject();
@@ -24,7 +54,7 @@ public static class AgentMcpConfig
             servers["agent-orange"] = new JsonObject
             {
                 ["type"] = "stdio",
-                ["command"] = Path.Combine(AppContext.BaseDirectory, "AgentOrange.exe"),
+                ["command"] = RelayProgram(agentFolder),
                 ["args"] = new JsonArray("--mcp", projectId),
             };
         }

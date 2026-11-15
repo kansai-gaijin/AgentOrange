@@ -3,6 +3,34 @@
 What got in the way while using Agent Orange to make the games, and what was done about it. Newest first.
 Anything not fixed on the spot is a GitHub issue, not a line here.
 
+## 2026-11-15 · Creative tools used by agents through Agent Orange
+
+The user meant the tools, not Agent Orange's own: Blender, Aseprite, ArmorPaint and Material Maker.
+None was usable by an agent: nothing in Agent Orange opened one, an agent's session only connects to
+MCP servers already running when it starts, and Blender's was "Port only", which isn't MCP.
+
+- **Installed the three forks** with Settings › Tools' Install buttons. They were all named just
+  "Install" (and "Set up"), so the drive tool, and a screen reader, couldn't tell them apart: now
+  "Install or update Aseprite" and so on.
+- **Agent Orange's MCP server now opens and passes calls to the tools** (`MainWindow.Tools.cs`,
+  `McpClient.cs`): list_tools, open_tool (starts it in the project's folder and waits for its MCP),
+  tool_tools (what it can do) and use_tool. It talks HTTP (JSON or event streams) and programs over
+  stdio, so a tool opened partway through a session is usable straight away.
+- **Blender, for now, through a bridge of Agent Orange's own** (`BlenderBridge.cs`), which Blender is
+  started with. The user then asked whether this was the official Blender MCP: it isn't, and Blender
+  Lab has had one since 2026, which it should switch to.
+- **A real agent used all four:** a green low-poly sphere exported from Blender, an orange circle
+  sprite saved from Aseprite, a bricks material exported from Material Maker, and the sphere imported
+  into ArmorPaint and captured. The game's folder was untouched.
+- From its notes: Blender had no screenshot (added to the bridge, and checked); Material Maker's 3D
+  preview came back white though its textures were right, and ArmorPaint always saves its capture to
+  a folder of its own outside the project (both in the forks); every call goes through use_tool, so
+  the tool's own list has to be read first.
+- **Approvals couldn't be answered from the keyboard:** Allow, Always allow and Don't allow were
+  words with a mouse handler. They're buttons now, looking the same.
+- **The MCP relay locked the dev build's own files,** so rebuilding while an agent ran failed and took
+  the app down. A dev build now runs the relay from a copy of itself in the agent folder.
+
 ## 2026-11-15 · Agent Orange's own MCP server
 
 With the GDD to be deleted, agents have to read the design from Agent Orange, and they only ever saw

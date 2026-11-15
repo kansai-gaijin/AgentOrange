@@ -50,6 +50,7 @@ public partial class SettingsModal
             foreach (var refresh in refreshers.Skip(refreshAt)) refresh();
         }
         var setUp = ActionButton("Set up");
+        System.Windows.Automation.AutomationProperties.SetName(setUp, $"Set up {editor.Name}");
         setUp.Click += (_, _) => ShowFull();
         host.Children.Add(Section(editor.Name));
 
@@ -153,6 +154,8 @@ public partial class SettingsModal
     {
         var button = ActionButton("Install");
         button.IsEnabled = false;
+        // Each tool's own, or every one is just "Install" to a screen reader.
+        System.Windows.Automation.AutomationProperties.SetName(button, $"Install or update {editor.Name}");
         var detail = new TextBlock { FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(0, 3, 0, 0), TextWrapping = TextWrapping.Wrap };
         var row = Row(ToolInstaller.InstalledVersion(editor) is null ? "Install from GitHub" : "Updates", null, button);
         ((StackPanel)row.Children[0]).Children.Add(detail);
