@@ -130,8 +130,13 @@ public partial class MainWindow
         var servers = (JsonNode.Parse(File.ReadAllText(mcp))?["mcpServers"] as JsonObject)?.Select(server => server.Key).ToList() ?? [];
         Directory.CreateDirectory(AttachmentsFolder);
 
-        // A game made in Unreal gets the skills its engine ships, and its own.
-        var others = FindProject(conversation.ProjectId)?.Engine == "Unreal Engine" ? UnrealSkills.ForFolder(conversation.Folder ?? ProjectFolder(conversation.ProjectId)) : [];
+        // The skills the creative tools set up here ship with them, and for a game made in Unreal
+        // the skills its engine ships, and its own.
+        List<AgentSkill> others = [.. ToolSkills.For(Settings.Editors)];
+        if (FindProject(conversation.ProjectId)?.Engine == "Unreal Engine")
+        {
+            others.AddRange(UnrealSkills.ForFolder(conversation.Folder ?? ProjectFolder(conversation.ProjectId)).Where(skill => !others.Any(had => had.Name == skill.Name)));
+        }
         _sessionSkills[conversation.Id] = [.. AgentSkills.List(agentFolder), .. others];
         return new AgentConversation.Setup(provider, mcp, servers, AgentSkills.ClaudePlugin(agentFolder, conversation.ProjectId, others),
             AgentBriefing.Write(Settings.Editors, agentFolder, conversation.ProjectId, others), AttachmentsFolder);

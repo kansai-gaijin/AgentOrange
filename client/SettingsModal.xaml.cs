@@ -355,8 +355,19 @@ public partial class SettingsModal : UserControl
         elements.Add(Section(skills.Count == 0 ? "No skills of Agent Orange's own yet" : $"{skills.Count} skill{(skills.Count == 1 ? "" : "s")}"));
         if (skills.Count > 0) elements.Add(Card([.. skills.Select(SkillRow)]));
 
-        // Unreal's own, for a game made in it, as the newest engine here has them with its plugins as they come.
         var listed = skills.Select(skill => skill.Name).ToHashSet();
+
+        // The creative tools' own, shipped beside their programs.
+        foreach (var tool in ToolSkills.For(Editors).GroupBy(skill => skill.From))
+        {
+            elements.Add(Section($"{tool.Key}'s skills"));
+            elements.Add(Card([
+                Row($"From {tool.Key}", $"{tool.Key} ships these with it, beside its program. Every agent session gets them while {tool.Key} is set up here."),
+                .. tool.Select(SkillRow)]));
+            listed.UnionWith(tool.Select(skill => skill.Name));
+        }
+
+        // Unreal's own, for a game made in it, as the newest engine here has them with its plugins as they come.
         if (UnrealProject.Installed().FirstOrDefault() is { } engine && UnrealSkills.For(engine) is { Count: > 0 } unreal)
         {
             elements.Add(Section($"Unreal Engine {engine.Version}'s skills"));
