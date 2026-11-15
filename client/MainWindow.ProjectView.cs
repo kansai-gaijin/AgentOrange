@@ -101,6 +101,7 @@ public partial class MainWindow
             {
                 body.Children.Add(new TextBlock { Text = $"This folder looks like a {engine} project, but this project is set to {project.Engine}. You can change that in project settings.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
             }
+            if (project.Engine == "Unreal Engine" && folder is not null && !_shownDownloadState.Unfinished) AddUnrealRow(body, project, folder);
             if (found.FolderMayNotMatch)
             {
                 body.Children.Add(new TextBlock { Text = "This folder doesn't have the repo's latest commits. It may just be behind, but it may not be the same project, so check before pushing.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });

@@ -47,7 +47,7 @@ public sealed partial class EditorMonitor
 
     public static readonly EditorDefinition[] Definitions =
     [
-        new("unreal", "Unreal Engine", true, McpKind.Http, "http://localhost:8666/uemcp"),
+        new("unreal", "Unreal Engine", true, McpKind.Http, "http://localhost:8666/mcp"), // Unreal's own MCP server, on the port Agent Orange gives it (UnrealProject.McpPort).
         new("godot", "Godot", true, McpKind.Http, "http://127.0.0.1:8645/mcp"),
         new("unity", "Unity", true, McpKind.Http, "http://127.0.0.1:8080/mcp"), // MCP for Unity's own default.
         new("blender", "Blender", false, McpKind.Port, "127.0.0.1:9876"),

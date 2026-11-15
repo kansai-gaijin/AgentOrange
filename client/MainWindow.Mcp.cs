@@ -84,13 +84,13 @@ public partial class MainWindow
             new JsonObject { ["id"] = Text("What follows picture: in the document.") }, ["id"], (project, given) => ReadPicture(Required(given, "id"))),
 
         // The creative tools, such as Blender, Aseprite, ArmorPaint and Material Maker.
-        new("list_tools", "The creative tools set up on this PC, such as Blender, Aseprite, ArmorPaint and Material Maker, and whether each is open and its MCP answers.",
+        new("list_tools", "The creative tools set up on this PC, such as Blender, Aseprite, ArmorPaint and Material Maker, and the game's engine, such as Unreal Engine, and whether each is open and its MCP answers.",
             [], [], (_, _) => "", (project, _) => ListToolsForAgentAsync(project)),
-        new("open_tool", "Opens a creative tool in the project's folder, if it isn't open, and waits until its MCP answers. Then tool_tools and use_tool can use it.",
+        new("open_tool", "Opens a creative tool in the project's folder, or the game's engine with its project, if it isn't open, and waits until its MCP answers. Then tool_tools and use_tool can use it.",
             new JsonObject { ["tool"] = Text("The tool's name, such as Blender or Aseprite.") }, ["tool"], (_, _) => "", OpenToolForAgentAsync),
-        new("tool_tools", "What an open creative tool can do: its own tools, with their arguments, for use_tool.",
+        new("tool_tools", "What an open creative tool or engine can do: its own tools, with their arguments, for use_tool.",
             new JsonObject { ["tool"] = Text("The tool's name.") }, ["tool"], (_, _) => "", ToolToolsAsync),
-        new("use_tool", "Uses one of an open creative tool's own tools, as tool_tools lists them, and gives back what it gave, pictures included.",
+        new("use_tool", "Uses one of an open creative tool's or engine's own tools, as tool_tools lists them, and gives back what it gave, pictures included.",
             new JsonObject { ["tool"] = Text("The tool's name, such as Blender."), ["name"] = Text("Its tool to use, from tool_tools."), ["arguments"] = new JsonObject { ["type"] = "object", ["description"] = "That tool's arguments." } },
             ["tool", "name"], (_, _) => "", UseToolAsync),
     ];

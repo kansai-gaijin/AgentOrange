@@ -3,6 +3,27 @@
 What got in the way while using Agent Orange to make the games, and what was done about it. Newest first.
 Anything not fixed on the spot is a GitHub issue, not a line here.
 
+## 2026-11-15 · Unreal 5.9: the game's project, made and opened from Agent Orange
+
+With Unreal set as the engine and nothing in the folder, the project page had nothing to offer: no
+way to make the Unreal project or open Unreal, and an agent couldn't reach the engine at all.
+
+- **Create the Unreal project** (`UnrealProject.cs`, `MainWindow.Unreal.cs`): shown on the project
+  page while the folder has no .uproject, with the installed engines to pick from (found from the
+  Epic launcher's list and Program Files). It does what Unreal's own wizard does with its Blank C++
+  template (by the template's TemplateDefs.ini), turns on Unreal MCP and All Toolsets, sets Unreal's
+  MCP server to start on its own on Agent Orange's port (8666), adds Unreal's folders to
+  .gitignore, and builds the editor's copy of the code, so Unreal never asks to. About 3 minutes.
+  The page then says "Unreal Engine 5.9" and offers **Open in Unreal Engine**.
+- **Agents open and use the game's engine** like the creative tools: open_tool opens the project in
+  Unreal and waits up to ten minutes; Unreal's own MCP server (5.9's is built in, at /mcp) gives
+  around 128 toolsets through its list_toolsets, describe_tools and call_tool.
+- Agent Orange had 5.8's MCP address for Unreal (port 8666 at /uemcp). 5.9's is /mcp, port 8000
+  unless told otherwise, and only started when asked, so Agent Orange now tells it both.
+- **Material Maker's "crash" was its rescue prompt**, there because I'd force-closed it with
+  unsaved test materials. Tools get closed the normal way, never killed.
+- In a dev build only, `dotnet watch` crashing takes down whatever the app started, Unreal included.
+
 ## 2026-11-15 · Blender through Blender Lab's official Blender MCP
 
 The user asked whether Agent Orange used the official Blender MCP. It didn't: it had a bridge of its

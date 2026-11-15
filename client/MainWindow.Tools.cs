@@ -17,11 +17,14 @@ public partial class MainWindow
 {
     private readonly Dictionary<string, McpClient> _toolClients = [];
 
-    private IEnumerable<EditorDefinition> CreativeTools => EditorMonitor.Definitions.Where(editor => !editor.IsEngine && Settings.Editors.IsSetUp(editor));
+    // The creative tools set up on this PC, and the game's own engine.
+    private IEnumerable<EditorDefinition> AgentTools(Project project) =>
+        EditorMonitor.Definitions.Where(editor => (!editor.IsEngine || editor.Name == project.Engine) && Settings.Editors.IsSetUp(editor));
 
-    private EditorDefinition ToolNamed(string asked) =>
-        CreativeTools.FirstOrDefault(editor => editor.Name.Equals(asked, StringComparison.OrdinalIgnoreCase) || editor.Id.Equals(asked, StringComparison.OrdinalIgnoreCase))
-        ?? throw new McpException(-32602, $"No tool called {asked} is set up here. Set up: {string.Join(", ", CreativeTools.Select(editor => editor.Name))}.");
+    private EditorDefinition ToolNamed(Project project, string asked) =>
+        AgentTools(project).FirstOrDefault(editor => editor.Name.Equals(asked, StringComparison.OrdinalIgnoreCase) || editor.Id.Equals(asked, StringComparison.OrdinalIgnoreCase)
+            || (editor.Id == "unreal" && asked.Equals("Unreal", StringComparison.OrdinalIgnoreCase)))
+        ?? throw new McpException(-32602, $"No tool called {asked} is set up here. Set up: {string.Join(", ", AgentTools(project).Select(editor => editor.Name))}.");
 
     private bool IsOpen(EditorDefinition editor) => Settings.Editors.StatusOf(editor.Id)?.Instances.Count > 0;
 
@@ -62,6 +65,7 @@ public partial class MainWindow
     {
         var settings = Settings.Editors.SettingsOf(editor);
         if (await ReachableAsync(editor)) return $"{editor.Name} is open, and its MCP answers.";
+        if (editor.Id == "unreal") return await OpenUnrealAsync(editor, folder);
         if (!File.Exists(settings.ProgramPath)) return $"{editor.Name}'s program isn't where Agent Orange has it ({settings.ProgramPath}). It's set in Settings › Tools.";
 
         // Blender Lab's Blender MCP, set up the first time: its extension in Blender and its server for agents.
@@ -103,6 +107,27 @@ public partial class MainWindow
         return $"{editor.Name} was started, but its MCP hasn't answered in two minutes. It may still be loading, or its MCP may be off in it.";
     }
 
+    // The game's own project, in its engine, which takes a while to load.
+    private async Task<string> OpenUnrealAsync(EditorDefinition editor, string? folder)
+    {
+        if (folder is null || UnrealProject.Find(folder) is not { } uproject)
+        {
+            return "This project's folder has no Unreal project yet. The person makes it with Create the Unreal project, on the project's page in Agent Orange.";
+        }
+        if (Process.GetProcessesByName("UnrealEditor").Length > 0)
+        {
+            return "Unreal is open, but its MCP doesn't answer on Agent Orange's port. It may be another project, or still loading. Ask the person to open this one with Open in Unreal Engine, on the project's page.";
+        }
+        if (UnrealProject.Open(uproject) is { } problem) return problem;
+
+        for (var waited = 0; waited < 600; waited++)
+        {
+            await Task.Delay(1000);
+            if (await ReachableAsync(editor)) return $"Opened {Path.GetFileName(uproject)} in Unreal, and its MCP answers.";
+        }
+        return "Unreal was started, but its MCP hasn't answered in ten minutes. The first open of a project compiles shaders, which can take longer. Try open_tool again in a while.";
+    }
+
     private async Task<McpClient> ToolClientAsync(EditorDefinition editor, string? folder)
     {
         if (_toolClients.TryGetValue(editor.Id, out var kept)) return kept;
@@ -119,22 +144,22 @@ public partial class MainWindow
     private async Task<object> ListToolsForAgentAsync(Project project)
     {
         var said = new StringBuilder();
-        foreach (var editor in CreativeTools)
+        foreach (var editor in AgentTools(project))
         {
             var reachable = await ReachableAsync(editor);
             said.AppendLine($"- {editor.Name}: {(IsOpen(editor) ? "open" : "not open")}, {(reachable ? "its MCP answers" : "its MCP doesn't answer yet")}.");
         }
         return said.Length == 0
-            ? "No creative tools are set up on this PC. The person sets them up in Settings › Tools."
+            ? "No creative tools or engine are set up on this PC. The person sets them up in Settings › Engines and Settings › Tools."
             : said + "\nopen_tool opens one in the project's folder. tool_tools says what one can do, and use_tool uses it.";
     }
 
     private async Task<object> OpenToolForAgentAsync(Project project, JsonObject given) =>
-        await OpenToolAsync(ToolNamed(Required(given, "tool")), ProjectFolder(project.Id));
+        await OpenToolAsync(ToolNamed(project, Required(given, "tool")), ProjectFolder(project.Id));
 
     private async Task<object> ToolToolsAsync(Project project, JsonObject given)
     {
-        var editor = ToolNamed(Required(given, "tool"));
+        var editor = ToolNamed(project, Required(given, "tool"));
         if (!await ReachableAsync(editor)) return $"{editor.Name}'s MCP doesn't answer. Open it with open_tool first.";
         var client = await ToolClientAsync(editor, ProjectFolder(project.Id));
         var listed = await client.RequestAsync("tools/list", []);
@@ -149,7 +174,7 @@ public partial class MainWindow
 
     private async Task<object> UseToolAsync(Project project, JsonObject given)
     {
-        var editor = ToolNamed(Required(given, "tool"));
+        var editor = ToolNamed(project, Required(given, "tool"));
         var name = Required(given, "name");
         var arguments = given["arguments"] as JsonObject ?? [];
         if (!await ReachableAsync(editor)) return ToolResult($"{editor.Name}'s MCP doesn't answer. Open it with open_tool first.", error: true);
