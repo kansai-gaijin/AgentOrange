@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
-using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -18,13 +17,15 @@ internal abstract class McpClient : IDisposable
 {
     private int _nextId;
 
-    public static async Task<McpClient> ConnectAsync(EditorSettings settings, string? folder)
+    // A tool whose MCP is only a port, such as Blender's, is reached through the server made for it (server).
+    public static async Task<McpClient> ConnectAsync(EditorSettings settings, string? folder, string? server = null)
     {
         McpClient client = settings.Kind switch
         {
             McpKind.Http => new HttpMcpClient(settings.Address),
             McpKind.Relay => new ProgramMcpClient(settings.ProgramPath, settings.Address, folder),
-            _ => throw new InvalidOperationException("This tool's MCP is only a port, which takes no MCP."),
+            _ when server is not null && File.Exists(server) => new ProgramMcpClient(server, "", folder),
+            _ => throw new InvalidOperationException("This tool's MCP is only a port, and nothing that speaks MCP to it is set up."),
         };
         try
         {
@@ -164,41 +165,5 @@ internal sealed class ProgramMcpClient : McpClient
         {
         }
         _program.Dispose();
-    }
-}
-
-/// <summary>
-/// Blender, through the bridge Agent Orange starts it with (<see cref="BlenderBridge"/>): a JSON
-/// command each way over a socket, as the community Blender MCP add-on takes them.
-/// </summary>
-internal static class BlenderSocket
-{
-    public static async Task<JsonNode?> SendAsync(string address, string type, JsonObject parameters, CancellationToken cancel = default)
-    {
-        var (host, port) = address.Split(':') is [var h, var p] && int.TryParse(p, out var number) ? (h, number) : ("127.0.0.1", 9876);
-        using var socket = new TcpClient();
-        await socket.ConnectAsync(host, port, cancel);
-        var stream = socket.GetStream();
-        var bytes = Encoding.UTF8.GetBytes(new JsonObject { ["type"] = type, ["params"] = parameters }.ToJsonString());
-        await stream.WriteAsync(bytes, cancel);
-
-        // One whole JSON answer, however many reads it takes.
-        var received = new MemoryStream();
-        var buffer = new byte[65536];
-        while (true)
-        {
-            var read = await stream.ReadAsync(buffer, cancel);
-            if (read == 0) break;
-            received.Write(buffer, 0, read);
-            try
-            {
-                return JsonNode.Parse(received.ToArray());
-            }
-            catch (JsonException)
-            {
-                // Not all of it yet.
-            }
-        }
-        throw new IOException("Blender closed the connection before answering.");
     }
 }

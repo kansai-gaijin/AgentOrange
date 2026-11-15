@@ -72,7 +72,10 @@ public static class AgentMcpConfig
                     servers[editor.Id] = new JsonObject { ["type"] = "stdio", ["command"] = settings.ProgramPath, ["args"] = arguments };
                     break;
 
-                // Only a port, which agents can't talk to without something of their own in between.
+                // Only a port, which agents talk to through the server made for it: Blender Lab's, for Blender.
+                case McpKind.Port when editor.Id == "blender" && File.Exists(BlenderMcp.ServerProgram(agentFolder)):
+                    servers[editor.Id] = new JsonObject { ["type"] = "stdio", ["command"] = BlenderMcp.ServerProgram(agentFolder) };
+                    break;
                 case McpKind.Port:
                     break;
             }

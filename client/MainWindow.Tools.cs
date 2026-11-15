@@ -10,8 +10,8 @@ namespace AgentOrange;
 /// The creative tools set up on this PC, such as Blender, Aseprite, ArmorPaint and Material Maker,
 /// opened by Agent Orange in the project's folder and used through it: an agent's session only
 /// connects to MCP servers already running when it starts, so Agent Orange passes its calls on to
-/// a tool opened partway through. Blender is opened with Agent Orange's own bridge
-/// (<see cref="BlenderBridge"/>), so nothing has to be installed in it first.
+/// a tool opened partway through. Blender is reached through Blender Lab's official Blender MCP
+/// (<see cref="BlenderMcp"/>), which Agent Orange sets up the first time it opens Blender.
 /// </summary>
 public partial class MainWindow
 {
@@ -64,11 +64,26 @@ public partial class MainWindow
         if (await ReachableAsync(editor)) return $"{editor.Name} is open, and its MCP answers.";
         if (!File.Exists(settings.ProgramPath)) return $"{editor.Name}'s program isn't where Agent Orange has it ({settings.ProgramPath}). It's set in Settings › Tools.";
 
+        // Blender Lab's Blender MCP, set up the first time: its extension in Blender and its server for agents.
+        if (editor.Id == "blender" && await BlenderMcp.SetUpAsync(Settings.Folders.AgentFolder, settings.ProgramPath, said => AppLog.Write(said)) is { } notSetUp) return notSetUp;
+
         var start = new ProcessStartInfo(settings.ProgramPath) { UseShellExecute = false };
         if (folder is not null && Directory.Exists(folder)) start.WorkingDirectory = folder;
-        if (editor.Id == "blender") start.ArgumentList.Add("--python"); // Agent Orange's bridge, as nothing else is needed in Blender.
-        if (editor.Id == "blender") start.ArgumentList.Add(BlenderBridge.Write(Settings.Folders.AgentFolder, settings.Address));
-        if (!IsOpen(editor) || editor.Id == "blender")
+        if (editor.Id == "blender")
+        {
+            start.ArgumentList.Add("--online-mode"); // Its extension only starts on its own when Blender may go online.
+            start.ArgumentList.Add("--python-expr");
+            start.ArgumentList.Add(BlenderMcp.WithoutSplash);
+        }
+
+        // Looked at now, as the monitor's last look may have caught the setup's own runs of the program.
+        var running = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(settings.ProgramPath)).Length > 0;
+        if (running && editor.Id == "blender")
+        {
+            return "Blender is open, but its MCP doesn't answer. Ask the person to turn it on in Blender (Edit › Preferences › Add-ons › MCP › Start), "
+                + "or to close Blender so open_tool can start it with its MCP on.";
+        }
+        if (!running)
         {
             try
             {
@@ -91,7 +106,7 @@ public partial class MainWindow
     private async Task<McpClient> ToolClientAsync(EditorDefinition editor, string? folder)
     {
         if (_toolClients.TryGetValue(editor.Id, out var kept)) return kept;
-        var client = await McpClient.ConnectAsync(Settings.Editors.SettingsOf(editor), folder);
+        var client = await McpClient.ConnectAsync(Settings.Editors.SettingsOf(editor), folder, editor.Id == "blender" ? BlenderMcp.ServerProgram(Settings.Folders.AgentFolder) : null);
         _toolClients[editor.Id] = client;
         return client;
     }
@@ -121,14 +136,6 @@ public partial class MainWindow
     {
         var editor = ToolNamed(Required(given, "tool"));
         if (!await ReachableAsync(editor)) return $"{editor.Name}'s MCP doesn't answer. Open it with open_tool first.";
-        if (Settings.Editors.SettingsOf(editor).Kind == McpKind.Port)
-        {
-            return $"{editor.Name}, through Agent Orange's bridge:\n"
-                + "- get_scene_info: the open file, its objects with their types and places, and its materials. No arguments.\n"
-                + "- get_viewport_screenshot: a picture of the 3D viewport as it is now, to see what you've made. No arguments.\n"
-                + "- execute_code: runs Python in Blender, with bpy, and gives back what it printed. Arguments: {\"code\": \"...\"}. Save and export with bpy.ops.wm.save_as_mainfile or the exporters, to wherever the work belongs.";
-        }
-
         var client = await ToolClientAsync(editor, ProjectFolder(project.Id));
         var listed = await client.RequestAsync("tools/list", []);
         var said = new StringBuilder($"{editor.Name}'s tools, for use_tool:\n");
@@ -145,21 +152,7 @@ public partial class MainWindow
         var editor = ToolNamed(Required(given, "tool"));
         var name = Required(given, "name");
         var arguments = given["arguments"] as JsonObject ?? [];
-        var settings = Settings.Editors.SettingsOf(editor);
         if (!await ReachableAsync(editor)) return ToolResult($"{editor.Name}'s MCP doesn't answer. Open it with open_tool first.", error: true);
-
-        if (settings.Kind == McpKind.Port)
-        {
-            var answer = await BlenderSocket.SendAsync(settings.Address, name, (JsonObject)arguments.DeepClone());
-            var failed = answer?["status"]?.GetValue<string>() == "error";
-
-            // A picture is given as one, for the agent to look at.
-            if (!failed && answer?["result"]?["png_base64"]?.GetValue<string>() is { } png)
-            {
-                return new JsonObject { ["content"] = new JsonArray(new JsonObject { ["type"] = "image", ["data"] = png, ["mimeType"] = "image/png" }) };
-            }
-            return ToolResult(failed ? answer?["message"]?.GetValue<string>() ?? "Blender said no." : answer?["result"]?.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) ?? "", error: failed);
-        }
 
         try
         {

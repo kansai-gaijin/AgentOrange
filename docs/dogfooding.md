@@ -3,6 +3,24 @@
 What got in the way while using Agent Orange to make the games, and what was done about it. Newest first.
 Anything not fixed on the spot is a GitHub issue, not a line here.
 
+## 2026-11-15 · Blender through Blender Lab's official Blender MCP
+
+The user asked whether Agent Orange used the official Blender MCP. It didn't: it had a bridge of its
+own. Now it uses Blender Lab's (`BlenderMcp.cs`), and the bridge is gone.
+
+- **Set up by Agent Orange the first time an agent opens Blender:** it fetches v1.0.3, puts its
+  `blender-mcp` server in a Python environment in the agent folder, and builds and installs its
+  extension into Blender with Blender's own command line. Nothing for the person to do.
+- **Blender didn't start after the setup:** the setup runs Blender twice, the tool monitor saw those
+  runs as Blender being open, and open_tool skipped starting it. It now looks at the running programs
+  itself, and if Blender is open without its MCP, tells the agent what the person can do.
+- **A real agent made a low-poly planet and moon,** looked up the glTF exporter in Blender's docs
+  through the tools, exported planets.glb and checked it held just the two. From its notes: Blender's
+  splash covered its screenshot (Blender is now started with the splash off for that start only, and
+  the person's preference is put back unsaved); Blender Lab's render tools save in Blender's temporary
+  folder whatever path they're given (their design: the briefing now says so); and almost all real
+  work goes through execute_blender_code.
+
 ## 2026-11-15 · Creative tools used by agents through Agent Orange
 
 The user meant the tools, not Agent Orange's own: Blender, Aseprite, ArmorPaint and Material Maker.
@@ -16,13 +34,12 @@ MCP servers already running when it starts, and Blender's was "Port only", which
   `McpClient.cs`): list_tools, open_tool (starts it in the project's folder and waits for its MCP),
   tool_tools (what it can do) and use_tool. It talks HTTP (JSON or event streams) and programs over
   stdio, so a tool opened partway through a session is usable straight away.
-- **Blender, for now, through a bridge of Agent Orange's own** (`BlenderBridge.cs`), which Blender is
-  started with. The user then asked whether this was the official Blender MCP: it isn't, and Blender
-  Lab has had one since 2026, which it should switch to.
+- **Blender, at first, through a bridge of Agent Orange's own,** which Blender was started with.
+  Replaced by Blender Lab's official Blender MCP (above).
 - **A real agent used all four:** a green low-poly sphere exported from Blender, an orange circle
   sprite saved from Aseprite, a bricks material exported from Material Maker, and the sphere imported
   into ArmorPaint and captured. The game's folder was untouched.
-- From its notes: Blender had no screenshot (added to the bridge, and checked); Material Maker's 3D
+- From its notes: Blender had no screenshot (Blender Lab's has them); Material Maker's 3D
   preview came back white though its textures were right, and ArmorPaint always saves its capture to
   a folder of its own outside the project (both in the forks); every call goes through use_tool, so
   the tool's own list has to be read first.
