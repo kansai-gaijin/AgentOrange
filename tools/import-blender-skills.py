@@ -1,9 +1,12 @@
 """Builds Agent Orange's Blender skills from a checkout of arjun988/blender-skills (MIT).
 
-Usage: python -I tools/import-blender-skills.py <checkout> client/Skills/tools/blender
+Usage: python -I tools/import-blender-skills.py <checkout> client/Skills/tools/blender/blender-skills-arjun988
 
 The two MCP references Agent Orange rewrote (mcp-tools.md, mcp-integration.md) are kept from the
-destination's blender-references. See client/Skills/tools/blender/README.md for what this changes.
+destination's blender-references. See the destination's README.md for what this changes.
+
+The skills EL4CTEO/blender-skills covers better (tested on Blender 5.3, with scripts) are left out,
+and links to them point to EL4CTEO's (tools/import-blender-agent-skills.py).
 """
 import os
 import re
@@ -15,6 +18,25 @@ OWN = ("mcp-tools.md", "mcp-integration.md")
 
 src = os.path.join(repo, ".claude", "skills")
 STUB = 1500  # A skill with less than this in all its files is a stub: a line or two of direction.
+
+# Covered by EL4CTEO's skills, by the one that covers each.
+COVERED = {
+    "blender-director": "blender-core", "blender-modeler": "blender-hardsurface-modeling",
+    "hard-surface": "blender-hardsurface-modeling", "sculpting": "blender-sculpting",
+    "retopology": "blender-retopology-uv", "uv-workflow": "blender-retopology-uv",
+    "materials": "blender-pbr-materials", "texture-workflow": "blender-texture-baking",
+    "hair-groom": "blender-hair-grooming", "cloth-sim": "blender-simulation",
+    "geometry-nodes": "blender-geometry-nodes", "lighting": "blender-lighting-lookdev",
+    "rendering": "blender-rendering", "compositing": "blender-rendering",
+    "animation": "blender-animation", "rigging": "blender-character-rigging",
+    "physics-sim": "blender-simulation", "procedural-modeling": "blender-geometry-nodes",
+    "scene-assembly": "blender-scene-setup", "asset-optimization": "blender-game-optimization",
+    "lod-pipeline": "blender-game-optimization", "export-pipeline": "blender-export-pipelines",
+    "unity-export": "blender-export-pipelines", "unreal-export": "blender-export-pipelines",
+    "godot-export": "blender-export-pipelines", "qa-review": "blender-asset-qa",
+    "lookdev": "blender-lighting-lookdev", "environment-artist": "blender-environment-kits",
+    "character-artist": "blender-workflow-recipes", "archviz": "blender-lighting-lookdev",
+}
 
 
 def size(folder):
@@ -53,7 +75,7 @@ def front(name, description):
 
 skills = sorted(d for d in os.listdir(src) if os.path.isfile(os.path.join(src, d, "SKILL.md")))
 stubs = [d for d in skills if size(os.path.join(src, d)) < STUB]
-kept = [d for d in skills if d not in stubs]
+kept = [d for d in skills if d not in stubs and d not in COVERED]
 
 readme = read(os.path.join(dest, "README.md"))
 own = {f: read(os.path.join(dest, "blender-references", f)) for f in OWN}
@@ -98,7 +120,7 @@ write(os.path.join(art, "SKILL.md"), front(
     "blender-art-direction",
     "Short art-direction notes for Blender work in one style, mood, world, era or game genre: retro 8-bit and 16-bit, HD-2D, chibi, noir, cozy, dark and gritty, brutalist, neon retro-futurism, cosmic and folk horror, liminal spaces, fantasy, sci-fi, apocalypse, biomes, and genres such as RPG, shooter, soulslike, stealth, racing and strategy. Use when the game's look or genre is one of these, alongside the modelling, materials and lighting skills.")
     + "\n# Blender art direction\n\nOne note per direction. Read the one that matches the game's look or genre, then use the craft skills"
-    + " (`blender-modeler`, `materials`, `lighting` and the rest) to carry it out.\n\n| Note | What it's for |\n|---|---|\n"
+    + " (`blender-core` routes to them) to carry it out.\n\n| Note | What it's for |\n|---|---|\n"
     + "\n".join(index) + "\n")
 
 # Fixes, across everything copied.
@@ -118,6 +140,17 @@ fixes = [
     (r"- \[ \] Object faces correct forward axis for target engine \(typically -Y or \+X\)",
      "- [ ] Object faces the right way for the target engine, checked by looking (the `model-facing` skill)"),
 ]
+# Links to a covered skill go to the one that covers it. A hyphenated name can't be anything else;
+# a one-word one (materials, lighting) only when it's written as a skill: in backticks, a table cell or a chain.
+for name, to in COVERED.items():
+    if "-" in name:
+        fixes.append((r"(?<![\w/-])" + re.escape(name) + r"(?![\w-])", to))
+    else:
+        fixes.append((r"`" + re.escape(name) + r"`", f"`{to}`"))
+        fixes.append((r"(?<=\| )" + re.escape(name) + r"(?= \||,)", to))
+        fixes.append((r"(?<=, )" + re.escape(name) + r"(?= \||,|$)", to))
+        fixes.append((r"(?<=→ )" + re.escape(name) + r"(?=\s|$)", to))
+
 for root, _, files in os.walk(dest):
     if os.path.basename(root) == "references" and os.path.dirname(root) == art:
         continue  # The stubs' own notes keep their names.

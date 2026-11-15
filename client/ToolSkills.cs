@@ -29,14 +29,19 @@ public static class ToolSkills
                 }
             }
 
-            // And those Agent Orange brings for it, such as Blender's (client/Skills/tools/blender).
+            // And those Agent Orange brings for it, such as Blender's (client/Skills/tools/blender), each
+            // pack in a folder of its own, as its skills link to each other and to their scripts there.
             var brought = Path.Combine(AgentSkills.BuiltInFolder, "tools", editor.Id);
             if (!Directory.Exists(brought)) continue;
-            var broughtNote = $"This skill comes with Agent Orange for {editor.Name}. "
-                + $"In Agent Orange, if {editor.Name}'s MCP tools aren't among yours, reach it through agent-orange's open_tool, tool_tools and use_tool; don't register it yourself.";
-            foreach (var skill in Directory.EnumerateDirectories(brought).Order(StringComparer.OrdinalIgnoreCase).Select(each => AgentSkills.Read(each, editor.Name)).OfType<AgentSkill>())
+            foreach (var pack in Directory.EnumerateDirectories(brought).Order(StringComparer.OrdinalIgnoreCase))
             {
-                if (!found.Any(had => had.Name == skill.Name)) found.Add(skill with { Note = broughtNote, BuiltIn = true });
+                var packNote = $"This skill comes with Agent Orange for {editor.Name}, and its own files are in `{pack}`, which is what `<skills_dir>` means in it. "
+                    + $"{editor.Name}'s program here is `{editors.SettingsOf(editor).ProgramPath}`{(editor.Id == "blender" ? " (BLENDER_EXE for a script that starts it)" : "")}. "
+                    + $"In Agent Orange, if {editor.Name}'s MCP tools aren't among yours, reach it through agent-orange's open_tool, tool_tools and use_tool; don't register it yourself.";
+                foreach (var skill in Directory.EnumerateDirectories(pack).Order(StringComparer.OrdinalIgnoreCase).Select(each => AgentSkills.Read(each, editor.Name)).OfType<AgentSkill>())
+                {
+                    if (!found.Any(had => had.Name == skill.Name)) found.Add(skill with { Note = packNote, BuiltIn = true });
+                }
             }
         }
         return found;

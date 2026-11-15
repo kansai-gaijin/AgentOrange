@@ -79,6 +79,7 @@ public static class AgentBriefing
             {
                 said.AppendLine();
                 said.AppendLine(group.Key == AgentSkills.OwnSource ? "Agent Orange's own:" : $"{group.Key}'s:");
+                foreach (var note in group.Where(skill => skill.BuiltIn && skill.Note is not null).Select(skill => skill.Note!).Distinct()) said.AppendLine($"({note})");
                 foreach (var skill in group) said.AppendLine($"- {AgentSkills.PluginPrefix}{skill.Name} ({skill.File}){(skill.Description.Length > 0 ? $": {FirstSentence(skill.Description)}" : "")}");
             }
         }

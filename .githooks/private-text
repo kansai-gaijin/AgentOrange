@@ -38,7 +38,8 @@ checks_text() {
         echo "Blocked: this seems to hold a personal path or a private address." >&2
         return 1
     fi
-    if grep -IoE '[[:alnum:]._%+-]+@([[:alnum:]-]+\.)+[[:alpha:]]{2,}' "$1" | grep -vqE '^git@github\.com$|@example\.(com|org)$|@users\.noreply\.github\.com$|^noreply@anthropic\.com$'; then
+    # Unity names an animation's file model@clip.fbx, which isn't an address.
+    if grep -IoE '[[:alnum:]._%+-]+@([[:alnum:]-]+\.)+[[:alpha:]]{2,}' "$1" | grep -vqE '^git@github\.com$|@example\.(com|org)$|@users\.noreply\.github\.com$|^noreply@anthropic\.com$|@[[:alnum:]_-]+\.(fbx|glb|gltf|obj|blend|anim|png|tga|wav)$'; then
         echo "Blocked: this seems to hold an email address." >&2
         return 1
     fi
