@@ -170,7 +170,7 @@ Everything is merged and pushed. Nothing is waiting on any branch.
   - **Visual work:** Claude **Fable**, always trying **Medium** first. If Fable's weekly limit is used up, Codex **GPT-6-Astra on High**. If both are used up, Claude **Opus on High**.
   - **Coding, problem solving and everything else:** Claude **Opus on High**. **Never use Codex for coding.**
   - **Image generation, planning and general game design:** Codex **GPT-6.1-Sol on High or Medium**, depending on the task. Codex's limits are small, so use it sparingly.
-  - A Claude conversation can't move to Codex, so Codex work needs its own conversation with a brief.
+  - **Never change model or login inside a conversation:** the new model re-reads the whole conversation, which wastes tokens. Start a new conversation with a short, focused brief instead (the design and progress are on AO's cards and tasks, so the brief can point there). The exception is a usage limit hit mid-task, where AO's "Go on with" is the only way to keep the work going.
 - **Approvals:** agents run in AO's **Auto** mode, so you don't approve every small thing (it wastes tokens).
 - **Multiplayer from the start:** always build with Unreal replication in mind (server-authoritative movement with prediction, every check run as 2-player Listen Server in Play In Editor).
 - **Controller from the start:** the user playtests with a **PS4 DualShock 4** on Windows. Enhanced Input with keyboard/mouse and gamepad in one mapping context. Unreal's free Game Input (Windows) plugin plus Microsoft's Game Input runtime is the candidate; installing the runtime waits for the user's yes.
@@ -194,7 +194,7 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 **Known rough edges to expect:**
 - **Agents can't add cards** (#92). Until that's built, an agent can only ask the person to add one, so build it when the game needs it.
 - **dotnet watch kills child processes.** In the dev build, a `dotnet watch` restart closes the programs AO started, Unreal included. So avoid multi-file hot-reload edits while an agent is mid-task in Unreal.
-- **Two-hour cap.** `dotnet watch` run from Claude Code stops after two hours at most; tell the user rather than restarting it in a loop.
+- **No two-hour cap:** a background command started by Claude Code stops after two hours, which closes the app (and Unreal). So start `dotnet watch` in its own console window instead: `Start-Process powershell.exe -ArgumentList '-NoExit','-Command','Set-Location <repo>; dotnet watch --project client --non-interactive' -WindowStyle Minimized`. Run only one `dotnet watch`.
 - **"New conversation" asks which project first.** The drive tool needs the project picked before typing, or the message goes into the open conversation.
 - **Unreal's MCP is large:** about 80 toolsets, and some tool descriptions are around 25 KB. A level is saved with the Asset toolset's `SaveAsset`; there's no tool named for saving a level.
 - **Waiting for approvals:** agents ask for approval for shell commands. Read each one before allowing it with the drive tool (`click "Allow PowerShell"`).

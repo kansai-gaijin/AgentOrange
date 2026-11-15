@@ -25,8 +25,7 @@ public sealed partial class AgentsWindow
     private void PickFiles()
     {
         if (_open is null) return;
-        var dialog = new Microsoft.Win32.OpenFileDialog { Title = "Send to the agent", Multiselect = true, InitialDirectory = _main.ProjectFolderOf(_open) ?? "" };
-        if (dialog.ShowDialog(this) == true) AttachFiles(dialog.FileNames);
+        if (Dialogs.PickFiles("Send to the agent", _main.ProjectFolderOf(_open), this) is { Length: > 0 } files) AttachFiles(files);
     }
 
     private bool PasteAttachments()

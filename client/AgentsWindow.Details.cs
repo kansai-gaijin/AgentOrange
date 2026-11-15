@@ -94,6 +94,8 @@ public sealed partial class AgentsWindow
     {
         if (await _main.GitFolderAsync(projectId) is not { Folder: { } folder }) return;
         var state = await Task.Run(() => GitTools.RepoStateAsync(folder, fetch));
+        // Drawing it again closes any menu open on the panel, such as the one whose opening asked for this.
+        if (RepoStates.TryGetValue(folder, out var was) && was == state) return;
         RepoStates[folder] = state;
         _redrawDetails?.Invoke();
         ShowConversations();
@@ -147,7 +149,9 @@ public sealed partial class AgentsWindow
         };
         void Redraw()
         {
-            // Always about the open conversation, which can change while it's open.
+            // Always about the open conversation, which can change while it's open. Never under an
+            // open menu, which drawing it again would close: a menu asks for the state as it opens.
+            if (layers.Children.OfType<System.Windows.Controls.Primitives.Popup>().Any(menu => menu.IsOpen)) return;
             if (_open is { } open) DrawDetails(open, layers);
         }
         _redrawDetails = Redraw;

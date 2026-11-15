@@ -346,3 +346,29 @@ shadows and the look.
   Agent Orange counted two messages and waited for a second finish that never came, so the agent had
   stopped with a question while the list said "Working 15m". Now, when nothing at all comes within 20
   seconds of a finish, nothing is waiting and it's done.
+- **The clip button's file picker ignored the drive tool's `answer`,** as it opened its own dialog
+  rather than going through `Dialogs`, so attaching a playtest screenshot took a paste instead. It now
+  goes through `Dialogs.PickFiles`.
+- **Playtest feedback, through Agent Orange:** the user's first playtest found the camera looking
+  straight down on the head by the start flag (the obstacle rule rising for a thin pole). Design call:
+  small props never move the camera and fade when in the way; only big ones make it rise, to 60° at
+  most.
+- **Changing model in a conversation re-reads all of it,** which the user called a waste of tokens:
+  the conversation was at 72% of its context when it moved from Opus to Fable. The rule now is a new
+  conversation with a short brief for each change of model. Agent Orange could help here: offer "New
+  conversation from here" with a summary when another model is picked in a long conversation.
+
+## Slice 1 committed and pushed through Agent Orange's Git panel (2026-11-16)
+
+The first real use of the agents window's Git actions on the game repo: Commit (message written by
+the login: a good summary of the slice), then Push to main past the default-branch warning.
+`e784a65` is on GitHub.
+
+- **The Git options menu closed as soon as it opened.** Opening it asks for the repo's state, and the
+  answer redrew the panel, which removed the menu. A person would have seen it flash and vanish. The
+  panel is no longer drawn again under an open menu, nor when the state hasn't changed.
+- **`click "Commit"` in the drive tool** most likely went on to the commit dialog's own Commit button, so
+  the file list was never seen and a throwaway test level went in with the slice. Drive ambiguous names
+  one step at a time, and check the dialog before confirming.
+- **`dotnet watch` stopped after two hours,** taking the app and Unreal with it: Claude Code ends
+  background commands at two hours. It now runs in its own console window (see the handoff).

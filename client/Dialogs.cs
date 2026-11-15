@@ -15,6 +15,16 @@ internal static class Dialogs
         return dialog.ShowDialog() == true ? dialog.FolderName : null;
     }
 
+    /// <summary>Files to open, several at once, or null if the person cancels. A drive answer is one path, or several separated by "|".</summary>
+    public static string[]? PickFiles(string title, string? initialFolder, System.Windows.Window? owner)
+    {
+#if DEBUG
+        if (Headless.Answering) return Headless.NextAnswer()?.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+#endif
+        var dialog = new OpenFileDialog { Title = title, Multiselect = true, InitialDirectory = initialFolder ?? "" };
+        return dialog.ShowDialog(owner) == true ? dialog.FileNames : null;
+    }
+
     /// <summary>For something the person has to know, when there's no page left to show it on.</summary>
     public static void Notify(string message)
     {
