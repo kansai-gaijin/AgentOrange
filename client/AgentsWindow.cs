@@ -40,6 +40,7 @@ public sealed partial class AgentsWindow : Window
     [
         ("default", "Ask first", "shield-question", "Asks before it edits a file or runs anything."),
         ("acceptEdits", "Edit freely", "square-pen", "Edits the project's files and uses the editors freely. Asks before anything else."),
+        ("auto", "Auto", "sparkles", "Decides for itself what's safe and gets on with it, asking only before something risky."),
         ("plan", "Plan only", "map", "Looks around and makes a plan, but changes nothing."),
         ("bypassPermissions", "Full access", "lock-open", "Does whatever it needs without asking. Only for work you'd trust it with alone."),
     ];
@@ -1197,7 +1198,9 @@ public sealed partial class AgentsWindow : Window
     private FrameworkElement ThoughtLine(Segment segment, AgentItem thought)
     {
         var opened = _openTools.Contains(thought.Id);
-        var row = WorkRow("brain", opened ? (thought.Streaming ? "Thinking" : "Thought") : Flatten(thought.Text), Ocean.Secondary, () =>
+        // Some models send their thinking with no words in it, only that it happened.
+        var said = Flatten(thought.Text);
+        var row = WorkRow("brain", opened || string.IsNullOrWhiteSpace(said) ? (thought.Streaming ? "Thinking" : "Thought") : said, Ocean.Secondary, () =>
         {
             if (!_openTools.Remove(thought.Id)) _openTools.Add(thought.Id);
             Draw(segment);

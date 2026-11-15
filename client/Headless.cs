@@ -185,6 +185,11 @@ internal static partial class Headless
             case "texts":
                 say(string.Join(" | ", Texts(window)));
                 break;
+            // The words in each visible document editor, whole, as a person reads by scrolling it.
+            case "read":
+                foreach (var editor in Visible<RichTextBox>(window))
+                    say(new System.Windows.Documents.TextRange(editor.Document.ContentStart, editor.Document.ContentEnd).Text);
+                break;
             case "shot":
                 await Task.Delay(150);
                 var shot = Path.Combine(output, $"{parts[1]}.png");

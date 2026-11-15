@@ -104,12 +104,13 @@ public sealed partial class AgentConversation
     public string? Effort { get; set; }
 
     /// <summary>
-    /// What it may do without asking: Claude Code's own permission modes. "acceptEdits" (the default)
+    /// What it may do without asking: Claude Code's own permission modes. "auto" (the default) decides
+    /// for itself what's safe and asks only before something risky, "acceptEdits"
     /// edits the project's files freely and asks for anything else, "default" asks first for edits too,
     /// "plan" only looks and plans, and "bypassPermissions" asks for nothing. Changed straight away,
     /// even while it works.
     /// </summary>
-    public string PermissionMode { get; set; } = "acceptEdits";
+    public string PermissionMode { get; set; } = "auto";
 
     /// <summary>Done with: put away at the bottom of the list, its agent program ended. Sending to it again takes it back out.</summary>
     public bool Settled { get; set; }
@@ -213,7 +214,7 @@ public sealed partial class AgentConversation
     }
 
     /// <summary>Everything a session needs set up first, made fresh each time so it matches what's set up now.</summary>
-    public sealed record Setup(AgentProvider Provider, string McpConfig, IReadOnlyList<string> McpServers, string SkillsPlugin, string Briefing, string AttachmentsFolder);
+    public sealed record Setup(AgentProvider Provider, string McpConfig, IReadOnlyList<string> McpServers, string SkillsPlugin, string Briefing, string AttachmentsFolder, string ClaudeSettings);
 
     /// <summary>
     /// Sends a message, starting the agent program if it isn't running. What the person is looking at
@@ -317,7 +318,7 @@ public sealed partial class AgentConversation
         var arguments = "-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool=stdio"
             + $" --permission-mode {PermissionMode} --setting-sources project,local --strict-mcp-config"
             + $" --mcp-config \"{setup.McpConfig}\" --plugin-dir \"{setup.SkillsPlugin}\" --append-system-prompt-file \"{setup.Briefing}\"{allowed}"
-            + $" --add-dir \"{setup.AttachmentsFolder}\""
+            + $" --add-dir \"{setup.AttachmentsFolder}\" --settings \"{setup.ClaudeSettings}\""
             + (Model is { Length: > 0 } model ? $" --model {model}" : "")
             + (Effort is { Length: > 0 } effort ? $" --effort {effort}" : "")
             + (SessionId is null ? "" : $" --resume {SessionId}");
@@ -587,7 +588,7 @@ public sealed partial class AgentConversation
         request.RequestState = goAhead ? AgentRequestState.Allowed : AgentRequestState.Denied;
         if (_codex)
         {
-            if (goAhead && PermissionMode == "plan") SetPermissionMode("acceptEdits");
+            if (goAhead && PermissionMode == "plan") SetPermissionMode("auto");
             ItemChanged?.Invoke(request);
             StateChanged?.Invoke();
             return;
@@ -595,7 +596,7 @@ public sealed partial class AgentConversation
         Respond(request, goAhead
             ? new JsonObject { ["behavior"] = "allow", ["updatedInput"] = request.RequestInput?.DeepClone() ?? new JsonObject() }
             : new JsonObject { ["behavior"] = "deny", ["message"] = "The person wants to keep planning. Stop here and wait for what they say next." });
-        if (goAhead && PermissionMode == "plan") SetPermissionMode("acceptEdits");
+        if (goAhead && PermissionMode == "plan") SetPermissionMode("auto");
     }
 
     public void Answer(AgentItem request, bool allow)

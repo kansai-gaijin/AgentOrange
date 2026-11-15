@@ -233,7 +233,7 @@ public sealed partial class AgentsWindow
 
         // As T3 Code: the mode shows here only when it isn't the usual one. It's always in the model picker's footer.
         var mode = ModeOf(conversation);
-        if (mode.Id != "acceptEdits")
+        if (mode.Id != "auto")
         {
             var risky = mode.Id == "bypassPermissions";
             var modeRow = Ocean.IconText(mode.Icon, mode.Name, risky ? Ocean.Error : Ocean.Soft, 14, 16, FontWeights.Medium);

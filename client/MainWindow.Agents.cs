@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Threading;
@@ -139,7 +140,25 @@ public partial class MainWindow
         }
         _sessionSkills[conversation.Id] = [.. AgentSkills.List(agentFolder), .. others];
         return new AgentConversation.Setup(provider, mcp, servers, AgentSkills.ClaudePlugin(agentFolder, conversation.ProjectId, others),
-            AgentBriefing.Write(Settings.Editors, agentFolder, conversation.ProjectId, others), AttachmentsFolder);
+            AgentBriefing.Write(Settings.Editors, agentFolder, conversation.ProjectId, others), AttachmentsFolder,
+            WriteClaudeSettings(mcp, _sessionSkills[conversation.Id]));
+    }
+
+    // The briefing points the agent at each skill's SKILL.md, wherever it is (Agent Orange's folder, the
+    // engine's, a tool's), so reading those folders never needs asking. Claude Code matches Windows
+    // paths in their POSIX form, "//c/Program Files/...".
+    private static string WriteClaudeSettings(string mcpConfig, IEnumerable<AgentSkill> skills)
+    {
+        var rules = new JsonArray();
+        foreach (var folder in skills.Select(skill => Path.GetDirectoryName(Path.GetFullPath(skill.Folder))).OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var posix = folder.Replace(Path.DirectorySeparatorChar, '/');
+            if (posix.Length > 1 && posix[1] == ':') posix = $"//{char.ToLowerInvariant(posix[0])}{posix[2..]}";
+            rules.Add($"Read({posix.TrimEnd('/')}/**)");
+        }
+        var path = Path.ChangeExtension(mcpConfig, null) + "-settings.json";
+        File.WriteAllText(path, new JsonObject { ["permissions"] = new JsonObject { ["allow"] = rules } }.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        return path;
     }
 
     // The skills each conversation's session was given, by conversation, for saying where a skill it used came from.

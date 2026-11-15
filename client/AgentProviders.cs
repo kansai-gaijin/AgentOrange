@@ -139,7 +139,10 @@ public sealed partial class AgentProviders(LocalDatabase database, string agentF
             if (method != "claude.ai") return (false, "Signed in without a subscription");
 
             var plan = root.TryGetProperty("subscriptionType", out var subscription) ? subscription.GetString() : null;
-            return (true, string.IsNullOrEmpty(plan) ? "Claude subscription" : $"Claude {Capitalize(plan)} subscription");
+            var detail = string.IsNullOrEmpty(plan) ? "Claude subscription" : $"Claude {Capitalize(plan)} subscription";
+            // Which account it is, so two logins of the same kind can be told apart.
+            var email = root.TryGetProperty("email", out var address) ? address.GetString() : null;
+            return (true, string.IsNullOrEmpty(email) ? detail : $"{detail} · {email}");
         }
         catch (Exception error) when (error is JsonException or InvalidOperationException)
         {

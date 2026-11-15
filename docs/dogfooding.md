@@ -287,3 +287,30 @@ loaded by itself. Agent Orange noted the use.
 - Unreal's side, not Agent Orange's: about 80 toolsets in one list, tool schemas of up to 25 KB, and
   Python wanting `read_me` first.
 
+
+## Building Animal Planet: planning the first slice (2026-11-15)
+
+The design was read through the app (Overview, Player, Movement and Camera, Player-Owned Home Planets,
+Tasks), then an agent in the agents window planned slice 1, a placeholder character walking round a
+small sphere, with the plan-the-next-slice skill. It read the design with get_project, list_tasks and
+read_card, and brought back seven questions for the user before building.
+
+- **The drive tool couldn't read a document or an agent's reply.** `texts` lists only TextBlocks, and
+  documents and replies are rich text boxes, so reading the design or a plan took screenshots page by
+  page. New `read` command: the whole text of each visible document editor or reply.
+- An agent's reply's "Copy message" shows only under the mouse, so the drive tool can't click it.
+  `read` covers what it was wanted for.
+- **Settings › Providers didn't say which account a login is,** only "Claude Pro subscription", so there
+  was no telling whether the agent ran on the right account. A Claude login now shows its email too.
+- **An empty reasoning row:** newer models send their thinking with no words, only that it happened,
+  and the row showed a brain icon and nothing else. It now says "Thinking", then "Thought".
+- **Reading a skill asked for approval.** The briefing points agents at each skill's SKILL.md, in
+  Agent Orange's folder or the engine's, and every read of one stopped the agent until it was allowed.
+- A message sent while the agent works goes in as steering, which is what was wanted: the multiplayer
+  rule reached it mid-turn.
+  Sessions now get a settings file (`--settings`) allowing Read of every skill's folder.
+- **Approving every small command wasted the person's time and tokens.** The agents window now offers
+  Claude Code's **Auto** mode (it judges what's safe and asks only before something risky), and it's the
+  default for new conversations. For Codex, Auto never asks and stays in the project's folder.
+- Adding a mode or a field restarts `dotnet watch`, which closes Unreal and cuts the agent's turn short.
+  A short "carry on" message after the restart picked the work back up.
