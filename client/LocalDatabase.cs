@@ -26,9 +26,10 @@ public sealed record AssetDetails(string? Type = null, string? Owner = null, str
 
 /// <summary>
 /// A task someone made, in a stage of a project: what's to be done, with notes, a day to have it done
-/// by and a milestone if it has them. Ticked off by hand. Order is its place among its milestone's.
+/// by, a milestone and the card it's about, if it has them. Ticked off by hand. Order is its place
+/// among its milestone's.
 /// </summary>
-public sealed record ProjectTask(string Stage, string Title, string? Notes = null, string? Due = null, bool Done = false, string? Milestone = null, double Order = 0);
+public sealed record ProjectTask(string Stage, string Title, string? Notes = null, string? Due = null, bool Done = false, string? Milestone = null, double Order = 0, string? Card = null);
 
 /// <summary>A milestone in a stage: what it's for, and what has to be true for it to be done.</summary>
 public sealed record Milestone(string Stage, string Name, string? Goal = null, string? DoneWhen = null, double Order = 0);

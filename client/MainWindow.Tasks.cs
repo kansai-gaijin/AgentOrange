@@ -115,6 +115,7 @@ public partial class MainWindow
 
         if (_tasksByDate) AddTasksByDate(body, project, assets, made, milestones);
         else AddTasksByMilestone(body, project, stage, assets, made, milestones);
+        if (_taskToFocus is { } focus && focus.Until > DateTime.UtcNow) FocusTask(focus.Id);
     }
 
     private void AddTasksByMilestone(StackPanel body, Project project, string stage, List<AssetTask> assets, List<(string Id, ProjectTask Task)> made, List<(string Id, Milestone Milestone)> milestones)
@@ -132,9 +133,20 @@ public partial class MainWindow
             AutomationProperties.SetName(add, $"Add a task to {milestone.Name}");
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Children = { add, edit } };
 
-            var title = new DockPanel { Margin = new Thickness(0, 26, 0, 2) };
+            var title = new DockPanel { Margin = new Thickness(0, 26, 0, 2), Background = Brushes.Transparent };
             DockPanel.SetDock(buttons, Dock.Right);
             title.Children.Add(buttons);
+
+            // Dragged by its title, or moved with Alt+Up and Alt+Down from its buttons. A task dropped on it goes to its end.
+            var milestoneId = id;
+            title.ToolTip = "Drag to move this milestone, or a task onto it to move the task here.";
+            title.PreviewKeyDown += (_, pressed) =>
+            {
+                if (MoveKey(pressed) is not { } by) return;
+                pressed.Handled = true;
+                PlaceMilestone(project, stage, milestoneId, milestones.FindIndex(each => each.Id == milestoneId) + by);
+            };
+            DragFrom(title, MilestoneDrag, milestoneId);
             title.Children.Add(new WrapPanel
             {
                 Children =
@@ -143,7 +155,23 @@ public partial class MainWindow
                     new TextBlock { Text = inIt.Count == 0 ? "" : done == inIt.Count ? "Done" : $"{done} of {inIt.Count}", FontSize = 13, Foreground = (Brush)FindResource(inIt.Count > 0 && done == inIt.Count ? "Accent" : "TextMuted"), VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(10, 0, 0, 2) },
                 },
             });
-            body.Children.Add(title);
+            var titleFrame = new Border { Child = title, BorderBrush = (Brush)FindResource("Accent") };
+            DropOn(titleFrame, TaskDrag, (moved, _) => PlaceTask(project, stage, moved, milestoneId, int.MaxValue));
+            titleFrame.Drop += (_, drop) =>
+            {
+                if (drop.Data.GetData(MilestoneDrag) is not string moved || moved == milestoneId) return;
+                drop.Handled = true;
+                var others = milestones.Where(each => each.Id != moved).ToList();
+                PlaceMilestone(project, stage, moved, others.FindIndex(each => each.Id == milestoneId) + (drop.GetPosition(titleFrame).Y > titleFrame.ActualHeight / 2 ? 1 : 0));
+            };
+            titleFrame.DragOver += (_, drag) =>
+            {
+                if (!drag.Data.GetDataPresent(MilestoneDrag)) return;
+                drag.Effects = DragDropEffects.Move;
+                titleFrame.BorderThickness = drag.GetPosition(titleFrame).Y > titleFrame.ActualHeight / 2 ? new Thickness(0, 0, 0, 2) : new Thickness(0, 2, 0, 0);
+                drag.Handled = true;
+            };
+            body.Children.Add(titleFrame);
             if (milestone.Goal is { Length: > 0 } goal) body.Children.Add(Note(goal, 0));
             foreach (var (taskId, task) in inIt) body.Children.Add(MadeTaskRow(project, stage, taskId, task, overdue: false));
             if (milestone.DoneWhen is { Length: > 0 } doneWhen) body.Children.Add(Note($"Done when: {doneWhen}", 6));
@@ -152,7 +180,10 @@ public partial class MainWindow
         var loose = made.Where(each => each.Task.Milestone is null || milestones.All(milestone => milestone.Id != each.Task.Milestone)).ToList();
         if (loose.Count > 0)
         {
-            body.Children.Add(Heading(milestones.Count > 0 ? "Other tasks" : "Tasks"));
+            // A task dropped on it leaves its milestone.
+            var looseHeading = new Border { Child = Heading(milestones.Count > 0 ? "Other tasks" : "Tasks"), BorderBrush = (Brush)FindResource("Accent"), Background = Brushes.Transparent };
+            DropOn(looseHeading, TaskDrag, (moved, _) => PlaceTask(project, stage, moved, null, int.MaxValue));
+            body.Children.Add(looseHeading);
             foreach (var (taskId, task) in loose) body.Children.Add(MadeTaskRow(project, stage, taskId, task, overdue: false));
         }
         if (assets.Count > 0)
@@ -251,15 +282,178 @@ public partial class MainWindow
         DockPanel.SetDock(dueText, Dock.Right);
         inside.Children.Add(dueText);
         inside.Children.Add(words);
-        var open = new Button { Style = (Style)FindResource("HeaderButton"), Content = inside, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(6, 4, 6, 4) };
+        var open = new Button { Style = (Style)FindResource("HeaderButton"), Content = inside, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(6, 4, 6, 4), Tag = id };
         AutomationProperties.SetName(open, task.Title);
+        open.ToolTip = "Click to change it. Drag, or Alt+Up and Alt+Down, to move it.";
         open.Click += (_, _) => OpenTaskForm(open, project, stage, (id, task), task.Milestone);
+        open.PreviewKeyDown += (_, pressed) =>
+        {
+            if (MoveKey(pressed) is not { } by) return;
+            pressed.Handled = true;
+            MoveTask(project, stage, id, by);
+        };
+        DragFrom(open, TaskDrag, id);
 
-        var row = new DockPanel { Margin = new Thickness(-1, 0, -7, 1) };
+        var row = new DockPanel { Margin = new Thickness(-1, 0, -7, 1), Background = Brushes.Transparent };
         DockPanel.SetDock(tickButton, Dock.Left);
         row.Children.Add(tickButton);
+
+        // The card it's about, which a click opens.
+        if (task.Card is { } cardId && AssetOwnerChoices(_database, project.Id, stage).FirstOrDefault(choice => choice.Card.Id == cardId) is { Card: not null } belongs)
+        {
+            var cardName = CardName(belongs.Card, belongs.Page);
+            var link = TextButton(cardName, () => OpenCardBoard(project, belongs.Page.ToLowerInvariant(), cardId));
+            link.Foreground = (Brush)FindResource("Accent");
+            link.FontSize = 12.5;
+            link.VerticalAlignment = VerticalAlignment.Top;
+            link.Margin = new Thickness(8, 2, 0, 0);
+            link.ToolTip = $"Open the {OneOf(belongs.Page)} {cardName}";
+            AutomationProperties.SetName(link, $"Open {cardName}, for {task.Title}");
+            DockPanel.SetDock(link, Dock.Right);
+            row.Children.Add(link);
+        }
         row.Children.Add(open);
-        return row;
+
+        // Dropped on, a task goes above or below it, in its milestone.
+        var frame = new Border { Child = row, BorderBrush = (Brush)FindResource("Accent") };
+        DropOn(frame, TaskDrag, (moved, below) =>
+        {
+            if (moved == id) return;
+            var group = _database.ListTasks(project.Id, stage).Where(each => each.Id != moved && GroupOf(project, stage, each.Task) == GroupOf(project, stage, task)).ToList();
+            var at = group.FindIndex(each => each.Id == id);
+            PlaceTask(project, stage, moved, GroupOf(project, stage, task), at + (below ? 1 : 0));
+        });
+        return frame;
+    }
+
+    // Moving tasks and milestones: dragged, or Alt+Up and Alt+Down on what has the keyboard.
+
+    private const string TaskDrag = "AgentOrange.Task";
+    private const string MilestoneDrag = "AgentOrange.Milestone";
+
+    private static int? MoveKey(KeyEventArgs pressed)
+    {
+        var key = pressed.Key == Key.System ? pressed.SystemKey : pressed.Key;
+        if ((KeyState.Modifiers & ModifierKeys.Alt) == 0 || key is not (Key.Up or Key.Down)) return null;
+        return key == Key.Up ? -1 : 1;
+    }
+
+    // The milestone a task is shown under: its own, or none when that's gone.
+    private string? GroupOf(Project project, string stage, ProjectTask task) =>
+        task.Milestone is { } id && _database.ListMilestones(project.Id, stage).Any(each => each.Id == id) ? id : null;
+
+    // Into a milestone (or none) at a place, the others there numbered again around it.
+    private void PlaceTask(Project project, string stage, string id, string? milestone, int at)
+    {
+        var tasks = _database.ListTasks(project.Id, stage);
+        if (tasks.FirstOrDefault(each => each.Id == id) is not { Task: not null } moved) return;
+        var group = tasks.Where(each => each.Id != id && GroupOf(project, stage, each.Task) == milestone).ToList();
+        group.Insert(Math.Clamp(at, 0, group.Count), (id, moved.Task with { Milestone = milestone }));
+        for (var i = 0; i < group.Count; i++)
+        {
+            var (each, task) = group[i];
+            if (task.Order != i + 1 || each == id) _database.SaveTask(project.Id, each, task with { Order = i + 1 });
+        }
+        RedrawProject(project);
+        FocusTaskAfterRedraw(id);
+    }
+
+    // A place up or down, and past the end of a milestone into the next, as it's shown.
+    private void MoveTask(Project project, string stage, string id, int by)
+    {
+        var groups = _database.ListMilestones(project.Id, stage).Select(each => (string?)each.Id).Append(null).ToList();
+        var tasks = _database.ListTasks(project.Id, stage);
+        if (tasks.FirstOrDefault(each => each.Id == id) is not { Task: not null } moving) return;
+        var group = GroupOf(project, stage, moving.Task);
+        var inGroup = tasks.Where(each => GroupOf(project, stage, each.Task) == group).ToList();
+        var to = inGroup.FindIndex(each => each.Id == id) + by;
+        if (to >= 0 && to < inGroup.Count)
+        {
+            PlaceTask(project, stage, id, group, to);
+            return;
+        }
+        var next = groups.IndexOf(group) + by;
+        if (next < 0 || next >= groups.Count) return;
+        PlaceTask(project, stage, id, groups[next], by < 0 ? int.MaxValue : 0);
+    }
+
+    private void PlaceMilestone(Project project, string stage, string id, int at)
+    {
+        var milestones = _database.ListMilestones(project.Id, stage);
+        if (milestones.FirstOrDefault(each => each.Id == id) is not { Milestone: not null } moved) return;
+        var others = milestones.Where(each => each.Id != id).ToList();
+        others.Insert(Math.Clamp(at, 0, others.Count), moved);
+        for (var i = 0; i < others.Count; i++)
+        {
+            var (each, milestone) = others[i];
+            if (milestone.Order != i + 1) _database.SaveMilestone(project.Id, each, milestone with { Order = i + 1 });
+        }
+        RedrawProject(project);
+    }
+
+    // A moved task keeps the keyboard, so Alt+Up can go on moving it. The page can be drawn again
+    // straight after, when the change syncs, so the next couple of seconds' drawing gives it back too.
+    private (string Id, DateTime Until)? _taskToFocus;
+
+    private void FocusTaskAfterRedraw(string id)
+    {
+        _taskToFocus = (id, DateTime.UtcNow.AddSeconds(2));
+        FocusTask(id);
+    }
+
+    private void FocusTask(string id)
+    {
+        static IEnumerable<Button> Buttons(DependencyObject root)
+        {
+            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            {
+                var child = VisualTreeHelper.GetChild(root, i);
+                if (child is Button button) yield return button;
+                foreach (var inside in Buttons(child)) yield return inside;
+            }
+        }
+        _ = Dispatcher.InvokeAsync(() => Buttons(ProjectPage).FirstOrDefault(button => button.Tag as string == id)?.Focus(), System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+
+    // Pressed and moved a little, it's picked up to be dropped somewhere else.
+    private static void DragFrom(FrameworkElement from, string kind, string id)
+    {
+        Point? pressedAt = null;
+        from.PreviewMouseLeftButtonDown += (_, press) => pressedAt = press.GetPosition(from);
+        from.PreviewMouseMove += (_, move) =>
+        {
+            if (move.LeftButton != MouseButtonState.Pressed || pressedAt is not { } start)
+            {
+                pressedAt = null;
+                return;
+            }
+            if ((move.GetPosition(from) - start).Length < SystemParameters.MinimumVerticalDragDistance * 2) return;
+            pressedAt = null;
+            DragDrop.DoDragDrop(from, new DataObject(kind, id), DragDropEffects.Move);
+        };
+    }
+
+    // A line above or below shows where it would go. Told what was dropped, and whether it was on the lower half.
+    private static void DropOn(Border on, string kind, Action<string, bool> dropped)
+    {
+        on.AllowDrop = true;
+        bool Lower(DragEventArgs drag) => drag.GetPosition(on).Y > on.ActualHeight / 2;
+        on.DragOver += (_, drag) =>
+        {
+            // Something else being dragged is left to whatever else here takes it.
+            if (!drag.Data.GetDataPresent(kind)) return;
+            drag.Effects = DragDropEffects.Move;
+            on.BorderThickness = Lower(drag) ? new Thickness(0, 0, 0, 2) : new Thickness(0, 2, 0, 0);
+            drag.Handled = true;
+        };
+        on.DragLeave += (_, _) => on.BorderThickness = new Thickness(0);
+        on.Drop += (_, drop) =>
+        {
+            on.BorderThickness = new Thickness(0);
+            if (drop.Data.GetData(kind) is not string id) return;
+            drop.Handled = true;
+            dropped(id, Lower(drop));
+        };
     }
 
     private Button AssetTaskRow(Project project, AssetTask task, bool overdue)
@@ -345,6 +539,12 @@ public partial class MainWindow
         rows.Children.Add(FormLabel("Milestone", above: 12));
         rows.Children.Add(milestone);
 
+        var card = task?.Card;
+        var (cardButton, cardList) = CardPicker(project.Id, stage, card, picked => card = picked);
+        rows.Children.Add(FormLabel("Belongs to", above: 12));
+        rows.Children.Add(cardButton);
+        rows.Children.Add(cardList);
+
         void Save()
         {
             var typed = title.Text.Trim();
@@ -359,7 +559,7 @@ public partial class MainWindow
                 ? task.Order
                 : _database.ListTasks(project.Id, stage).Where(each => each.Task.Milestone == chosen).Select(each => each.Task.Order).DefaultIfEmpty(0).Max() + 1;
             var notesText = notes.Text.Trim();
-            _database.SaveTask(project.Id, existing?.Id, new ProjectTask(stage, typed, notesText.Length > 0 ? notesText : null, DayText(due), task?.Done ?? false, chosen, order));
+            _database.SaveTask(project.Id, existing?.Id, new ProjectTask(stage, typed, notesText.Length > 0 ? notesText : null, DayText(due), task?.Done ?? false, chosen, order, card));
             asked.IsOpen = false;
             RedrawProject(project);
         }
@@ -395,6 +595,11 @@ public partial class MainWindow
             {
                 dueList.Visibility = Visibility.Collapsed;
                 dueButton.Focus();
+            }
+            else if (cardList.IsKeyboardFocusWithin)
+            {
+                cardList.Visibility = Visibility.Collapsed;
+                cardButton.Focus();
             }
             else
             {

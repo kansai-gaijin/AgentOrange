@@ -36,6 +36,8 @@ public partial class MainWindow
         {
             said.AppendLine($"Page: {section.Name}, on the {page.One} card \"{CardName(card, section.Name)}\" (id {card.Id}), looking at its own board.");
             if (section.Name == AssetsPage) said.AppendLine(DescribeAsset(project, card));
+            var forCard = _database.ListTasks(project.Id, stageId).Where(each => each.Task.Card == card.Id).ToList();
+            if (forCard.Count > 0) said.AppendLine($"Tasks about it, on the Tasks page: {string.Join("; ", forCard.Select(each => $"[{(each.Task.Done ? "x" : " ")}] {each.Task.Title}"))}.");
         }
         else if (CardPages.ContainsKey(section.Name))
         {
@@ -52,9 +54,9 @@ public partial class MainWindow
                 foreach (var (milestoneId, milestone) in _database.ListMilestones(project.Id, stageNow))
                 {
                     said.AppendLine($"Milestone \"{milestone.Name}\"{(milestone.Goal is { } goal ? $", for: {goal}" : "")}{(milestone.DoneWhen is { } doneWhen ? $"; done when: {doneWhen}" : "")}");
-                    foreach (var (_, task) in tasks.Where(each => each.Task.Milestone == milestoneId)) said.AppendLine($"  [{(task.Done ? "x" : " ")}] {task.Title}{(task.Due is { } due ? $" (by {due})" : "")}");
+                    foreach (var (_, task) in tasks.Where(each => each.Task.Milestone == milestoneId)) said.AppendLine($"  [{(task.Done ? "x" : " ")}] {TaskLine(project, task)}");
                 }
-                foreach (var (_, task) in tasks.Where(each => each.Task.Milestone is null)) said.AppendLine($"  [{(task.Done ? "x" : " ")}] {task.Title}{(task.Due is { } due ? $" (by {due})" : "")}");
+                foreach (var (_, task) in tasks.Where(each => each.Task.Milestone is null)) said.AppendLine($"  [{(task.Done ? "x" : " ")}] {TaskLine(project, task)}");
             }
             else
             {
@@ -64,6 +66,18 @@ public partial class MainWindow
 
         if (OpenBoard(project) is { } board) said.AppendLine($"On the board (board key {board.BoardKey}):\n{board.Describe()}");
         return said.ToString().TrimEnd();
+    }
+
+    // A task as agents are told it: what it is, when by, and the card it's about.
+    private string TaskLine(Project project, ProjectTask task)
+    {
+        var line = task.Title;
+        if (task.Due is { } due) line += $" (by {due})";
+        if (task.Card is { } cardId && AssetOwnerChoices(_database, project.Id, task.Stage).FirstOrDefault(choice => choice.Card.Id == cardId) is { Card: not null } belongs)
+        {
+            line += $", about the {CardPages[belongs.Page].One} \"{CardName(belongs.Card, belongs.Page)}\"";
+        }
+        return line;
     }
 
     private string DescribeAsset(Project project, BoardCard card)

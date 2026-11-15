@@ -41,6 +41,64 @@ public partial class MainWindow
     internal static List<(BoardCard Card, string Page)> AssetOwnerChoices(LocalDatabase database, string projectId, string stage) =>
         [.. AssetOwnerPages.SelectMany(page => database.ListCards(projectId, stage, page.ToLowerInvariant()).Select(card => (card, page)))];
 
+    /// <summary>
+    /// A story beat, character, level or mechanic in the stage, searched for in a list that opens
+    /// under its button, or nothing. What an asset or a task belongs to.
+    /// </summary>
+    private (Button Button, Border List) CardPicker(string projectId, string stage, string? initial, Action<string?> picked)
+    {
+        var chosenId = initial;
+        var choices = AssetOwnerChoices(_database, projectId, stage);
+        var button = DropButton("Belongs to", out var shown);
+        var (searchBox, search) = SearchBox("Search");
+        var rows = new StackPanel();
+        var list = OpenUnder();
+        list.Child = new StackPanel { Children = { searchBox, new ScrollViewer { MaxHeight = 220, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = rows } } };
+
+        void Show()
+        {
+            var chosen = choices.FirstOrDefault(choice => choice.Card.Id == chosenId);
+            shown.Text = chosen.Card is null ? "Nothing" : $"{CardName(chosen.Card, chosen.Page)} · {OneOf(chosen.Page)}";
+        }
+        void Pick(string? id)
+        {
+            chosenId = id;
+            picked(id);
+            Show();
+            list.Visibility = Visibility.Collapsed;
+            button.Focus();
+        }
+        void List()
+        {
+            var typed = search.Text.Trim();
+            rows.Children.Clear();
+            if (typed.Length == 0) rows.Children.Add(PickRow("Nothing", chosenId is null ? "✓" : null, () => Pick(null)));
+            foreach (var page in AssetOwnerPages)
+            {
+                var matching = choices.Where(choice => choice.Page == page && CardName(choice.Card, page).Contains(typed, StringComparison.CurrentCultureIgnoreCase)).ToList();
+                if (matching.Count == 0) continue;
+                rows.Children.Add(ListHeading(page));
+                foreach (var (each, _) in matching) rows.Children.Add(PickRow(CardName(each, page), each.Id == chosenId ? "✓" : null, () => Pick(each.Id)));
+            }
+            if (choices.Count == 0) rows.Children.Add(ListNote("No story beats, characters, levels or mechanics in this stage yet."));
+            else if (typed.Length > 0 && rows.Children.Count == 0) rows.Children.Add(ListNote("Nothing matches."));
+        }
+        search.TextChanged += (_, _) => List();
+        MoveThroughList(list, search, rows);
+        button.Click += (_, _) =>
+        {
+            var opening = list.Visibility != Visibility.Visible;
+            list.Visibility = opening ? Visibility.Visible : Visibility.Collapsed;
+            if (!opening) return;
+            search.Text = "";
+            List();
+            search.Focus();
+            ScrollTo(list);
+        };
+        Show();
+        return (button, list);
+    }
+
     // Under an asset's name, here and on the board: what it is and what it belongs to, then its tags.
     internal static StackPanel AssetCardLines(LocalDatabase database, string projectId, BoardCard card)
     {
@@ -243,53 +301,7 @@ public partial class MainWindow
         rows.Children.Add(type);
 
         // What it belongs to, searched for in a list that opens under it.
-        var owners = AssetOwnerChoices(_database, project.Id, stage);
-        var ownerButton = DropButton("Belongs to", out var ownerShown);
-        var (ownerSearchBox, ownerSearch) = SearchBox("Search");
-        var ownerRows = new StackPanel();
-        var ownerList = OpenUnder();
-        ownerList.Child = new StackPanel { Children = { ownerSearchBox, new ScrollViewer { MaxHeight = 220, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = ownerRows } } };
-
-        void ShowOwner()
-        {
-            var chosen = owners.FirstOrDefault(choice => choice.Card.Id == owner);
-            ownerShown.Text = chosen.Card is null ? "Nothing" : $"{CardName(chosen.Card, chosen.Page)} · {OneOf(chosen.Page)}";
-        }
-        void PickOwner(string? id)
-        {
-            owner = id;
-            ShowOwner();
-            ownerList.Visibility = Visibility.Collapsed;
-            ownerButton.Focus();
-        }
-        void ListOwners()
-        {
-            var typed = ownerSearch.Text.Trim();
-            ownerRows.Children.Clear();
-            if (typed.Length == 0) ownerRows.Children.Add(PickRow("Nothing", owner is null ? "✓" : null, () => PickOwner(null)));
-            foreach (var page in AssetOwnerPages)
-            {
-                var matching = owners.Where(choice => choice.Page == page && CardName(choice.Card, page).Contains(typed, StringComparison.CurrentCultureIgnoreCase)).ToList();
-                if (matching.Count == 0) continue;
-                ownerRows.Children.Add(ListHeading(page));
-                foreach (var (each, _) in matching) ownerRows.Children.Add(PickRow(CardName(each, page), each.Id == owner ? "✓" : null, () => PickOwner(each.Id)));
-            }
-            if (owners.Count == 0) ownerRows.Children.Add(ListNote("No story beats, characters, levels or mechanics in this stage yet."));
-            else if (typed.Length > 0 && ownerRows.Children.Count == 0) ownerRows.Children.Add(ListNote("Nothing matches."));
-        }
-        ownerSearch.TextChanged += (_, _) => ListOwners();
-        MoveThroughList(ownerList, ownerSearch, ownerRows);
-        ownerButton.Click += (_, _) =>
-        {
-            var opening = ownerList.Visibility != Visibility.Visible;
-            ownerList.Visibility = opening ? Visibility.Visible : Visibility.Collapsed;
-            if (!opening) return;
-            ownerSearch.Text = "";
-            ListOwners();
-            ownerSearch.Focus();
-            ScrollTo(ownerList);
-        };
-        ShowOwner();
+        var (ownerButton, ownerList) = CardPicker(project.Id, stage, owner, picked => owner = picked);
         rows.Children.Add(FormLabel("Belongs to", above: 12));
         rows.Children.Add(ownerButton);
         rows.Children.Add(ownerList);

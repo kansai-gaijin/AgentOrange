@@ -19,6 +19,14 @@ this should be tasks".
 - **The implementation plan** went in through the forms: Priority 0 to 11 and Release Readiness, 13
   milestones and 134 tasks. Its document is now only the development principles.
 - The asset form's date picker is shared by both forms now.
+- **Moving tasks and milestones** (asked for next): drag a task within or between milestones, or onto
+  "Other tasks", and a milestone by its title; or Alt+Up and Alt+Down on what has the keyboard, which
+  carries a task across into the next milestone at either end. The moved task keeps the keyboard.
+- **A task can belong to a card** (story beat, character, level or mechanic), picked as an asset's
+  owner is, with the same picker, now shared. The card's name shows on the task and opens it.
+  Agents are told each task's card, and on a card, its tasks. 78 of the plan's tasks were linked:
+  each prototype milestone to its card, or a closer one its words name. Foundations, the vertical
+  slice, content, polish and readiness cut across everything, so they weren't.
 
 ## 2026-11-15 · Animal Planet: a lean Overview, frames, undo and game settings
 
