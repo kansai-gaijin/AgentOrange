@@ -280,6 +280,10 @@ loaded by itself. Agent Orange noted the use.
   "Unreal Engine: call_tool".
 - **Settings › Skills didn't show a new use** when Settings was opened again on that page, as it kept the
   page drawn before. The page is drawn again each time Settings opens.
-- Unreal's side, not Agent Orange's: about 80 toolsets in one list, tool schemas of up to 25 KB, no
-  tool that saves a level (it saved through Python), and Python wanting `read_me` first.
+- **The agent said Unreal has no tool to save a level, and saved through Python. Wrong:** a level is an
+  asset, and the Asset toolset's `SaveAsset` saves it (the Level toolset's `LoadLevel` can also save
+  first). It only looked in the Level toolset, which has `SaveActor` and nothing named for the level.
+  The briefing now says so.
+- Unreal's side, not Agent Orange's: about 80 toolsets in one list, tool schemas of up to 25 KB, and
+  Python wanting `read_me` first.
 
