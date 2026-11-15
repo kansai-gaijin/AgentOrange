@@ -83,7 +83,31 @@ public sealed partial class AgentProviders(LocalDatabase database, string agentF
         var (signedIn, detail) = provider.Kind == ProviderKind.Claude
             ? ReadClaudeStatus(status.Output)
             : ReadCodexStatus(status.Output);
+        if (signedIn && provider.Kind == ProviderKind.Codex && CodexEmail(provider.LoginFolder) is { } email) detail = $"{detail} · {email}";
         return new ProviderStatus(true, versionNumber, signedIn, detail);
+    }
+
+    // Which account a Codex login is, so two can be told apart: the email in the ID token Codex keeps
+    // in its own login folder. Only that is read; the tokens themselves are never used or kept.
+    private static string? CodexEmail(string loginFolder)
+    {
+        try
+        {
+            var file = Path.Combine(loginFolder, "auth.json");
+            if (!File.Exists(file)) return null;
+            using var auth = JsonDocument.Parse(File.ReadAllText(file));
+            if (!auth.RootElement.TryGetProperty("tokens", out var tokens) || !tokens.TryGetProperty("id_token", out var idToken)) return null;
+            var parts = (idToken.GetString() ?? "").Split('.');
+            if (parts.Length < 2) return null;
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight(payload.Length + (4 - payload.Length % 4) % 4, '=');
+            using var claims = JsonDocument.Parse(Convert.FromBase64String(payload));
+            return claims.RootElement.TryGetProperty("email", out var email) ? email.GetString() : null;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or FormatException or InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     /// <summary>Runs Codex's sign-in, which opens the browser, and waits for it to finish.</summary>

@@ -314,3 +314,35 @@ read_card, and brought back seven questions for the user before building.
   default for new conversations. For Codex, Auto never asks and stays in the project's folder.
 - Adding a mode or a field restarts `dotnet watch`, which closes Unreal and cuts the agent's turn short.
   A short "carry on" message after the restart picked the work back up.
+
+## Slice 1, tasks 2 and 3: the planet and the placeholder (2026-11-16)
+
+Fable 5.2 (Extra High, Auto) built a 172 m whitebox planet with true sphere collision, landmarks and a
+start flag, and a replicated orange capsule character, then checked both with editor screenshots and a
+2-player Listen Server run, which caught the sky throwing both players 10 km up. It stopped with
+questions about the DualShock 4 (Unreal's free Game Input plugin needs Microsoft's runtime installed),
+shadows and the look.
+
+- **Its screenshots came as a list of file names,** so seeing them meant opening a folder. The briefing
+  now tells agents to put pictures in replies as Markdown images, which the agents window draws.
+- **Codex's rows didn't say which account they were either.** They now show the email from the ID token
+  in Codex's own login folder (only that claim is read).
+- **The tray-hidden window stopped the drive tool:** after a restart the app came up in the tray, and
+  every command found nothing. New `show` command, as clicking the tray icon.
+- **Two dev builds ran at once,** from an old `dotnet watch` left over from before the app was closed.
+  Stopped it; only one `dotnet watch` should run.
+- **Codex in Auto refused its own tools.** Auto mapped to "never ask", which Codex takes as "turn down
+  anything that would need asking", so it stopped before it could read anything. Auto now works as Edit
+  freely does for Codex. (The user then chose Claude, not Codex, for coding: Opus for code, Fable for
+  visual work, High effort at most.)
+- **A Claude conversation can't move to Codex,** so going to Codex meant a new conversation and a
+  hand-written brief.
+- **A usage limit stopped the agent mid-task** (nate's 5-hour limit, after 34 minutes of Opus). "Go on
+  with Claude (lc)" carried the conversation to the other login and went on, as it should. Its note
+  said "Sent for you once the usage limit reset", which wasn't what happened; it now says "Sent for
+  you, to go on after a usage limit".
+- **A finished turn still showed "Working".** A message sent while the agent works (the Game Input
+  approval) was taken into the turn it was on, and Claude Code then finished once, not once a message.
+  Agent Orange counted two messages and waited for a second finish that never came, so the agent had
+  stopped with a question while the list said "Working 15m". Now, when nothing at all comes within 20
+  seconds of a finish, nothing is waiting and it's done.

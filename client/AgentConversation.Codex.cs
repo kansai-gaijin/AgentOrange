@@ -229,8 +229,8 @@ public sealed partial class AgentConversation
             "default" => ("untrusted", "readOnly"),
             "plan" => ("untrusted", "readOnly"),
             "bypassPermissions" => ("never", "dangerFullAccess"),
-            // Codex has no judge of its own, so Auto never stops to ask and stays in the project's folder.
-            "auto" => ("never", "workspaceWrite"),
+            // Codex has no judge of its own. "never" turned down its own tool calls, so Auto works as Edit freely does.
+            "auto" => ("on-request", "workspaceWrite"),
             _ => ("on-request", "workspaceWrite"),
         };
         turn["threadId"] = _codexThread;

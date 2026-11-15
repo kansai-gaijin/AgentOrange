@@ -96,6 +96,11 @@ internal static partial class Headless
     {
         switch (parts[0])
         {
+            // Opens the main window from the tray, as clicking the tray icon does.
+            case "show":
+                typeof(MainWindow).GetMethod("ShowFromTray", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?.Invoke(_driveMain, null);
+                say("shown");
+                return true;
             case "windows":
                 foreach (var each in Application.Current.Windows.OfType<Window>().Where(each => each.IsLoaded))
                 {

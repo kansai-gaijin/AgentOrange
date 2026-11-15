@@ -1013,7 +1013,7 @@ public sealed partial class AgentsWindow : Window
         var meta = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 4, 4, 0) };
         if (item.Automatic)
         {
-            meta.Children.Add(Ocean.IconText("refresh-cw", "Sent for you once the usage limit reset", Ocean.MutedText, 12, 12));
+            meta.Children.Add(Ocean.IconText("refresh-cw", "Sent for you, to go on after a usage limit", Ocean.MutedText, 12, 12));
         }
         else
         {

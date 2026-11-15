@@ -161,6 +161,7 @@ public sealed partial class AgentConversation
     private bool _stopping;
     private bool _restarting; // Ended so the next message starts it with what's changed, which says nothing.
     private int _turns; // Messages sent that it hasn't finished with, as one sent while it works waits its turn.
+    private long _lines; // Lines it has said, to tell whether anything came after it finished.
     private string? _startedWith; // The model and effort it was started with.
     private bool _codex; // Talking to Codex's app server rather than Claude Code.
     private string? _runningMode; // The permission mode it's in, which can change while it runs.
@@ -720,6 +721,7 @@ public sealed partial class AgentConversation
     // One JSON event per line. Anything unknown is skipped, as its events change between versions.
     private void Read(string line)
     {
+        _lines++;
         JsonNode? root;
         try
         {
@@ -792,8 +794,20 @@ public sealed partial class AgentConversation
                 _turns = Math.Max(0, _turns - 1);
                 AskForUsage();
                 SetWorking(_turns > 0);
+                if (_turns > 0) _ = SettleQueuedAsync(_lines);
                 break;
         }
+    }
+
+    // Claude Code takes a message sent while it works into the turn it's on when it can, and then
+    // finishes once for both, not once a message. So when nothing at all comes after it finishes,
+    // no message is still waiting, and it's done.
+    private async Task SettleQueuedAsync(long linesWhenFinished)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(20));
+        if (_lines != linesWhenFinished || _turns == 0) return;
+        _turns = 0;
+        SetWorking(false);
     }
 
     private void ReadSystem(JsonObject json)
