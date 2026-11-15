@@ -1325,19 +1325,22 @@ public sealed partial class AgentsWindow : Window
         return model?.Name ?? endpoint.Model ?? "Default model";
     }
 
-    // Under the timeline, before the next message: the switch of login it'll carry everything across.
+    // Under the timeline, before the next message: the switch of login it'll carry everything across,
+    // and the commands it left running in the background, which it goes on with when they end.
     private void ShowPendingHandoff()
     {
-        if (_open is { PendingFrom: { } from, PendingTo: { } to } conversation)
+        var under = new StackPanel();
+        if (_open is { PendingFrom: { } from, PendingTo: { } to } conversation) under.Children.Add(HandoffRow(from, to with { Model = conversation.Model }, pending: true));
+        if (_open is { IsWorking: false, BackgroundJobs: > 0 and var jobs })
         {
-            _pendingHandoff.Child = HandoffRow(from, to with { Model = conversation.Model }, pending: true);
-            _pendingHandoff.Visibility = Visibility.Visible;
+            var waiting = WorkRow("clock", jobs == 1
+                ? "Waiting on a background job. It carries on by itself when the job ends."
+                : $"Waiting on {jobs} background jobs. It carries on by itself as each one ends.", Ocean.Info);
+            AutomationProperties.SetName(waiting, "Waiting on background jobs");
+            under.Children.Add(waiting);
         }
-        else
-        {
-            _pendingHandoff.Child = null;
-            _pendingHandoff.Visibility = Visibility.Collapsed;
-        }
+        _pendingHandoff.Child = under.Children.Count > 0 ? under : null;
+        _pendingHandoff.Visibility = under.Children.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private FrameworkElement Notice(string text)

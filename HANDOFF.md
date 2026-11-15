@@ -175,6 +175,9 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 - **Multiplayer from the start:** always build with Unreal replication in mind (server-authoritative movement with prediction, every check run as 2-player Listen Server in Play In Editor).
 - **Controller from the start:** the user playtests with a **PS4 DualShock 4** on Windows. Enhanced Input with keyboard/mouse and gamepad in one mapping context. Unreal's free Game Input (Windows) plugin plus Microsoft's Game Input runtime is the candidate; installing the runtime waits for the user's yes.
 - **You are the game designer.** The GDD on AO's pages is the bible and what's in it is already decided; everything else is your call. You may research (web), but never develop the game yourself.
+- **Builds:** no web or packaged builds per task (this PC is slow; the first web build took 35 minutes). Test in the editor (Play In Editor, 2 players, simulated gamepad). Build for the web and measure in the browser only when a milestone is finished (`Tools/Build/build_web.ps1 -Measure` in the game repo).
+- **Settle conversations** in the agents window as soon as their work is done (drive: `hover` the row, then `click "Settle thread"`).
+- **Always push:** game commits go straight to `main`, no pull requests.
 - **Pausing:** when the user asks to pause, let the agent's current turn finish and send nothing more until they say so.
 - Slice 1 so far: planet 172 m radius (6-minute equator walk at 3 m/s), no run, no jump, Deiland-style camera (about 9 m back, about 40° down, orbit with Q/E, right-mouse or right stick, zoom 6–14 m, never any roll), the player a cute whimsical low-poly human (orange capsule placeholder for now).
 

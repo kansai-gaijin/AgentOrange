@@ -136,6 +136,14 @@ public sealed partial class AgentConversation
 
     [JsonIgnore] public string? Folder { get; set; }
     [JsonIgnore] public bool IsWorking { get; private set; }
+
+    /// <summary>
+    /// Commands it started in the background that haven't ended, as far as can be told: Claude Code
+    /// starts a turn by itself when one ends, so each turn it starts on its own counts one as ended.
+    /// While there are some and it isn't working, it's waiting on them, not done.
+    /// </summary>
+    [JsonIgnore] public int BackgroundJobs { get; private set; }
+    private readonly HashSet<string> _backgroundIds = [];
     [JsonIgnore] public DateTimeOffset WorkingSince { get; private set; }
     [JsonIgnore] public bool IsWaiting => Items.Any(item => item.RequestState == AgentRequestState.Waiting && item.Kind is AgentItemKind.Approval or AgentItemKind.Question or AgentItemKind.Plan);
 
@@ -371,6 +379,7 @@ public sealed partial class AgentConversation
             return;
         }
         _process = null;
+        BackgroundJobs = 0; // They end with it.
         process.Dispose();
         foreach (var item in Items.Where(item => item.RequestState == AgentRequestState.Waiting && item.Kind is AgentItemKind.Approval or AgentItemKind.Question).ToList())
         {
@@ -852,6 +861,13 @@ public sealed partial class AgentConversation
         {
             case "message_start":
                 _messageId = Str(streamed["message"] as JsonObject, "id");
+                // Nothing was sent, so it started this turn itself: one of its background commands ended.
+                if (!IsWorking && !_codex)
+                {
+                    BackgroundJobs = Math.Max(0, BackgroundJobs - 1);
+                    _turns = 1;
+                    SetWorking(true);
+                }
                 break;
             case "content_block_start" when streamed["content_block"] is JsonObject started && Str(started, "type") == "tool_use"
                 && Str(started, "name") is { } toolName && toolName is not "AskUserQuestion" and not "ExitPlanMode" && Str(started, "id") is { } toolId && !_byId.ContainsKey(toolId):
@@ -972,6 +988,16 @@ public sealed partial class AgentConversation
                 default:
                     if (Str(part, "type") != "tool_use" || Str(part, "name") is not { } name || name == "AskUserQuestion" || name == "ExitPlanMode" || Str(part, "id") is not { } toolId) break;
                     NoteSkills(toolId, name, part["input"] as JsonObject);
+                    if (name is "Bash" or "PowerShell" or "Monitor" && part["input"]?["run_in_background"]?.GetValueKind() == JsonValueKind.True && _backgroundIds.Add(toolId))
+                    {
+                        BackgroundJobs++;
+                        StateChanged?.Invoke();
+                    }
+                    else if (name is "KillShell" or "TaskStop" && BackgroundJobs > 0)
+                    {
+                        BackgroundJobs--;
+                        StateChanged?.Invoke();
+                    }
                     if (_byId.TryGetValue(toolId, out var started))
                     {
                         started.Text = DescribeTool(name, part["input"] as JsonObject);

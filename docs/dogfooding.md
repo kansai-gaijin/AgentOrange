@@ -377,3 +377,16 @@ the login: a good summary of the slice), then Push to main past the default-bran
   .gitattributes sending Unreal assets, art, models, sound, video and fonts through LFS, and ignores
   plugins' Binaries and Intermediate. An agent set up LFS in Animal Planet's repo, converting the
   committed files in a new commit (no history rewrite, so no force push) and removing the test level.
+- **A conversation looked finished while the agent's background job ran.** The agent started a 40-minute
+  browser measurement in the background and ended its turn ("the job will notify me when it ends"); the
+  list said "Worked for 1h 12m" and nothing showed a job still running or that the agent would come
+  back by itself when it ended, so the user thought it was stuck. To build: show running background
+  jobs on the conversation ("Waiting on 1 background job") until Claude Code says they've ended.
+  **Built:** a command an agent starts with run_in_background counts as a job; when Claude Code starts a
+  turn by itself (a job ended), one is counted as ended and the conversation shows Working again. While
+  jobs are left, the list says "Waiting on job" and the timeline "Waiting on a background job. It carries
+  on by itself when the job ends." Tried with a 60-second job: it waited, came back by itself, and cleared.
+- **The supervisor's own watching went wrong three times:** a watcher keyed on the "Working" label, a
+  leftover `grep` whose command line looked like a build, and a 10-minute quiet window all hid a finished
+  agent. And a brief with double quotes inside it was cut short by the drive tool's `set`. With "Waiting
+  on job" in Agent Orange, the label now tells the truth.
