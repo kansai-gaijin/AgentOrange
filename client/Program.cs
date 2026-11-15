@@ -12,6 +12,14 @@ public static class Program
         // special arguments and exits here without opening a window.
         VelopackApp.Build().Run();
 
+        // Started by an agent session for Agent Orange's MCP server: only passes its messages on.
+        var args = Environment.GetCommandLineArgs();
+        if (Array.IndexOf(args, "--mcp") is var mcp and >= 0)
+        {
+            McpRelay.Run(mcp + 1 < args.Length ? args[mcp + 1] : "");
+            return;
+        }
+
 #if DEBUG
         Headless.Configure(Environment.GetCommandLineArgs());
         if (!Headless.Active)

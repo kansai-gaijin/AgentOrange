@@ -3,6 +3,24 @@
 What got in the way while using Agent Orange to make the games, and what was done about it. Newest first.
 Anything not fixed on the spot is a GitHub issue, not a line here.
 
+## 2026-11-15 · Agent Orange's own MCP server
+
+With the GDD to be deleted, agents have to read the design from Agent Orange, and they only ever saw
+the page the person had open. Now every agent session gets Agent Orange's MCP server
+(`McpServer.cs`, `MainWindow.Mcp.cs`): `AgentOrange.exe --mcp <project>` relays its JSON-RPC lines to
+the running app over a pipe only this Windows account can open (a separate one for the dev build).
+Each project gets its own MCP config, so the server is always about the session's project.
+
+- **Tools:** get_project (settings, pages, milestones, the folder's documents), list_cards,
+  read_card (a card's document and its tasks, or the overview), write_card (replace or append),
+  list_tasks, add_task, update_task, search (documents, card names, tasks), read_picture.
+  Nothing delivers an asset.
+- What an agent writes shows at once on the page if it's open, unless the person is writing there.
+- Checked through the relay with every tool, then with a real Claude Code session in the agents
+  window, which answered from read_card, list_cards and list_tasks.
+- Found: asking for milestone "Priority 1" matched Priority 10 and 11 too; fixed.
+- Seen: an empty reasoning row (an icon with no words) in that session's work log.
+
 ## 2026-11-15 · Documents instead of boards for design text
 
 The user: "nodes are not good for documents… text is better for a large gdd like this… node graph

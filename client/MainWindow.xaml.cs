@@ -121,6 +121,10 @@ public partial class MainWindow : Window
         Closing += (_, closing) => closing.Cancel = !_restarting && (HideToTray() || !ConfirmStoppingClone("Closing"));
         StartTray();
         StartScreenshotHotkey();
+#if DEBUG
+        if (!Headless.Active)
+#endif
+        StartMcpServer();
 
         // Nothing stays compatible across a release, so a copy that has to update doesn't sync.
         _sync = new SyncEngine(_database, _server, _devices, folders.DatabasePath) { IsPaused = () => _requiredVersion is not null };

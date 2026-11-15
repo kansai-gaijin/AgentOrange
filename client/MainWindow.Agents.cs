@@ -125,7 +125,7 @@ public partial class MainWindow
     {
         var agentFolder = Settings.Folders.AgentFolder;
         var provider = AgentProviderFor(conversation) ?? throw new IOException("There's no Claude Code provider.");
-        var mcp = AgentMcpConfig.Write(Settings.Editors, agentFolder);
+        var mcp = AgentMcpConfig.Write(Settings.Editors, agentFolder, conversation.ProjectId);
         var servers = (JsonNode.Parse(File.ReadAllText(mcp))?["mcpServers"] as JsonObject)?.Select(server => server.Key).ToList() ?? [];
         Directory.CreateDirectory(AttachmentsFolder);
         return new AgentConversation.Setup(provider, mcp, servers, AgentSkills.ClaudePlugin(agentFolder), AgentBriefing.Write(Settings.Editors, agentFolder), AttachmentsFolder);

@@ -14,9 +14,20 @@ public static class AgentMcpConfig
 {
     private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
 
-    public static string Write(EditorMonitor editors, string agentFolder)
+    public static string Write(EditorMonitor editors, string agentFolder, string? projectId = null)
     {
         var servers = new JsonObject();
+
+        // Agent Orange's own, for the project the session is about: the design, the tasks and the settings.
+        if (projectId is not null)
+        {
+            servers["agent-orange"] = new JsonObject
+            {
+                ["type"] = "stdio",
+                ["command"] = Path.Combine(AppContext.BaseDirectory, "AgentOrange.exe"),
+                ["args"] = new JsonArray("--mcp", projectId),
+            };
+        }
         foreach (var editor in EditorMonitor.Definitions.Where(editors.IsSetUp))
         {
             var settings = editors.SettingsOf(editor);
@@ -39,7 +50,7 @@ public static class AgentMcpConfig
 
         var folder = Path.Combine(agentFolder, "mcp");
         Directory.CreateDirectory(folder);
-        var path = Path.Combine(folder, "claude.json");
+        var path = Path.Combine(folder, projectId is null ? "claude.json" : $"claude-{projectId}.json");
         File.WriteAllText(path, new JsonObject { ["mcpServers"] = servers }.ToJsonString(Indented));
         return path;
     }
