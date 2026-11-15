@@ -142,7 +142,10 @@ internal static partial class Headless
                 else clicked.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 break;
             case "set":
-                var field = await UntilThereAsync(window, () => Visible<TextBox>(window).ElementAtOrDefault(int.Parse(parts[1])), $"field {parts[1]}");
+                // By its place among the fields shown, or by its name, such as "Commit message".
+                var field = await UntilThereAsync(window, () => int.TryParse(parts[1], out var place)
+                    ? Visible<TextBox>(window).ElementAtOrDefault(place)
+                    : Visible<TextBox>(window).FirstOrDefault(box => System.Windows.Automation.AutomationProperties.GetName(box) == parts[1]), $"field {parts[1]}");
                 field.Text = parts[2].Replace("\\n", "\n"); // A command is one line, so \n stands for a line break.
 
                 // The window can't take focus, so leaving the field is done by hand.

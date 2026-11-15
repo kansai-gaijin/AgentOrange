@@ -261,3 +261,25 @@ For driving the dev build (`tools/drive.ps1`):
   open board), `focused` (where keys go), bare `wait` (half a second). Failures say where in the app.
 - Hot reload sometimes misses a changed method, and never runs new static fields' initialisers.
   Restart `dotnet watch` when a change doesn't show.
+
+## Unreal 5.9 through Agent Orange, with Unreal's own skills
+
+Unreal 5.9 ships agent skills (`Engine/Extras/AgentTools/Skills`, the web platform's, PCG's). Agent
+Orange now gives them to an Unreal game's sessions, and notes every skill an agent uses (Settings ›
+Skills). A real agent then made a test level in Animal Planet through Agent Orange: a floor, a light, a
+cube, sphere and cone, saved as `Content/Test/AgentTest.umap` (left untracked, not committed). It
+checked the level with Unreal's editor screenshots, fixed a black sky and unlit sides with a sky
+atmosphere, sky light and fog, and checked the log with Unreal's `unreal-log-triage` skill, which it
+loaded by itself. Agent Orange noted the use.
+
+- **A call failed with "MCP doesn't answer"** just after Unreal opened, though list_tools had said it
+  answered: the editor was busy and missed the three-second look. A call now gives an open editor half
+  a minute before saying so.
+- **A skill call showed only as "Skill"** in the conversation, and a passed-on call only as
+  "agent-orange: use_tool". They now name the skill, and the tool and its tool, such as
+  "Unreal Engine: call_tool".
+- **Settings › Skills didn't show a new use** when Settings was opened again on that page, as it kept the
+  page drawn before. The page is drawn again each time Settings opens.
+- Unreal's side, not Agent Orange's: about 80 toolsets in one list, tool schemas of up to 25 KB, no
+  tool that saves a level (it saved through Python), and Python wanting `read_me` first.
+

@@ -147,6 +147,12 @@ public sealed partial class AgentConversation
     /// <summary>On the window's thread: an item was added or changed.</summary>
     public event Action<AgentItem>? ItemChanged;
 
+    /// <summary>A skill it used, by its name, and how: by name, through Claude Code's Skill tool, or by reading its file.</summary>
+    public event Action<string, string>? SkillUsed;
+
+    private readonly HashSet<string> _skillTools = []; // The tools seen using a skill, so one that's updated isn't counted again.
+    private readonly HashSet<string> _skillsThisTurn = []; // Each skill counts once a turn, however many times it's used.
+
     /// <summary>On the window's thread: it started or stopped working, or wants the person.</summary>
     public event Action? StateChanged;
 
@@ -225,6 +231,7 @@ public sealed partial class AgentConversation
         }
         PendingFrom = null;
         PendingTo = null;
+        _skillsThisTurn.Clear();
         Add(new AgentItem { Id = NewId(), Kind = AgentItemKind.User, Text = text, View = viewLabel, Attachments = attachments.Count == 0 ? null : [.. attachments], Automatic = automatic });
         var named = text.Length > 0 ? text : attachments.Any(attachment => attachment.IsImage) ? "A picture" : $"About {attachments.FirstOrDefault()?.Name}";
         // One line, as T3's titles are.
@@ -949,6 +956,7 @@ public sealed partial class AgentConversation
                     goto default;
                 default:
                     if (Str(part, "type") != "tool_use" || Str(part, "name") is not { } name || name == "AskUserQuestion" || name == "ExitPlanMode" || Str(part, "id") is not { } toolId) break;
+                    NoteSkills(toolId, name, part["input"] as JsonObject);
                     if (_byId.TryGetValue(toolId, out var started))
                     {
                         started.Text = DescribeTool(name, part["input"] as JsonObject);
@@ -961,6 +969,52 @@ public sealed partial class AgentConversation
                     break;
             }
         }
+    }
+
+    // Claude Code uses a skill through its Skill tool, or an agent reads one's SKILL.md itself, as
+    // Codex does with the skills its briefing names.
+    private void NoteSkills(string toolId, string tool, JsonObject? input)
+    {
+        if (input is null || _skillTools.Contains(toolId)) return;
+        var found = new List<(string Skill, string How)>();
+        if (tool == "Skill" && (Str(input, "skill") ?? Str(input, "command")) is { Length: > 0 } named) found.Add((named.TrimStart('/'), "By name"));
+        else if (tool == "Read" && Str(input, "file_path") is { } read && AgentSkills.NameOfFile(read) is { } file) found.Add((file, "Read its file"));
+        else if (tool is "Bash" or "PowerShell" && Str(input, "command") is { } command) found.AddRange(SkillFilesIn(command).Select(skill => (skill, "Read its file")));
+        if (found.Count == 0) return;
+
+        _skillTools.Add(toolId);
+        foreach (var (skill, how) in found)
+        {
+            var name = skill.StartsWith(AgentSkills.PluginPrefix, StringComparison.Ordinal) ? skill[AgentSkills.PluginPrefix.Length..] : skill;
+            if (_skillsThisTurn.Add(name)) SkillUsed?.Invoke(name, how);
+        }
+    }
+
+    // The skills whose SKILL.md a command names. A path can have spaces, so it's the longest run
+    // before "SKILL.md", back to a quote or the start, that's a file here.
+    private List<string> SkillFilesIn(string command)
+    {
+        var skills = new List<string>();
+        for (var at = command.IndexOf("SKILL.md", StringComparison.OrdinalIgnoreCase); at >= 0; at = command.IndexOf("SKILL.md", at + 1, StringComparison.OrdinalIgnoreCase))
+        {
+            var end = at + "SKILL.md".Length;
+            string? best = null;
+            for (var start = at - 1; start >= 0 && command[start] is not ('"' or '\'' or '`'); start--)
+            {
+                if (start > 0 && command[start - 1] is not (' ' or '"' or '\'' or '`' or '=' or '(')) continue;
+                var path = command[start..end];
+                try
+                {
+                    var full = Path.IsPathRooted(path) ? path : Path.Combine(Folder ?? "", path);
+                    if (File.Exists(full)) best = full;
+                }
+                catch (Exception error) when (error is ArgumentException or NotSupportedException)
+                {
+                }
+            }
+            if (best is not null && AgentSkills.NameOfFile(best) is { } skill && !skills.Contains(skill)) skills.Add(skill);
+        }
+        return skills;
     }
 
     private void ReadToolResults(JsonArray content)
@@ -1020,7 +1074,10 @@ public sealed partial class AgentConversation
     private static string DescribeTool(string name, JsonObject? input)
     {
         var shortName = name.StartsWith("mcp__", StringComparison.Ordinal) && name.Split("__") is [_, var server, var tool] ? $"{server}: {tool}" : name;
-        foreach (var key in new[] { "file_path", "path", "command", "pattern", "url", "query", "description" })
+
+        // Which tool's tool Agent Orange passes the call on to, such as Unreal Engine's call_tool.
+        if (Str(input, "tool") is { Length: > 0 } passedTo) return $"{shortName}  {passedTo}{(Str(input, "name") is { Length: > 0 } passed ? $": {passed}" : "")}";
+        foreach (var key in new[] { "skill", "file_path", "path", "command", "pattern", "url", "query", "description" })
         {
             if (Str(input, key) is { Length: > 0 } value) return $"{shortName}  {Shortened(value.ReplaceLineEndings(" "), 160)}";
         }

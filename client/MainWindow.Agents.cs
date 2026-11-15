@@ -43,6 +43,7 @@ public partial class MainWindow
     {
         _conversations!.Add(conversation);
         conversation.LimitsReported += (provider, limits, complete) => Usage.Update(provider, limits, complete);
+        conversation.SkillUsed += (skill, how) => RecordSkillUse(conversation, skill, how);
         conversation.StateChanged += () =>
         {
             // Done, or wanting something, with no one looking at it.
@@ -128,7 +129,32 @@ public partial class MainWindow
         var mcp = AgentMcpConfig.Write(Settings.Editors, agentFolder, conversation.ProjectId);
         var servers = (JsonNode.Parse(File.ReadAllText(mcp))?["mcpServers"] as JsonObject)?.Select(server => server.Key).ToList() ?? [];
         Directory.CreateDirectory(AttachmentsFolder);
-        return new AgentConversation.Setup(provider, mcp, servers, AgentSkills.ClaudePlugin(agentFolder), AgentBriefing.Write(Settings.Editors, agentFolder), AttachmentsFolder);
+
+        // A game made in Unreal gets the skills its engine ships, and its own.
+        var others = FindProject(conversation.ProjectId)?.Engine == "Unreal Engine" ? UnrealSkills.ForFolder(conversation.Folder ?? ProjectFolder(conversation.ProjectId)) : [];
+        _sessionSkills[conversation.Id] = [.. AgentSkills.List(agentFolder), .. others];
+        return new AgentConversation.Setup(provider, mcp, servers, AgentSkills.ClaudePlugin(agentFolder, conversation.ProjectId, others),
+            AgentBriefing.Write(Settings.Editors, agentFolder, conversation.ProjectId, others), AttachmentsFolder);
+    }
+
+    // The skills each conversation's session was given, by conversation, for saying where a skill it used came from.
+    private readonly Dictionary<string, List<AgentSkill>> _sessionSkills = [];
+
+    // Kept on this PC, for Settings › Skills to say which skills get used, where and how.
+    private void RecordSkillUse(AgentConversation conversation, string skill, string how)
+    {
+        var name = skill.StartsWith(AgentSkills.PluginPrefix, StringComparison.Ordinal) ? skill[AgentSkills.PluginPrefix.Length..] : skill;
+        var provider = AgentProviderFor(conversation);
+        var given = _sessionSkills.TryGetValue(conversation.Id, out var skills) ? skills.FirstOrDefault(each => each.Name == name) : null;
+        var from = given?.From ?? (provider?.Kind == ProviderKind.Codex ? "Codex" : "Claude Code");
+        try
+        {
+            _database.AddSkillUse(new SkillUse(DateTimeOffset.Now, name, from, conversation.ProjectId, conversation.Id, provider?.Kind.ToString() ?? "", how));
+        }
+        catch (Exception error) when (error is Microsoft.Data.Sqlite.SqliteException or IOException)
+        {
+            AppLog.Write($"Couldn't note that {name} was used: {error.Message}");
+        }
     }
 
     /// <summary>The logins a conversation can go on with: every Claude Code one turned on.</summary>

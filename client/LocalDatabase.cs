@@ -85,6 +85,9 @@ public sealed record Project(string Id, string Name, string Engine, string Engin
 /// ChangedAt is when this copy was made, in milliseconds. Resend means it's only being sent again
 /// because a server lost its data, so it mustn't replace anything newer.
 /// </summary>
+/// <summary>An agent using a skill: when, which, who it's from, where, by which kind of login, and how (by name, or by reading its file).</summary>
+public sealed record SkillUse(DateTimeOffset At, string Skill, string From, string ProjectId, string ConversationId, string Provider, string How);
+
 public sealed record SyncChange(string Collection, string Id, string Data, bool Deleted, long ChangedAt = 0, bool Resend = false);
 
 /// <summary>
@@ -732,6 +735,9 @@ public sealed class LocalDatabase
             CREATE INDEX IF NOT EXISTS records_changed_at ON records (changed_at);
 
             CREATE TABLE IF NOT EXISTS holds (token TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL, project_id TEXT NOT NULL, project_name TEXT NOT NULL);
+
+            CREATE TABLE IF NOT EXISTS skill_uses (at INTEGER NOT NULL, skill TEXT NOT NULL, source TEXT NOT NULL, project_id TEXT NOT NULL, conversation_id TEXT NOT NULL, provider TEXT NOT NULL, how TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS skill_uses_at ON skill_uses (at);
 
             CREATE TABLE IF NOT EXISTS revisions (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
             INSERT OR IGNORE INTO revisions (name, value) VALUES ('records', 0);
@@ -1946,6 +1952,37 @@ public sealed class LocalDatabase
         {
             // Already there, from an earlier start.
         }
+    }
+
+    // Kept on this PC only: it's about how agents work here, not the game.
+    public void AddSkillUse(SkillUse use)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO skill_uses (at, skill, source, project_id, conversation_id, provider, how) VALUES ($at, $skill, $source, $project, $conversation, $provider, $how)";
+        command.Parameters.AddWithValue("$at", use.At.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$skill", use.Skill);
+        command.Parameters.AddWithValue("$source", use.From);
+        command.Parameters.AddWithValue("$project", use.ProjectId);
+        command.Parameters.AddWithValue("$conversation", use.ConversationId);
+        command.Parameters.AddWithValue("$provider", use.Provider);
+        command.Parameters.AddWithValue("$how", use.How);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>Every skill use noted on this PC, newest first.</summary>
+    public List<SkillUse> ListSkillUses()
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT at, skill, source, project_id, conversation_id, provider, how FROM skill_uses ORDER BY at DESC";
+        var found = new List<SkillUse>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            found.Add(new SkillUse(DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(0)).ToLocalTime(), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetString(5), reader.GetString(6)));
+        }
+        return found;
     }
 
     private static void Execute(SqliteConnection connection, string sql)

@@ -283,6 +283,7 @@ public partial class MainWindow : Window
         MainContent.IsEnabled = false;
         MainContent.Effect = new BlurEffect { Radius = 8 };
         Settings.RefreshServerPage();
+        Settings.RefreshOnOpen();
         Settings.Visibility = Visibility.Visible;
         Settings.Focus();
     }

@@ -60,6 +60,19 @@ public partial class MainWindow
         }
     }
 
+    // Before passing a call on: an editor that's open but busy, as Unreal is for a while after it
+    // opens, can miss one look, so it's given half a minute.
+    private async Task<bool> AnswersAsync(EditorDefinition editor)
+    {
+        for (var waited = 0; ; waited += 2)
+        {
+            if (await ReachableAsync(editor)) return true;
+            var program = Path.GetFileNameWithoutExtension(editor.Id == "unreal" ? "UnrealEditor" : Settings.Editors.SettingsOf(editor).ProgramPath);
+            if (waited >= 30 || program.Length == 0 || Process.GetProcessesByName(program).Length == 0) return false;
+            await Task.Delay(2000);
+        }
+    }
+
     /// <summary>Opens the tool in the project's folder if it isn't open, and waits for its MCP to answer.</summary>
     internal async Task<string> OpenToolAsync(EditorDefinition editor, string? folder)
     {
@@ -160,7 +173,7 @@ public partial class MainWindow
     private async Task<object> ToolToolsAsync(Project project, JsonObject given)
     {
         var editor = ToolNamed(project, Required(given, "tool"));
-        if (!await ReachableAsync(editor)) return $"{editor.Name}'s MCP doesn't answer. Open it with open_tool first.";
+        if (!await AnswersAsync(editor)) return $"{editor.Name}'s MCP doesn't answer. Open it with open_tool first.";
         var client = await ToolClientAsync(editor, ProjectFolder(project.Id));
         var listed = await client.RequestAsync("tools/list", []);
         var said = new StringBuilder($"{editor.Name}'s tools, for use_tool:\n");
@@ -177,7 +190,7 @@ public partial class MainWindow
         var editor = ToolNamed(project, Required(given, "tool"));
         var name = Required(given, "name");
         var arguments = given["arguments"] as JsonObject ?? [];
-        if (!await ReachableAsync(editor)) return ToolResult($"{editor.Name}'s MCP doesn't answer. Open it with open_tool first.", error: true);
+        if (!await AnswersAsync(editor)) return ToolResult($"{editor.Name}'s MCP doesn't answer. Open it with open_tool first.", error: true);
 
         try
         {

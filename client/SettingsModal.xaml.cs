@@ -285,6 +285,12 @@ public partial class SettingsModal : UserControl
         _ = Sync.SyncNowAsync();
     }
 
+    /// <summary>Settings opened again: the skills page shows uses noted since it was drawn.</summary>
+    public void RefreshOnOpen()
+    {
+        if (_currentPage.Name == "Skills") ShowPage(_currentPage);
+    }
+
     /// <summary>Another PC, or the window that syncs, may have changed the approvals being shown.</summary>
     public void RefreshIfApprovalsChanged()
     {
@@ -313,6 +319,7 @@ public partial class SettingsModal : UserControl
     }
 
     // Read from the folder each time the page opens, as skills are added by putting files there.
+    // With how much each gets used, as noted on this PC when an agent uses one.
     private UIElement[] SkillsPage()
     {
         var folder = AgentSkills.FolderIn(Folders.AgentFolder);
@@ -324,11 +331,71 @@ public partial class SettingsModal : UserControl
             Card(Row("Agent Orange's skills", "Every agent session loads these, whichever provider it uses, and never the skills installed for a provider elsewhere on this PC. Each skill is a folder here with a SKILL.md in it.", open)),
         };
 
+        List<SkillUse> uses;
+        try
+        {
+            uses = Database.ListSkillUses();
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException error)
+        {
+            AppLog.Write($"Couldn't read the skill uses: {error.Message}");
+            uses = [];
+        }
+        var byName = uses.GroupBy(use => use.Skill).ToDictionary(group => group.Key, group => group.ToList());
+
+        FrameworkElement SkillRow(AgentSkill skill)
+        {
+            var used = byName.TryGetValue(skill.Name, out var times) ? times : [];
+            // Its first sentence, as some of Unreal's go on to list every phrase they're for.
+            var said = skill.Description.IndexOf(". ", StringComparison.Ordinal) is var stop and > 0 ? skill.Description[..(stop + 1)] : skill.Description;
+            return Row(skill.Name, said.Length > 0 ? said : "No description.", UsedText(used));
+        }
+
         var skills = AgentSkills.List(Folders.AgentFolder);
-        elements.Add(Section(skills.Count == 0 ? "No skills yet" : $"{skills.Count} skill{(skills.Count == 1 ? "" : "s")}"));
-        if (skills.Count > 0) elements.Add(Card(skills.Select(skill => (FrameworkElement)Row(skill.Name, skill.Description.Length > 0 ? skill.Description : "No description.")).ToArray()));
+        elements.Add(Section(skills.Count == 0 ? "No skills of Agent Orange's own yet" : $"{skills.Count} skill{(skills.Count == 1 ? "" : "s")}"));
+        if (skills.Count > 0) elements.Add(Card([.. skills.Select(SkillRow)]));
+
+        // Unreal's own, for a game made in it, as the newest engine here has them with its plugins as they come.
+        var listed = skills.Select(skill => skill.Name).ToHashSet();
+        if (UnrealProject.Installed().FirstOrDefault() is { } engine && UnrealSkills.For(engine) is { Count: > 0 } unreal)
+        {
+            elements.Add(Section($"Unreal Engine {engine.Version}'s skills"));
+            elements.Add(Card([
+                Row("For games made in Unreal", $"Unreal ships these with the engine. An agent working on an Unreal game gets them too: the engine's, its platforms', those of the plugins the game has on, and any in the game's own Skills folder. They stay in the engine, at {engine.Folder}."),
+                .. unreal.Select(SkillRow)]));
+            listed.UnionWith(unreal.Select(skill => skill.Name));
+        }
+
+        // Ones from elsewhere, such as a provider's own or a game's.
+        var others = byName.Where(pair => !listed.Contains(pair.Key)).OrderByDescending(pair => pair.Value.Count).ToList();
+        if (others.Count > 0)
+        {
+            elements.Add(Section("Other skills used"));
+            elements.Add(Card([.. others.Select(pair => (FrameworkElement)Row(pair.Key, pair.Value[0].From, UsedText(pair.Value)))]));
+        }
+
+        elements.Add(Section("Recent uses"));
+        if (uses.Count == 0)
+        {
+            elements.Add(Card(Row("None yet", "Each time an agent uses a skill, whether by its name or by reading its file, it's noted here, on this PC.")));
+        }
+        else
+        {
+            var projects = Database.ListProjects().ToDictionary(project => project.Id, project => project.Name);
+            elements.Add(Card([.. uses.Take(20).Select(use => (FrameworkElement)Row(use.Skill,
+                $"{(projects.TryGetValue(use.ProjectId, out var name) ? name : "A project no longer here")} · {use.From} · {(use.Provider == nameof(ProviderKind.Codex) ? "Codex" : "Claude Code")} · {use.How}",
+                Muted(When(use.At))))]));
+        }
         return elements.ToArray();
     }
+
+    private static TextBlock Muted(string text) => new() { Text = text, FontSize = 12.5, Foreground = (Brush)Application.Current.FindResource("TextMuted") };
+
+    private static TextBlock UsedText(List<SkillUse> used) =>
+        Muted(used.Count == 0 ? "Not used yet" : $"{used.Count} use{(used.Count == 1 ? "" : "s")}, last {When(used[0].At)}");
+
+    private static string When(DateTimeOffset at) =>
+        at.Date == DateTime.Today ? $"today, {at:HH:mm}" : at.Date == DateTime.Today.AddDays(-1) ? $"yesterday, {at:HH:mm}" : at.Year == DateTime.Today.Year ? $"{at:d MMM}" : $"{at:d MMM yyyy}";
 
     private UIElement[] ServerPage()
     {

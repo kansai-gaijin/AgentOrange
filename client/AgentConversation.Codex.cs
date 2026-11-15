@@ -500,6 +500,7 @@ public sealed partial class AgentConversation
             case "commandExecution":
                 // The command as T3 shows it: on its own, with the backslashes Codex escapes in it as they are.
                 CodexTool(id, "Bash", (Str(item, "command") ?? "").Replace(@"\\", @"\"), item, done, Str(item, "aggregatedOutput"));
+                NoteSkills(id, "Bash", new JsonObject { ["command"] = (Str(item, "command") ?? "").Replace(@"\\", @"\") });
                 break;
             case "fileChange":
                 var paths = (item["changes"] as JsonArray ?? []).OfType<JsonObject>().Select(change => Str(change, "path")).OfType<string>().ToList();

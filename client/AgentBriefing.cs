@@ -13,7 +13,7 @@ namespace AgentOrange;
 /// </summary>
 public static class AgentBriefing
 {
-    public static string Write(EditorMonitor editors, string agentFolder)
+    public static string Write(EditorMonitor editors, string agentFolder, string projectId, IReadOnlyList<AgentSkill> others)
     {
         var said = new StringBuilder();
         said.AppendLine("""
@@ -66,16 +66,25 @@ public static class AgentBriefing
         said.AppendLine(reachable.Count > 0 ? string.Join("\n", reachable) : "- None yet. Editors are set up in Agent Orange's Settings, under Editors.");
         if (notReachable.Count > 0) said.AppendLine($"\nSet up, but not reachable by you yet: {string.Join(", ", notReachable)}.");
 
+        // Claude Code has them as skills. Codex isn't given them as its own, so it reads their files.
         var skills = AgentSkills.List(agentFolder);
-        if (skills.Count > 0)
+        var theirs = others.Where(skill => !skills.Any(own => own.Name == skill.Name)).ToList();
+        if (skills.Count > 0 || theirs.Count > 0)
         {
             said.AppendLine();
-            said.AppendLine("## Agent Orange's skills");
+            said.AppendLine("## Skills");
             said.AppendLine();
-            foreach (var skill in skills) said.AppendLine($"- agent-orange:{skill.Name}{(skill.Description.Length > 0 ? $": {skill.Description}" : "")}");
+            said.AppendLine($"With Claude Code these are skills of yours, by these names, starting {AgentSkills.PluginPrefix}. Otherwise, when one fits the work, read its SKILL.md, at the path given, and follow it.");
+            foreach (var group in skills.Concat(theirs).GroupBy(skill => skill.From))
+            {
+                said.AppendLine();
+                said.AppendLine(group.Key == AgentSkills.OwnSource ? "Agent Orange's own:" : $"{group.Key}'s:");
+                foreach (var skill in group) said.AppendLine($"- {AgentSkills.PluginPrefix}{skill.Name} ({skill.File}){(skill.Description.Length > 0 ? $": {skill.Description}" : "")}");
+            }
         }
 
-        var path = Path.Combine(agentFolder, "briefing.md");
+        var path = Path.Combine(agentFolder, "briefings", $"{projectId}.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, said.ToString());
         return path;
     }
