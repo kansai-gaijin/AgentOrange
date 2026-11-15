@@ -39,10 +39,11 @@ MCP servers already running when it starts, and Blender's was "Port only", which
 - **A real agent used all four:** a green low-poly sphere exported from Blender, an orange circle
   sprite saved from Aseprite, a bricks material exported from Material Maker, and the sphere imported
   into ArmorPaint and captured. The game's folder was untouched.
-- From its notes: Blender had no screenshot (Blender Lab's has them); Material Maker's 3D
-  preview came back white though its textures were right, and ArmorPaint always saves its capture to
-  a folder of its own outside the project (both in the forks); every call goes through use_tool, so
-  the tool's own list has to be read first.
+- From its notes: Blender had no screenshot (Blender Lab's has them); every call goes through
+  use_tool, so the tool's own list has to be read first. It also said Material Maker's 3D preview
+  came back white: checked, and it isn't a bug. The Bricks pattern is white bricks with black
+  mortar, and both the preview render and the 3D panel show them. ArmorPaint saving its capture to
+  a folder of its own is how it works, and fine.
 - **Approvals couldn't be answered from the keyboard:** Allow, Always allow and Don't allow were
   words with a mouse handler. They're buttons now, looking the same.
 - **The MCP relay locked the dev build's own files,** so rebuilding while an agent ran failed and took
