@@ -115,6 +115,18 @@ public partial class MainWindow
         }
     }
 
+    // How much is in it: its document's words, and anything on its board.
+    private string CardSize(Project project, BoardCard card, int nodeCount)
+    {
+        var words = _database.GetDocument(project.Id, LocalDatabase.CardBoardKey(card)) is { } markdown
+            ? System.Text.RegularExpressions.Regex.Matches(markdown, @"[\p{L}\p{N}]+").Count
+            : 0;
+        var parts = new List<string>();
+        if (words > 0) parts.Add(words == 1 ? "1 word" : $"{words:N0} words");
+        if (nodeCount > 0) parts.Add(nodeCount == 1 ? "1 node on its board" : $"{nodeCount} nodes on its board");
+        return parts.Count > 0 ? string.Join(" · ", parts) : "Nothing written yet";
+    }
+
     private ImageSource? CardPicture(string cardId, int decodeWidth)
     {
         if (_database.GetCardImage(cardId) is not { } stored)
@@ -180,7 +192,7 @@ public partial class MainWindow
         // An asset says what it is instead of how much is on its board.
         content.Children.Add(page == AssetsPage
             ? AssetCardLines(_database, project.Id, card)
-            : new TextBlock { Text = nodeCount switch { 0 => "Nothing on its board yet", 1 => "1 node", _ => $"{nodeCount} nodes" }, Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0) });
+            : new TextBlock { Text = CardSize(project, card, nodeCount), Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0) });
         var tile = new Button { Style = (Style)FindResource("ProjectCard"), Content = content, Tag = card, Width = width, Margin = new Thickness(0, 0, 20, 24), VerticalAlignment = VerticalAlignment.Top };
         AutomationProperties.SetName(tile, shownName);
 

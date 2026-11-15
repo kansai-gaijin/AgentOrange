@@ -3,6 +3,27 @@
 What got in the way while using Agent Orange to make the games, and what was done about it. Newest first.
 Anything not fixed on the spot is a GitHub issue, not a line here.
 
+## 2026-11-15 · Documents instead of boards for design text
+
+The user: "nodes are not good for documents… text is better for a large gdd like this… node graph
+is too hard to look at when it gets this complex". Boards stay, for workflows later.
+
+- **Each card and the overview open on a document** (`DocumentPage.cs`): its picture as a banner,
+  Markdown as it's typed or pasted, its headings down the side to jump between, and its board a
+  click away ("Board"). Kept as Markdown (`documents`, pictures in `document_pictures`), so agents
+  read and write the same text, and told to agents when it's open.
+- **One Markdown converter** for both ways (`MarkdownText.cs`), shared with the board's paste.
+  Links can go to cards (`card:part/id`) and to the project's files (`doc:path`).
+- **Every board was written out as its document** the first time it opened, in reading order:
+  links followed from where each chain starts (the user's overview columns), the rest row by row,
+  frames as headings. Each board was then emptied, with a copy in the agent folder's
+  `board-backups`. All 42 converted: the overview, 2 beats, 4 characters, 8 levels, 27 mechanics.
+- Cards show their document's word count instead of a node count.
+- Assets keep their board for now: their own screen (brief, candidates, delivery, workflow) is next
+  after the MCP server.
+- Found on the way: a link at the start of a list item was saved with the bullet in its words.
+- Not yet: ticking a tick box in a document with a click, and the button bar the nodes had.
+
 ## 2026-11-15 · Animal Planet: the first real commit and push through Agent Orange
 
 The new production documents were committed and pushed to the game repo with the agents window's git

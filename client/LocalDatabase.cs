@@ -101,6 +101,8 @@ public sealed class LocalDatabase
     private const string EnginesCollection = "project_engines";
     private const string GameSettingsCollection = "game_settings";
     private const string TasksCollection = "tasks";
+    private const string DocumentsCollection = "documents";
+    private const string DocumentPicturesCollection = "document_pictures";
     private const string MilestonesCollection = "milestones";
 
     // Edits to a project, one record per field, so two PCs changing different things both
@@ -454,6 +456,28 @@ public sealed class LocalDatabase
         {
             return new GameSettings(); // It arrived from another PC and can't be read.
         }
+    }
+
+    /// <summary>
+    /// The document of a card, or of a part of the project such as its overview, in Markdown: its
+    /// main view, as a board is hard to read once it holds a lot. Null when it has none yet.
+    /// </summary>
+    public string? GetDocument(string projectId, string boardKey) => GetRecord(DocumentsCollection, $"{projectId}:{boardKey}");
+
+    public void SetDocument(string projectId, string boardKey, string markdown) => SaveRecord(DocumentsCollection, $"{projectId}:{boardKey}", markdown);
+
+    /// <summary>Every document in the project, by the board it's for.</summary>
+    public List<(string BoardKey, string Markdown)> ListDocuments(string projectId) =>
+        [.. ListProjectRecords(DocumentsCollection, projectId).Select(each => (each.Id[(projectId.Length + 1)..], each.Data))];
+
+    /// <summary>A picture in a document, as stored: base64. Kept apart so the document stays readable text.</summary>
+    public string? GetDocumentPicture(string id) => GetRecord(DocumentPicturesCollection, id);
+
+    public string AddDocumentPicture(string projectId, byte[] picture)
+    {
+        var id = $"{projectId}:{Guid.NewGuid():N}";
+        SaveRecord(DocumentPicturesCollection, id, Convert.ToBase64String(picture));
+        return id;
     }
 
     /// <summary>The tasks people made in a stage, each with its id, in their order.</summary>
@@ -1283,7 +1307,7 @@ public sealed class LocalDatabase
     private static string? ProjectIdOf(SyncChange change) => change.Collection switch
     {
         ProjectsCollection or EnginesCollection or GameSettingsCollection => change.Id,
-        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection or AssetDetailsCollection or AssetTagsCollection or AssetDeliverablesCollection or TasksCollection or MilestonesCollection => change.Id.Split(':')[0],
+        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection or AssetDetailsCollection or AssetTagsCollection or AssetDeliverablesCollection or TasksCollection or MilestonesCollection or DocumentsCollection or DocumentPicturesCollection => change.Id.Split(':')[0],
         _ => null,
     };
 

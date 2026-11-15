@@ -69,6 +69,7 @@ Everything is merged and pushed. Nothing is waiting on any branch.
   - Alpha/Beta/Demo/Production stage toggle in the header. Each stage keeps its own boards, and a project can add, rename, copy and delete stages.
   - Progress tiles for Tasks done and Assets delivered.
   - Section cards for Overview (the board once called GDD), Story, Characters, Levels, Assets, Mechanics and References.
+- **Documents, not boards, for design text** (the user's call, 2026-11-15: "node graph is too hard to look at when it gets this complex"): the overview and every story beat, character, level and mechanic open on a document (`client/DocumentPage.cs`, `client/MainWindow.Documents.cs`), Markdown in `documents`, with the board a click away for workflows. `client/MarkdownText.cs` converts both ways. Assets keep their board until their own screen (brief, candidates, delivery, workflow) is built.
 - **Section pages:** no title, and a back button that returns to the project page.
   - **Overview:** a node board.
   - **Story, Characters, Levels, Mechanics:** pages of cards (story beats, characters and so on), each card with a picture and a board of its own.

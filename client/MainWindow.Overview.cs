@@ -50,6 +50,17 @@ public partial class MainWindow
         if (_openProject?.Id == project.Id) RenderProject(_openProject);
     }
 
+    // Each stage has a board of its own for this part of the project, kept while the app runs.
+    private NodeCanvas BoardFor(Project project, string name, BoardCard? card)
+    {
+        _database.GiveBoardsAStage(project.Id);
+        var stage = _database.ProjectStage(project.Id);
+        var key = $"{project.Id}|{stage}|{name}|{card?.Id}";
+        if (!_boards.TryGetValue(key, out var board)) board = _boards[key] = new NodeCanvas(_database, project.Id, BoardKeyOf(project, name, card), () => _ = _sync.SyncNowAsync());
+        board.OpenCard = (part, cardId) => OpenCardBoard(project, part, cardId);
+        return board;
+    }
+
     // A card page's board is one card's own. Any other page has just the one.
     private void AddBoard(StackPanel body, Project project, string name, BoardCard? card = null)
     {
@@ -57,13 +68,7 @@ public partial class MainWindow
         body.MaxWidth = double.PositiveInfinity;
         body.Margin = new Thickness(0);
 
-        // Each stage has a board of its own for this part of the project.
-        _database.GiveBoardsAStage(project.Id);
-        var stage = _database.ProjectStage(project.Id);
-        var key = $"{project.Id}|{stage}|{name}|{card?.Id}";
-        var named = card is null ? LocalDatabase.BoardKey(stage, BoardPart(name)) : LocalDatabase.CardBoardKey(card);
-        if (!_boards.TryGetValue(key, out var board)) board = _boards[key] = new NodeCanvas(_database, project.Id, named, () => _ = _sync.SyncNowAsync());
-        board.OpenCard = (part, cardId) => OpenCardBoard(project, part, cardId);
+        var board = BoardFor(project, name, card);
         var hadFocus = board.IsKeyboardFocusWithin;
         (board.Parent as Panel)?.Children.Remove(board);
 
@@ -352,12 +357,14 @@ public partial class MainWindow
         }
         if (BoardSections.Contains(name))
         {
-            AddBoard(body, project, name);
+            AddDocumentOrBoard(body, project, name);
             return;
         }
         if (CardPages.ContainsKey(name))
         {
-            if (OpenCardOf(project) is { } card) AddBoard(body, project, name, card);
+            // An asset's own screen comes later. Until then it keeps its board, with its deliverable.
+            if (OpenCardOf(project) is { } card && name == AssetsPage) AddBoard(body, project, name, card);
+            else if (OpenCardOf(project) is { } other) AddDocumentOrBoard(body, project, name, other);
             else AddCardPage(body, project, name);
             return;
         }

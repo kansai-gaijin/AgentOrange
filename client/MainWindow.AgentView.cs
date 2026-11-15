@@ -64,7 +64,21 @@ public partial class MainWindow
             }
         }
 
-        if (OpenBoard(project) is { } board) said.AppendLine($"On the board (board key {board.BoardKey}):\n{board.Describe()}");
+        // Its document is its main view, and its board is shown instead only when the person asks.
+        if (OpenBoard(project) is { } board)
+        {
+            if (_boardShown.Contains(board.BoardKey) || _openDocument is not { IsVisible: true } document)
+            {
+                said.AppendLine($"On the board (board key {board.BoardKey}):\n{board.Describe()}");
+            }
+            else
+            {
+                var markdown = document.Markdown;
+                const int Longest = 30_000;
+                said.AppendLine($"Its document, in Markdown (board key {board.BoardKey}){(board.NodeCount > 0 ? $", with {board.NodeCount} nodes on its board too" : "")}:");
+                said.AppendLine(markdown.Length > Longest ? markdown[..Longest] + "\n[The rest is cut off here.]" : markdown);
+            }
+        }
         return said.ToString().TrimEnd();
     }
 

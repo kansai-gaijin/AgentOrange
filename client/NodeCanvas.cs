@@ -161,6 +161,9 @@ internal sealed partial class NodeCanvas : Border
         Drop += FilesDropped;
     }
 
+    /// <summary>How many nodes are on the board, frames included.</summary>
+    public int NodeCount => _nodes.Count;
+
     /// <summary>In the middle of something that drawing the page again would cut short.</summary>
     public bool IsBusy => _gesture != Gesture.None || _editing is not null;
 
