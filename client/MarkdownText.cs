@@ -362,6 +362,9 @@ internal static class MarkdownText
         }
     }
 
+    /// <summary>One paragraph's words as Markdown: its marks written out, and any typed as Markdown left as they are.</summary>
+    public static string ParagraphMarkdown(Paragraph paragraph) => InlinesToMarkdown(paragraph.Inlines, heading: false);
+
     private static string InlinesToMarkdown(InlineCollection inlines, bool heading)
     {
         var said = new StringBuilder();

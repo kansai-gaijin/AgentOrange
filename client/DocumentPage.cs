@@ -87,8 +87,15 @@ internal sealed class DocumentPage : Grid
         }
         page.Children.Add(_editor);
         _scroller = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Content = page };
-        SetColumn(_scroller, 1);
-        Children.Add(_scroller);
+
+        // The buttons stay at the top while the page scrolls under them.
+        var bar = Toolbar();
+        var column = new DockPanel();
+        DockPanel.SetDock(bar, Dock.Top);
+        column.Children.Add(bar);
+        column.Children.Add(_scroller);
+        SetColumn(column, 1);
+        Children.Add(column);
 
         _saveSoon = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
         _saveSoon.Tick += (_, _) => Save();
@@ -254,12 +261,77 @@ internal sealed class DocumentPage : Grid
         if (_outline.Children.Count == 0) _outline.Children.Add(new TextBlock { Text = "Headings show here.", FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(7, 0, 0, 0) });
     }
 
+    // The button bar: headings, marks and lists, for what's selected or the line being written.
+    private Border Toolbar()
+    {
+        var row = new WrapPanel { Margin = new Thickness(12, 14, 0, 6) };
+        Button Tool(object face, string tip, Action act)
+        {
+            var button = new Button { Style = (Style)FindResource("HeaderButton"), Content = face, ToolTip = tip, Focusable = false, MinWidth = 30 };
+            System.Windows.Automation.AutomationProperties.SetName(button, tip);
+            button.Click += (_, _) =>
+            {
+                act();
+                _editor.Focus();
+            };
+            row.Children.Add(button);
+            return button;
+        }
+        void Gap() => row.Children.Add(new Border { Width = 1, Margin = new Thickness(6, 5, 6, 5), Background = (Brush)FindResource("Line") });
+        void Heading(int level)
+        {
+            if (_editor.CaretPosition.Paragraph is not { } paragraph) return;
+            _editor.BeginChange();
+            foreach (var each in ParagraphsSelected().DefaultIfEmpty(paragraph)) SetHeading(each, level);
+            _editor.EndChange();
+            Save();
+        }
+
+        Tool("H1", "Large heading (# at the start of a line)", () => Heading(1));
+        Tool("H2", "Heading (##)", () => Heading(2));
+        Tool("H3", "Small heading (###)", () => Heading(3));
+        Tool("Text", "Normal text", () => Heading(0));
+        Gap();
+        Tool(new TextBlock { Text = "B", FontWeight = FontWeights.Bold }, "Bold (Ctrl+B, or **words**)", () => EditingCommands.ToggleBold.Execute(null, _editor));
+        Tool(new TextBlock { Text = "I", FontStyle = FontStyles.Italic }, "Italic (Ctrl+I, or *words*)", () => EditingCommands.ToggleItalic.Execute(null, _editor));
+        Tool(new TextBlock { Text = "S", TextDecorations = TextDecorations.Strikethrough }, "Strikethrough (~~words~~)", () =>
+        {
+            var now = _editor.Selection.GetPropertyValue(Inline.TextDecorationsProperty) as TextDecorationCollection;
+            var struck = now?.Any(each => each.Location == TextDecorationLocation.Strikethrough) == true;
+            _editor.Selection.ApplyPropertyValue(Inline.TextDecorationsProperty, struck ? new TextDecorationCollection() : TextDecorations.Strikethrough);
+        });
+        Gap();
+        Tool("•", "Bulleted list (- at the start of a line)", () => EditingCommands.ToggleBullets.Execute(null, _editor));
+        Tool("1.", "Numbered list (1.)", () => EditingCommands.ToggleNumbering.Execute(null, _editor));
+        Tool(MarkdownText.Unticked, "Tick box ([])", () =>
+        {
+            if (_editor.CaretPosition.Paragraph is not { } paragraph) return;
+            var start = paragraph.ContentStart.GetInsertionPosition(LogicalDirection.Forward);
+            new TextRange(start, start).Text = MarkdownText.Unticked + " ";
+        });
+        return new Border { Child = row, Background = (Brush)FindResource("ContentBackground") };
+    }
+
+    private IEnumerable<Paragraph> ParagraphsSelected()
+    {
+        var found = new List<Paragraph>();
+        for (var at = _editor.Selection.Start.Paragraph; at is not null && found.Count < 1000; at = at.ContentEnd.GetNextInsertionPosition(LogicalDirection.Forward)?.Paragraph)
+        {
+            if (!found.Contains(at)) found.Add(at);
+            if (ReferenceEquals(at, _editor.Selection.End.Paragraph)) break;
+        }
+        return found;
+    }
+
+    // The Japanese IME's full-width marks and space count as the ones Markdown uses.
+    private static string Narrow(string text) => text.Replace('＃', '#').Replace('－', '-').Replace('＊', '*').Replace('　', ' ').Replace('［', '[').Replace('］', ']').Replace('．', '.').Replace('１', '1');
+
     // Markdown as it's typed: a space after #, ##, ###, -, 1. or [] at the start of a line.
     private void SpaceTyped(object sender, TextCompositionEventArgs typed)
     {
-        if (typed.Text != " " || !_editor.Selection.IsEmpty || _editor.CaretPosition.Paragraph is not { } paragraph) return;
+        if (Narrow(typed.Text) != " " || !_editor.Selection.IsEmpty || _editor.CaretPosition.Paragraph is not { } paragraph) return;
         var before = new TextRange(paragraph.ContentStart, _editor.CaretPosition);
-        Action? make = before.Text switch
+        Action? make = Narrow(before.Text) switch
         {
             "#" => () => SetHeading(paragraph, 1),
             "##" => () => SetHeading(paragraph, 2),
@@ -277,23 +349,57 @@ internal sealed class DocumentPage : Grid
         _editor.EndChange();
     }
 
+    // The whole line, words already on it included, and what's typed next on it.
     private void SetHeading(Paragraph paragraph, int level)
     {
         paragraph.FontSize = Look.Headings[level];
         paragraph.FontWeight = level > 0 ? FontWeights.Bold : FontWeights.Normal;
-        _editor.Selection.ApplyPropertyValue(TextElement.FontSizeProperty, Look.Headings[level]);
-        _editor.Selection.ApplyPropertyValue(TextElement.FontWeightProperty, paragraph.FontWeight);
+        var all = new TextRange(paragraph.ContentStart, paragraph.ContentEnd);
+        all.ApplyPropertyValue(TextElement.FontSizeProperty, Look.Headings[level]);
+        all.ApplyPropertyValue(TextElement.FontWeightProperty, paragraph.FontWeight);
+        if (_editor.Selection.IsEmpty && _editor.CaretPosition.Paragraph == paragraph)
+        {
+            _editor.Selection.ApplyPropertyValue(TextElement.FontSizeProperty, Look.Headings[level]);
+            _editor.Selection.ApplyPropertyValue(TextElement.FontWeightProperty, paragraph.FontWeight);
+        }
     }
 
-    // Enter at the end of a heading goes back to normal words.
+    // Enter: the line just written becomes what its Markdown says, such as "# Title" or **bold**, and
+    // the line after a heading goes back to normal words.
     private void EnterAfterHeading(object sender, KeyEventArgs pressed)
     {
-        if (pressed.Key != Key.Enter || KeyState.Modifiers != ModifierKeys.None || _editor.CaretPosition.Paragraph is not { } paragraph || Look.LevelOf(paragraph.FontSize) == 0) return;
+        if (pressed.Key != Key.Enter || KeyState.Modifiers != ModifierKeys.None || _editor.CaretPosition.Paragraph is not { } paragraph) return;
+        if (paragraph.Parent is not FlowDocument || !_editor.Selection.IsEmpty) return; // List items and table cells keep the box's own Enter.
+
+        var written = Narrow(MarkdownText.ParagraphMarkdown(paragraph));
+        var hasMarkdown = System.Text.RegularExpressions.Regex.IsMatch(written, @"^#{1,3}\s|\*\*[^*]+\*\*|(?<![\w*])\*[^*\s][^*]*\*|`[^`]+`|~~[^~]+~~|\[[^\]]+\]\([^)\s]+\)");
+        var level = Look.LevelOf(paragraph.FontSize);
+        if (!hasMarkdown && level == 0) return;
+
         pressed.Handled = true;
+        _formatting = true;
         _editor.BeginChange();
-        EditingCommands.EnterParagraphBreak.Execute(null, _editor);
-        if (_editor.CaretPosition.Paragraph is { } next && !ReferenceEquals(next, paragraph)) SetHeading(next, 0);
-        _editor.EndChange();
+        try
+        {
+            var current = paragraph;
+            var atEnd = _editor.CaretPosition.CompareTo(paragraph.ContentEnd.GetInsertionPosition(LogicalDirection.Backward)) >= 0;
+            if (hasMarkdown && atEnd && MarkdownText.ToBlocks(level > 0 ? $"{new string('#', level)} {written}" : written, Look, ownLinks: true).FirstOrDefault() is Paragraph made)
+            {
+                _editor.Document.Blocks.InsertAfter(paragraph, made);
+                _editor.Document.Blocks.Remove(paragraph);
+                current = made;
+                _editor.CaretPosition = made.ContentEnd;
+                level = Look.LevelOf(made.FontSize);
+            }
+            EditingCommands.EnterParagraphBreak.Execute(null, _editor);
+            if (level > 0 && _editor.CaretPosition.Paragraph is { } next && !ReferenceEquals(next, current)) SetHeading(next, 0);
+        }
+        finally
+        {
+            _editor.EndChange();
+            _formatting = false;
+        }
+        Save();
     }
 
     // Markdown pasted in comes in as what it means.
