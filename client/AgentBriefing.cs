@@ -34,8 +34,10 @@ public static class AgentBriefing
             - Overview: a node board for the game as a whole.
             - Story (story beats), Characters, Levels, Mechanics and Assets: pages of cards. Each card has a picture and a node board of its own.
             - An asset also has a type (such as 3D model, sprite sheet or sound effect), the story beat, character, level or mechanic it belongs to, tags, a date to deliver it by, and its deliverable: one file in the project's folder.
-            - Tasks: every asset with a date to deliver it by is a task, done once the person has delivered it. Nothing else is a task.
-            - Boards hold nodes: Title, Rich Text and Image nodes, and reference nodes that stand for a story beat, character, level, mechanic or asset card.
+            - Tasks, in the stage: ones people make, with notes, a day to have them done by, the card they're about and a tick, gathered under milestones that say what they're for and when they're done; and every asset with a date to deliver it by, done once the person has delivered it.
+            - Game settings, in the project's settings: technical targets such as platforms, frame rate, players and languages.
+            - Boards hold nodes: Title, Rich Text, Image and Document nodes (a Document node is one of the project's own files, such as a plan in Markdown, which you can read in the folder), Frames that group the nodes inside them, and reference nodes that stand for a story beat, character, level, mechanic or asset card.
+            - This is the whole design. There is no separate design document: what's on these pages, in the tasks and in the project's documents is what the game is.
 
             ## What the person is looking at
 
