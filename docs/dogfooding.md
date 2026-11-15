@@ -372,3 +372,8 @@ the login: a good summary of the slice), then Push to main past the default-bran
   one step at a time, and check the dialog before confirming.
 - **`dotnet watch` stopped after two hours,** taking the app and Unreal with it: Claude Code ends
   background commands at two hours. It now runs in its own console window (see the handoff).
+- **No Git LFS in the game repo.** "Create the Unreal project" wrote a .gitignore but no .gitattributes,
+  so the first slice's assets, maps and ~15 MB of screenshots went into plain Git. It now also writes a
+  .gitattributes sending Unreal assets, art, models, sound, video and fonts through LFS, and ignores
+  plugins' Binaries and Intermediate. An agent set up LFS in Animal Planet's repo, converting the
+  committed files in a new commit (no history rewrite, so no force push) and removing the test level.

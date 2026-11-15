@@ -167,6 +167,7 @@ public static partial class UnrealProject
         await File.WriteAllTextAsync(mcpSettings, $"[/Script/ModelContextProtocol.ModelContextProtocolSettings]\nbAutoStartServer=True\nServerPortNumber={McpPort}\n", cancel);
 
         await AddToGitIgnoreAsync(folder, cancel);
+        await AddLfsAttributesAsync(folder, cancel);
 
         say($"Building {name} for Unreal {engine.Version}…");
         return await BuildAsync(engine, uproject, name, say, cancel);
@@ -196,13 +197,34 @@ public static partial class UnrealProject
     // What Unreal makes as it works, which doesn't belong in the repo.
     private static async Task AddToGitIgnoreAsync(string folder, CancellationToken cancel)
     {
-        string[] ignored = ["Binaries/", "Intermediate/", "Saved/", "DerivedDataCache/", ".vs/", "*.sln", "*.VC.db", "*.opensdf", "*.sdf", "*.suo"];
+        string[] ignored = ["Binaries/", "Intermediate/", "Saved/", "DerivedDataCache/", "Plugins/*/Binaries/", "Plugins/*/Intermediate/", ".vs/", "*.sln", "*.VC.db", "*.opensdf", "*.sdf", "*.suo"];
         var path = Path.Combine(folder, ".gitignore");
         var lines = File.Exists(path) ? await File.ReadAllLinesAsync(path, cancel) : [];
         var missing = ignored.Where(line => !lines.Contains(line)).ToList();
         if (missing.Count == 0) return;
         var start = lines.Length > 0 && !string.IsNullOrWhiteSpace(lines[^1]) ? "\n" : "";
         await File.AppendAllTextAsync(path, $"{start}# Unreal Engine\n{string.Join("\n", missing)}\n", cancel);
+    }
+
+    /// <summary>Unreal's assets and the art and sound that go into them are big binary files, which plain
+    /// Git keeps whole in every clone forever. These go through Git LFS instead, from the first commit.</summary>
+    public static readonly string[] LfsPatterns =
+    [
+        "*.uasset", "*.umap", "*.ubulk", "*.uexp", "*.upk",
+        "*.png", "*.jpg", "*.jpeg", "*.tga", "*.psd", "*.exr", "*.hdr", "*.tif", "*.tiff", "*.bmp",
+        "*.fbx", "*.obj", "*.glb", "*.gltf", "*.blend", "*.abc", "*.usd", "*.usdz",
+        "*.wav", "*.mp3", "*.ogg", "*.flac", "*.mp4", "*.mov", "*.ttf", "*.otf",
+    ];
+
+    private static async Task AddLfsAttributesAsync(string folder, CancellationToken cancel)
+    {
+        var path = Path.Combine(folder, ".gitattributes");
+        var lines = File.Exists(path) ? await File.ReadAllLinesAsync(path, cancel) : [];
+        var missing = LfsPatterns.Where(pattern => !lines.Any(line => line.StartsWith(pattern + " ", StringComparison.Ordinal))).ToList();
+        if (missing.Count == 0) return;
+        var start = lines.Length > 0 && !string.IsNullOrWhiteSpace(lines[^1]) ? "\n" : "";
+        var added = string.Join("\n", missing.Select(pattern => $"{pattern} filter=lfs diff=lfs merge=lfs -text"));
+        await File.AppendAllTextAsync(path, $"{start}# Unreal assets, art and sound through Git LFS\n{added}\n", cancel);
     }
 
     /// <summary>Builds the editor's copy of the project's code, saying how far it's got.</summary>
