@@ -79,7 +79,7 @@ public static class AgentBriefing
             {
                 said.AppendLine();
                 said.AppendLine(group.Key == AgentSkills.OwnSource ? "Agent Orange's own:" : $"{group.Key}'s:");
-                foreach (var skill in group) said.AppendLine($"- {AgentSkills.PluginPrefix}{skill.Name} ({skill.File}){(skill.Description.Length > 0 ? $": {skill.Description}" : "")}");
+                foreach (var skill in group) said.AppendLine($"- {AgentSkills.PluginPrefix}{skill.Name} ({skill.File}){(skill.Description.Length > 0 ? $": {FirstSentence(skill.Description)}" : "")}");
             }
         }
 
@@ -87,5 +87,13 @@ public static class AgentBriefing
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, said.ToString());
         return path;
+    }
+
+    // Enough to choose by, as some skills' descriptions run on for a paragraph and there can be dozens.
+    private static string FirstSentence(string description)
+    {
+        var stop = description.IndexOf(". ", StringComparison.Ordinal);
+        var first = stop > 0 ? description[..(stop + 1)] : description;
+        return first.Length > 200 ? first[..199].TrimEnd() + "…" : first;
     }
 }

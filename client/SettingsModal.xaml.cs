@@ -362,7 +362,10 @@ public partial class SettingsModal : UserControl
         {
             elements.Add(Section($"{tool.Key}'s skills"));
             elements.Add(Card([
-                Row($"From {tool.Key}", $"{tool.Key} ships these with it, beside its program. Every agent session gets them while {tool.Key} is set up here."),
+                Row($"For {tool.Key}", (tool.All(skill => skill.BuiltIn)
+                    ? $"Agent Orange brings these for {tool.Key}."
+                    : tool.Any(skill => skill.BuiltIn) ? $"Some ship with {tool.Key}, beside its program, and Agent Orange brings the rest." : $"{tool.Key} ships these with it, beside its program.")
+                    + $" Every agent session gets them while {tool.Key} is set up here."),
                 .. tool.Select(SkillRow)]));
             listed.UnionWith(tool.Select(skill => skill.Name));
         }

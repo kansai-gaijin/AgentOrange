@@ -1,0 +1,6 @@
+# Genre: Metroidvania / Roguelike
+
+Modular rooms. Ability gates. Biome mastery. Run-to-run readable modifiers.
+
+# Module Kits
+Door sockets standardized, secret wall language consistent, map icons match geo landmarks, elite rooms telegraphed.
