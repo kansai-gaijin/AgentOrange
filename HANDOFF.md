@@ -146,11 +146,53 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 - A turn that changes files, to see its changed-files card and open its diff.
 - Each Third Party service's Check, once they have keys (#9). The user plans to add an OpenAI key first.
 
-**Dogfooding has started (2026-11-15).** First goal done: Animal Planet's GDD is in Agent Orange, brought in by hand through the app: cards with concept art, boards laid out in columns, and fixes along the way (Markdown pasting, Home to frame a board, and more; see `docs/dogfooding.md`). The user called the first, text-dump pass "so damn lazily" done: use what the app offers (pictures, Title and Image nodes, layout), as a person would. Keys sent by the drive tool go wherever keyboard focus is in the background window, so use `focus "Board"` before board shortcuts. Earlier plan:
-- Make the three games only through Agent Orange, beginning with **Animal Planet**: work in its project, through agent conversations in the agents window, with the agents driving the tools.
-- When Agent Orange can't do something the game needs, stop and build that feature, one small visible piece at a time. Likely early gaps: Agent Orange's own MCP server (so agents can read and change boards, cards and assets), and workflows with nodes for the Third Party services (`docs/third-party/`).
-- The user owns the game's design, so ask them what they want Animal Planet to be before an agent designs it.
-- Still to copy from T3 when it matters: subagents and Lineage, the list row's right-click menu and pinning, and the diff panel's split layout, file tree, commit scopes and ref picker.
-- **Running the dev build from Claude Code:** a background command stops after two hours at most, so tell the user when `dotnet watch` stops rather than restarting it in a loop.
+**Dogfooding so far (2026-11-15):**
+- **The design is in AO.** Animal Planet's GDD was brought in by hand through the app: cards with concept art, boards laid out in columns, and fixes along the way (`docs/dogfooding.md`). The user called the first, text-dump pass "so damn lazily" done: use what the app offers (pictures, Title and Image nodes, layout), as a person would.
+- **Agents tested AO's tools.** Real agent sessions tested AO's own MCP tools, then every creative tool through AO (Blender through Blender Lab's MCP; Aseprite, ArmorPaint and Material Maker through their forks' MCPs).
+- **Unreal works through AO.** The page's "Create the Unreal project" made `AnimalPlanet.uproject` (Blank C++, Unreal MCP + All Toolsets, MCP on port 8666, built), committed and pushed through AO's Git UI. An agent then made a test level through AO: `Content/Test/AgentTest.umap`, left untracked on purpose; delete it or ignore it.
+- **Skills:** sessions get AO's built-in skills, Unreal 5.9's own, Material Maker's and Blender's (see Skills above). Settings › Skills shows how often each is used.
 
-**Open issues:** #9 (Third Party keys not yet tried with real ones), #20 (wider check of a folder's Git settings before agents run Git there), #21 (releases aren't signed), #89 (Codex providers for agents: sessions, MCP and skills).
+## Next goal: build Animal Planet through Agent Orange
+
+**The real work now is making Animal Planet,** fixing Agent Orange whenever it gets in the way. In the user's words: "our next goal should be actually trying to build animal planet while fixing agent orange when we run into problems along the way".
+
+**The hard rule.** You are the one making this game, but only through Agent Orange. In the user's words: "you are the one who is going to have to start making this game and the gdd doc is going to be deleted before then and agent orange is all you have to work with. you are not allowed to use unreal or blender or any tools yourself just agent orange".
+- **What this means:**
+  - The game's design is what's on its pages in AO, not a file in the repo.
+  - All game work happens in AO's agents window: you write messages to agents there, as the person would, with `tools/drive.ps1`.
+  - The agents use Unreal, Blender and the rest through AO's MCP (`open_tool`, `tool_tools`, `use_tool`) and AO's own tools (`get_project`, `read_card`, `write_card`, `add_task`, `update_task`).
+- **What's off limits:** never run Unreal, Blender or the game's files directly yourself, and never edit the game repo by hand.
+- **Fixing AO itself:** normal tools are fine for that, as before.
+
+**How to go about it:**
+1. **Start the dev build** (above) and open Animal Planet's project. Read its design through AO (its pages, or an agent's `get_project`), not the repo.
+2. **Plan the first slice with an agent.** Use the built-in `plan-the-next-slice` skill: the smallest playable slice of the game, a cute character walking around a tiny globe. Agents put tasks under a milestone.
+3. **Build it in small slices.** Each slice should be something you can play:
+   - the character on a sphere with spherical gravity and a following camera;
+   - then the planet's look;
+   - then the character's model and animation (Blender, then Unreal);
+   - then one thing to do.
+
+   Have agents check each slice with `play-and-review` (and `model-facing` for every imported model) before ticking its tasks.
+4. **When AO is the problem, fix AO.** That means a missing feature, a confusing screen, a tool that fails, or an agent that can't do something. Then log it in `docs/dogfooding.md` with what was done, and carry on with the game.
+5. **The user owns the game's design and its look:** bring them decisions about those, and anything that costs money. Never mark an asset delivered: only the user fills a deliverable.
+
+**Known rough edges to expect:**
+- **Agents can't add cards** (#92). Until that's built, an agent can only ask the person to add one, so build it when the game needs it.
+- **dotnet watch kills child processes.** In the dev build, a `dotnet watch` restart closes the programs AO started, Unreal included. So avoid multi-file hot-reload edits while an agent is mid-task in Unreal.
+- **Two-hour cap.** `dotnet watch` run from Claude Code stops after two hours at most; tell the user rather than restarting it in a loop.
+- **"New conversation" asks which project first.** The drive tool needs the project picked before typing, or the message goes into the open conversation.
+- **Unreal's MCP is large:** about 80 toolsets, and some tool descriptions are around 25 KB. A level is saved with the Asset toolset's `SaveAsset`; there's no tool named for saving a level.
+- **Waiting for approvals:** agents ask for approval for shell commands. Read each one before allowing it with the drive tool (`click "Allow PowerShell"`).
+- **Unreal opens slowly:** the first open after a restart compiles shaders, and the agent's `open_tool` waits up to ten minutes.
+
+**Later, from the agreed plan:**
+- the asset screen;
+- the Unreal web target;
+- status labels and a Decisions page;
+- content tables;
+- search (`docs/research/` has notes for several of these).
+
+Still to copy from T3 when it matters: subagents and Lineage, the list row's right-click menu and pinning, and the diff panel's split layout, file tree, commit scopes and ref picker.
+
+**Open issues:** #9 (Third Party keys not yet tried with real ones), #20 (wider check of a folder's Git settings before agents run Git there), #21 (releases aren't signed), #89 (Codex providers for agents: sessions, MCP and skills), #92 (agents can't add cards).
