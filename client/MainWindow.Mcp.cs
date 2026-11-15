@@ -125,7 +125,7 @@ public partial class MainWindow
     private BoardCard FindCard(Project project, string page, string asked)
     {
         var cards = _database.ListCards(project.Id, _database.ProjectStage(project.Id), page.ToLowerInvariant());
-        return cards.FirstOrDefault(card => card.Id == asked)
+        return cards.FirstOrDefault(card => SameId(card.Id, asked))
             ?? cards.FirstOrDefault(card => CardName(card, page).Equals(asked, StringComparison.OrdinalIgnoreCase))
             ?? cards.FirstOrDefault(card => CardName(card, page).StartsWith(asked, StringComparison.OrdinalIgnoreCase))
             ?? throw new McpException(-32602, $"{page} has no card called {asked}. Its cards: {string.Join(", ", cards.Select(card => CardName(card, page)))}.");
@@ -140,7 +140,27 @@ public partial class MainWindow
         return (CardName(card, page), LocalDatabase.CardBoardKey(card), card);
     }
 
+    // What a card on a page is called, as the pages call it.
+    internal static string KindOfCard(string page) => page == "Story" ? "story beat" : CardPages[page].One;
+
     private static int WordsIn(string? text) => text is null ? 0 : Regex.Matches(text, @"[\p{L}\p{N}]+").Count;
+
+    // Ids as agents see them: without the project's id in front, which every one of them shares.
+    private static string Short(string id) => id[(id.LastIndexOf(':') + 1)..];
+
+    private static bool SameId(string id, string asked) => id == asked || Short(id) == asked.Trim();
+
+    // A task as agents are told it, everything about it, so a change can be seen to have happened.
+    private string TaskSummary(Project project, string id, ProjectTask task)
+    {
+        var stage = _database.ProjectStage(project.Id);
+        var said = new StringBuilder($"[{(task.Done ? "x" : " ")}] {task.Title} (task {Short(id)})");
+        if (task.Milestone is { } milestoneId && _database.ListMilestones(project.Id, stage).FirstOrDefault(each => each.Id == milestoneId) is { Milestone: not null } milestone) said.Append($", in {milestone.Milestone.Name}");
+        if (task.Due is { } due) said.Append($", by {due}");
+        if (task.Card is { } cardId && AssetOwnerChoices(_database, project.Id, stage).FirstOrDefault(choice => choice.Card.Id == cardId) is { Card: not null } belongs) said.Append($", about the {KindOfCard(belongs.Page)} {CardName(belongs.Card, belongs.Page)}");
+        if (task.Notes is { Length: > 0 } notes) said.Append($". Notes: {notes.Replace("\n", " ")}");
+        return said.ToString();
+    }
 
     private string DescribeProject(Project project)
     {
@@ -199,7 +219,7 @@ public partial class MainWindow
         var said = new StringBuilder();
         foreach (var card in cards)
         {
-            said.Append($"- {CardName(card, page)} (id {card.Id}): {WordsIn(_database.GetDocument(project.Id, LocalDatabase.CardBoardKey(card)))} words");
+            said.Append($"- {CardName(card, page)} (id {Short(card.Id)}): {WordsIn(_database.GetDocument(project.Id, LocalDatabase.CardBoardKey(card)))} words");
             if (page == AssetsPage)
             {
                 var details = _database.GetAssetDetails(card.Id);
@@ -218,7 +238,7 @@ public partial class MainWindow
         var (name, boardKey, card) = DocumentFor(project, given);
         var said = new StringBuilder();
         said.AppendLine($"# {name}");
-        if (card is not null) said.AppendLine($"({Page(given)} card, id {card.Id})");
+        if (card is not null) said.AppendLine($"({Page(given)} card, id {Short(card.Id)})");
         said.AppendLine();
         var document = _database.GetDocument(project.Id, boardKey);
         said.AppendLine(document is { Length: > 0 } ? document.Trim() : "Nothing written yet.");
@@ -229,7 +249,7 @@ public partial class MainWindow
             {
                 said.AppendLine();
                 said.AppendLine("## Tasks about it");
-                foreach (var (id, task) in tasks) said.AppendLine($"- [{(task.Done ? "x" : " ")}] {task.Title} (task {id})");
+                foreach (var (id, task) in tasks) said.AppendLine($"- [{(task.Done ? "x" : " ")}] {task.Title} (task {Short(id)})");
             }
             if (Page(given) == AssetsPage) said.AppendLine().AppendLine(DescribeAsset(project, card));
         }
@@ -268,9 +288,9 @@ public partial class MainWindow
         void Write(string id, ProjectTask task)
         {
             if (openOnly && task.Done) return;
-            said.Append($"- [{(task.Done ? "x" : " ")}] {task.Title} (task {id})");
+            said.Append($"- [{(task.Done ? "x" : " ")}] {task.Title} (task {Short(id)})");
             if (task.Due is { } due) said.Append($", by {due}");
-            if (task.Card is { } cardId && cards.FirstOrDefault(choice => choice.Card.Id == cardId) is { Card: not null } belongs) said.Append($", about the {CardPages[belongs.Page].One} {CardName(belongs.Card, belongs.Page)}");
+            if (task.Card is { } cardId && cards.FirstOrDefault(choice => choice.Card.Id == cardId) is { Card: not null } belongs) said.Append($", about the {KindOfCard(belongs.Page)} {CardName(belongs.Card, belongs.Page)}");
             said.AppendLine();
             if (task.Notes is { Length: > 0 } notes) said.AppendLine($"  Notes: {notes.Replace("\n", " ")}");
         }
@@ -332,14 +352,14 @@ public partial class MainWindow
         var due = Day(Given(given, "due")) is { Length: > 0 } day ? day : null;
         var id = _database.SaveTask(project.Id, null, new ProjectTask(stage, Required(given, "title"), Given(given, "notes") is { Length: > 0 } notes ? notes : null, due, false, milestone, order, card));
         McpChanged(project);
-        return $"Added the task (task {id}).";
+        return $"Added: {TaskSummary(project, id, _database.ListTasks(project.Id, stage).First(each => each.Id == id).Task)}";
     }
 
     private string UpdateTaskFor(Project project, JsonObject given)
     {
         var id = Required(given, "id");
         var tasks = _database.ListTasks(project.Id, _database.ProjectStage(project.Id));
-        if (tasks.FirstOrDefault(each => each.Id == id) is not { Task: not null } found) throw new McpException(-32602, $"There's no task {id}. list_tasks gives their ids.");
+        if (tasks.FirstOrDefault(each => SameId(each.Id, id)) is not { Task: not null } found) throw new McpException(-32602, $"There's no task {id}. list_tasks gives their ids.");
         var task = found.Task;
         if (given["done"] is JsonValue done && done.TryGetValue<bool>(out var isDone)) task = task with { Done = isDone };
         if (Given(given, "title") is { Length: > 0 } title) task = task with { Title = title };
@@ -347,23 +367,28 @@ public partial class MainWindow
         if (Day(Given(given, "due")) is { } due) task = task with { Due = due.Length > 0 ? due : null };
         if (MilestoneId(project, Given(given, "milestone")) is { } milestone) task = task with { Milestone = milestone.Length > 0 ? milestone : null };
         if (CardId(project, given) is { } card) task = task with { Card = card.Length > 0 ? card : null };
-        _database.SaveTask(project.Id, id, task);
+        _database.SaveTask(project.Id, found.Id, task);
         McpChanged(project);
-        return $"Changed: [{(task.Done ? "x" : " ")}] {task.Title}.";
+        return $"Changed. Now: {TaskSummary(project, found.Id, task)}";
     }
 
     private string Search(Project project, string text)
     {
         var stage = _database.ProjectStage(project.Id);
         var found = new List<string>();
+        // Each line it's in, under the heading it comes after, if it has one.
         void Look(string where, string? words)
         {
             if (words is null) return;
+            string? heading = null;
             foreach (var line in words.Split('\n'))
             {
-                if (found.Count >= 40 || !line.Contains(text, StringComparison.OrdinalIgnoreCase)) continue;
                 var trimmed = line.Trim();
-                found.Add($"- {where}: {(trimmed.Length > 200 ? trimmed[..200] + "…" : trimmed)}");
+                var isHeading = Regex.Match(trimmed, @"^#{1,6}\s+(.*)$");
+                if (isHeading.Success) heading = isHeading.Groups[1].Value.Trim();
+                if (found.Count >= 40 || !line.Contains(text, StringComparison.OrdinalIgnoreCase)) continue;
+                var section = heading is not null && !isHeading.Success ? $" › {heading}" : "";
+                found.Add($"- {where}{section}: \"{(trimmed.Length > 200 ? trimmed[..200] + "…" : trimmed)}\"");
             }
         }
 
@@ -377,10 +402,12 @@ public partial class MainWindow
                 Look($"{page} › {name}", _database.GetDocument(project.Id, LocalDatabase.CardBoardKey(card)));
             }
         }
+        var milestones = _database.ListMilestones(project.Id, stage).ToDictionary(each => each.Id, each => each.Milestone.Name);
         foreach (var (id, task) in _database.ListTasks(project.Id, stage))
         {
-            Look($"Task {id}", task.Title);
-            Look($"Task {id}'s notes", task.Notes);
+            var where = $"Task {Short(id)}{(task.Milestone is { } milestone && milestones.TryGetValue(milestone, out var name) ? $" in {name}" : "")}";
+            Look(where, task.Title);
+            Look($"{where}, its notes", task.Notes);
         }
         return found.Count == 0 ? $"Nothing has \"{text}\" in it." : string.Join("\n", found) + (found.Count >= 40 ? "\n(The first 40.)" : "");
     }

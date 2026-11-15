@@ -89,7 +89,7 @@ public partial class MainWindow
         if (task.Due is { } due) line += $" (by {due})";
         if (task.Card is { } cardId && AssetOwnerChoices(_database, project.Id, task.Stage).FirstOrDefault(choice => choice.Card.Id == cardId) is { Card: not null } belongs)
         {
-            line += $", about the {CardPages[belongs.Page].One} \"{CardName(belongs.Card, belongs.Page)}\"";
+            line += $", about the {KindOfCard(belongs.Page)} \"{CardName(belongs.Card, belongs.Page)}\"";
         }
         return line;
     }

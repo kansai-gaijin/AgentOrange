@@ -20,6 +20,13 @@ Each project gets its own MCP config, so the server is always about the session'
   window, which answered from read_card, list_cards and list_tasks.
 - Found: asking for milestone "Priority 1" matched Priority 10 and 11 too; fixed.
 - Seen: an empty reasoning row (an icon with no words) in that session's work log.
+- **A real agent then used every tool once** (on a throwaway card and task) and reported what was
+  awkward. Fixed from its notes, and confirmed by it on a second run: add_task and update_task reply
+  with the whole task as it now stands, so a change can be seen to have happened; ids are shown
+  without the project's id in front, and either form is taken; search says the section a hit is
+  under and a task's milestone, with the line in quotes; cards are called "story beat", not "beat".
+- Left: the pictures from the GDD have no captions, so an agent has to open one to know what it shows.
+- The drive tool's `set` now takes `\n` for a line break, as a command is one line.
 
 ## 2026-11-15 · Documents instead of boards for design text
 

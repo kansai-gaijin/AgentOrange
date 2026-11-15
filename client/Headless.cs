@@ -143,7 +143,7 @@ internal static partial class Headless
                 break;
             case "set":
                 var field = await UntilThereAsync(window, () => Visible<TextBox>(window).ElementAtOrDefault(int.Parse(parts[1])), $"field {parts[1]}");
-                field.Text = parts[2];
+                field.Text = parts[2].Replace("\\n", "\n"); // A command is one line, so \n stands for a line break.
 
                 // The window can't take focus, so leaving the field is done by hand.
                 field.RaiseEvent(new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice, Environment.TickCount, field, null) { RoutedEvent = Keyboard.LostKeyboardFocusEvent });
