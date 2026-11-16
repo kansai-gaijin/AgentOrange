@@ -443,3 +443,8 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
   conversation to its top or end, so the pictures had to be found in the game's folder instead. `read`
   now ends each document with a "Picture: path" line per picture (needs an app restart: the drive's
   command loop is already running, so hot reload can't swap it).
+- **Agents can't write to a milestone.** Finishing Priority 5's browser check, the agent wanted to put the
+  evidence on the milestone and found no field for it: the MCP tools read a milestone's goal and "done
+  when" but can't change them, and milestones have no notes. It added a ticked "Priority 5 browser
+  check" task instead, which reads fine on the tasks page. Not built: an `update_milestone` tool, if
+  agents keep needing one.
