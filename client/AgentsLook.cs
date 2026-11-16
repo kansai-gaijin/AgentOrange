@@ -224,6 +224,15 @@ internal static class Ocean
             menu.IsOpen = false;
             e.Handled = true;
         };
+
+        // A pop-up is a window of its own, so one whose button is hidden or taken away, as when the page
+        // under it is drawn again or left, would float on over everything. It goes with its button.
+        void Gone(object sender, DependencyPropertyChangedEventArgs e)
+        {
+            if (!by.IsVisible) menu.IsOpen = false;
+        }
+        menu.Opened += (_, _) => by.IsVisibleChanged += Gone;
+        menu.Closed += (_, _) => by.IsVisibleChanged -= Gone;
         return menu;
     }
 

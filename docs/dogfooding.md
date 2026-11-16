@@ -476,3 +476,7 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
   T3 leaves that to the person; Agent Orange's person may never use Git, so Sync ref now does it: it
   puts this PC's commits after origin's (`git pull --rebase`) and pushes. When both sides change the same
   files it puts everything back as it was and names them.
+- **A menu could float on over every window.** The project page's Git menu stayed on screen after
+  leaving the page, and even over the agents window: a pop-up is a window of its own, and its button
+  had been hidden. Every T3-style menu (`Ocean.Menu`) now closes when the button it opened from is
+  hidden or taken away.
