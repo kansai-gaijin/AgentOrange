@@ -488,3 +488,11 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
 - **The drive tool can only read the conversation's newest replies.** The list is virtualised, so
   `read` missed slice B's long summary once a shorter reply followed it; the review file in the repo
   had it all.
+- **Agents couldn't tag assets.** The user found the Assets page hard to see and sort: the farming agent
+  had added 20 assets with no tags, because `add_card` had no tags and nothing could change an asset's
+  details afterwards. `add_card` now takes tags (by name, made when new), a new `update_asset` changes an
+  asset's type, owner, tags or date (never its deliverable), and `list_cards` shows each asset's tags
+  and the project's tags, so agents reuse them.
+- **Codex in Auto asked before reading the project's own files** (a `Get-Content` of five design docs,
+  quoted in single quotes). The Auto rule now covers plain reads of files in the project's folder
+  (not `.git`) as well as skills', several at once, relative to the project.

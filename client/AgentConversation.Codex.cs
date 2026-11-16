@@ -581,9 +581,9 @@ public sealed partial class AgentConversation
     // Its own requests: approvals for commands, file changes and permissions, and questions for the person.
     private void ReadCodexRequest(JsonNode id, string method, JsonObject parameters)
     {
-        // Codex asks before running a shell command to read a skill's files, though the briefing sends it
-        // there; a Claude session reads them without asking. In Auto, those reads are allowed here.
-        if (method == "item/commandExecution/requestApproval" && PermissionMode == "auto" && ReadsOnlyASkill(Str(parameters, "command")))
+        // On Windows Codex asks before any shell command, even one that only reads the project's files or
+        // a skill's, which a Claude session reads without asking. In Auto, those reads are allowed here.
+        if (method == "item/commandExecution/requestApproval" && PermissionMode == "auto" && OnlyReadsItsFiles(Str(parameters, "command")))
         {
             WriteCodex(new JsonObject { ["id"] = id.DeepClone(), ["result"] = new JsonObject { ["decision"] = "accept" } });
             return;
@@ -650,20 +650,30 @@ public sealed partial class AgentConversation
         StateChanged?.Invoke();
     }
 
-    // One plain read of one file (Get-Content, cat or type, maybe inside "powershell -Command"), nothing
-    // chained or substituted, of a file inside a skill's folder.
-    private bool ReadsOnlyASkill(string? command)
+    // One plain read (Get-Content, cat or type, maybe inside "powershell -Command"), nothing chained or
+    // substituted, of files inside the project's folder (but not its .git) or a skill's folder.
+    private bool OnlyReadsItsFiles(string? command)
     {
-        if (command is null || _skillFolders.Count == 0) return false;
+        if (command is null) return false;
         var inner = Regex.Match(command.Trim(), @"^(?:""?[^""]*?powershell(?:\.exe)?""?\s+(?:-NoProfile\s+)?-Command\s+)?(?<inner>.+)$", RegexOptions.IgnoreCase | RegexOptions.Singleline).Groups["inner"].Value.Trim();
-        if (inner.Length > 1 && inner[0] == '"' && inner[^1] == '"') inner = inner[1..^1];
+        if (inner.Length > 1 && (inner[0] == '"' && inner[^1] == '"' || inner[0] == '\'' && inner[^1] == '\'')) inner = inner[1..^1];
         if (inner.IndexOfAny([';', '|', '&', '>', '<', '`', '$', '(', ')', '\n', '\r']) >= 0) return false;
-        var read = Regex.Match(inner, @"^(?:Get-Content|gc|cat|type)\s+(?:-(?:LiteralPath|Path|Raw|Encoding\s+\w+)\s+)*(?:'(?<path>[^']+)'|""(?<path>[^""]+)""|(?<path>\S+))(?:\s+-(?:Raw|Encoding\s+\w+))*$", RegexOptions.IgnoreCase);
+        var read = Regex.Match(inner, @"^(?:Get-Content|gc|cat|type)\s+(?:-(?:LiteralPath|Path|Raw|Encoding\s+\w+)\s+)*(?<paths>.+?)(?:\s+-(?:Raw|Encoding\s+\w+))*$", RegexOptions.IgnoreCase);
         if (!read.Success) return false;
+
+        string[] mayRead = [.. _skillFolders, .. Folder is { } project ? new[] { project } : []];
+        static bool Inside(string file, string folder) => file.StartsWith(Path.TrimEndingDirectorySeparator(folder) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
         try
         {
-            var file = Path.GetFullPath(read.Groups["path"].Value);
-            return _skillFolders.Any(folder => file.StartsWith(Path.TrimEndingDirectorySeparator(folder) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+            // PowerShell takes several, separated by commas.
+            var paths = read.Groups["paths"].Value.Split(',').Select(each => each.Trim().Trim('\'', '"')).ToList();
+            return paths.All(path =>
+            {
+                if (path.Length == 0) return false;
+                var file = Path.GetFullPath(Path.IsPathRooted(path) || Folder is null ? path : Path.Combine(Folder, path));
+                if (Folder is { } project && Inside(file, Path.Combine(project, ".git"))) return false;
+                return mayRead.Any(folder => Inside(file, folder));
+            });
         }
         catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
         {

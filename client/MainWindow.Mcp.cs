@@ -71,7 +71,7 @@ public partial class MainWindow
         new("write_card", "Writes a card's document, or the Overview's, in Markdown. mode replace swaps the whole document for this; append adds this at its end. Write what's been settled, in the document's own style, with ## and ### headings.",
             new JsonObject { ["page"] = Text(PageNote), ["card"] = Text(CardNote), ["markdown"] = Text("The Markdown."), ["mode"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("replace", "append"), ["description"] = "replace or append. append when not given." } },
             ["page", "markdown"], (project, given) => WriteCard(project, given)),
-        new("add_card", "Adds a card to a page: a story beat, character, level, mechanic or asset, as the page's Add form does, with its document if given. An asset can also be given its type, the card it belongs to and a day to deliver it by. Never fill an asset's deliverable: only the person does, once they've judged the result.",
+        new("add_card", "Adds a card to a page: a story beat, character, level, mechanic or asset, as the page's Add form does, with its document if given. An asset can also be given its type, the card it belongs to, its tags and a day to deliver it by. Never fill an asset's deliverable: only the person does, once they've judged the result.",
             new JsonObject
             {
                 ["page"] = Text("Story, Characters, Levels, Mechanics or Assets."),
@@ -81,8 +81,20 @@ public partial class MainWindow
                 ["belongs_to_page"] = Text("For an asset: the page of the card it belongs to (Story, Characters, Levels or Mechanics)."),
                 ["belongs_to"] = Text("For an asset: the card it belongs to, by name or id."),
                 ["due"] = Text("For an asset: a day to deliver it by, as yyyy-mm-dd. Makes it a task."),
+                ["tags"] = Text("For an asset: its tags, by name, separated by commas, such as Forest, Sound. Use the ones list_cards Assets shows when they fit; new ones are made."),
             },
             ["page", "name"], (project, given) => AddCardFor(project, given)),
+        new("update_asset", "Changes an asset's type, the card it belongs to, its tags or its day to deliver it by. Only what's given changes. Never its deliverable: only the person fills that.",
+            new JsonObject
+            {
+                ["card"] = Text("The asset, by name or id."),
+                ["type"] = Text("What it is as a file, one of " + string.Join(", ", AssetTypes.SelectMany(group => group.Types).Select(type => type.Name)) + "."),
+                ["belongs_to_page"] = Text("The page of the card it belongs to (Story, Characters, Levels or Mechanics)."),
+                ["belongs_to"] = Text("The card it belongs to, by name or id, or empty for none."),
+                ["tags"] = Text("Its tags, by name, separated by commas, replacing the ones it has; empty for none. Use the ones list_cards Assets shows when they fit; new ones are made."),
+                ["due"] = Text("A day to deliver it by, as yyyy-mm-dd, or empty for none."),
+            },
+            ["card"], (project, given) => UpdateAssetFor(project, given)),
         new("list_tasks", "The milestones, each with what it's for and when it's done, and their tasks with ids, ticks, dates and the cards they're about.",
             new JsonObject { ["milestone"] = Text("Only this milestone, by its name or the start of it."), ["open_only"] = Flag("Leave out tasks that are done.") }, [], (project, given) => ListTasksFor(project, given)),
         new("add_task", "Adds a task, such as one found while working.",
@@ -251,10 +263,12 @@ public partial class MainWindow
                 said.Append($"; {AssetTypeName(details.Type) ?? "no type"}");
                 if (AssetOwnerChoices(_database, project.Id, stage).FirstOrDefault(choice => choice.Card.Id == details.Owner) is { Card: not null } owner) said.Append($", belongs to {CardName(owner.Card, owner.Page)}");
                 if (DueOf(details) is { } due) said.Append($", due {due:yyyy-MM-dd}");
+                if (TagNames(project, details) is { Count: > 0 } tagged) said.Append($", tagged {string.Join(", ", tagged)}");
                 said.Append(_database.GetAssetDeliverable(card.Id) is { } given ? $", delivered as {given.Path}" : ", not delivered");
             }
             said.AppendLine();
         }
+        if (page == AssetsPage) said.AppendLine(_database.ListAssetTags(project.Id) is { Count: > 0 } all ? $"The project's tags: {string.Join(", ", all.Select(tag => tag.Name))}." : "The project has no tags yet.");
         return said.ToString();
     }
 
@@ -315,11 +329,11 @@ public partial class MainWindow
             var due = Given(given, "due") is { Length: > 0 } day
                 ? (DateOnly.TryParseExact(day, "yyyy-MM-dd", out _) ? day : throw new McpException(-32602, "Give due as yyyy-mm-dd."))
                 : null;
-            details = new AssetDetails(Type: type, Owner: owner, Due: due);
+            details = new AssetDetails(Type: type, Owner: owner, Tags: TagIds(project, Given(given, "tags")), Due: due);
         }
-        else if (Given(given, "type") is { Length: > 0 } || Given(given, "belongs_to") is { Length: > 0 } || Given(given, "due") is { Length: > 0 })
+        else if (Given(given, "type") is { Length: > 0 } || Given(given, "belongs_to") is { Length: > 0 } || Given(given, "due") is { Length: > 0 } || Given(given, "tags") is { Length: > 0 })
         {
-            throw new McpException(-32602, "type, belongs_to and due are for assets only.");
+            throw new McpException(-32602, "type, belongs_to, tags and due are for assets only.");
         }
 
         var added = _database.AddCard(project.Id, stage, part, name);
@@ -328,6 +342,59 @@ public partial class MainWindow
         McpChanged(project);
         return $"Added the {KindOfCard(page)} {name} (id {Short(added.Id)}) to {page}." + (details is null ? "" : $" {DescribeAsset(project, added)}");
     }
+
+    private string UpdateAssetFor(Project project, JsonObject given)
+    {
+        var card = FindCard(project, AssetsPage, Required(given, "card"));
+        var details = _database.GetAssetDetails(card.Id);
+
+        // Everything is checked before anything is saved, so a mistake changes nothing.
+        if (Given(given, "type") is { Length: > 0 } asked)
+        {
+            details = details with
+            {
+                Type = AssetTypes.SelectMany(group => group.Types).FirstOrDefault(each => each.Id.Equals(asked, StringComparison.OrdinalIgnoreCase) || each.Name.Equals(asked, StringComparison.OrdinalIgnoreCase)).Id
+                    ?? throw new McpException(-32602, $"There's no asset type called {asked}. The types: {string.Join(", ", AssetTypes.SelectMany(group => group.Types).Select(each => each.Name))}."),
+            };
+        }
+        if (Given(given, "belongs_to") is { } ownerName)
+        {
+            if (ownerName.Length == 0) details = details with { Owner = null };
+            else
+            {
+                var ownerPage = Given(given, "belongs_to_page") is { Length: > 0 } askedPage
+                    ? AssetOwnerPages.FirstOrDefault(each => each.Equals(askedPage, StringComparison.OrdinalIgnoreCase) || CardPages[each].One.Equals(askedPage, StringComparison.OrdinalIgnoreCase)) ?? throw new McpException(-32602, $"An asset can belong to a card on {string.Join(", ", AssetOwnerPages)}.")
+                    : throw new McpException(-32602, "Say belongs_to_page too: Story, Characters, Levels or Mechanics.");
+                details = details with { Owner = FindCard(project, ownerPage, ownerName).Id };
+            }
+        }
+        if (Given(given, "due") is { } day)
+        {
+            details = details with { Due = day.Length == 0 ? null : DateOnly.TryParseExact(day, "yyyy-MM-dd", out _) ? day : throw new McpException(-32602, "Give due as yyyy-mm-dd.") };
+        }
+        if (Given(given, "tags") is { } tags) details = details with { Tags = TagIds(project, tags) };
+        _database.SetAssetDetails(card.Id, details);
+        McpChanged(project);
+        return $"Changed {CardName(card, AssetsPage)}. {DescribeAsset(project, card)}";
+    }
+
+    // Tags named, as the project's own, made when there's none of that name yet. All are checked
+    // before any is made.
+    private string[]? TagIds(Project project, string? named)
+    {
+        if (named is null) return null;
+        var names = named.Split(',').Select(LocalDatabase.TidyTagName).Where(name => name.Length > 0).Distinct(StringComparer.CurrentCultureIgnoreCase).ToList();
+        var have = _database.ListAssetTags(project.Id);
+        foreach (var name in names)
+        {
+            if (have.Any(tag => tag.Name.Equals(name, StringComparison.CurrentCultureIgnoreCase))) continue;
+            if (_database.AssetTagProblem(project.Id, name) is { } problem) throw new McpException(-32602, $"The tag {name}: {problem}");
+        }
+        return [.. names.Select(name => (have.FirstOrDefault(tag => tag.Name.Equals(name, StringComparison.CurrentCultureIgnoreCase)) ?? _database.AddAssetTag(project.Id, name)).Id)];
+    }
+
+    private List<string> TagNames(Project project, AssetDetails details) =>
+        [.. _database.ListAssetTags(project.Id).Where(tag => details.Tags?.Contains(tag.Id) == true).Select(tag => tag.Name)];
 
     private string WriteCard(Project project, JsonObject given)
     {

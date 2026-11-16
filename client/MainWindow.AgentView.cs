@@ -101,6 +101,7 @@ public partial class MainWindow
         var owner = AssetOwnerChoices(_database, project.Id, card.Board.Split('/')[0]).FirstOrDefault(choice => choice.Card.Id == details.Owner);
         if (owner.Card is not null) parts.Add($"belongs to the {CardPages[owner.Page].One} \"{CardName(owner.Card, owner.Page)}\"");
         if (DueOf(details) is { } due) parts.Add($"to be delivered by {due:yyyy-MM-dd}");
+        if (TagNames(project, details) is { Count: > 0 } tagged) parts.Add($"tagged {string.Join(", ", tagged)}");
         parts.Add(_database.GetAssetDeliverable(card.Id) is { } given ? $"delivered as {given.Path}" : "not delivered yet");
         return $"The asset: {string.Join(", ", parts)}.";
     }
