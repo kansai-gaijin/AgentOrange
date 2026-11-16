@@ -258,7 +258,6 @@ public sealed partial class AgentsWindow
             return asking ? Status("message-circle-question", "Input", Indigo) : Status("shield-question", "Approval", Ocean.Warning);
         }
         if (conversation.IsWorking) return Status("circle-dashed", "Working", Ocean.Info, Took(DateTimeOffset.UtcNow - conversation.WorkingSince));
-        if (conversation.BackgroundJobs > 0) return Status("clock", "Waiting on job", Ocean.Info);
         if (conversation.Unseen && conversation.Items.LastOrDefault()?.Kind == AgentItemKind.Problem) return Status("circle-alert", "Failed", Ocean.Error);
         if (conversation.Unseen) return Status("circle-check", "Done", Ocean.Success);
         return Ocean.Text(Ago(conversation.Updated), Ocean.Secondary, 12);

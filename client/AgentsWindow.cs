@@ -1333,10 +1333,13 @@ public sealed partial class AgentsWindow : Window
         if (_open is { PendingFrom: { } from, PendingTo: { } to } conversation) under.Children.Add(HandoffRow(from, to with { Model = conversation.Model }, pending: true));
         if (_open is { IsWorking: false, BackgroundJobs: > 0 and var jobs })
         {
-            var waiting = WorkRow("clock", jobs == 1
-                ? "Waiting on a background job. It carries on by itself when the job ends."
-                : $"Waiting on {jobs} background jobs. It carries on by itself as each one ends.", Ocean.Info);
-            AutomationProperties.SetName(waiting, "Waiting on background jobs");
+            // What it started may be something it waits for, such as a build, or a service it leaves
+            // running, such as a local server: only that it's running is known, so only that's said.
+            var command = _open.LastBackgroundCommand is { } last ? Flatten(last) : null;
+            if (command is { Length: > 80 }) command = command[..80] + "…";
+            var waiting = WorkRow("clock", (jobs == 1 ? "1 command it started is still running in the background" : $"{jobs} commands it started are still running in the background")
+                + (command is null ? "" : $" ({command})") + ". It goes on by itself if it was waiting for one.", Ocean.Info);
+            AutomationProperties.SetName(waiting, "Background commands still running");
             under.Children.Add(waiting);
         }
         _pendingHandoff.Child = under.Children.Count > 0 ? under : null;

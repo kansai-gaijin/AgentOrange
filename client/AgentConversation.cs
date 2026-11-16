@@ -144,6 +144,9 @@ public sealed partial class AgentConversation
     /// </summary>
     [JsonIgnore] public int BackgroundJobs { get; private set; }
     private readonly HashSet<string> _backgroundIds = [];
+
+    /// <summary>The last command it started in the background, to say what may still be running.</summary>
+    [JsonIgnore] public string? LastBackgroundCommand { get; private set; }
     [JsonIgnore] public DateTimeOffset WorkingSince { get; private set; }
     [JsonIgnore] public bool IsWaiting => Items.Any(item => item.RequestState == AgentRequestState.Waiting && item.Kind is AgentItemKind.Approval or AgentItemKind.Question or AgentItemKind.Plan);
 
@@ -991,6 +994,7 @@ public sealed partial class AgentConversation
                     if (name is "Bash" or "PowerShell" or "Monitor" && part["input"]?["run_in_background"]?.GetValueKind() == JsonValueKind.True && _backgroundIds.Add(toolId))
                     {
                         BackgroundJobs++;
+                        LastBackgroundCommand = Str(part["input"] as JsonObject, "command") ?? Str(part["input"] as JsonObject, "description");
                         StateChanged?.Invoke();
                     }
                     else if (name is "KillShell" or "TaskStop" && BackgroundJobs > 0)

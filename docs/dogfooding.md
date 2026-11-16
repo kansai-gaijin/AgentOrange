@@ -429,3 +429,9 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
 - add_card worked: the planner put 20 farming assets on the Assets page, each with its type and owner
   card. But it named them all "Farming — ...", so every tile shows the same F and the names are cut off
   before the part that matters. Worth showing an asset's type icon when it has no picture.
+- **"Waiting on job" was wrong for a service.** The farming agent started its local backend in the
+  background so the game could save, finished its turn, and the list said "Waiting on job" for half an
+  hour: the job was a server meant to keep running, not something it waited for. Only that a command is
+  still running is known, so that's all it says now: the list shows Done as usual, and under the
+  timeline "1 command it started is still running in the background (command). It goes on by itself if
+  it was waiting for one."
