@@ -176,6 +176,7 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 - **Controller from the start:** the user playtests with a **PS4 DualShock 4** on Windows. Enhanced Input with keyboard/mouse and gamepad in one mapping context. Unreal's free Game Input (Windows) plugin plus Microsoft's Game Input runtime is the candidate; installing the runtime waits for the user's yes.
 - **You are the game designer.** The GDD on AO's pages is the bible and what's in it is already decided; everything else is your call. You may research (web), but never develop the game yourself.
 - **Builds:** no web or packaged builds per task (this PC is slow; the first web build took 35 minutes). Test in the editor (Play In Editor, 2 players, simulated gamepad). Build for the web and measure in the browser only when a milestone is finished (`Tools/Build/build_web.ps1 -Measure` in the game repo).
+- **No art until the art pass:** the art pass is its own phase, after a working prototype of everything is done. Until then, only prototype stand-ins (whitebox shapes, or a quick Blender placeholder such as a prototype crop). Don't ask the user about final looks yet; decide placeholders yourself.
 - **Settle conversations** in the agents window as soon as their work is done (drive: `hover` the row, then `click "Settle thread"`).
 - **Always push:** game commits go straight to `main`, no pull requests.
 - **Pausing:** when the user asks to pause, let the agent's current turn finish and send nothing more until they say so.
