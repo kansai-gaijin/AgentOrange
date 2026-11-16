@@ -188,7 +188,19 @@ internal static partial class Headless
             // The words in each visible document editor, whole, as a person reads by scrolling it.
             case "read":
                 foreach (var editor in Visible<RichTextBox>(window))
+                {
                     say(new System.Windows.Documents.TextRange(editor.Document.ContentStart, editor.Document.ContentEnd).Text);
+                    // Pictures aren't text, so say where each one is, to open it.
+                    var pending = new Stack<object>([editor.Document]);
+                    while (pending.Count > 0)
+                    {
+                        var item = pending.Pop();
+                        if (item is FrameworkElement { Tag: MarkdownText.PictureMark mark }) say($"Picture: {mark.Address}");
+                        else if (item is Image { Source: System.Windows.Media.Imaging.BitmapImage { UriSource: { IsFile: true } file } }) say($"Picture: {file.LocalPath}");
+                        if (item is DependencyObject parent)
+                            foreach (var child in LogicalTreeHelper.GetChildren(parent).Cast<object>().Reverse()) pending.Push(child);
+                    }
+                }
                 break;
             case "shot":
                 await Task.Delay(150);

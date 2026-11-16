@@ -438,3 +438,8 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
 - **The drive tool garbled Japanese.** The agent's report on the farming screens' Japanese came back from
   `tools/drive.ps1 read` as mojibake, though AO's own window drew it fine. Windows PowerShell wrote the
   reply in the console's code page; it now writes UTF-8, so Japanese and curly quotes come through.
+- **The drive tool couldn't see an agent's pictures.** The crop agent showed its render and an in-game
+  screenshot as pictures in its reply, but `read` printed only the words, and the drive can only scroll a
+  conversation to its top or end, so the pictures had to be found in the game's folder instead. `read`
+  now ends each document with a "Picture: path" line per picture (needs an app restart: the drive's
+  command loop is already running, so hot reload can't swap it).
