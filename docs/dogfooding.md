@@ -471,3 +471,8 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
   With no conversation, commit messages and PR text are written by the login a new conversation would
   start with. Both windows draw it from one shared copy (`GitActions`), so an action run in either shows
   in the other.
+- **"Sync ref" did nothing.** On the user's other PC the project page said "Branch has diverged from
+  upstream. Rebase/merge first.": that PC had commits origin didn't, and origin had the agents' pushes.
+  T3 leaves that to the person; Agent Orange's person may never use Git, so Sync ref now does it: it
+  puts this PC's commits after origin's (`git pull --rebase`) and pushes. When both sides change the same
+  files it puts everything back as it was and names them.

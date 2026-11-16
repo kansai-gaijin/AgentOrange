@@ -43,7 +43,7 @@ internal sealed class GitActions(MainWindow main, Overlays overlays)
     /// <summary>An action moved on to its next step, finished or failed, so whatever shows it is drawn again.</summary>
     public static event Action? RunsChanged;
 
-    private enum GitAction { None, Commit, CommitPush, CommitPushPr, Push, PushPr, Pull, CreatePr }
+    private enum GitAction { None, Commit, CommitPush, CommitPushPr, Push, PushPr, Pull, CreatePr, Sync }
 
     private sealed record GitPlan(string Label, GitAction Action, string? Hint);
 
@@ -91,7 +91,8 @@ internal sealed class GitActions(MainWindow main, Overlays overlays)
         }
         if (state.Upstream is not null)
         {
-            if (ahead && behind) return new("Sync ref", GitAction.None, "Branch has diverged from upstream. Rebase/merge first.");
+            // T3 stops here ("Rebase/merge first"); Agent Orange does it, as the person may never use Git themselves.
+            if (ahead && behind) return new("Sync ref", GitAction.Sync, null);
             if (behind) return new("Pull", GitAction.Pull, null);
             if (ahead) return prOpen ? new("Push", GitAction.Push, null) : new("Push & create PR", GitAction.PushPr, null);
             if (prOpen) return new("Commit", GitAction.None, "Branch is up to date. No action needed.");
@@ -141,7 +142,7 @@ internal sealed class GitActions(MainWindow main, Overlays overlays)
         return items;
     }
 
-    private static bool Pushes(GitAction action) => action is GitAction.CommitPush or GitAction.CommitPushPr or GitAction.Push or GitAction.PushPr or GitAction.CreatePr;
+    private static bool Pushes(GitAction action) => action is GitAction.CommitPush or GitAction.CommitPushPr or GitAction.Push or GitAction.PushPr or GitAction.CreatePr or GitAction.Sync;
 
     private static bool Commits(GitAction action) => action is GitAction.Commit or GitAction.CommitPush or GitAction.CommitPushPr;
 
@@ -154,6 +155,7 @@ internal sealed class GitActions(MainWindow main, Overlays overlays)
         var name = action switch
         {
             GitAction.Pull => "cloud-download",
+            GitAction.Sync => "refresh-cw",
             GitAction.Push or GitAction.CommitPush => "cloud-upload",
             GitAction.Commit => "git-commit-horizontal",
             _ => label switch { "Commit" => "git-commit-horizontal", "Push" => "cloud-upload", _ => "info" },
@@ -311,7 +313,7 @@ internal sealed class GitActions(MainWindow main, Overlays overlays)
         void Fail(string why)
         {
             Runs.Remove(folder);
-            overlays.Toast(action == GitAction.Pull ? "Pull failed" : "Action failed", why, error: true);
+            overlays.Toast(action switch { GitAction.Pull => "Pull failed", GitAction.Sync => "Sync failed", _ => "Action failed" }, why, error: true);
             RunsChanged?.Invoke();
         }
 
@@ -375,6 +377,17 @@ internal sealed class GitActions(MainWindow main, Overlays overlays)
                 return;
             }
             sha = committed.Value;
+        }
+
+        if (action == GitAction.Sync)
+        {
+            Phase("Bringing in origin's commits...");
+            var rebased = await GitTools.RebaseOnUpstreamAsync(folder);
+            if (!rebased.Worked)
+            {
+                Fail(rebased.Value);
+                return;
+            }
         }
 
         if (Pushes(action) && (action != GitAction.CreatePr || state?.Upstream is null))

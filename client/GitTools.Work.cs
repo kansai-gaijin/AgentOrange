@@ -162,6 +162,24 @@ public static partial class GitTools
     public static Task<GitResult> PullAsync(string folder) =>
         GitStepAsync(folder, "Couldn't pull", "pull", "--ff-only", "--quiet");
 
+    /// <summary>
+    /// When this branch and its upstream each have commits the other hasn't: puts this branch's own commits
+    /// after the upstream's, as if they'd been made after it. When both change the same files, it's put
+    /// back as it was, and says which files, as only a person can say which change wins.
+    /// </summary>
+    public static async Task<GitResult> RebaseOnUpstreamAsync(string folder)
+    {
+        var rebased = await GitStepAsync(folder, "Couldn't bring in origin's commits", "pull", "--rebase", "--quiet");
+        if (rebased.Worked) return rebased;
+        var clashing = await RunAsync("git", folder, "-c", "core.quotepath=false", "diff", "--name-only", "--diff-filter=U") is { ExitCode: 0 } listed
+            ? listed.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : [];
+        await RunAsync("git", folder, "rebase", "--abort");
+        if (clashing.Length == 0) return rebased;
+        var named = string.Join(", ", clashing.Take(5)) + (clashing.Length > 5 ? $" and {clashing.Length - 5} more" : "");
+        return new GitResult(false, $"This PC's commits and origin's both change {named}. Nothing was changed: decide which to keep, or ask an agent to merge them.");
+    }
+
     /// <summary>A file changed in the folder and not yet committed, with its lines added and taken out.</summary>
     public sealed record ChangedFile(string Path, int Insertions, int Deletions);
 
