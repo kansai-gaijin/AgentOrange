@@ -496,3 +496,9 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
 - **Codex in Auto asked before reading the project's own files** (a `Get-Content` of five design docs,
   quoted in single quotes). The Auto rule now covers plain reads of files in the project's folder
   (not `.git`) as well as skills', several at once, relative to the project.
+- **First real commit and push from the project page** worked: 30 GDD images an agent had left outside
+  LFS (they were committed before `.jpg` went to LFS) were committed with a written message and pushed
+  to main, with the default-branch warning on the way. But for a project that always pushes straight to
+  main, the main button keeps offering "Commit, push & PR" / "Push & create PR", so every push goes
+  through the menu and the warning. Not built: a project setting for "no pull requests here" that
+  makes the main action "Commit & push" and skips the warning.
