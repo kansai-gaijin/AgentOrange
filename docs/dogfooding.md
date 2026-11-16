@@ -435,3 +435,6 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
   still running is known, so that's all it says now: the list shows Done as usual, and under the
   timeline "1 command it started is still running in the background (command). It goes on by itself if
   it was waiting for one."
+- **The drive tool garbled Japanese.** The agent's report on the farming screens' Japanese came back from
+  `tools/drive.ps1 read` as mojibake, though AO's own window drew it fine. Windows PowerShell wrote the
+  reply in the console's code page; it now writes UTF-8, so Japanese and curly quotes come through.

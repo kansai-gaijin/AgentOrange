@@ -20,5 +20,7 @@ foreach ($command in $Commands) { $writer.WriteLine($command) }
 $writer.WriteLine('<<end>>')
 $writer.Flush()
 $reader = [System.IO.StreamReader]::new($pipe)
+# The console's own code page mangles anything past ASCII, such as Japanese or curly quotes.
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Write-Output $reader.ReadToEnd()
 $pipe.Dispose()
