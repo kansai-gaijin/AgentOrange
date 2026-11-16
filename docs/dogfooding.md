@@ -502,3 +502,7 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
   main, the main button keeps offering "Commit, push & PR" / "Push & create PR", so every push goes
   through the menu and the warning. Not built: a project setting for "no pull requests here" that
   makes the main action "Commit & push" and skips the warning.
+- **Adding tasks by hand from the Tasks page worked** (three designer tasks: camera, orbits, space look).
+  Two small things: the New task form's fields have no names for screen readers or the drive tool
+  (only their place in the form finds them), and the form opens partly outside the window's right
+  edge on a 1084 px wide window.
