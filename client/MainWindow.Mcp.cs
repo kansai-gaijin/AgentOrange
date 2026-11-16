@@ -56,6 +56,7 @@ public partial class MainWindow
     private static JsonObject Text(string description) => new() { ["type"] = "string", ["description"] = description };
 
     private static JsonObject Flag(string description) => new() { ["type"] = "boolean", ["description"] = description };
+    private static JsonObject Number(string description) => new() { ["type"] = "integer", ["description"] = description };
 
     private const string PageNote = "The page: Overview, Story, Characters, Levels, Mechanics or Assets.";
     private const string CardNote = "The card's name, or its id. Leave out for the Overview.";
@@ -87,8 +88,8 @@ public partial class MainWindow
         new("add_task", "Adds a task, such as one found while working.",
             new JsonObject { ["title"] = Text("What's to be done."), ["notes"] = Text("Anything more about it."), ["milestone"] = Text("Its milestone, by name or the start of it."), ["page"] = Text("The page of the card it's about."), ["card"] = Text("The card it's about, by name or id."), ["due"] = Text("A day to have it done by, as yyyy-mm-dd.") },
             ["title"], (project, given) => AddTaskFor(project, given)),
-        new("update_task", "Changes a task: ticks it done (or not), or changes what it says, its notes, date, milestone or card.",
-            new JsonObject { ["id"] = Text("The task's id, from list_tasks."), ["done"] = Flag("Whether it's done."), ["title"] = Text("What's to be done."), ["notes"] = Text("Its notes, replacing the old ones."), ["due"] = Text("yyyy-mm-dd, or empty for none."), ["milestone"] = Text("Its milestone, by name, or empty for none."), ["page"] = Text("The page of the card it's about."), ["card"] = Text("The card it's about, or empty for none.") },
+        new("update_task", "Changes a task: ticks it done (or not), or changes what it says, its notes, date, milestone, card or place in the list.",
+            new JsonObject { ["id"] = Text("The task's id, from list_tasks."), ["done"] = Flag("Whether it's done."), ["title"] = Text("What's to be done."), ["notes"] = Text("Its notes, replacing the old ones."), ["due"] = Text("yyyy-mm-dd, or empty for none."), ["milestone"] = Text("Its milestone, by name, or empty for none."), ["page"] = Text("The page of the card it's about."), ["card"] = Text("The card it's about, or empty for none."), ["position"] = Number("Where it goes among its milestone's tasks, 1 for first; they're listed in this order.") },
             ["id"], (project, given) => UpdateTaskFor(project, given)),
         new("search", "Finds words anywhere in the design: every document, card name and task, with where each is.",
             new JsonObject { ["text"] = Text("What to find. Not case-sensitive.") }, ["text"], (project, given) => Search(project, Required(given, "text"))),
@@ -439,6 +440,15 @@ public partial class MainWindow
         if (Day(Given(given, "due")) is { } due) task = task with { Due = due.Length > 0 ? due : null };
         if (MilestoneId(project, Given(given, "milestone")) is { } milestone) task = task with { Milestone = milestone.Length > 0 ? milestone : null };
         if (CardId(project, given) is { } card) task = task with { Card = card.Length > 0 ? card : null };
+        if (given["position"] is JsonValue position && position.TryGetValue<int>(out var place))
+        {
+            // Between the two it now goes between, so nothing else needs moving.
+            var others = tasks.Where(each => each.Task.Milestone == task.Milestone && !SameId(each.Id, found.Id)).Select(each => each.Task.Order).ToList();
+            var at = Math.Clamp(place, 1, others.Count + 1) - 1;
+            var before = at > 0 ? others[at - 1] : (others.Count > 0 ? others[0] - 2 : 0);
+            var after = at < others.Count ? others[at] : before + 2;
+            task = task with { Order = (before + after) / 2 };
+        }
         _database.SaveTask(project.Id, found.Id, task);
         McpChanged(project);
         return $"Changed. Now: {TaskSummary(project, found.Id, task)}";

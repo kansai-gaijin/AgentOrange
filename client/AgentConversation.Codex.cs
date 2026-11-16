@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace AgentOrange;
 
@@ -34,6 +35,7 @@ public sealed partial class AgentConversation
     private string? _codexFailure; // Why the turn is failing, from its error notice, said once the turn ends.
     private bool _codexLimited;
     private readonly List<string> _codexImages = []; // Pictures made this turn, saved where Codex put them.
+    private IReadOnlyList<string> _skillFolders = []; // The skills' folders it was pointed at, which it may read.
 
     private bool StartCodex(Setup setup)
     {
@@ -54,6 +56,7 @@ public sealed partial class AgentConversation
         }
 
         ProviderId = setup.Provider.Id;
+        _skillFolders = setup.SkillFolders;
         _process = process;
         _stopping = false;
         _restarting = false;
@@ -578,6 +581,13 @@ public sealed partial class AgentConversation
     // Its own requests: approvals for commands, file changes and permissions, and questions for the person.
     private void ReadCodexRequest(JsonNode id, string method, JsonObject parameters)
     {
+        // Codex asks before running a shell command to read a skill's files, though the briefing sends it
+        // there; a Claude session reads them without asking. In Auto, those reads are allowed here.
+        if (method == "item/commandExecution/requestApproval" && PermissionMode == "auto" && ReadsOnlyASkill(Str(parameters, "command")))
+        {
+            WriteCodex(new JsonObject { ["id"] = id.DeepClone(), ["result"] = new JsonObject { ["decision"] = "accept" } });
+            return;
+        }
         var itemId = $"codex-request-{id.ToJsonString()}-{NewId()[..6]}";
         AgentItem? item = method switch
         {
@@ -638,5 +648,26 @@ public sealed partial class AgentConversation
         _codexRequests[item.Id] = id.DeepClone();
         Add(item);
         StateChanged?.Invoke();
+    }
+
+    // One plain read of one file (Get-Content, cat or type, maybe inside "powershell -Command"), nothing
+    // chained or substituted, of a file inside a skill's folder.
+    private bool ReadsOnlyASkill(string? command)
+    {
+        if (command is null || _skillFolders.Count == 0) return false;
+        var inner = Regex.Match(command.Trim(), @"^(?:""?[^""]*?powershell(?:\.exe)?""?\s+(?:-NoProfile\s+)?-Command\s+)?(?<inner>.+)$", RegexOptions.IgnoreCase | RegexOptions.Singleline).Groups["inner"].Value.Trim();
+        if (inner.Length > 1 && inner[0] == '"' && inner[^1] == '"') inner = inner[1..^1];
+        if (inner.IndexOfAny([';', '|', '&', '>', '<', '`', '$', '(', ')', '\n', '\r']) >= 0) return false;
+        var read = Regex.Match(inner, @"^(?:Get-Content|gc|cat|type)\s+(?:-(?:LiteralPath|Path|Raw|Encoding\s+\w+)\s+)*(?:'(?<path>[^']+)'|""(?<path>[^""]+)""|(?<path>\S+))(?:\s+-(?:Raw|Encoding\s+\w+))*$", RegexOptions.IgnoreCase);
+        if (!read.Success) return false;
+        try
+        {
+            var file = Path.GetFullPath(read.Groups["path"].Value);
+            return _skillFolders.Any(folder => file.StartsWith(Path.TrimEndingDirectorySeparator(folder) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
     }
 }

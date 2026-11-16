@@ -201,6 +201,8 @@ internal static partial class Headless
                             foreach (var child in LogicalTreeHelper.GetChildren(parent).Cast<object>().Reverse()) pending.Push(child);
                     }
                 }
+                // And the words in boxes for more than a line, such as a task's notes, which show only in part.
+                foreach (var notes in Visible<TextBox>(window).Where(each => each.AcceptsReturn && each.Text.Length > 0)) say(notes.Text);
                 break;
             case "shot":
                 await Task.Delay(150);

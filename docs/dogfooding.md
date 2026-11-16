@@ -448,3 +448,19 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
   when" but can't change them, and milestones have no notes. It added a ticked "Priority 5 browser
   check" task instead, which reads fine on the tasks page. Not built: an `update_milestone` tool, if
   agents keep needing one.
+
+## Planning Priority 6 (residents) with Codex (2026-11-16)
+
+- **Codex stopped again to ask before reading a skill's SKILL.md,** in Auto. Agent Orange now allows it
+  itself in Auto: a command that is one plain read (Get-Content, cat or type, maybe inside
+  `powershell -Command`) of a file inside a folder of a skill the session was given, with nothing chained
+  or substituted. Anything else still asks.
+- **Agents couldn't order tasks.** The planner put "P6 00" to "P6 14" in the titles ("titles encode order
+  because task tools expose no reorder field"), and the tasks page still listed them out of order.
+  `update_task` now takes a position among its milestone's tasks.
+- **Shared rules went into every task's notes.** The same long paragraph of constraints opens all of
+  Priority 6's tasks, as a milestone has nowhere to keep them, so the tasks page, which shows a note's
+  first lines, shows the same words under every task. Second sign that milestones want notes agents can
+  write (see "Agents can't write to a milestone").
+- **The drive tool couldn't read a task's notes:** they're in an edit box, which `read` skipped. It now
+  prints boxes of more than one line too.

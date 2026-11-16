@@ -226,7 +226,7 @@ public sealed partial class AgentConversation
     }
 
     /// <summary>Everything a session needs set up first, made fresh each time so it matches what's set up now.</summary>
-    public sealed record Setup(AgentProvider Provider, string McpConfig, IReadOnlyList<string> McpServers, string SkillsPlugin, string Briefing, string AttachmentsFolder, string ClaudeSettings);
+    public sealed record Setup(AgentProvider Provider, string McpConfig, IReadOnlyList<string> McpServers, string SkillsPlugin, string Briefing, string AttachmentsFolder, string ClaudeSettings, IReadOnlyList<string> SkillFolders);
 
     /// <summary>
     /// Sends a message, starting the agent program if it isn't running. What the person is looking at
