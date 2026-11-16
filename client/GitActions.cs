@@ -2,23 +2,78 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using static AgentOrange.PanelParts;
 
 namespace AgentOrange;
+
+/// <summary>What git actions act on: a project's folder, and the login that writes commit messages and pull requests for it.</summary>
+internal sealed record GitTarget(string ProjectId, string Folder, Func<AgentProvider?> Login);
 
 /// <summary>
 /// T3 Code's git actions, copied from its code: which one fits where the branch stands (its mz
 /// rules), the menu beside it (pz, with Oz's reasons), the commit dialog, the warning before
 /// acting on the default branch, and the steps as T3's server runs them, with commit messages,
-/// branch names and pull requests written by the conversation's own login when left blank.
+/// branch names and pull requests written by the target's login when left blank. Each window that
+/// shows them has its own, over its own dialogs and toasts. How each folder stands, and the action
+/// running in it, are kept for all of them, so every window shows the same.
 /// </summary>
-public sealed partial class AgentsWindow
+internal sealed class GitActions(MainWindow main, Overlays overlays)
 {
+    public static readonly SolidColorBrush Addition = Freeze(new SolidColorBrush(Color.FromRgb(0x05, 0xDF, 0x72)));
+    public static readonly SolidColorBrush Deletion = Freeze(new SolidColorBrush(Color.FromRgb(0xFF, 0x64, 0x67)));
+
+    private static SolidColorBrush Freeze(SolidColorBrush brush)
+    {
+        brush.Freeze();
+        return brush;
+    }
+
+    /// <summary>How each folder stood when it was last read.</summary>
+    public static readonly Dictionary<string, RepoState> RepoStates = [];
+
+    private static readonly Dictionary<string, GitRun> Runs = [];
+
+    /// <summary>A folder was read and stands differently, so whatever shows it is drawn again.</summary>
+    public static event Action? StatesChanged;
+
+    /// <summary>An action moved on to its next step, finished or failed, so whatever shows it is drawn again.</summary>
+    public static event Action? RunsChanged;
+
     private enum GitAction { None, Commit, CommitPush, CommitPushPr, Push, PushPr, Pull, CreatePr }
 
     private sealed record GitPlan(string Label, GitAction Action, string? Hint);
+
+    // A git action under way, or just finished, as T3's panel shows it.
+    private sealed class GitRun
+    {
+        public string Status = "";
+        public DateTimeOffset PhaseStarted = DateTimeOffset.UtcNow;
+        public string? SuccessTitle;
+        public string? SuccessDescription;
+        public DateTimeOffset SuccessUntil;
+    }
+
+    /// <summary>Reads how the project's folder stands, once Git may run there, and has what shows it drawn again.</summary>
+    public async Task RefreshAsync(string projectId, bool fetch)
+    {
+        if (await main.GitFolderAsync(projectId) is not { Folder: { } folder }) return;
+        var state = await Task.Run(() => GitTools.RepoStateAsync(folder, fetch));
+        // Drawing it again closes any menu open on the panel, such as the one whose opening asked for this.
+        if (RepoStates.TryGetValue(folder, out var was) && was == state) return;
+        RepoStates[folder] = state;
+        StatesChanged?.Invoke();
+    }
+
+    public async Task InitializeAsync(GitTarget target)
+    {
+        var made = await GitTools.InitializeAsync(target.Folder);
+        if (!made.Worked) overlays.Toast("Git initialization failed", made.Value, error: true);
+        await RefreshAsync(target.ProjectId, fetch: false);
+    }
 
     // T3's mz: the one action that fits.
     private static GitPlan PlanFor(RepoState? state, bool busy)
@@ -92,43 +147,176 @@ public sealed partial class AgentsWindow
 
     private static bool OpensPr(GitAction action) => action is GitAction.CommitPushPr or GitAction.PushPr or GitAction.CreatePr;
 
-    private void StartGitAction(AgentConversation conversation, string folder, GitAction action, string? message, bool featureBranch, bool fromMenu, IReadOnlyList<string>? only = null)
+    // The quick action's icon, as T3's Mz picks it.
+    private static FrameworkElement ActionIcon(GitAction action, string label)
     {
+        if (action is GitAction.PushPr or GitAction.CreatePr or GitAction.CommitPushPr) return AgentIcons.GitHub(16, Ocean.MutedText);
+        var name = action switch
+        {
+            GitAction.Pull => "cloud-download",
+            GitAction.Push or GitAction.CommitPush => "cloud-upload",
+            GitAction.Commit => "git-commit-horizontal",
+            _ => label switch { "Commit" => "git-commit-horizontal", "Push" => "cloud-upload", _ => "info" },
+        };
+        return AgentIcons.Line(name, 16, Ocean.MutedText);
+    }
+
+    /// <summary>
+    /// The git actions: the one that fits, or what's under way, or what just finished, with the rest
+    /// in a menu beside it. Its menus go in layers, which is drawn again as the folder or the action
+    /// moves on, except while a menu is open on it.
+    /// </summary>
+    public FrameworkElement Row(GitTarget target, Panel layers)
+    {
+        var folder = target.Folder;
         RepoStates.TryGetValue(folder, out var state);
+        Runs.TryGetValue(folder, out var run);
+        var busy = run is not null && run.SuccessTitle is null;
+        var plan = PlanFor(state, busy);
+        Button primary;
+        if (busy)
+        {
+            // Under way: a spinner, what it's doing, and how long this part has taken.
+            var spinner = AgentIcons.Line("loader-circle", 16, RowWords);
+            spinner.RenderTransformOrigin = new Point(0.5, 0.5);
+            var turn = new RotateTransform();
+            spinner.RenderTransform = turn;
+            turn.BeginAnimation(RotateTransform.AngleProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 360, TimeSpan.FromSeconds(1)) { RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever });
+            primary = PanelButton(IconRow(WithGap(spinner, 12), RowText(run!.Status)), () => { }, run.Status);
+            primary.IsHitTestVisible = false;
+            var timer = Ocean.Text(Elapsed(run.PhaseStarted), Ocean.MutedText, 11);
+            timer.VerticalAlignment = VerticalAlignment.Center;
+            timer.Margin = new Thickness(0, 0, 10, 0);
+            var tick = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            tick.Tick += (_, _) => timer.Text = Elapsed(run.PhaseStarted);
+            tick.Start();
+            timer.Unloaded += (_, _) => tick.Stop();
+            var running = new Grid { Background = new SolidColorBrush(Color.FromArgb(0x0E, 0xFF, 0xFF, 0xFF)) };
+            running.ColumnDefinitions.Add(new ColumnDefinition());
+            running.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(timer, 1);
+            running.Children.Add(primary);
+            running.Children.Add(timer);
+            return new Border { CornerRadius = new CornerRadius(8), Child = running };
+        }
+        if (run?.SuccessTitle is { } title && run.SuccessUntil > DateTimeOffset.UtcNow)
+        {
+            // Done: T3 says so for 10 seconds, the chevron still there.
+            var check = AgentIcons.Line("check", 14, Ocean.Success);
+            var words = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Children = { RowText(title) } };
+            if (run.SuccessDescription is { Length: > 0 } said) words.Children.Add(new TextBlock { Text = said, Foreground = Ocean.MutedText, FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis });
+            primary = PanelButton(IconRow(WithGap(check, 12), words), () => { }, title);
+            primary.Height = double.NaN;
+            primary.MinHeight = 32;
+            primary.Padding = new Thickness(10, 6, 10, 6);
+            primary.IsHitTestVisible = false;
+        }
+        else
+        {
+            primary = PanelButton(IconRow(WithGap(ActionIcon(plan.Action, plan.Label), 10), RowText(plan.Label)), () =>
+            {
+                if (plan.Action == GitAction.None)
+                {
+                    overlays.Toast(plan.Label, plan.Hint, error: false);
+                    return;
+                }
+                StartGitAction(target, plan.Action, null, featureBranch: false, fromMenu: false);
+            }, plan.Label);
+            if (plan.Action == GitAction.None)
+            {
+                primary.Opacity = 0.64;
+                primary.ToolTip = plan.Hint ?? "This action is currently unavailable.";
+                ToolTipService.SetPlacement(primary, PlacementMode.Bottom);
+            }
+        }
+
+        Grid? group = null;
+        Button? options = null;
+        options = PanelButton(Chevron(), () =>
+        {
+            _ = RefreshAsync(target.ProjectId, fetch: false);
+            var rows = new StackPanel();
+            Popup? menu = null;
+            foreach (var (label, icon, action, why) in GitMenu(state, busy))
+            {
+                FrameworkElement glyph = icon == "git-pull-request" ? AgentIcons.GitHub(16, Ocean.MutedText) : AgentIcons.Line(icon == "arrow-up-from-line" ? "cloud-upload" : icon, 16, Ocean.MutedText);
+                glyph.Opacity = 0.8;
+                var item = Ocean.MenuRow(IconRow(WithGap(glyph, 8), Ocean.Text(label, Ocean.Foreground, 14)), () =>
+                {
+                    if (why is not null) return;
+                    menu!.IsOpen = false;
+                    StartGitAction(target, action, null, featureBranch: false, fromMenu: true);
+                });
+                item.MinHeight = 28;
+                item.Padding = new Thickness(8, 4, 8, 4);
+                if (why is not null)
+                {
+                    item.Opacity = 0.64;
+                    item.Cursor = Cursors.No;
+                    item.ToolTip = why;
+                    ToolTipService.SetPlacement(item, PlacementMode.Left);
+                }
+                AutomationProperties.SetName(item, why is null ? label : $"{label}: {why}");
+                rows.Children.Add(item);
+            }
+            if (state is { Branch: null }) rows.Children.Add(WarningText($"Detached HEAD: create and check out a branch to enable push and pull request actions."));
+            else if (state is { HasChanges: false, Behind: > 0, Ahead: 0 }) rows.Children.Add(WarningText("Behind upstream. Pull/rebase first."));
+            if (state?.Problem is { } problem && state.Branch is null) rows.Children.Add(new TextBlock { Text = problem, Foreground = Ocean.Error, FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(8, 6, 8, 6) });
+            menu = PanelMenu(layers, group!, rows, group!.ActualWidth);
+            menu.Placement = PlacementMode.Bottom;
+            menu.IsOpen = true;
+        }, "Git action options");
+        group = SplitRow(primary, options);
+        AutomationProperties.SetName(group, "Git actions");
+        return group;
+    }
+
+    private static TextBlock WarningText(string words) => new() { Text = words, Foreground = Ocean.Warning, FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(8, 6, 8, 6) };
+
+    private static string Elapsed(DateTimeOffset since)
+    {
+        var seconds = Math.Max(0, (int)(DateTimeOffset.UtcNow - since).TotalSeconds);
+        return seconds < 60 ? $"{seconds}s" : $"{seconds / 60}m {seconds % 60}s";
+    }
+
+    private void StartGitAction(GitTarget target, GitAction action, string? message, bool featureBranch, bool fromMenu, IReadOnlyList<string>? only = null)
+    {
+        RepoStates.TryGetValue(target.Folder, out var state);
         if (fromMenu && action == GitAction.Commit)
         {
-            ShowCommitDialog(conversation, folder, state);
+            ShowCommitDialog(target, state);
             return;
         }
         if (!featureBranch && Pushes(action) && state is { OnDefaultBranch: true, Branch: { } branch })
         {
-            ShowDefaultBranchDialog(conversation, folder, action, message, only, branch, state.HasChanges);
+            ShowDefaultBranchDialog(target, action, message, only, branch, state.HasChanges);
             return;
         }
-        _ = RunGitActionAsync(conversation, folder, action, message, featureBranch, only);
+        _ = RunGitActionAsync(target, action, message, featureBranch, only);
     }
 
     // The steps as T3's server runs them, each with the words it shows.
-    private async Task RunGitActionAsync(AgentConversation conversation, string folder, GitAction action, string? message, bool featureBranch, IReadOnlyList<string>? only)
+    private async Task RunGitActionAsync(GitTarget target, GitAction action, string? message, bool featureBranch, IReadOnlyList<string>? only)
     {
+        var folder = target.Folder;
         RepoStates.TryGetValue(folder, out var state);
         var run = new GitRun();
-        _gitRuns[folder] = run;
+        Runs[folder] = run;
         void Phase(string status)
         {
             run.Status = status;
             run.PhaseStarted = DateTimeOffset.UtcNow;
-            _redrawDetails?.Invoke();
+            RunsChanged?.Invoke();
         }
         void Fail(string why)
         {
-            _gitRuns.Remove(folder);
-            Toast(action == GitAction.Pull ? "Pull failed" : "Action failed", why, error: true);
-            _redrawDetails?.Invoke();
+            Runs.Remove(folder);
+            overlays.Toast(action == GitAction.Pull ? "Pull failed" : "Action failed", why, error: true);
+            RunsChanged?.Invoke();
         }
 
         Phase(action == GitAction.Pull ? "Pulling latest changes..." : "Starting source control action...");
-        var login = _main.AgentProviderFor(conversation);
+        var login = target.Login();
         var branch = state?.Branch ?? "";
         string subject = "", body = "";
         string? suggestedBranch = null;
@@ -245,116 +433,25 @@ public sealed partial class AgentsWindow
         {
             Succeed(run, $"Committed {sha}", subject);
         }
-        await RefreshRepoAsync(conversation.ProjectId, fetch: false);
+        await RefreshAsync(target.ProjectId, fetch: false);
     }
 
-    private void Succeed(GitRun run, string title, string? description)
+    private static void Succeed(GitRun run, string title, string? description)
     {
         run.SuccessTitle = title;
         run.SuccessDescription = description is { Length: > 72 } ? description[..72] : description;
         run.SuccessUntil = DateTimeOffset.UtcNow.AddSeconds(10);
-        _redrawDetails?.Invoke();
+        RunsChanged?.Invoke();
+        // And once more when it stops saying so.
+        _ = Task.Delay(run.SuccessUntil - DateTimeOffset.UtcNow).ContinueWith(_ => RunsChanged?.Invoke(), TaskScheduler.FromCurrentSynchronizationContext());
     }
 
     private static string? Str(JsonElement json, string name) =>
         json.ValueKind == JsonValueKind.Object && json.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
-    // Dialogs, over the whole window, as T3's: a glass card on a dimmed window.
-
-    private void ShowDialog(UIElement card, Color? shade = null)
-    {
-        _dialogs.Children.Clear();
-        var dim = new Border { Background = new SolidColorBrush(shade ?? Color.FromArgb(0x80, 0x00, 0x00, 0x00)) };
-        // A click that began on it, so the release of the click that opened the dialog doesn't close it.
-        var pressedHere = false;
-        dim.MouseLeftButtonDown += (_, _) => pressedHere = true;
-        dim.MouseLeftButtonUp += (_, _) =>
-        {
-            if (pressedHere) CloseDialog();
-            pressedHere = false;
-        };
-        _dialogs.Children.Add(dim);
-        _dialogs.Children.Add(card);
-        _dialogs.Visibility = Visibility.Visible;
-        CloseDetails();
-    }
-
-    private void CloseDialog()
-    {
-        _dialogs.Children.Clear();
-        _dialogs.Visibility = Visibility.Collapsed;
-    }
-
-    private static Border DialogCard(double maxWidth, string title, string description, UIElement? panel, Action close, params UIElement[] buttons) =>
-        DialogCard(maxWidth, title, description, panel, close, firstOnLeft: false, buttons);
-
-    // T3's footer wraps its buttons when they don't fit, and can keep the first at the left, as its
-    // default-branch dialog does with Abort (sm:mr-auto).
-    private static Border DialogCard(double maxWidth, string title, string description, UIElement? panel, Action close, bool firstOnLeft, params UIElement[] buttons)
-    {
-        var closer = Ocean.IconButton("x", close, "Close", 28, 16, Ocean.MutedText);
-        closer.HorizontalAlignment = HorizontalAlignment.Right;
-        closer.VerticalAlignment = VerticalAlignment.Top;
-        closer.Margin = new Thickness(0, 8, 8, 0);
-        var heading = Ocean.Wrapped(title, Ocean.Foreground, 20, 26);
-        heading.FontWeight = FontWeights.SemiBold;
-        var header = new StackPanel { Margin = new Thickness(24, 24, 24, 12), Children = { heading } };
-        var said = Ocean.Wrapped(description, Ocean.MutedText, 14, 20);
-        said.Margin = new Thickness(0, 8, 0, 0);
-        header.Children.Add(said);
-        var footer = new DockPanel { Margin = new Thickness(24, 16, 16, 16), LastChildFill = true };
-        var rest = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right };
-        for (var at = 0; at < buttons.Length; at++)
-        {
-            if (buttons[at] is FrameworkElement each) each.Margin = new Thickness(0, 4, 8, 4);
-            if (at == 0 && firstOnLeft)
-            {
-                DockPanel.SetDock(buttons[at], Dock.Left);
-                footer.Children.Add(buttons[at]);
-            }
-            else
-            {
-                rest.Children.Add(buttons[at]);
-            }
-        }
-        footer.Children.Add(rest);
-        var stack = new StackPanel { Children = { header } };
-        if (panel is not null) stack.Children.Add(panel);
-        stack.Children.Add(footer);
-        return new Border
-        {
-            MaxWidth = maxWidth,
-            Margin = new Thickness(24),
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            Background = Ocean.Glass,
-            BorderBrush = Ocean.GlassBorder,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(16),
-            Child = new Grid { Children = { stack, closer } },
-        };
-    }
-
-    // T3's buttons: outline, and primary.
-    private static Button DialogButton(string words, Action click, bool primary, bool enabled = true)
-    {
-        var text = Ocean.Text(words, primary ? Ocean.OnPrimary : Ocean.Foreground, 14, FontWeights.Medium);
-        var button = Ocean.Ghost(text, click, 8, new Thickness(12, 0, 12, 0), primary ? Ocean.PrimaryHover : Ocean.RowHover, primary ? Ocean.Primary : null);
-        button.Height = 32;
-        if (!primary)
-        {
-            button.BorderBrush = Ocean.Border;
-            button.BorderThickness = new Thickness(1);
-        }
-        button.IsEnabled = enabled;
-        button.Opacity = enabled ? 1 : 0.64;
-        AutomationProperties.SetName(button, words);
-        return button;
-    }
-
     // T3's commit dialog: the branch, the files (each can be left out while editing), and an
     // optional message, which is written for it when left empty.
-    private void ShowCommitDialog(AgentConversation conversation, string folder, RepoState? state)
+    private void ShowCommitDialog(GitTarget target, RepoState? state)
     {
         var excluded = new HashSet<string>();
         var editing = false;
@@ -532,21 +629,21 @@ public sealed partial class AgentsWindow
         var panel = new StackPanel { Margin = new Thickness(24, 4, 24, 4), Children = { card, messageLabel, new Grid { Children = { message, hint } } } };
 
         IReadOnlyList<string>? Only() => excluded.Count == 0 ? null : [.. files.Select(file => file.Path).Where(path => !excluded.Contains(path))];
-        var cancel = DialogButton("Cancel", CloseDialog, primary: false);
-        newBranch = DialogButton("Commit on new branch", () =>
+        var cancel = Overlays.DialogButton("Cancel", overlays.CloseDialog, primary: false);
+        newBranch = Overlays.DialogButton("Commit on new branch", () =>
         {
-            CloseDialog();
-            _ = RunGitActionAsync(conversation, folder, GitAction.Commit, message.Text.Trim(), featureBranch: true, Only());
+            overlays.CloseDialog();
+            _ = RunGitActionAsync(target, GitAction.Commit, message.Text.Trim(), featureBranch: true, Only());
         }, primary: false);
-        commit = DialogButton("Commit", () =>
+        commit = Overlays.DialogButton("Commit", () =>
         {
-            CloseDialog();
-            _ = RunGitActionAsync(conversation, folder, GitAction.Commit, message.Text.Trim(), featureBranch: false, Only());
+            overlays.CloseDialog();
+            _ = RunGitActionAsync(target, GitAction.Commit, message.Text.Trim(), featureBranch: false, Only());
         }, primary: true);
         Draw();
-        ShowDialog(DialogCard(512, "Commit changes", "Review and confirm your commit. Leave the message blank to auto-generate one.", panel, CloseDialog, cancel, newBranch, commit));
-        Dispatcher.InvokeAsync(() => Keyboard.Focus(message), DispatcherPriority.Input);
-        _ = GitTools.ChangedFilesAsync(folder).ContinueWith(task => Dispatcher.Invoke(() =>
+        overlays.ShowDialog(Overlays.DialogCard(512, "Commit changes", "Review and confirm your commit. Leave the message blank to auto-generate one.", panel, overlays.CloseDialog, cancel, newBranch, commit));
+        message.Dispatcher.InvokeAsync(() => Keyboard.Focus(message), DispatcherPriority.Input);
+        _ = GitTools.ChangedFilesAsync(target.Folder).ContinueWith(task => message.Dispatcher.Invoke(() =>
         {
             files = task.Result;
             Draw();
@@ -554,7 +651,7 @@ public sealed partial class AgentsWindow
     }
 
     // T3's hz: before pushing or opening a pull request from the default branch.
-    private void ShowDefaultBranchDialog(AgentConversation conversation, string folder, GitAction action, string? message, IReadOnlyList<string>? only, string branch, bool hasChanges)
+    private void ShowDefaultBranchDialog(GitTarget target, GitAction action, string? message, IReadOnlyList<string>? only, string branch, bool hasChanges)
     {
         var tail = $" on \"{branch}\". You can continue on this ref or create a feature ref and run the same action there.";
         var withCommit = Commits(action);
@@ -572,17 +669,17 @@ public sealed partial class AgentsWindow
             words.Margin = new Thickness(24, 0, 24, 0);
             note = words;
         }
-        var abort = DialogButton("Abort", CloseDialog, primary: false);
-        var proceed = DialogButton(go, () =>
+        var abort = Overlays.DialogButton("Abort", overlays.CloseDialog, primary: false);
+        var proceed = Overlays.DialogButton(go, () =>
         {
-            CloseDialog();
-            _ = RunGitActionAsync(conversation, folder, action, message, featureBranch: false, only);
+            overlays.CloseDialog();
+            _ = RunGitActionAsync(target, action, message, featureBranch: false, only);
         }, primary: false);
-        var feature = DialogButton("Check out feature branch & continue", () =>
+        var feature = Overlays.DialogButton("Check out feature branch & continue", () =>
         {
-            CloseDialog();
-            _ = RunGitActionAsync(conversation, folder, action, message, featureBranch: true, only);
+            overlays.CloseDialog();
+            _ = RunGitActionAsync(target, action, message, featureBranch: true, only);
         }, primary: true, enabled: hasChanges);
-        ShowDialog(DialogCard(576, title, description, note, CloseDialog, firstOnLeft: true, abort, proceed, feature));
+        overlays.ShowDialog(Overlays.DialogCard(576, title, description, note, overlays.CloseDialog, firstOnLeft: true, abort, proceed, feature));
     }
 }

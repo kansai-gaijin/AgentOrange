@@ -182,7 +182,7 @@ public sealed partial class AgentsWindow
             Template = Ocean.Template(8, new SolidColorBrush(Color.FromArgb(0xCC, 0, 0, 0))),
         };
         AutomationProperties.SetName(close, "Close image preview");
-        close.Click += (_, _) => CloseDialog();
+        close.Click += (_, _) => _overlays.CloseDialog();
         var box = new Grid { Children = { stack, close } };
         if (pictures.Count > 1)
         {
@@ -204,7 +204,7 @@ public sealed partial class AgentsWindow
         surface.MouseLeftButtonDown += (_, press) => pressedOutside = press.OriginalSource == surface || press.OriginalSource == box;
         surface.MouseLeftButtonUp += (_, click) =>
         {
-            if (pressedOutside && (click.OriginalSource == surface || click.OriginalSource == box)) CloseDialog();
+            if (pressedOutside && (click.OriginalSource == surface || click.OriginalSource == box)) _overlays.CloseDialog();
             pressedOutside = false;
         };
         stack.MouseLeftButtonUp += (_, click) => click.Handled = true;
@@ -214,7 +214,7 @@ public sealed partial class AgentsWindow
             var handled = true;
             switch (key.Key)
             {
-                case Key.Escape: CloseDialog(); break;
+                case Key.Escape: _overlays.CloseDialog(); break;
                 case Key.Enter or Key.Space: Zoom(zoom > 1 ? 1 : 2, null); break;
                 case Key.OemPlus or Key.Add: Zoom(zoom * 1.5, null); break;
                 case Key.OemMinus or Key.Subtract: Zoom(zoom / 1.5, null); break;
@@ -243,7 +243,7 @@ public sealed partial class AgentsWindow
         }
 
         Load();
-        ShowDialog(surface, shade: Color.FromArgb(0xBF, 0, 0, 0));
+        _overlays.ShowDialog(surface, shade: Color.FromArgb(0xBF, 0, 0, 0));
 
         // T3: the picture comes in from 98% and clear over 200 ms.
         var scale = new ScaleTransform(0.98, 0.98);

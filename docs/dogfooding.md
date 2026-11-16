@@ -464,3 +464,10 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
   write (see "Agents can't write to a milestone").
 - **The drive tool couldn't read a task's notes:** they're in an edit box, which `read` skipped. It now
   prints boxes of more than one line too.
+- **AO had no way to control the repo outside the agents window.** Committing, pushing, pulling or
+  opening a pull request meant opening a conversation and its details panel. The project's page now has
+  the same Git actions group beside "Open in Unreal Engine": the action that fits, the menu with its
+  reasons, the commit dialog, the default-branch warning and the toasts, acting on the project's folder.
+  With no conversation, commit messages and PR text are written by the login a new conversation would
+  start with. Both windows draw it from one shared copy (`GitActions`), so an action run in either shows
+  in the other.

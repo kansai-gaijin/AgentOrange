@@ -101,7 +101,20 @@ public partial class MainWindow
             {
                 body.Children.Add(new TextBlock { Text = $"This folder looks like a {engine} project, but this project is set to {project.Engine}. You can change that in project settings.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
             }
-            if (project.Engine == "Unreal Engine" && folder is not null && !_shownDownloadState.Unfinished) AddUnrealRow(body, project, folder);
+            // What can be done with the folder, side by side: open it in its engine, and its git actions.
+            // Not with its download unfinished, as a commit then would take its missing files out.
+            if (folder is not null && !_shownDownloadState.Unfinished)
+            {
+                var actions = new WrapPanel { Margin = new Thickness(0, 10, 0, 0), HorizontalAlignment = HorizontalAlignment.Center };
+                if (project.Engine == "Unreal Engine") AddUnrealRow(actions, project, folder);
+                if (!inSection && ProjectFolder(project.Id) is { } gitFolder)
+                {
+                    var git = GitActionsGroup(project, gitFolder);
+                    git.Margin = new Thickness(actions.Children.Count > 0 ? 8 : 0, 0, 0, 0);
+                    actions.Children.Add(git);
+                }
+                if (actions.Children.Count > 0) body.Children.Add(actions);
+            }
             if (found.FolderMayNotMatch)
             {
                 body.Children.Add(new TextBlock { Text = "This folder doesn't have the repo's latest commits. It may just be behind, but it may not be the same project, so check before pushing.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });

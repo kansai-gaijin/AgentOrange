@@ -92,8 +92,13 @@ public partial class MainWindow
         var providers = all.Where(provider => provider.Enabled).ToList();
         if (providers.FirstOrDefault(provider => provider.Id == conversation.ProviderId) is { } own) return own;
         var kind = all.FirstOrDefault(provider => provider.Id == conversation.ProviderId)?.Kind;
-        return kind is { } same ? providers.FirstOrDefault(provider => provider.Kind == same) : providers.OrderBy(provider => provider.Kind).FirstOrDefault();
+        return kind is { } same ? providers.FirstOrDefault(provider => provider.Kind == same) : FirstLogin(providers);
     }
+
+    /// <summary>The login a new conversation would start with, for writing done for a project with no conversation, such as its commit messages.</summary>
+    internal AgentProvider? DefaultAgentProvider() => FirstLogin(Settings.Providers.List().Where(provider => provider.Enabled));
+
+    private static AgentProvider? FirstLogin(IEnumerable<AgentProvider> turnedOn) => turnedOn.OrderBy(provider => provider.Kind).FirstOrDefault();
 
     /// <summary>Why the conversation can't be sent anything right now, or null when it can.</summary>
     internal async Task<string?> AgentProblemAsync(AgentConversation conversation)

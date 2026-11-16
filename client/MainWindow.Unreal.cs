@@ -12,14 +12,13 @@ namespace AgentOrange;
 /// </summary>
 public partial class MainWindow
 {
-    private void AddUnrealRow(StackPanel body, Project project, string folder)
+    // Into the row of what can be done with the folder, which the git actions share.
+    private void AddUnrealRow(Panel row, Project project, string folder)
     {
-        var row = new WrapPanel { Margin = new Thickness(0, 10, 0, 0), HorizontalAlignment = HorizontalAlignment.Center };
-        body.Children.Add(row);
-
         if (UnrealProject.Find(folder) is { } uproject)
         {
             var open = ActionButton("Open in Unreal Engine");
+            open.VerticalAlignment = VerticalAlignment.Center; // Not stretched to the git actions' height beside it.
             open.IsEnabled = !IsBusyWith(project.Id);
             open.Click += (_, _) =>
             {
@@ -47,6 +46,7 @@ public partial class MainWindow
         if (engines.Count > 1) row.Children.Add(version);
 
         var create = ActionButton("Create the Unreal project");
+        create.VerticalAlignment = VerticalAlignment.Center;
         create.IsEnabled = !IsBusy;
         create.Click += async (_, _) => await CreateUnrealProjectAsync(project, folder, (UnrealInstall)((ComboBoxItem)version.SelectedItem).Tag);
         row.Children.Add(create);

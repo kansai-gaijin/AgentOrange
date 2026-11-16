@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using static AgentOrange.PanelParts;
 
 namespace AgentOrange;
 
@@ -98,7 +99,7 @@ public sealed partial class AgentsWindow
             }
             else
             {
-                Toast(action, "That conversation isn't on this PC any more.", error: false);
+                _overlays.Toast(action, "That conversation isn't on this PC any more.", error: false);
             }
         }, 999, new Thickness(10, 4, 10, 4), Ocean.Accent, Ocean.Canvas);
         pill.BorderBrush = Ocean.Border70;
@@ -145,7 +146,7 @@ public sealed partial class AgentsWindow
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
             {
-                Toast("Couldn't save the image", error.Message, error: true);
+                _overlays.Toast("Couldn't save the image", error.Message, error: true);
             }
         });
         Item("Copy image", () =>
@@ -161,7 +162,7 @@ public sealed partial class AgentsWindow
             }
             catch (Exception error) when (error is IOException or NotSupportedException or UriFormatException or System.Runtime.InteropServices.COMException)
             {
-                Toast("Couldn't copy the image", error.Message, error: true);
+                _overlays.Toast("Couldn't copy the image", error.Message, error: true);
             }
         });
         menu = Ocean.Menu(by, PlacementMode.MousePoint, rows, 180, 0);
