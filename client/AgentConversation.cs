@@ -138,12 +138,15 @@ public sealed partial class AgentConversation
     [JsonIgnore] public bool IsWorking { get; private set; }
 
     /// <summary>
-    /// Commands it started in the background that haven't ended, as far as can be told: Claude Code
-    /// starts a turn by itself when one ends, so each turn it starts on its own counts one as ended.
-    /// While there are some and it isn't working, it's waiting on them, not done.
+    /// Commands it started in the background that haven't ended. Claude Code says when each starts and
+    /// ends (task_started, task_notification), including one that ends while it's still working. Without
+    /// that, it's told by Claude Code starting a turn by itself when one ends, so each turn it starts on its
+    /// own counts one as ended. While there are some and it isn't working, it's waiting on them, not done.
     /// </summary>
     [JsonIgnore] public int BackgroundJobs { get; private set; }
     private readonly HashSet<string> _backgroundIds = [];
+    private readonly HashSet<string> _endedIds = [];
+    private bool _tasksTold; // Claude Code says when its background commands start and end, so nothing is guessed.
 
     /// <summary>The last command it started in the background, to say what may still be running.</summary>
     [JsonIgnore] public string? LastBackgroundCommand { get; private set; }
@@ -830,6 +833,17 @@ public sealed partial class AgentConversation
             case "init":
                 AskForUsage();
                 break;
+            case "task_started" when Str(json, "tool_use_id") is { } begun && _backgroundIds.Contains(begun):
+                _tasksTold = true;
+                break;
+            case "task_notification" when Str(json, "tool_use_id") is { } ended && _backgroundIds.Contains(ended):
+                _tasksTold = true;
+                if (_endedIds.Add(ended))
+                {
+                    BackgroundJobs = Math.Max(0, BackgroundJobs - 1);
+                    StateChanged?.Invoke();
+                }
+                break;
             case "status" when Str(json, "status") == "compacting":
                 Retrying = "Making room in its memory";
                 StateChanged?.Invoke();
@@ -867,7 +881,7 @@ public sealed partial class AgentConversation
                 // Nothing was sent, so it started this turn itself: one of its background commands ended.
                 if (!IsWorking && !_codex)
                 {
-                    BackgroundJobs = Math.Max(0, BackgroundJobs - 1);
+                    if (!_tasksTold) BackgroundJobs = Math.Max(0, BackgroundJobs - 1);
                     _turns = 1;
                     SetWorking(true);
                 }
@@ -997,7 +1011,7 @@ public sealed partial class AgentConversation
                         LastBackgroundCommand = Str(part["input"] as JsonObject, "command") ?? Str(part["input"] as JsonObject, "description");
                         StateChanged?.Invoke();
                     }
-                    else if (name is "KillShell" or "TaskStop" && BackgroundJobs > 0)
+                    else if (name is "KillShell" or "TaskStop" && BackgroundJobs > 0 && !_tasksTold)
                     {
                         BackgroundJobs--;
                         StateChanged?.Invoke();

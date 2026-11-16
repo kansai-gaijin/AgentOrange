@@ -95,6 +95,9 @@ public partial class MainWindow
                 ["due"] = Text("A day to deliver it by, as yyyy-mm-dd, or empty for none."),
             },
             ["card"], (project, given) => UpdateAssetFor(project, given)),
+        new("remove_card", "Deletes a card from a page, with its document, picture and board, as the page's Delete does. It can't be undone, so only when the person asked for it or the card is being replaced by others. A delivered asset, or a card that assets belong to, isn't deleted.",
+            new JsonObject { ["page"] = Text("Story, Characters, Levels, Mechanics or Assets."), ["card"] = Text("The card's whole name, or its id.") },
+            ["page", "card"], (project, given) => RemoveCardFor(project, given)),
         new("list_tasks", "The milestones, each with what it's for and when it's done, and their tasks with ids, ticks, dates and the cards they're about.",
             new JsonObject { ["milestone"] = Text("Only this milestone, by its name or the start of it."), ["open_only"] = Flag("Leave out tasks that are done.") }, [], (project, given) => ListTasksFor(project, given)),
         new("add_task", "Adds a task, such as one found while working.",
@@ -341,6 +344,34 @@ public partial class MainWindow
         if (Given(given, "markdown") is { Length: > 0 } markdown) _database.SetDocument(project.Id, LocalDatabase.CardBoardKey(added), markdown.Trim() + Environment.NewLine);
         McpChanged(project);
         return $"Added the {KindOfCard(page)} {name} (id {Short(added.Id)}) to {page}." + (details is null ? "" : $" {DescribeAsset(project, added)}");
+    }
+
+    private string RemoveCardFor(Project project, JsonObject given)
+    {
+        var page = Page(given);
+        if (page == "Overview") throw new McpException(-32602, "The Overview isn't a card.");
+        var asked = Required(given, "card");
+
+        // Its whole name or id only: a deletion never guesses from the start of a name, as finding one to read does.
+        var cards = _database.ListCards(project.Id, _database.ProjectStage(project.Id), page.ToLowerInvariant());
+        var card = cards.FirstOrDefault(each => SameId(each.Id, asked))
+            ?? cards.SingleOrDefault(each => CardName(each, page).Equals(asked, StringComparison.OrdinalIgnoreCase))
+            ?? throw new McpException(-32602, cards.Count(each => CardName(each, page).Equals(asked, StringComparison.OrdinalIgnoreCase)) > 1
+                ? $"{page} has more than one card called {asked}. Give its id: list_cards shows them."
+                : $"{page} has no card called {asked}. Give its whole name or id.");
+        var name = CardName(card, page);
+        if (page == AssetsPage && _database.GetAssetDeliverable(card.Id) is { } delivered)
+            throw new McpException(-32602, $"{name} is delivered as {delivered.Path}, so it isn't deleted. The person can delete it on the Assets page.");
+        if (page != AssetsPage)
+        {
+            var owned = _database.ListCards(project.Id, _database.ProjectStage(project.Id), AssetsPage.ToLowerInvariant())
+                .Where(asset => _database.GetAssetDetails(asset.Id).Owner == card.Id).Select(asset => CardName(asset, AssetsPage)).ToList();
+            if (owned.Count > 0) throw new McpException(-32602, $"These assets belong to {name}: {string.Join(", ", owned)}. Change what they belong to, or remove them, first.");
+        }
+        _database.DeleteCard(project.Id, card);
+        _cardPictures.Remove(card.Id);
+        McpChanged(project);
+        return $"Deleted {name} from {page}.";
     }
 
     private string UpdateAssetFor(Project project, JsonObject given)

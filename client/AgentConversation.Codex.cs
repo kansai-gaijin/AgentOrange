@@ -415,8 +415,15 @@ public sealed partial class AgentConversation
             case "turn/completed" when parameters["turn"] is JsonObject turn:
                 EndCodexTurn(turn);
                 break;
+            default:
+                // Logged once each, so a turn that never ends (as one did, hours after its last answer) leaves
+                // a trace of what Codex said instead.
+                if (method is not null && _codexUnread.Add(method)) AppLog.Write($"Codex said {method}, which isn't read.");
+                break;
         }
     }
+
+    private readonly HashSet<string> _codexUnread = [];
 
     // Its usage limit, as T3 Code tells it: usageLimitExceeded or rateLimitExceeded, or a 429 that kept failing.
     private static bool IsCodexLimit(JsonNode? info) => info switch

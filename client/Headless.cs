@@ -206,7 +206,9 @@ internal static partial class Headless
                 break;
             case "shot":
                 await Task.Delay(150);
-                var shot = Path.Combine(output, $"{parts[1]}.png");
+                // A name for it in the output folder, or a whole path; "shot" alone names it by the time.
+                var named = parts.Length > 1 ? parts[1] : $"shot-{DateTime.Now:HHmmss}";
+                var shot = Path.Combine(output, named.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ? named : $"{named}.png");
                 SaveImage(window, shot);
                 say(shot);
                 break;

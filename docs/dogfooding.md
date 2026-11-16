@@ -506,3 +506,18 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
   Two small things: the New task form's fields have no names for screen readers or the drive tool
   (only their place in the form finds them), and the form opens partly outside the window's right
   edge on a 1084 px wide window.
+- **Agents couldn't remove a card.** Splitting the asset "sets" into one card per file left 61 old cards
+  for the person to delete one at a time (right-click, Delete, confirm). A new `remove_card` tool deletes
+  a card as the page's Delete does, by its whole name or id only (never the start of a name), and won't
+  delete a delivered asset or a card that assets still belong to.
+- **"A command is still running in the background" stayed after it had ended.** Agent Orange counted a
+  background command as ended only when Claude Code started a turn by itself for it, so one that ended
+  while the agent was still working was never counted. Claude Code says when each starts and ends
+  (`task_started`, `task_notification` with the command's tool id), and those are read now; the old guess
+  is kept only for a session that doesn't say.
+- **A Codex conversation showed Working for almost four hours after its last answer.** The asset split's
+  final reply came at about 02:15 and Codex never said the turn had completed; Stop ended it. Nothing
+  says why yet, so Agent Orange now logs (once each) any Codex event it doesn't read, to leave a trace next
+  time.
+- **drive `shot` with no name failed** (index out of range), and a name ending in `.png` got a second
+  `.png`. It names the picture by the time now, and keeps a given `.png`.
