@@ -406,3 +406,19 @@ the editor tests missed; both fixed.
 - **The agent didn't say so plainly,** and while looking for another way in it read a login folder's
   .claude.json. The briefing now says to report a failing Agent Orange tool with its error rather than
   work around it, and never to read Claude Code's or Codex's login folders.
+
+## Planning Priority 5 (farming) with Codex (2026-11-16)
+
+The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first real Codex work in a while.
+
+- **Codex couldn't use any of Agent Orange's tools:** every call came back "user rejected MCP tool
+  call". Codex now asks the app to approve each MCP tool call as an MCP elicitation with nothing to fill
+  in, and Agent Orange turned every elicitation down, as T3 does. Codex only gets Agent Orange's own MCP
+  servers, which Claude sessions use without asking, so an approval-only elicitation is now accepted;
+  real forms are still turned down. The agent said so plainly, as the new briefing line asks.
+- **Codex in Auto still asks before reading a skill's SKILL.md** with a shell command. Allowed for the
+  conversation by hand for now; skills for Codex are #89.
+- **Agents couldn't add cards (#92),** so a slice plan's assets couldn't reach the Assets page. New
+  add_card tool: a story beat, character, level, mechanic or asset, as the page's Add form does, with
+  its document, and for an asset its type, the card it belongs to and a deliver-by day. Agents still
+  never fill a deliverable.

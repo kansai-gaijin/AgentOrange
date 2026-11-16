@@ -620,8 +620,15 @@ public sealed partial class AgentConversation
         };
         if (item is null)
         {
-            // MCP forms and anything else are turned down, as T3 Code turns down what it doesn't handle.
-            if (method == "mcpServer/elicitation/request") WriteCodex(new JsonObject { ["id"] = id.DeepClone(), ["result"] = new JsonObject { ["action"] = "decline" } });
+            // Codex asks before each call to an MCP tool as a form with nothing to fill in. Its MCP servers
+            // are only the ones Agent Orange set up (its own and the editors'), which a Claude session uses
+            // without asking, so those are allowed. Forms that ask for something, and anything else, are
+            // turned down, as T3 Code turns down what it doesn't handle.
+            if (method == "mcpServer/elicitation/request")
+            {
+                var asks = parameters["requestedSchema"]?["properties"] is JsonObject fields && fields.Count > 0;
+                WriteCodex(new JsonObject { ["id"] = id.DeepClone(), ["result"] = asks ? new JsonObject { ["action"] = "decline" } : new JsonObject { ["action"] = "accept", ["content"] = new JsonObject() } });
+            }
             else WriteCodex(new JsonObject { ["id"] = id.DeepClone(), ["error"] = new JsonObject { ["code"] = -32601, ["message"] = "Method not found" } });
             return;
         }
