@@ -67,6 +67,7 @@ internal sealed class HttpMcpClient(string address) : McpClient
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(10) };
     private string? _session;
+    private bool _renewing; // Once only, should the new session be refused too.
 
     protected override async Task<JsonNode?> SendAsync(JsonObject message, int? id, CancellationToken cancel)
     {
@@ -75,6 +76,33 @@ internal sealed class HttpMcpClient(string address) : McpClient
         request.Headers.Accept.ParseAdd("text/event-stream");
         if (_session is not null) request.Headers.Add("Mcp-Session-Id", _session);
         using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancel);
+
+        // A tool that restarted, such as Unreal opened again, has forgotten the session, and says so with
+        // 404, as MCP has it: start a new session, as the first time, and send it again.
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound && _session is not null && !_renewing && message["method"]?.GetValue<string>() != "initialize")
+        {
+            _session = null;
+            _renewing = true;
+            try
+            {
+                await SendAsync(new JsonObject
+                {
+                    ["jsonrpc"] = "2.0", ["id"] = -1, ["method"] = "initialize",
+                    ["params"] = new JsonObject
+                    {
+                        ["protocolVersion"] = "2025-06-18",
+                        ["capabilities"] = new JsonObject(),
+                        ["clientInfo"] = new JsonObject { ["name"] = "agent-orange", ["version"] = "1" },
+                    },
+                }, -1, cancel);
+                await SendAsync(new JsonObject { ["jsonrpc"] = "2.0", ["method"] = "notifications/initialized" }, null, cancel);
+                return await SendAsync(message, id, cancel);
+            }
+            finally
+            {
+                _renewing = false;
+            }
+        }
         if (response.Headers.TryGetValues("Mcp-Session-Id", out var sessions)) _session = sessions.FirstOrDefault() ?? _session;
         if (id is null) return null;
         response.EnsureSuccessStatusCode();

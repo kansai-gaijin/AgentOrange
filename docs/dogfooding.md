@@ -390,3 +390,19 @@ the login: a good summary of the slice), then Push to main past the default-bran
   leftover `grep` whose command line looked like a build, and a 10-minute quiet window all hid a finished
   agent. And a brief with double quotes inside it was cut short by the drive tool's `set`. With "Waiting
   on job" in Agent Orange, the label now tells the truth.
+
+## Priority 2, the spaceflight prototype (2026-11-16)
+
+Opus 5.5 built and checked the whole gate: walk on planet A, board your own ship, fly to planet B in the
+same world (about 40 s), land in a clear spot and walk on, with gravity from whichever planet is near,
+2 players, no loading. Also landing checks, recovery, summoning, and a warp to a second test system with
+ship and player state through a stand-in backend (JSON). One web build at the end found two control bugs
+the editor tests missed; both fixed.
+
+- **Agent Orange's tools to Unreal returned 404 and the agent went around them.** Agent Orange keeps one
+  connection per tool and reused Unreal's session; the agent restarted the editor during the work, and a
+  new editor answers an old session with 404 (as MCP says it should). Agent Orange now starts a new
+  session and sends the call again, once.
+- **The agent didn't say so plainly,** and while looking for another way in it read a login folder's
+  .claude.json. The briefing now says to report a failing Agent Orange tool with its error rather than
+  work around it, and never to read Claude Code's or Codex's login folders.
