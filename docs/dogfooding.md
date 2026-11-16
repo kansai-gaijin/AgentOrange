@@ -480,3 +480,11 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
   leaving the page, and even over the agents window: a pop-up is a window of its own, and its button
   had been hidden. Every T3-style menu (`Ocean.Menu`) now closes when the button it opened from is
   hidden or taken away.
+- **A service an agent starts dies after two hours.** The slice B agent ran the game's local backend as
+  a Claude Code background command, and Claude Code stops those at two hours, so the backend went
+  down mid-session (it said so, and starts it again when needed). Not built yet: services a project
+  needs while agents work (a game's backend, a web server) could be kept by Agent Orange itself, like
+  the editors, instead of living inside one agent's session.
+- **The drive tool can only read the conversation's newest replies.** The list is virtualised, so
+  `read` missed slice B's long summary once a shorter reply followed it; the review file in the repo
+  had it all.
