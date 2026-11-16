@@ -92,8 +92,8 @@ public partial class MainWindow
             ["id"], (project, given) => UpdateTaskFor(project, given)),
         new("search", "Finds words anywhere in the design: every document, card name and task, with where each is.",
             new JsonObject { ["text"] = Text("What to find. Not case-sensitive.") }, ["text"], (project, given) => Search(project, Required(given, "text"))),
-        new("read_picture", "A picture from a document, given as ![](picture:id) in its Markdown, to look at.",
-            new JsonObject { ["id"] = Text("What follows picture: in the document.") }, ["id"], (project, given) => ReadPicture(Required(given, "id"))),
+        new("read_picture", "A picture to look at: one from a document, given as ![](picture:id) in its Markdown, or a card's own picture, such as its concept art, given by read_card as picture:card-id.",
+            new JsonObject { ["id"] = Text("What follows picture: in the document or in read_card.") }, ["id"], (project, given) => ReadPicture(project, Required(given, "id"))),
 
         // The creative tools, such as Blender, Aseprite, ArmorPaint and Material Maker.
         new("list_tools", "The creative tools set up on this PC, such as Blender, Aseprite, ArmorPaint and Material Maker, and the game's engine, such as Unreal Engine, and whether each is open and its MCP answers.",
@@ -243,6 +243,7 @@ public partial class MainWindow
         foreach (var card in cards)
         {
             said.Append($"- {CardName(card, page)} (id {Short(card.Id)}): {WordsIn(_database.GetDocument(project.Id, LocalDatabase.CardBoardKey(card)))} words");
+            if (_database.GetCardImage(card.Id) is not null) said.Append(", has a picture");
             if (page == AssetsPage)
             {
                 var details = _database.GetAssetDetails(card.Id);
@@ -262,6 +263,7 @@ public partial class MainWindow
         var said = new StringBuilder();
         said.AppendLine($"# {name}");
         if (card is not null) said.AppendLine($"({Page(given)} card, id {Short(card.Id)})");
+        if (card is not null && _database.GetCardImage(card.Id) is not null) said.AppendLine($"Its picture, such as its concept art: picture:card-{Short(card.Id)}. Look at it with read_picture.");
         said.AppendLine();
         var document = _database.GetDocument(project.Id, boardKey);
         said.AppendLine(document is { Length: > 0 } ? document.Trim() : "Nothing written yet.");
@@ -482,9 +484,19 @@ public partial class MainWindow
         return found.Count == 0 ? $"Nothing has \"{text}\" in it." : string.Join("\n", found) + (found.Count >= 40 ? "\n(The first 40.)" : "");
     }
 
-    private JsonObject ReadPicture(string id)
+    private JsonObject ReadPicture(Project project, string id)
     {
-        if (_database.GetDocumentPicture(id.StartsWith("picture:", StringComparison.Ordinal) ? id["picture:".Length..] : id) is not { } stored) throw new McpException(-32602, $"There's no picture {id}.");
+        if (id.StartsWith("picture:", StringComparison.Ordinal)) id = id["picture:".Length..];
+        string? stored;
+        if (id.StartsWith("card-", StringComparison.Ordinal))
+        {
+            // A card's own picture, found on whichever page the card is.
+            var stage = _database.ProjectStage(project.Id);
+            var card = CardPages.Keys.SelectMany(page => _database.ListCards(project.Id, stage, page == AssetsPage ? AssetsPart : page.ToLowerInvariant())).FirstOrDefault(each => SameId(each.Id, id["card-".Length..]));
+            stored = card is null ? null : _database.GetCardImage(card.Id);
+        }
+        else stored = _database.GetDocumentPicture(id);
+        if (stored is null) throw new McpException(-32602, $"There's no picture {id}.");
         var bytes = Convert.FromBase64String(stored);
         var type = bytes.Length > 3 && bytes[0] == 0x89 && bytes[1] == 0x50 ? "image/png" : "image/jpeg";
         return new JsonObject { ["content"] = new JsonArray(new JsonObject { ["type"] = "image", ["data"] = stored, ["mimeType"] = type }) };

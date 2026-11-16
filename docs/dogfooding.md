@@ -422,3 +422,10 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
   add_card tool: a story beat, character, level, mechanic or asset, as the page's Add form does, with
   its document, and for an asset its type, the card it belongs to and a deliver-by day. Agents still
   never fill a deliverable.
+- **Agents couldn't see a card's own picture,** the concept art on Characters, Levels and Mechanics cards:
+  read_card gave only the document, so the planner judged the style from the Overview's four pictures.
+  read_card now names the card's picture (picture:card-id), read_picture opens it, and list_cards says
+  which cards have one.
+- add_card worked: the planner put 20 farming assets on the Assets page, each with its type and owner
+  card. But it named them all "Farming — ...", so every tile shows the same F and the names are cut off
+  before the part that matters. Worth showing an asset's type icon when it has no picture.
