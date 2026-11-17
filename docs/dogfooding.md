@@ -521,3 +521,9 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
   time.
 - **drive `shot` with no name failed** (index out of range), and a name ending in `.png` got a second
   `.png`. It names the picture by the time now, and keeps a given `.png`.
+- **Agent Orange has no way to split work across agents.** The user found progress slow: each
+  conversation is one agent doing a slice's tasks one after another (the Priority 8 slice A agent used
+  no subagents), and about half of each slice is checking in the one Unreal editor. Briefs now allow
+  subagents for independent pieces and pair two slices per conversation, and non-Unreal work runs in a
+  second conversation alongside. Not built: Agent Orange running independent tasks in parallel itself,
+  each in its own worktree, while keeping work that needs the project's one editor in sequence.
