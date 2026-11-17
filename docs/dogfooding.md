@@ -525,5 +525,9 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
   conversation is one agent doing a slice's tasks one after another (the Priority 8 slice A agent used
   no subagents), and about half of each slice is checking in the one Unreal editor. Briefs now allow
   subagents for independent pieces and pair two slices per conversation, and non-Unreal work runs in a
-  second conversation alongside. Not built: Agent Orange running independent tasks in parallel itself,
+  second conversation alongside. Not built (#94): Agent Orange running independent tasks in parallel itself,
   each in its own worktree, while keeping work that needs the project's one editor in sequence.
+- **Checking proven work holds up new work.** A slice review replayed earlier, already-proven work in the
+  one editor for 1–2 hours. The game now gets a fast headless regression suite, and reviews test only new
+  work by hand. Not built (#93): sending a project's regression command to another paired PC as a test
+  machine, the way T3 Code links other machines.
