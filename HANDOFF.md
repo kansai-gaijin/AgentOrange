@@ -177,7 +177,7 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 - **You are the game designer.** The GDD on AO's pages is the bible and what's in it is already decided; everything else is your call. You may research (web), but never develop the game yourself.
 - **Builds:** no web or packaged builds per task (this PC is slow; the first web build took 35 minutes). Test in the editor (Play In Editor, 2 players, simulated gamepad). Build for the web and measure in the browser only when a milestone is finished (`Tools/Build/build_web.ps1 -Measure` in the game repo).
 - **No art until the art pass:** the art pass is its own phase, after a working prototype of everything is done. Until then, only prototype stand-ins (whitebox shapes, or a quick Blender placeholder such as a prototype crop). Don't ask the user about final looks yet; decide placeholders yourself.
-- **Stop before Priority 8** (Modular Habitat Prototype): finish Priorities 6 and 7, then don't plan or start Priority 8. The user has concerns and wants to discuss how it's implemented first.
+- **Priority 8 is cleared** (2026-11-17). The user's concern was building interiors, now settled in the GDD: outside shells on the planet, flat rooms behind doors loaded only for the players inside, under the planet surface, never visible from space. Flight limits (star glare zone, system edge, no entering planets) went into the Priority 9 orbits task.
 - **Settle conversations** in the agents window as soon as their work is done (drive: `hover` the row, then `click "Settle thread"`).
 - **Always push:** game commits go straight to `main`, no pull requests.
 - **Pausing:** when the user asks to pause, let the agent's current turn finish and send nothing more until they say so.
