@@ -531,3 +531,42 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
   one editor for 1–2 hours. The game now gets a fast headless regression suite, and reviews test only new
   work by hand. Not built (#93): sending a project's regression command to another paired PC as a test
   machine, the way T3 Code links other machines.
+
+## Test machines: a project's tests on another PC, linked as T3 links machines (2026-11-18)
+
+Checking the game in its one editor held up new work (#93), so steps 1 to 4 of the design on the issue
+are built (step 4 is the job MAC and cancel): a PC can let the user's other PCs run a project's tests on it, linked the way T3 Code links
+environments, with the server as the mailbox between them. It's generic: plain commands, exit codes
+and free-form tags, nothing about any engine.
+
+- **Settings › Test machines** (`SettingsModal.TestMachines.cs`), with T3's texts where T3 has the same
+  thing. Linked machines comes first (T3's Linked environments: status dot, access, "Expires in N days.
+  Link it again to renew.", Forget with T3's confirm, and its Link dialog: machine, pairing code, access).
+  Then This PC: "Let other PCs run tests here", and once on, a name, tags, a work folder, the shell
+  (PowerShell, cmd or Git Bash), environment variables and a time limit, all kept on this PC. Then T3's
+  Authorized clients: Create link makes a pairing link with T3's countdown, Show code, Copy code and
+  Revoke; linked PCs show as "Agent Orange · <PC>" with Revoke. Then Runs here, with exactly what each
+  run ran, as any PC can change a project's synced commands.
+- **Linking** (`MachineLinks.cs`, `TestMachines.cs`): the code is 12 characters in T3's alphabet, lives
+  only in the target's memory for 5 minutes and one use, and never reaches the server. The PC linking
+  sends an HMAC proof of it, which the target checks in constant time; 5 wrong proofs throw the code
+  away, and the server holds off a PC whose proofs were turned down 5 times in a minute, as with
+  pairing keys. Both PCs derive the link's key from the code and keep it with DPAPI. Links last 30
+  days, and either PC ending one ends it for both.
+- **A project's tests** (Project settings › Tests, synced as `test_setups`): an optional prepare command,
+  the test command, an optional exit code meaning "couldn't run", the tags a machine must offer and a
+  time limit. **Run tests on…** on the project page lists the linked machines (and earlier runs) and
+  sends the commit checked out, once origin has it, signed with the link's key. Its window shows the
+  status and the live log.
+- **The runner** (`TestRunner.cs`) runs in the window that syncs, one run at a time, only while the PC
+  takes runs. It refuses a job whose link it has no key for, that's expired, below the access it needs,
+  or whose MAC doesn't match. It checks the commit out in its own clone under the work folder, runs
+  prepare then test as GitHub Actions runs a step in each shell, streams the log and renews its lease.
+  Verdicts: passed, failed, couldn't run, timed out, cancelled, and lost when the lease runs out.
+- **Windows PowerShell lost exit codes:** run as GitHub does (`-Command ". 'script'"`), 5.1 reports 1 for
+  a script that exits 5. Scripts run with `-File` instead, which keeps it.
+- **Checked for real** against a local server and Postgres (no automated tests added): two PCs played
+  through the API, then the headless app as the target with each shell (every verdict, a forged job
+  refused, cancel, time limit), and as the PC linking (Link dialog, Run tests on…, the run window).
+- Not built yet: agent tools for test runs and picking a machine by its tags (step 5), JUnit summaries
+  and agent-level access (step 6, #94).
