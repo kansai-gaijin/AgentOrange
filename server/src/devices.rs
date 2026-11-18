@@ -264,6 +264,12 @@ pub async fn remove(
         )
         .await
         .map_err(internal_error)?;
+    // Its links go with it, from both ends, as no one could use them now.
+    if removed > 0 {
+        crate::machines::forget_removed_pcs(&state.db)
+            .await
+            .map_err(internal_error)?;
+    }
     found_or_404(removed)
 }
 
@@ -285,7 +291,31 @@ pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Strin
     Ok(row.get(0))
 }
 
-fn clean_name(name: &str) -> Result<String, StatusCode> {
+/// The PC behind this login, as test machines go by PCs rather than logins. A PC paired before
+/// pairing said which PC it was has to pair again to take part, as there's no telling.
+pub async fn authenticate_install(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<String, StatusCode> {
+    let token = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let row = state
+        .db
+        .query_opt(
+            "UPDATE devices SET last_seen_at = now() WHERE token_hash = $1 RETURNING install_hash",
+            &[&sha256(token)],
+        )
+        .await
+        .map_err(internal_error)?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    row.get::<_, Option<String>>(0)
+        .ok_or(StatusCode::PRECONDITION_FAILED)
+}
+
+pub fn clean_name(name: &str) -> Result<String, StatusCode> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > MAX_NAME_LENGTH {
         return Err(StatusCode::BAD_REQUEST);
@@ -310,7 +340,7 @@ fn sha256(text: &str) -> String {
     hex::encode(Sha256::digest(text))
 }
 
-fn random_hex<const N: usize>() -> String {
+pub fn random_hex<const N: usize>() -> String {
     let mut bytes = [0u8; N];
     getrandom::fill(&mut bytes).expect("the system's random source failed");
     hex::encode(bytes)

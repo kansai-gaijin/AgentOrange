@@ -159,7 +159,7 @@ pub struct SyncResponse {
 /// Nothing stays compatible across a release, so only this server's own can read or change data
 /// here. Changes stay queued on a PC until the two match, which takes minutes at most after a
 /// release, since both update themselves. Dev builds don't send a version.
-fn client_is_out_of_date(headers: &HeaderMap) -> bool {
+pub fn client_is_out_of_date(headers: &HeaderMap) -> bool {
     let parts = |version: &str| -> Option<Vec<u64>> {
         version.split('.').map(|part| part.parse().ok()).collect()
     };

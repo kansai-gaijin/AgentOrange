@@ -1,4 +1,5 @@
 mod devices;
+mod machines;
 mod sync;
 
 use std::sync::{Arc, Mutex};
@@ -9,7 +10,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode},
     middleware::map_response,
     response::Response,
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post, put},
 };
 use tokio_postgres::{Client, NoTls};
 
@@ -31,6 +32,7 @@ pub struct AppState {
     /// None turns pairing off, for a server that hasn't been given a key yet.
     pub pairing_key: Option<String>,
     pub pairing_limit: Mutex<devices::PairingLimit>,
+    pub link_limit: Mutex<machines::LinkLimit>,
 }
 
 #[tokio::main]
@@ -52,6 +54,9 @@ async fn main() {
     sync::create_tables(&db)
         .await
         .expect("could not set up the database");
+    machines::create_tables(&db)
+        .await
+        .expect("could not set up the database");
 
     let state = Arc::new(AppState {
         db,
@@ -60,6 +65,7 @@ async fn main() {
         pruned_at: Mutex::new(None),
         pairing_key,
         pairing_limit: Mutex::new(devices::PairingLimit::default()),
+        link_limit: Mutex::new(machines::LinkLimit::default()),
     });
 
     let app = |route: devices::Route| {
@@ -73,6 +79,33 @@ async fn main() {
                 "/v1/devices/{id}",
                 patch(devices::rename).delete(devices::remove),
             )
+            .route("/v1/machines", get(machines::list))
+            .route("/v1/machines/me", put(machines::publish))
+            .route(
+                "/v1/machines/me/link-requests",
+                get(machines::pending_link_requests),
+            )
+            .route("/v1/machines/me/runs/next", post(machines::claim_next))
+            .route(
+                "/v1/machines/{install}/link-requests",
+                post(machines::request_link),
+            )
+            .route("/v1/link-requests/{id}", get(machines::link_request))
+            .route(
+                "/v1/link-requests/{id}/accept",
+                post(machines::accept_link_request),
+            )
+            .route(
+                "/v1/link-requests/{id}/reject",
+                post(machines::reject_link_request),
+            )
+            .route("/v1/links/{id}", delete(machines::remove_link))
+            .route("/v1/runs", get(machines::list_runs).post(machines::enqueue))
+            .route("/v1/runs/{id}", get(machines::read_run))
+            .route("/v1/runs/{id}/cancel", post(machines::cancel_run))
+            .route("/v1/runs/{id}/heartbeat", post(machines::heartbeat))
+            .route("/v1/runs/{id}/log", post(machines::append_log))
+            .route("/v1/runs/{id}/end", post(machines::end_run))
             .layer(map_response(mark_as_ours))
             .layer(Extension(route))
             .with_state(state.clone())

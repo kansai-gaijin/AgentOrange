@@ -1,0 +1,1060 @@
+//! Test machines: PCs that let another of the owner's PCs run a project's tests on them, as T3
+//! Code's linked environments let one machine's agents work on another. PCs here rarely reach
+//! each other, but both always reach this server, so it carries the work as a mailbox.
+//!
+//! A link is made on the target PC with a one-time code that never comes here. The PC linking
+//! sends a proof that it knows the code, and the target checks it. Jobs carry a MAC made with a
+//! key both PCs derive from the code, so this server can relay and keep jobs but can't make a
+//! PC run anything of its own. What's run is plain commands, and nothing here knows what a
+//! project, a tag or a command means.
+//!
+//! Everything is keyed by the PC (its install), not its login, as a PC has a login at each of
+//! this server's addresses.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode},
+};
+use serde::{Deserialize, Serialize};
+use tokio_postgres::{Client, Row};
+
+use crate::{
+    AppState,
+    devices::{authenticate_install, clean_name, internal_error, random_hex},
+    sync::client_is_out_of_date,
+};
+
+/// Seen this recently, a PC that accepts runs counts as reachable. PCs sync every 3 seconds.
+const REACHABLE_SECONDS: f64 = 15.0;
+const MAX_TAGS: usize = 32;
+const MAX_TAG_LENGTH: usize = 40;
+const MAX_JOB_BYTES: usize = 64 * 1024;
+const MAX_LOG_CHUNK_BYTES: usize = 64 * 1024;
+const MAX_LOG_BYTES: i64 = 5 * 1024 * 1024;
+const MAX_LOG_ROWS_PER_READ: i64 = 400;
+const MAX_QUEUED_PER_LINK: i64 = 10;
+const MAX_UNANSWERED_PER_LINKER: i64 = 3;
+const ACCESS_LEVELS: [&str; 3] = ["tests", "agents", "full"];
+const RUN_ENDINGS: [&str; 5] = ["passed", "failed", "couldnt_run", "timed_out", "cancelled"];
+
+// Link proofs a target turned down, counted as wrong pairing keys are: per PC linking, and much
+// higher in all, against one PC guessing at another's code, or many at once.
+const MAX_REJECTED_LINKS: u32 = 5;
+const MAX_REJECTED_LINKS_IN_ALL: u32 = 100;
+const REJECTED_LINK_WINDOW: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+pub struct LinkLimit {
+    window_started: Option<Instant>,
+    rejected: HashMap<String, u32>,
+    total: u32,
+}
+
+impl LinkLimit {
+    fn is_blocked(&mut self, linker: &str) -> bool {
+        if self
+            .window_started
+            .is_some_and(|started| started.elapsed() >= REJECTED_LINK_WINDOW)
+        {
+            *self = Self::default();
+        }
+        self.total >= MAX_REJECTED_LINKS_IN_ALL
+            || self.rejected.get(linker).copied().unwrap_or(0) >= MAX_REJECTED_LINKS
+    }
+
+    fn record_rejection(&mut self, linker: &str) {
+        self.window_started.get_or_insert_with(Instant::now);
+        *self.rejected.entry(linker.to_string()).or_insert(0) += 1;
+        self.total += 1;
+    }
+}
+
+pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
+    db.batch_execute(
+        "CREATE TABLE IF NOT EXISTS test_machines (
+            install_hash TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            tags TEXT[] NOT NULL DEFAULT '{}',
+            accepting BOOLEAN NOT NULL DEFAULT false,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+         );
+         -- Asked for by the PC linking, answered by the target, and gone after 10 minutes.
+         CREATE TABLE IF NOT EXISTS machine_link_requests (
+            id TEXT PRIMARY KEY,
+            machine_install TEXT NOT NULL,
+            linker_install TEXT NOT NULL,
+            access TEXT NOT NULL,
+            nonce TEXT NOT NULL,
+            proof TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            answer TEXT,
+            link_id TEXT
+         );
+         CREATE INDEX IF NOT EXISTS machine_link_requests_machine ON machine_link_requests (machine_install);
+         CREATE TABLE IF NOT EXISTS machine_links (
+            id TEXT PRIMARY KEY,
+            machine_install TEXT NOT NULL,
+            linker_install TEXT NOT NULL,
+            access TEXT NOT NULL,
+            linked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            expires_at TIMESTAMPTZ NOT NULL,
+            UNIQUE (machine_install, linker_install)
+         );
+         CREATE TABLE IF NOT EXISTS test_runs (
+            id TEXT PRIMARY KEY,
+            link_id TEXT NOT NULL,
+            machine_install TEXT NOT NULL,
+            linker_install TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            commit_sha TEXT NOT NULL,
+            job TEXT NOT NULL,
+            mac TEXT NOT NULL,
+            status TEXT NOT NULL,
+            exit_code INTEGER,
+            cancel_requested BOOLEAN NOT NULL DEFAULT false,
+            lease_until TIMESTAMPTZ,
+            log_bytes BIGINT NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            started_at TIMESTAMPTZ,
+            ended_at TIMESTAMPTZ
+         );
+         CREATE INDEX IF NOT EXISTS test_runs_machine ON test_runs (machine_install, status, created_at);
+         CREATE INDEX IF NOT EXISTS test_runs_linker ON test_runs (linker_install, created_at);
+         CREATE TABLE IF NOT EXISTS test_run_logs (
+            run_id TEXT NOT NULL REFERENCES test_runs (id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            PRIMARY KEY (run_id, seq)
+         );",
+    )
+    .await
+}
+
+/// Every route here needs a login from a PC that said which PC it is, and this server's own
+/// release, as test machines are new and nothing about them stays the same across releases.
+async fn caller(state: &AppState, headers: &HeaderMap) -> Result<String, StatusCode> {
+    let install = authenticate_install(state, headers).await?;
+    if client_is_out_of_date(headers) {
+        return Err(StatusCode::UPGRADE_REQUIRED);
+    }
+    Ok(install)
+}
+
+/// Links to or from a PC whose every login was removed can't be used by anyone any more.
+pub async fn forget_removed_pcs(db: &Client) -> Result<(), tokio_postgres::Error> {
+    db.batch_execute(
+        "DELETE FROM machine_links l WHERE
+            NOT EXISTS (SELECT 1 FROM devices d WHERE d.install_hash = l.machine_install)
+            OR NOT EXISTS (SELECT 1 FROM devices d WHERE d.install_hash = l.linker_install);
+         DELETE FROM test_machines m WHERE
+            NOT EXISTS (SELECT 1 FROM devices d WHERE d.install_hash = m.install_hash);
+         UPDATE test_runs SET status = 'cancelled', ended_at = now()
+            WHERE status = 'queued' AND NOT EXISTS (SELECT 1 FROM machine_links l WHERE l.id = test_runs.link_id);",
+    )
+    .await
+}
+
+/// A run whose machine stopped renewing its lease is lost. Settled whenever runs are looked at.
+async fn settle_lost_runs(db: &Client) -> Result<(), StatusCode> {
+    db.execute(
+        "UPDATE test_runs SET status = 'lost', ended_at = now()
+         WHERE status = 'running' AND lease_until < now()",
+        &[],
+    )
+    .await
+    .map_err(internal_error)?;
+    Ok(())
+}
+
+fn status(expired: bool, accepting: bool, last_seen: f64, now: f64, busy: bool) -> &'static str {
+    if expired {
+        "expired"
+    } else if !accepting || now - last_seen > REACHABLE_SECONDS {
+        "unreachable"
+    } else if busy {
+        "busy"
+    } else {
+        "reachable"
+    }
+}
+
+// Machines
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineView {
+    install: String,
+    label: String,
+    tags: Vec<String>,
+    accepting: bool,
+    status: &'static str,
+    last_seen_at: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkView {
+    id: String,
+    machine: String,
+    machine_label: String,
+    machine_tags: Vec<String>,
+    linker: String,
+    linker_label: String,
+    access: String,
+    linked_at: f64,
+    expires_at: f64,
+    status: &'static str,
+    last_seen_at: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachinesResponse {
+    /// This PC, as the others know it, which the proof of a link names.
+    me: String,
+    /// What this PC said about itself, if it ever did.
+    this_machine: Option<MachineView>,
+    /// The other PCs that let others run tests on them.
+    machines: Vec<MachineView>,
+    /// Links from this PC to others, and from others to this one.
+    links: Vec<LinkView>,
+}
+
+const LAST_SEEN: &str = "COALESCE((SELECT EXTRACT(EPOCH FROM MAX(d.last_seen_at))::float8 FROM devices d WHERE d.install_hash = {pc}), 0)";
+const BUSY: &str = "EXISTS (SELECT 1 FROM test_runs r WHERE r.machine_install = {pc} AND r.status = 'running' AND r.lease_until > now())";
+
+pub async fn list(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<MachinesResponse>, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    settle_lost_runs(&state.db).await?;
+
+    let machine_rows = state
+        .db
+        .query(
+            &format!(
+                "SELECT m.install_hash, m.label, m.tags, m.accepting, {}, {}, EXTRACT(EPOCH FROM now())::float8
+                 FROM test_machines m
+                 WHERE EXISTS (SELECT 1 FROM devices d WHERE d.install_hash = m.install_hash)
+                 ORDER BY lower(m.label)",
+                LAST_SEEN.replace("{pc}", "m.install_hash"),
+                BUSY.replace("{pc}", "m.install_hash"),
+            ),
+            &[],
+        )
+        .await
+        .map_err(internal_error)?;
+
+    let mut this_machine = None;
+    let mut machines = Vec::new();
+    for row in &machine_rows {
+        let view = MachineView {
+            install: row.get(0),
+            label: row.get(1),
+            tags: row.get(2),
+            accepting: row.get(3),
+            last_seen_at: row.get(4),
+            status: status(false, row.get(3), row.get(4), row.get(6), row.get(5)),
+        };
+        if view.install == me {
+            this_machine = Some(view);
+        } else {
+            machines.push(view);
+        }
+    }
+
+    let link_rows = state
+        .db
+        .query(
+            &format!(
+                "SELECT l.id, l.machine_install, l.linker_install, l.access,
+                    EXTRACT(EPOCH FROM l.linked_at)::float8, EXTRACT(EPOCH FROM l.expires_at)::float8,
+                    l.expires_at <= now(),
+                    COALESCE(m.label, (SELECT d.name FROM devices d WHERE d.install_hash = l.machine_install LIMIT 1), ''),
+                    COALESCE((SELECT d.name FROM devices d WHERE d.install_hash = l.linker_install LIMIT 1), ''),
+                    COALESCE(m.accepting, false), COALESCE(m.tags, '{{}}'),
+                    {}, {}, EXTRACT(EPOCH FROM now())::float8
+                 FROM machine_links l LEFT JOIN test_machines m ON m.install_hash = l.machine_install
+                 WHERE l.machine_install = $1 OR l.linker_install = $1
+                 ORDER BY l.linked_at",
+                LAST_SEEN.replace("{pc}", "l.machine_install"),
+                BUSY.replace("{pc}", "l.machine_install"),
+            ),
+            &[&me],
+        )
+        .await
+        .map_err(internal_error)?;
+
+    let links = link_rows
+        .iter()
+        .map(|row| LinkView {
+            id: row.get(0),
+            machine: row.get(1),
+            linker: row.get(2),
+            access: row.get(3),
+            linked_at: row.get(4),
+            expires_at: row.get(5),
+            machine_label: row.get(7),
+            linker_label: row.get(8),
+            machine_tags: row.get(10),
+            last_seen_at: row.get(11),
+            status: status(
+                row.get(6),
+                row.get(9),
+                row.get(11),
+                row.get(13),
+                row.get(12),
+            ),
+        })
+        .collect();
+
+    Ok(Json(MachinesResponse {
+        me,
+        this_machine,
+        machines,
+        links,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct PublishRequest {
+    label: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    accepting: bool,
+}
+
+/// What this PC offers: a name, free-form tags, and whether it takes runs now.
+pub async fn publish(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<PublishRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    let label = clean_name(&request.label)?;
+    let mut tags: Vec<String> = Vec::new();
+    for tag in &request.tags {
+        let tag = tag.trim();
+        if tag.is_empty()
+            || tag.chars().count() > MAX_TAG_LENGTH
+            || tag.chars().any(char::is_control)
+        {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        if !tags.iter().any(|known| known.eq_ignore_ascii_case(tag)) {
+            tags.push(tag.to_string());
+        }
+    }
+    if tags.len() > MAX_TAGS {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    state
+        .db
+        .execute(
+            "INSERT INTO test_machines (install_hash, label, tags, accepting) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (install_hash) DO UPDATE SET
+                label = excluded.label, tags = excluded.tags, accepting = excluded.accepting, updated_at = now()",
+            &[&me, &label, &tags, &request.accepting],
+        )
+        .await
+        .map_err(internal_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// Linking
+
+fn is_hex(text: &str, length: usize) -> bool {
+    text.len() == length && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[derive(Deserialize)]
+pub struct LinkRequestBody {
+    access: String,
+    nonce: String,
+    proof: String,
+}
+
+#[derive(Serialize)]
+pub struct Created {
+    id: String,
+}
+
+/// Asks a PC for a link. Only the target can check the proof, as only it has the code.
+pub async fn request_link(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(machine): Path<String>,
+    Json(body): Json<LinkRequestBody>,
+) -> Result<Json<Created>, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    if !ACCESS_LEVELS.contains(&body.access.as_str())
+        || !is_hex(&body.nonce, 32)
+        || !is_hex(&body.proof, 64)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if machine == me {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    if state.link_limit.lock().unwrap().is_blocked(&me) {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    state
+        .db
+        .execute(
+            "DELETE FROM machine_link_requests WHERE created_at < now() - interval '10 minutes'",
+            &[],
+        )
+        .await
+        .map_err(internal_error)?;
+
+    // Only a PC that lets others run tests on it can be linked to.
+    let accepting = state
+        .db
+        .query_opt(
+            "SELECT accepting FROM test_machines m WHERE install_hash = $1
+                AND EXISTS (SELECT 1 FROM devices d WHERE d.install_hash = m.install_hash)",
+            &[&machine],
+        )
+        .await
+        .map_err(internal_error)?
+        .map(|row| row.get::<_, bool>(0));
+    match accepting {
+        None => return Err(StatusCode::NOT_FOUND),
+        Some(false) => return Err(StatusCode::CONFLICT),
+        Some(true) => {}
+    }
+
+    // A few at a time, so a PC can't queue up guesses faster than the target turns them down.
+    let id = random_hex::<16>();
+    let inserted = state
+        .db
+        .execute(
+            "INSERT INTO machine_link_requests (id, machine_install, linker_install, access, nonce, proof)
+             SELECT $1, $2, $3, $4, $5, $6
+             WHERE (SELECT count(*) FROM machine_link_requests WHERE linker_install = $3 AND answer IS NULL) < $7",
+            &[
+                &id,
+                &machine,
+                &me,
+                &body.access,
+                &body.nonce,
+                &body.proof,
+                &MAX_UNANSWERED_PER_LINKER,
+            ],
+        )
+        .await
+        .map_err(internal_error)?;
+    if inserted == 0 {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+    Ok(Json(Created { id }))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingLinkRequest {
+    id: String,
+    linker: String,
+    linker_label: String,
+    access: String,
+    nonce: String,
+    proof: String,
+}
+
+/// Requests waiting on this PC's answer.
+pub async fn pending_link_requests(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<PendingLinkRequest>>, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    let rows = state
+        .db
+        .query(
+            "SELECT r.id, r.linker_install, COALESCE((SELECT d.name FROM devices d WHERE d.install_hash = r.linker_install LIMIT 1), ''),
+                r.access, r.nonce, r.proof
+             FROM machine_link_requests r
+             WHERE r.machine_install = $1 AND r.answer IS NULL AND r.created_at > now() - interval '10 minutes'
+             ORDER BY r.created_at",
+            &[&me],
+        )
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(
+        rows.iter()
+            .map(|row| PendingLinkRequest {
+                id: row.get(0),
+                linker: row.get(1),
+                linker_label: row.get(2),
+                access: row.get(3),
+                nonce: row.get(4),
+                proof: row.get(5),
+            })
+            .collect(),
+    ))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkAnswer {
+    answer: Option<String>,
+    link_id: Option<String>,
+    expires_at: Option<f64>,
+}
+
+/// The PC linking waits on this for the target's answer.
+pub async fn link_request(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<LinkAnswer>, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    let row = state
+        .db
+        .query_opt(
+            "SELECT r.answer, r.link_id, (SELECT EXTRACT(EPOCH FROM l.expires_at)::float8 FROM machine_links l WHERE l.id = r.link_id)
+             FROM machine_link_requests r
+             WHERE r.id = $1 AND r.linker_install = $2 AND r.created_at > now() - interval '10 minutes'",
+            &[&id, &me],
+        )
+        .await
+        .map_err(internal_error)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(LinkAnswer {
+        answer: row.get(0),
+        link_id: row.get(1),
+        expires_at: row.get(2),
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct AcceptBody {
+    /// Made by the target, which derives the link's key from it.
+    id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Accepted {
+    expires_at: f64,
+}
+
+/// The target checked the proof and took the code. A link between the same two PCs is replaced,
+/// which is how one is renewed.
+pub async fn accept_link_request(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(request): Path<String>,
+    Json(body): Json<AcceptBody>,
+) -> Result<Json<Accepted>, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    if !is_hex(&body.id, 32) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let row = state
+        .db
+        .query_opt(
+            "WITH answered AS (
+                UPDATE machine_link_requests SET answer = 'accepted', link_id = $3
+                WHERE id = $1 AND machine_install = $2 AND answer IS NULL AND created_at > now() - interval '10 minutes'
+                RETURNING machine_install, linker_install, access
+             )
+             INSERT INTO machine_links (id, machine_install, linker_install, access, expires_at)
+             SELECT $3, machine_install, linker_install, access, now() + interval '30 days' FROM answered
+             ON CONFLICT (machine_install, linker_install) DO UPDATE SET
+                id = excluded.id, access = excluded.access, linked_at = now(), expires_at = excluded.expires_at
+             RETURNING EXTRACT(EPOCH FROM expires_at)::float8",
+            &[&request, &me, &body.id],
+        )
+        .await
+        .map_err(internal_error)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Queued under the link this replaced, and signed with its key, which neither PC has now.
+    forget_removed_pcs(&state.db)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(Accepted {
+        expires_at: row.get(0),
+    }))
+}
+
+/// The proof didn't match, or the target had no code. Counts against the PC that asked.
+pub async fn reject_link_request(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(request): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    let row = state
+        .db
+        .query_opt(
+            "UPDATE machine_link_requests SET answer = 'rejected'
+             WHERE id = $1 AND machine_install = $2 AND answer IS NULL
+             RETURNING linker_install",
+            &[&request, &me],
+        )
+        .await
+        .map_err(internal_error)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    state
+        .link_limit
+        .lock()
+        .unwrap()
+        .record_rejection(&row.get::<_, String>(0));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Either PC can end a link, and that's final. Its queued runs are cancelled, and a running one
+/// is told to stop.
+pub async fn remove_link(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    let removed = state
+        .db
+        .execute(
+            "DELETE FROM machine_links WHERE id = $1 AND (machine_install = $2 OR linker_install = $2)",
+            &[&id, &me],
+        )
+        .await
+        .map_err(internal_error)?;
+    if removed == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    state
+        .db
+        .execute(
+            "UPDATE test_runs SET
+                status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
+                ended_at = CASE WHEN status = 'queued' THEN now() ELSE ended_at END,
+                cancel_requested = true
+             WHERE link_id = $1 AND status IN ('queued', 'running')",
+            &[&id],
+        )
+        .await
+        .map_err(internal_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// Runs
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunView {
+    id: String,
+    link_id: String,
+    machine: String,
+    machine_label: String,
+    linker: String,
+    linker_label: String,
+    project_id: String,
+    commit: String,
+    job: String,
+    mac: String,
+    status: String,
+    exit_code: Option<i32>,
+    cancel_requested: bool,
+    created_at: f64,
+    started_at: Option<f64>,
+    ended_at: Option<f64>,
+    /// The link it was sent under, as it is now: its access, and when it ends. None once it's gone.
+    link_access: Option<String>,
+    link_expires_at: Option<f64>,
+}
+
+const RUN_COLUMNS: &str = "r.id, r.link_id, r.machine_install,
+    COALESCE((SELECT m.label FROM test_machines m WHERE m.install_hash = r.machine_install),
+             (SELECT d.name FROM devices d WHERE d.install_hash = r.machine_install LIMIT 1), ''),
+    r.linker_install,
+    COALESCE((SELECT d.name FROM devices d WHERE d.install_hash = r.linker_install LIMIT 1), ''),
+    r.project_id, r.commit_sha, r.job, r.mac, r.status, r.exit_code, r.cancel_requested,
+    EXTRACT(EPOCH FROM r.created_at)::float8, EXTRACT(EPOCH FROM r.started_at)::float8, EXTRACT(EPOCH FROM r.ended_at)::float8,
+    (SELECT l.access FROM machine_links l WHERE l.id = r.link_id),
+    (SELECT EXTRACT(EPOCH FROM l.expires_at)::float8 FROM machine_links l WHERE l.id = r.link_id)";
+
+fn run_view(row: &Row) -> RunView {
+    RunView {
+        id: row.get(0),
+        link_id: row.get(1),
+        machine: row.get(2),
+        machine_label: row.get(3),
+        linker: row.get(4),
+        linker_label: row.get(5),
+        project_id: row.get(6),
+        commit: row.get(7),
+        job: row.get(8),
+        mac: row.get(9),
+        status: row.get(10),
+        exit_code: row.get(11),
+        cancel_requested: row.get(12),
+        created_at: row.get(13),
+        started_at: row.get(14),
+        ended_at: row.get(15),
+        link_access: row.get(16),
+        link_expires_at: row.get(17),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnqueueBody {
+    link_id: String,
+    project_id: String,
+    commit: String,
+    /// Opaque here: the PC linking writes it, and the target checks its MAC before running it.
+    job: String,
+    mac: String,
+}
+
+/// Sends a project's tests to a PC this one is linked to.
+pub async fn enqueue(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<EnqueueBody>,
+) -> Result<Json<Created>, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    let commit_ok = (7..=64).contains(&body.commit.len())
+        && body.commit.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !commit_ok
+        || !is_hex(&body.mac, 64)
+        || body.job.len() > MAX_JOB_BYTES
+        || body.project_id.is_empty()
+        || body.project_id.len() > 128
+        || [&body.job, &body.project_id]
+            .iter()
+            .any(|text| text.contains('\0'))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Kept a month, which is plenty to look back on.
+    state
+        .db
+        .execute(
+            "DELETE FROM test_runs WHERE ended_at < now() - interval '30 days'",
+            &[],
+        )
+        .await
+        .map_err(internal_error)?;
+
+    let id = random_hex::<16>();
+    let inserted = state
+        .db
+        .execute(
+            "INSERT INTO test_runs (id, link_id, machine_install, linker_install, project_id, commit_sha, job, mac, status)
+             SELECT $1, l.id, l.machine_install, l.linker_install, $3, $4, $5, $6, 'queued'
+             FROM machine_links l
+             WHERE l.id = $2 AND l.linker_install = $7 AND l.expires_at > now()
+                AND (SELECT count(*) FROM test_runs q WHERE q.link_id = l.id AND q.status = 'queued') < $8",
+            &[
+                &id,
+                &body.link_id,
+                &body.project_id,
+                &body.commit.to_ascii_lowercase(),
+                &body.job,
+                &body.mac,
+                &me,
+                &MAX_QUEUED_PER_LINK,
+            ],
+        )
+        .await
+        .map_err(internal_error)?;
+    if inserted == 0 {
+        // Gone, expired, not this PC's, or too many waiting.
+        return Err(StatusCode::CONFLICT);
+    }
+    Ok(Json(Created { id }))
+}
+
+#[derive(Deserialize)]
+pub struct RunsQuery {
+    project: Option<String>,
+}
+
+/// The latest runs this PC sent or ran.
+pub async fn list_runs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<RunsQuery>,
+) -> Result<Json<Vec<RunView>>, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    settle_lost_runs(&state.db).await?;
+    let rows = state
+        .db
+        .query(
+            &format!(
+                "SELECT {RUN_COLUMNS} FROM test_runs r
+                 WHERE (r.linker_install = $1 OR r.machine_install = $1) AND ($2::text IS NULL OR r.project_id = $2)
+                 ORDER BY r.created_at DESC LIMIT 30"
+            ),
+            &[&me, &query.project],
+        )
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(rows.iter().map(run_view).collect()))
+}
+
+#[derive(Serialize)]
+pub struct LogLine {
+    seq: i32,
+    text: String,
+}
+
+#[derive(Serialize)]
+pub struct RunWithLog {
+    #[serde(flatten)]
+    run: RunView,
+    log: Vec<LogLine>,
+}
+
+#[derive(Deserialize)]
+pub struct ReadQuery {
+    #[serde(default)]
+    after: Option<i32>,
+}
+
+/// A run and its log after the part already read, for either PC.
+pub async fn read_run(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<ReadQuery>,
+) -> Result<Json<RunWithLog>, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    settle_lost_runs(&state.db).await?;
+    let row = state
+        .db
+        .query_opt(
+            &format!(
+                "SELECT {RUN_COLUMNS} FROM test_runs r
+                 WHERE r.id = $1 AND (r.linker_install = $2 OR r.machine_install = $2)"
+            ),
+            &[&id, &me],
+        )
+        .await
+        .map_err(internal_error)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let log = state
+        .db
+        .query(
+            "SELECT seq, text FROM test_run_logs WHERE run_id = $1 AND seq > $2 ORDER BY seq LIMIT $3",
+            &[&id, &query.after.unwrap_or(-1), &MAX_LOG_ROWS_PER_READ],
+        )
+        .await
+        .map_err(internal_error)?
+        .iter()
+        .map(|row| LogLine {
+            seq: row.get(0),
+            text: row.get(1),
+        })
+        .collect();
+    Ok(Json(RunWithLog {
+        run: run_view(&row),
+        log,
+    }))
+}
+
+/// Either PC can cancel. One waiting is cancelled at once; one running is told to stop.
+pub async fn cancel_run(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    let changed = state
+        .db
+        .execute(
+            "UPDATE test_runs SET
+                status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
+                ended_at = CASE WHEN status = 'queued' THEN now() ELSE ended_at END,
+                cancel_requested = true
+             WHERE id = $1 AND (linker_install = $2 OR machine_install = $2) AND status IN ('queued', 'running')",
+            &[&id, &me],
+        )
+        .await
+        .map_err(internal_error)?;
+    if changed == 0 {
+        return Err(StatusCode::CONFLICT);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The target takes the oldest run waiting for it, one at a time, under a lease it renews.
+pub async fn claim_next(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<axum::response::Response, StatusCode> {
+    use axum::response::IntoResponse;
+    let me = caller(&state, &headers).await?;
+    settle_lost_runs(&state.db).await?;
+    let claimed = state
+        .db
+        .query_opt(
+            "UPDATE test_runs SET status = 'running', started_at = now(), lease_until = now() + interval '2 minutes'
+             WHERE id = (
+                SELECT q.id FROM test_runs q JOIN machine_links l ON l.id = q.link_id
+                WHERE q.machine_install = $1 AND q.status = 'queued' AND l.expires_at > now()
+                    AND NOT EXISTS (SELECT 1 FROM test_runs b WHERE b.machine_install = $1 AND b.status = 'running')
+                ORDER BY q.created_at LIMIT 1
+                FOR UPDATE OF q SKIP LOCKED
+             )
+             RETURNING id",
+            &[&me],
+        )
+        .await
+        .map_err(internal_error)?;
+    let Some(claimed) = claimed else {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    };
+    let id: String = claimed.get(0);
+    let row = state
+        .db
+        .query_one(
+            &format!("SELECT {RUN_COLUMNS} FROM test_runs r WHERE r.id = $1"),
+            &[&id],
+        )
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(run_view(&row)).into_response())
+}
+
+#[derive(Serialize)]
+pub struct KeepGoing {
+    /// Someone cancelled it, or its link ended, so the target should stop it.
+    cancel: bool,
+    /// The log is full, so the rest isn't kept.
+    truncated: bool,
+}
+
+// A run of this PC's that it's still running, and whether it should stop.
+async fn running_run(db: &Client, id: &str, me: &str) -> Result<(bool, i64), StatusCode> {
+    let row = db
+        .query_opt(
+            "SELECT r.cancel_requested OR NOT EXISTS (SELECT 1 FROM machine_links l WHERE l.id = r.link_id AND l.expires_at > now()),
+                r.log_bytes
+             FROM test_runs r WHERE r.id = $1 AND r.machine_install = $2 AND r.status = 'running'",
+            &[&id, &me],
+        )
+        .await
+        .map_err(internal_error)?
+        // Ended, or lost because its lease ran out. Either way, it's not this PC's to go on with.
+        .ok_or(StatusCode::GONE)?;
+    Ok((row.get(0), row.get(1)))
+}
+
+pub async fn heartbeat(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<KeepGoing>, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    settle_lost_runs(&state.db).await?;
+    let (cancel, log_bytes) = running_run(&state.db, &id, &me).await?;
+    state
+        .db
+        .execute(
+            "UPDATE test_runs SET lease_until = now() + interval '2 minutes' WHERE id = $1 AND status = 'running'",
+            &[&id],
+        )
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(KeepGoing {
+        cancel,
+        truncated: log_bytes >= MAX_LOG_BYTES,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct LogBody {
+    seq: i32,
+    text: String,
+}
+
+/// Adds to a run's log. Sending a part again is harmless, as each is numbered.
+pub async fn append_log(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<LogBody>,
+) -> Result<Json<KeepGoing>, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    if body.seq < 0 || body.text.len() > MAX_LOG_CHUNK_BYTES || body.text.contains('\0') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let (cancel, log_bytes) = running_run(&state.db, &id, &me).await?;
+    let size = body.text.len() as i64;
+    if log_bytes + size > MAX_LOG_BYTES {
+        return Ok(Json(KeepGoing {
+            cancel,
+            truncated: true,
+        }));
+    }
+    let added = state
+        .db
+        .execute(
+            "INSERT INTO test_run_logs (run_id, seq, text) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+            &[&id, &body.seq, &body.text],
+        )
+        .await
+        .map_err(internal_error)?;
+    if added > 0 {
+        state
+            .db
+            .execute(
+                "UPDATE test_runs SET log_bytes = log_bytes + $2, lease_until = now() + interval '2 minutes'
+                 WHERE id = $1 AND status = 'running'",
+                &[&id, &size],
+            )
+            .await
+            .map_err(internal_error)?;
+    }
+    Ok(Json(KeepGoing {
+        cancel,
+        truncated: false,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndBody {
+    status: String,
+    #[serde(default)]
+    exit_code: Option<i32>,
+}
+
+/// The target says how it went.
+pub async fn end_run(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<EndBody>,
+) -> Result<StatusCode, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    if !RUN_ENDINGS.contains(&body.status.as_str()) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let ended = state
+        .db
+        .execute(
+            "UPDATE test_runs SET status = $3, exit_code = $4, ended_at = now(), lease_until = NULL
+             WHERE id = $1 AND machine_install = $2 AND status = 'running'",
+            &[&id, &me, &body.status, &body.exit_code],
+        )
+        .await
+        .map_err(internal_error)?;
+    if ended == 0 {
+        return Err(StatusCode::GONE);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
