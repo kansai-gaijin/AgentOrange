@@ -146,8 +146,12 @@ public partial class SettingsModal
         ];
     }
 
+    // Within what the server takes: 32 tags, each 40 characters at most.
     private static string[] SplitTags(string typed) =>
-        [.. typed.Split([',', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase)];
+        [.. typed.Split([',', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(tag => tag.Length <= 40 && !tag.Any(char.IsControl))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(32)];
 
     // The parts that change as the server answers, drawn again each time. As the PC linking: T3's
     // Linked environments.
