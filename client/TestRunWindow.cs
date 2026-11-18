@@ -129,7 +129,6 @@ public sealed class TestRunWindow : Window
     {
         var verdict = TestRunner.VerdictLabel(run.Status);
         _status.Text = run.Status == "running" && run.CancelRequested ? "Cancelling…"
-            : run.Status == "running" && run.WaitingApproval ? $"Waiting for someone on {run.MachineLabel} to allow these commands"
             : run.ExitCode is { } code && run.Finished ? $"{verdict} (exit code {code})"
             : verdict;
         _status.Foreground = run.Status switch
@@ -139,18 +138,16 @@ public sealed class TestRunWindow : Window
             _ => (Brush)FindResource("TextStrong"),
         };
 
-        var commands = "";
+        // The commands are the repo's, which the log shows as the machine read them.
+        var repo = "";
         try
         {
-            if (JsonSerializer.Deserialize<TestJob>(run.Job, TestJob.Json) is { } job)
-            {
-                commands = (job.Prepare.Length > 0 ? $"\nPrepare: {job.Prepare}" : "") + $"\nTest: {job.Test}";
-            }
+            if (JsonSerializer.Deserialize<TestJob>(run.Job, TestJob.Json) is { } job) repo = $"\n{job.RepoUrl}";
         }
         catch (JsonException)
         {
         }
-        _details.Text = $"On {run.MachineLabel}, at {(run.Commit.Length > 12 ? run.Commit[..12] : run.Commit)}.{commands}";
+        _details.Text = $"On {run.MachineLabel}, at {(run.Commit.Length > 12 ? run.Commit[..12] : run.Commit)}, running what {TestsFile.RelativePath} says there.{repo}";
         _cancel.Visibility = run.Finished ? Visibility.Collapsed : Visibility.Visible;
     }
 }

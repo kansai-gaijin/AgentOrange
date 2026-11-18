@@ -110,7 +110,7 @@ public partial class SettingsModal
             Row("Environment variables", "Set for every run here, one KEY=VALUE a line.", environment),
             Row("Time limit", "Minutes a run may take here, over what the project asks. Empty uses the project's.", timeout),
         ];
-        var thisPc = Card([Row("Let other PCs run tests here", "Your other PCs linked to this one can send a project's tests to run here, in the background, as you. Before a project's commands first run here, and whenever they change, you're asked to allow them. Each run is listed below with exactly what it ran.", accepting), .. targetRows]);
+        var thisPc = Card([Row("Let other PCs run tests here", "Your other PCs linked to this one can send a commit of a project's repo to test here, in the background, as you, with nobody needing to be here. What runs is what the repo's .agent-orange/tests.json says at that commit, so anyone who can push to the repo decides it. Each run is listed below with exactly what it ran.", accepting), .. targetRows]);
         void ShowTargetRows()
         {
             var rows = (StackPanel)thisPc.Child;
@@ -231,18 +231,7 @@ public partial class SettingsModal
         {
             parts.Add(Section("Runs here"));
             var rows = new List<FrameworkElement>();
-            if (TestMachines.Approval is { } waiting)
-            {
-                var request = waiting.Request;
-                var allow = PrimaryButton("Allow", () => TestMachines.AnswerApproval(request.RunId, true));
-                var refuse = ActionButton("Refuse");
-                refuse.Click += (_, _) => TestMachines.AnswerApproval(request.RunId, false);
-                rows.Add(Row(
-                    $"{request.From} wants to run these commands here",
-                    $"For {request.Project}, in a clone of {request.RepoUrl} at {ShortCommit(request.Commit)}, in {request.Shell}. They'd run as you.{(request.Prepare.Length > 0 ? $"\nPrepare: {request.Prepare}" : "")}\nTest: {request.Test}",
-                    refuse, allow));
-            }
-            else if (TestMachines.Running is { } running)
+            if (TestMachines.Running is { } running)
             {
                 var stop = ActionButton("Cancel");
                 stop.Click += (_, _) => running.Cancel();
@@ -420,7 +409,7 @@ public partial class SettingsModal
         if (link.Status == "expired" || left <= TimeSpan.Zero) return (DestructiveDot, "Expired. Link it again with a new pairing code.");
         if (link.Status == "unreachable") return ((Brush)Application.Current.FindResource("TextMuted"), "Not answering right now.");
         var days = (int)Math.Ceiling(left.TotalDays);
-        if (days <= 5) return (WarningDot, $"Expires in {days} {(days == 1 ? "day" : "days")}. Link it again to renew.");
+        if (days <= 5) return (WarningDot, $"Expires in {days} {(days == 1 ? "day" : "days")}. It renews by itself while both PCs are online, or choose Renew.");
         return (SuccessDot, link.Status == "busy" ? "Running tests" : "Reachable");
     }
 
@@ -430,7 +419,22 @@ public partial class SettingsModal
         var forget = new Button { Style = (Style)FindResource("DangerButton"), Content = "Forget" };
         forget.Click += (_, _) => ConfirmForget(link);
         var tags = link.MachineTags.Count > 0 ? $"\n{string.Join(", ", link.MachineTags)}" : "";
-        return DotRow(dot, status, link.MachineLabel, $"{MachineLinks.AccessLabel(link.Access)} · {status}{tags}", forget);
+        var expiry = DateTimeOffset.FromUnixTimeSeconds((long)link.ExpiresAt) > DateTimeOffset.UtcNow ? $"\n{LinkExpiry(link)}" : "";
+
+        // A link still good is extended from here; an expired one needs a new code from the target.
+        var renew = ActionButton("Renew");
+        renew.IsEnabled = expiry.Length > 0;
+        renew.Click += async (_, _) =>
+        {
+            renew.IsEnabled = false;
+            renew.Content = "Renewing…";
+            var failed = await TestMachines.RenewAsync(link, CancellationToken.None);
+            renew.Content = "Renew";
+            renew.IsEnabled = true;
+            _linkedNote = failed is null ? $"Renewed {link.MachineLabel} for 30 days" : $"Could not renew the link. {failed}";
+            _refreshTestMachines?.Invoke();
+        };
+        return DotRow(dot, status, link.MachineLabel, $"{MachineLinks.AccessLabel(link.Access)} · {status}{expiry}{tags}", renew, forget);
     }
 
     // T3's confirm: "Forget <label>?", Cancel and Confirm. Here it ends the link on both PCs, as the server keeps the only copy.

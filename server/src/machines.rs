@@ -6,12 +6,12 @@
 //! ephemeral P-256 public keys through here, each authenticated with the code, and derive the
 //! link's key from their ECDH secret, so a code cracked later from what's stored here gives
 //! nothing. Jobs carry a MAC made with that key, over a run id and time the target won't take
-//! twice or late. So this server can relay, keep, delay or drop jobs, but can't write, change or
-//! replay one. It can change what a job holds before it's signed, though: the commands and repo
-//! come from synced data, which this server or any paired PC can rewrite. So the target asks a
-//! person before running commands it hasn't been allowed to run for that link and project, and
-//! the PC linking asks before signing ones it hasn't signed for that machine. Verdicts and logs
-//! come back unauthenticated. What's run is plain commands, and nothing here knows what a
+//! twice or late, and say only which commit of which repo to test: the repo URL is the linking
+//! PC's own git remote, and the commands are in the repo, in .agent-orange/tests.json at that
+//! commit. So nothing this server or another paired PC can change decides what runs; whoever can
+//! push to the repo can, which running its tests already trusts. This server can relay, keep,
+//! delay or drop jobs. Verdicts and logs come back unauthenticated. Links are renewed the same
+//! way: a request and an answer each MACed with the link's key. Nothing here knows what a
 //! project, a tag or a command means.
 //!
 //! Everything is keyed by the PC (its install), not its login, as a PC has a login at each of
@@ -147,8 +147,14 @@ pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
          ALTER TABLE machine_link_requests ADD COLUMN IF NOT EXISTS machine_key TEXT;
          ALTER TABLE machine_link_requests ADD COLUMN IF NOT EXISTS machine_expires_at DOUBLE PRECISION;
          ALTER TABLE machine_link_requests ADD COLUMN IF NOT EXISTS confirm TEXT;
-         -- Claimed, but waiting for a person on the target to allow its commands.
-         ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS waiting_approval BOOLEAN NOT NULL DEFAULT false;",
+         -- The PC linking asks to renew a link, MACed with its key, and the target answers.
+         ALTER TABLE machine_links ADD COLUMN IF NOT EXISTS renew_nonce TEXT;
+         ALTER TABLE machine_links ADD COLUMN IF NOT EXISTS renew_sent_at BIGINT;
+         ALTER TABLE machine_links ADD COLUMN IF NOT EXISTS renew_expires_at BIGINT;
+         ALTER TABLE machine_links ADD COLUMN IF NOT EXISTS renew_mac TEXT;
+         ALTER TABLE machine_links ADD COLUMN IF NOT EXISTS renewed_nonce TEXT;
+         ALTER TABLE machine_links ADD COLUMN IF NOT EXISTS renewed_expires_at BIGINT;
+         ALTER TABLE machine_links ADD COLUMN IF NOT EXISTS renewed_mac TEXT;",
     )
     .await
 }
@@ -230,6 +236,27 @@ pub struct LinkView {
     expires_at: f64,
     status: &'static str,
     last_seen_at: f64,
+    /// A renewal the PC linking asked for, which the target checks and answers.
+    renewal: Option<Renewal>,
+    /// The target's answer to the last renewal, which the PC linking checks.
+    renewed: Option<Renewed>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Renewal {
+    nonce: String,
+    sent_at: i64,
+    expires_at: i64,
+    mac: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Renewed {
+    nonce: String,
+    expires_at: i64,
+    mac: String,
 }
 
 #[derive(Serialize)]
@@ -299,7 +326,9 @@ pub async fn list(
                     COALESCE(m.label, (SELECT d.name FROM devices d WHERE d.install_hash = l.machine_install LIMIT 1), ''),
                     COALESCE((SELECT d.name FROM devices d WHERE d.install_hash = l.linker_install LIMIT 1), ''),
                     COALESCE(m.accepting, false), COALESCE(m.tags, '{{}}'),
-                    {}, {}, EXTRACT(EPOCH FROM now())::float8
+                    {}, {}, EXTRACT(EPOCH FROM now())::float8,
+                    l.renew_nonce, l.renew_sent_at, l.renew_expires_at, l.renew_mac,
+                    l.renewed_nonce, l.renewed_expires_at, l.renewed_mac
                  FROM machine_links l LEFT JOIN test_machines m ON m.install_hash = l.machine_install
                  WHERE l.machine_install = $1 OR l.linker_install = $1
                  ORDER BY l.linked_at",
@@ -324,6 +353,23 @@ pub async fn list(
             linker_label: row.get(8),
             machine_tags: row.get(10),
             last_seen_at: row.get(11),
+            renewal: match (row.get(14), row.get(15), row.get(16), row.get(17)) {
+                (Some(nonce), Some(sent_at), Some(expires_at), Some(mac)) => Some(Renewal {
+                    nonce,
+                    sent_at,
+                    expires_at,
+                    mac,
+                }),
+                _ => None,
+            },
+            renewed: match (row.get(18), row.get(19), row.get(20)) {
+                (Some(nonce), Some(expires_at), Some(mac)) => Some(Renewed {
+                    nonce,
+                    expires_at,
+                    mac,
+                }),
+                _ => None,
+            },
             status: status(
                 row.get(6),
                 row.get(9),
@@ -672,6 +718,80 @@ pub async fn reject_link_request(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenewBody {
+    nonce: String,
+    sent_at: i64,
+    expires_at: i64,
+    /// Made with the link's key, which only the two PCs have. Opaque here.
+    mac: String,
+}
+
+/// The PC linking asks to renew a link that's still good. Only the target can check the request
+/// and answer it, so this only keeps it for the target to see in its list.
+pub async fn request_renewal(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<RenewBody>,
+) -> Result<StatusCode, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    if !is_hex(&body.nonce, 32) || !is_hex(&body.mac, 64) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let asked = state
+        .db
+        .execute(
+            "UPDATE machine_links SET renew_nonce = $3, renew_sent_at = $4, renew_expires_at = $5, renew_mac = $6
+             WHERE id = $1 AND linker_install = $2 AND expires_at > now()",
+            &[&id, &me, &body.nonce, &body.sent_at, &body.expires_at, &body.mac],
+        )
+        .await
+        .map_err(internal_error)?;
+    if asked == 0 {
+        // Gone, expired, or not this PC's: only a new code made on the target links them again.
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenewedBody {
+    nonce: String,
+    expires_at: i64,
+    mac: String,
+}
+
+/// The target answers the renewal it was asked for, with the expiry it set itself. This server's
+/// own expiry for the link moves on as far, and never further than 30 days from now.
+pub async fn answer_renewal(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<RenewedBody>,
+) -> Result<StatusCode, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    if !is_hex(&body.nonce, 32) || !is_hex(&body.mac, 64) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let answered = state
+        .db
+        .execute(
+            "UPDATE machine_links SET renewed_nonce = $3, renewed_expires_at = $4, renewed_mac = $5,
+                expires_at = LEAST(to_timestamp($4::float8), now() + interval '30 days')
+             WHERE id = $1 AND machine_install = $2 AND renew_nonce = $3 AND expires_at > now()",
+            &[&id, &me, &body.nonce, &body.expires_at, &body.mac],
+        )
+        .await
+        .map_err(internal_error)?;
+    if answered == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Either PC can end a link, and that's final. Its queued runs are cancelled, and a running one
 /// is told to stop.
 pub async fn remove_link(
@@ -724,8 +844,6 @@ pub struct RunView {
     status: String,
     exit_code: Option<i32>,
     cancel_requested: bool,
-    /// Claimed, and waiting for a person on the target to allow its commands.
-    waiting_approval: bool,
     created_at: f64,
     started_at: Option<f64>,
     ended_at: Option<f64>,
@@ -742,8 +860,7 @@ const RUN_COLUMNS: &str = "r.id, r.link_id, r.machine_install,
     r.project_id, r.commit_sha, r.job, r.mac, r.status, r.exit_code, r.cancel_requested,
     EXTRACT(EPOCH FROM r.created_at)::float8, EXTRACT(EPOCH FROM r.started_at)::float8, EXTRACT(EPOCH FROM r.ended_at)::float8,
     (SELECT l.access FROM machine_links l WHERE l.id = r.link_id),
-    (SELECT EXTRACT(EPOCH FROM l.expires_at)::float8 FROM machine_links l WHERE l.id = r.link_id),
-    r.waiting_approval";
+    (SELECT EXTRACT(EPOCH FROM l.expires_at)::float8 FROM machine_links l WHERE l.id = r.link_id)";
 
 fn run_view(row: &Row) -> RunView {
     RunView {
@@ -765,7 +882,6 @@ fn run_view(row: &Row) -> RunView {
         ended_at: row.get(15),
         link_access: row.get(16),
         link_expires_at: row.get(17),
-        waiting_approval: row.get(18),
     }
 }
 
@@ -1020,18 +1136,10 @@ async fn running_run(db: &Client, id: &str, me: &str) -> Result<(bool, i64), Sta
     Ok((row.get(0), row.get(1)))
 }
 
-#[derive(Deserialize)]
-pub struct HeartbeatBody {
-    /// Waiting for a person on the target to allow its commands.
-    #[serde(default)]
-    waiting: bool,
-}
-
 pub async fn heartbeat(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<HeartbeatBody>,
 ) -> Result<Json<KeepGoing>, StatusCode> {
     let me = caller(&state, &headers).await?;
     settle_lost_runs(&state.db).await?;
@@ -1039,9 +1147,8 @@ pub async fn heartbeat(
     state
         .db
         .execute(
-            "UPDATE test_runs SET lease_until = now() + interval '2 minutes', waiting_approval = $2
-             WHERE id = $1 AND status = 'running'",
-            &[&id, &body.waiting],
+            "UPDATE test_runs SET lease_until = now() + interval '2 minutes' WHERE id = $1 AND status = 'running'",
+            &[&id],
         )
         .await
         .map_err(internal_error)?;
@@ -1123,7 +1230,7 @@ pub async fn end_run(
     let ended = state
         .db
         .execute(
-            "UPDATE test_runs SET status = $3, exit_code = $4, ended_at = now(), lease_until = NULL, waiting_approval = false
+            "UPDATE test_runs SET status = $3, exit_code = $4, ended_at = now(), lease_until = NULL
              WHERE id = $1 AND machine_install = $2 AND status = 'running'",
             &[&id, &me, &body.status, &body.exit_code],
         )

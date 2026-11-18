@@ -192,7 +192,6 @@ public partial class MainWindow : Window
         // Only the window that syncs takes test runs, so two windows never run the same one.
         _testMachines = new TestMachines(_database, _server, _devices, () => _sync.HasTurn && _requiredVersion is null);
         Settings.TestMachines = _testMachines;
-        WatchTestApprovals();
         Settings.Start();
 
         // Dev builds aren't installed, so there's nothing for them to update.

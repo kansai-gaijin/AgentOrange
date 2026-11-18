@@ -57,53 +57,11 @@ public sealed class TestMachines
 
     public TestRunner? Running { get; private set; }
 
-    /// <summary>A run waiting for a person on this PC to allow its commands, and where the answer goes.</summary>
-    public (TestApproval Request, TaskCompletionSource<bool> Answer)? Approval { get; private set; }
-
-    /// <summary>A run's commands need a person here to allow them, so something should show them.</summary>
-    public event Action<TestApproval>? ApprovalNeeded;
-
-    /// <summary>The run that was waiting got its answer, or stopped waiting.</summary>
-    public event Action? ApprovalEnded;
-
-    /// <summary>The person's answer to the commands waiting.</summary>
-    public void AnswerApproval(string runId, bool allow)
-    {
-        if (Approval is { } waiting && waiting.Request.RunId == runId) waiting.Answer.TrySetResult(allow);
-    }
-
     // Runs keep their awaits on the window's thread, but the UI only ever hears from it there.
     private void OnWindow(Action action)
     {
         if (_dispatcher.CheckAccess()) action();
         else _dispatcher.Invoke(action);
-    }
-
-    private async Task<bool> AskToAllowAsync(TestApproval request, CancellationToken cancel)
-    {
-        var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        OnWindow(() =>
-        {
-            Approval = (request, answer);
-            Changed?.Invoke();
-            ApprovalNeeded?.Invoke(request);
-        });
-        try
-        {
-            using (cancel.Register(() => answer.TrySetCanceled()))
-            {
-                return await answer.Task;
-            }
-        }
-        finally
-        {
-            OnWindow(() =>
-            {
-                Approval = null;
-                ApprovalEnded?.Invoke();
-                Changed?.Invoke();
-            });
-        }
     }
 
     // This PC's own settings
@@ -261,6 +219,20 @@ public sealed class TestMachines
                 if (MachineLinks.ReadKey(_database, known) is { } key && key.SavedAt >= askedAt - 1) continue;
                 MachineLinks.ForgetKey(_database, known);
             }
+
+            // Renewals, unattended, in the window that does background work: as the target, each one
+            // asked for is answered; as the PC linking, an answer is checked, and a link with under a
+            // week left is renewed while the target is online.
+            if (_hasSyncTurn())
+            {
+                foreach (var link in latest.Links.Where(link => link.Machine == latest.Me)) await AnswerRenewalAsync(link);
+                foreach (var link in latest.Links.Where(link => link.Linker == latest.Me))
+                {
+                    TakeRenewal(link);
+                    var left = DateTimeOffset.FromUnixTimeSeconds((long)link.ExpiresAt) - DateTimeOffset.UtcNow;
+                    if (link.Status is "reachable" or "busy" && left > TimeSpan.Zero && left < MachineLinks.RenewWithin && !RenewalPending(link)) await AskRenewalAsync(link);
+                }
+            }
         }
         Changed?.Invoke();
     }
@@ -349,7 +321,7 @@ public sealed class TestMachines
             return;
         }
 
-        var runner = new TestRunner(_database, _devices, settings, run, AskToAllowAsync);
+        var runner = new TestRunner(_database, _devices, settings, run);
         Running = runner;
         Changed?.Invoke();
         AppLog.Write($"Started test run {run.Id} for {run.LinkerLabel}.");
@@ -468,33 +440,142 @@ public sealed class TestMachines
     }
 
     /// <summary>
-    /// Sends a project's tests to a machine this PC is linked to, at a commit origin has, signed with
-    /// the link's key, under a run id and time made here. The repo and commands come from synced
-    /// data, so when they differ from what this PC last signed for that machine, a person here sees
-    /// them first (confirm), and nothing is sent without a yes. Returns the run's id, or what went wrong.
+    /// What a commit in a project's folder would send: its repo, from the folder's own origin, and
+    /// the test setup it has committed. A problem, in words a person can act on, when it can't be
+    /// sent: no origin, not pushed, or no valid .agent-orange/tests.json at that commit.
     /// </summary>
-    public async Task<(string? RunId, string? Problem)> RunTestsAsync(MachineLinkInfo link, Project project, TestSetup setup, string commit, Func<TestApproval, Task<bool>> confirm)
+    public static async Task<(string? RepoUrl, string? Commit, TestSetup? Setup, string? Problem)> WhatToSendAsync(string folder)
+    {
+        var (commit, _, pushed, problem) = await GitTools.PushedHeadAsync(folder);
+        if (problem is not null) return (null, null, null, problem);
+        var (origin, originProblem) = await GitTools.OriginForTestsAsync(folder);
+        if (origin is null) return (null, null, null, originProblem);
+        if (!pushed) return (null, null, null, $"Push the commit checked out here first. A test machine fetches it from origin, and origin doesn't have {commit[..Math.Min(12, commit.Length)]} yet.");
+        if (await GitTools.FileAtCommitAsync(folder, commit, TestsFile.RelativePath) is not { } text)
+        {
+            return (null, null, null, $"The commit checked out here has no {TestsFile.RelativePath}, which says how the tests run. Set it up in Project settings › Tests, then commit and push it.");
+        }
+        var (setup, invalid) = TestsFile.Parse(text);
+        return setup is null ? (null, null, null, $"{invalid} Fix it, then commit and push it.") : (origin, commit, setup, null);
+    }
+
+    /// <summary>
+    /// Sends a project's tests to a machine this PC is linked to: which commit of which repo, signed
+    /// with the link's key under a run id and time made here. Never the commands, which the target
+    /// reads from the repo at that commit. Returns the run's id, or what went wrong.
+    /// </summary>
+    public async Task<(string? RunId, string? Problem)> RunTestsAsync(MachineLinkInfo link, Project project, string folder)
     {
         if (MachineLinks.ReadKey(_database, link.Id) is not { ThisPcIsMachine: false } key) return (null, $"This PC has no key for its link to {link.MachineLabel}. Link it again.");
         if (link.Status == "expired" || key.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return (null, $"The link to {link.MachineLabel} expired. Link it again with a new pairing code from {link.MachineLabel}.");
-        if (!setup.CanRun) return (null, "This project has no test command yet. Set one in Project settings › Tests.");
-
-        var (prepare, test) = (setup.Prepare.Trim(), setup.Test.Trim());
-        var commands = MachineLinks.CommandsHash(project.RepoUrl, prepare, test);
-        if (!MachineLinks.SignedBefore(_database, link.Machine, project.Id, commands))
-        {
-            if (!await confirm(new TestApproval("", link.MachineLabel, project.Name, project.RepoUrl, commit, prepare, test, "", ""))) return (null, null);
-            MachineLinks.RememberSigned(_database, link.Machine, project.Id, commands);
-        }
+        var (repoUrl, commit, setup, problem) = await WhatToSendAsync(folder);
+        if (problem is not null || repoUrl is null || commit is null || setup is null) return (null, problem);
+        var missing = setup.Tags.Where(tag => !HasTags(link.MachineTags, [tag])).ToList();
+        if (missing.Count > 0) return (null, $"{link.MachineLabel} doesn't offer {string.Join(", ", missing)}, which {TestsFile.RelativePath} asks for.");
 
         var runId = MachineLinks.NewId();
-        var job = JsonSerializer.Serialize(new TestJob(TestJob.TestsKind, runId, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), project.Id, project.Name, project.RepoUrl, commit.ToLowerInvariant(), prepare, test, setup.CouldntRunCode, setup.Tags ?? [], setup.TimeoutMinutes), TestJob.Json);
+        var job = JsonSerializer.Serialize(new TestJob(TestJob.TestsKind, runId, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), project.Id, project.Name, repoUrl, commit.ToLowerInvariant(), "tests", setup.Tags), TestJob.Json);
         var mac = MachineLinks.JobMac(key.Key, runId, link.Id, project.Id, commit, job);
         var sent = await _devices.EnqueueRunAsync(runId, link.Id, project.Id, commit.ToLowerInvariant(), job, mac);
         if (sent.Value is { } run) return (run.Id, null);
         return (null, sent.Status == HttpStatusCode.Conflict
             ? $"{link.MachineLabel} couldn't take it: the link may have ended, or ten runs are already waiting there."
             : DescribeProblem(sent.Status) ?? "The server couldn't take the run.");
+    }
+
+    // Renewing a link. Only a link that's still good can be renewed; an expired or revoked one needs
+    // a new code made on the target.
+
+    // The renewals this PC asked for and hasn't had an answer to, by link: the nonce and when.
+    private readonly Dictionary<string, (string Nonce, DateTimeOffset At)> _renewing = [];
+
+    private bool RenewalPending(MachineLinkInfo link) =>
+        _renewing.TryGetValue(link.Id, out var asked) && DateTimeOffset.UtcNow - asked.At < MachineLinks.RenewMaxAge;
+
+    /// <summary>As the PC linking: asks the target to renew. The answer comes with the list.</summary>
+    private async Task<string?> AskRenewalAsync(MachineLinkInfo link)
+    {
+        if (MachineLinks.ReadKey(_database, link.Id) is not { ThisPcIsMachine: false } key) return $"This PC has no key for its link to {link.MachineLabel}. Link it again.";
+        var nonce = MachineLinks.NewId();
+        var sentAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var wanted = (DateTimeOffset.UtcNow + MachineLinks.LinkLifetime).ToUnixTimeSeconds();
+        var asked = await _devices.RenewLinkAsync(link.Id, nonce, sentAt, wanted, MachineLinks.RenewMac(key.Key, link.Id, nonce, sentAt, wanted));
+        if (!asked.Worked)
+        {
+            return asked.Status == HttpStatusCode.NotFound
+                ? $"The link to {link.MachineLabel} has expired or was revoked. Link it again with a new pairing code from {link.MachineLabel}."
+                : DescribeProblem(asked.Status) ?? "The server couldn't take the renewal.";
+        }
+        _renewing[link.Id] = (nonce, DateTimeOffset.UtcNow);
+        AppLog.Write($"Asked {link.MachineLabel} to renew its link.");
+        return null;
+    }
+
+    /// <summary>As the PC linking: keeps the target's answer to this PC's renewal, once its MAC checks out.</summary>
+    private bool TakeRenewal(MachineLinkInfo link)
+    {
+        if (link.Renewed is not { } answer || !_renewing.TryGetValue(link.Id, out var asked) || answer.Nonce != asked.Nonce) return false;
+        if (MachineLinks.ReadKey(_database, link.Id) is not { ThisPcIsMachine: false } key) return false;
+        _renewing.Remove(link.Id);
+        var sensible = answer.ExpiresAt > DateTimeOffset.UtcNow.ToUnixTimeSeconds() && answer.ExpiresAt <= (DateTimeOffset.UtcNow + MachineLinks.LinkLifetime + TimeSpan.FromDays(1)).ToUnixTimeSeconds();
+        if (!sensible || !MachineLinks.MacMatches(MachineLinks.RenewedMac(key.Key, link.Id, answer.Nonce, answer.ExpiresAt), answer.Mac))
+        {
+            AppLog.Write($"An answer to renewing the link to {link.MachineLabel} didn't check out, so it was ignored.");
+            return false;
+        }
+        MachineLinks.SaveKey(_database, key with { ExpiresAt = answer.ExpiresAt });
+        AppLog.Write($"The link to {link.MachineLabel} was renewed.");
+        return true;
+    }
+
+    /// <summary>As the target: answers a renewal the PC linking asked for, once its MAC checks out, with this PC's own new expiry.</summary>
+    private async Task AnswerRenewalAsync(MachineLinkInfo link)
+    {
+        if (link.Renewal is not { } asked || link.Renewed?.Nonce == asked.Nonce) return;
+        if (MachineLinks.ReadKey(_database, link.Id) is not { ThisPcIsMachine: true } key) return;
+        var now = DateTimeOffset.UtcNow;
+        if (key.ExpiresAt <= now.ToUnixTimeSeconds()) return; // Expired here: only a new code links them again.
+        var age = now - DateTimeOffset.FromUnixTimeSeconds(asked.SentAt);
+        if (age > MachineLinks.RenewMaxAge || age < -MachineLinks.RenewMaxAge || !MachineLinks.IsId(asked.Nonce)) return;
+        if (!MachineLinks.MacMatches(MachineLinks.RenewMac(key.Key, link.Id, asked.Nonce, asked.SentAt, asked.ExpiresAt), asked.Mac))
+        {
+            AppLog.Write($"A request to renew the link from {link.LinkerLabel} didn't check out, so it was ignored.");
+            return;
+        }
+
+        // Never longer than this PC's own 30 days from now, whatever was asked.
+        var expiresAt = Math.Min(asked.ExpiresAt, (now + MachineLinks.LinkLifetime).ToUnixTimeSeconds());
+        var answered = await _devices.AnswerRenewalAsync(link.Id, asked.Nonce, expiresAt, MachineLinks.RenewedMac(key.Key, link.Id, asked.Nonce, expiresAt));
+        if (!answered.Worked) return;
+        MachineLinks.SaveKey(_database, key with { ExpiresAt = expiresAt });
+        AppLog.Write($"Renewed the link from {link.LinkerLabel}.");
+    }
+
+    /// <summary>The Renew button: asks, then waits up to two minutes for the target's answer. Null once renewed.</summary>
+    public async Task<string?> RenewAsync(MachineLinkInfo link, CancellationToken cancel)
+    {
+        if (await AskRenewalAsync(link) is { } problem) return problem;
+        var until = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);
+        while (DateTimeOffset.UtcNow < until)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(3), cancel);
+            }
+            catch (OperationCanceledException)
+            {
+                return "Cancelled.";
+            }
+            if (!_renewing.ContainsKey(link.Id)) return null; // The list's refresh took the answer.
+            var answer = await _devices.MachinesAsync();
+            if (answer.Value?.Links.FirstOrDefault(each => each.Id == link.Id) is not { } now) continue;
+            if (TakeRenewal(now))
+            {
+                await RefreshAsync();
+                return null;
+            }
+        }
+        return $"{link.MachineLabel} didn't answer. It renews the link when Agent Orange is running there and it's online.";
     }
 
     /// <summary>Whether a machine offers every tag a project needs. Tags are only words that match, whatever case.</summary>

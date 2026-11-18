@@ -100,6 +100,8 @@ async fn main() {
                 post(machines::reject_link_request),
             )
             .route("/v1/links/{id}", delete(machines::remove_link))
+            .route("/v1/links/{id}/renew", post(machines::request_renewal))
+            .route("/v1/links/{id}/renewed", post(machines::answer_renewal))
             .route("/v1/runs", get(machines::list_runs).post(machines::enqueue))
             .route("/v1/runs/{id}", get(machines::read_run))
             .route("/v1/runs/{id}/cancel", post(machines::cancel_run))

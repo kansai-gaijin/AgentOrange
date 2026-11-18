@@ -599,29 +599,39 @@ public partial class ProjectSettingsModal : UserControl
         return Card([.. rows]);
     }
 
-    // How its tests run on a test machine (#93): plain commands, whatever the project is made with.
-    // They sync, so any PC can send them; the machine shows exactly what it ran.
+    // How its tests run on a test machine (#93): the repo's own .agent-orange/tests.json, which is
+    // what a test machine reads at the commit it's sent. Edited here in this PC's folder, never
+    // committed from here, so a person commits and pushes it as any other change.
     private Border TestSetupCard(string projectId)
     {
-        var now = _database.GetTestSetup(projectId);
+        if (_database.GetProjectFolder(projectId) is not { } folder)
+        {
+            return Card(Row("Tests", $"Choose the project's folder on this PC first. Its tests are set up in its repo, in {TestsFile.RelativePath}."));
+        }
+
+        var (read, problem, exists) = TestsFile.Read(folder);
+        var current = read ?? new TestSetup("", "", null, [], TestsFile.DefaultTimeoutMinutes);
+        var about = $"Test machines run what this file says at the commit they're sent, so commit and push it after changing it here. This edits the file in this PC's folder: {TestsFile.PathIn(folder)}."
+            + (problem is not null ? $" {problem} Saving here replaces it." : exists ? "" : " It isn't there yet: filling in a test command makes it.");
+
         (string Name, string Hint, string Value, int Width, Func<TestSetup, string, (TestSetup?, string?)> Set)[] settings =
         [
-            ("Prepare command", "Optional. Gets it ready first, such as npm ci, cargo build or the project's own build script. If it fails, the tests couldn't run.", now.Prepare, 300,
+            ("Prepare command", "Optional. Gets it ready first, such as npm ci, cargo build or the project's own build script. If it fails, the tests couldn't run.", current.Prepare, 300,
                 (all, value) => (all with { Prepare = value }, null)),
-            ("Test command", "Runs the tests, in the project's folder on the test machine. Its exit code is the verdict: 0 passed, anything else failed.", now.Test, 300,
-                (all, value) => (all with { Test = value }, null)),
-            ("Couldn't run exit code", "Optional. An exit code of the test command that means the tests couldn't run, rather than that they failed.", now.CouldntRunCode?.ToString() ?? "", 80,
-                (all, value) => value.Length == 0 ? (all with { CouldntRunCode = null }, null)
-                    : int.TryParse(value, out var code) && code != 0 ? (all with { CouldntRunCode = code }, null)
+            ("Test command", "Runs the tests, in the repo's folder on the test machine. Its exit code is the verdict: 0 passed, anything else failed.", current.Test, 300,
+                (all, value) => value.Length > 0 ? (all with { Test = value }, null) : (null, $"{TestsFile.RelativePath} needs a test command.")),
+            ("Couldn't run exit code", "Optional. An exit code of the test command that means the tests couldn't run, rather than that they failed.", current.CouldNotRunExitCode?.ToString() ?? "", 80,
+                (all, value) => value.Length == 0 ? (all with { CouldNotRunExitCode = null }, null)
+                    : int.TryParse(value, out var code) && code != 0 ? (all with { CouldNotRunExitCode = code }, null)
                     : (null, "The couldn't run exit code is a whole number other than 0, or empty.")),
-            ("Tags needed", "Words a test machine has to offer, such as windows or gpu. Separate them with commas.", string.Join(", ", now.Tags ?? []), 300,
-                (all, value) => (all with { Tags = [.. value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase)] }, null)),
-            ("Time limit", "Minutes a run may take, from checking out to the last test. A test machine can set its own.", now.TimeoutMinutes.ToString(), 80,
+            ("Tags needed", "Words a test machine has to offer, such as windows or gpu. Separate them with commas.", string.Join(", ", current.Tags), 300,
+                (all, value) => (all with { Tags = [.. value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Where(tag => tag.Length <= 40).Distinct(StringComparer.OrdinalIgnoreCase)] }, null)),
+            ("Time limit", "Minutes a run may take, from checking out to the last test. A test machine can set its own.", current.TimeoutMinutes.ToString(), 80,
                 (all, value) => int.TryParse(value, out var minutes) && minutes is >= 1 and <= 24 * 60 ? (all with { TimeoutMinutes = minutes }, null)
                     : (null, "The time limit is in minutes, from 1 to 1440.")),
         ];
 
-        var rows = new List<FrameworkElement>();
+        var rows = new List<FrameworkElement> { Row(TestsFile.RelativePath, about) };
         foreach (var (name, hint, value, width, set) in settings)
         {
             var field = Field(value);
@@ -630,11 +640,13 @@ public partial class ProjectSettingsModal : UserControl
             System.Windows.Automation.AutomationProperties.SetName(field, name);
             SaveOnLeave(field, value, typed =>
             {
-                var (changed, problem) = set(_database.GetTestSetup(projectId), typed);
-                if (changed is null) return Task.FromResult(problem);
-                _database.SetTestSetup(projectId, changed);
-                Changed?.Invoke();
-                return Task.FromResult<string?>(null);
+                var (changed, invalid) = set(current, typed);
+                if (changed is null) return Task.FromResult(invalid);
+                current = changed;
+
+                // The file needs a test command, so nothing's written until it has one.
+                if (current.Test.Length == 0) return Task.FromResult<string?>(name == "Test command" ? null : "Fill in the test command too, as the file needs one. Nothing's saved until it has one.");
+                return Task.FromResult(TestsFile.Save(folder, current));
             });
             rows.Add(Row(name, hint, field));
         }

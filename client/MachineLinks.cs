@@ -22,7 +22,8 @@ public sealed record MachineLinkKey(string LinkId, byte[] Key, string Access, do
 /// MAC keyed with both the code and the link's key over the whole exchange. The link's key comes
 /// from the ECDH secret, so cracking the code later from a stored proof gives nothing, and the
 /// confirmation means the server can't put its own key in the middle without knowing the code
-/// while it's live. Every job is then signed with the link's key, over a run id and time.
+/// while it's live. Every job is then signed with the link's key, over a run id and time, and a
+/// link still good is renewed with a request and an answer each MACed with it.
 /// </summary>
 public static class MachineLinks
 {
@@ -31,6 +32,12 @@ public static class MachineLinks
     public const int CodeLength = 12;
     public static readonly TimeSpan CodeLifetime = TimeSpan.FromMinutes(5);
     public static readonly TimeSpan LinkLifetime = TimeSpan.FromDays(30);
+
+    /// <summary>A link with less than this left is renewed by itself, while both PCs are online.</summary>
+    public static readonly TimeSpan RenewWithin = TimeSpan.FromDays(7);
+
+    /// <summary>A renewal request older than this is ignored, so one can't be sent again later.</summary>
+    public static readonly TimeSpan RenewMaxAge = TimeSpan.FromMinutes(10);
 
     /// <summary>Wrong proofs a code takes before it's thrown away, as T3's guess limit and the server's are.</summary>
     public const int MaxWrongProofs = 5;
@@ -51,7 +58,7 @@ public static class MachineLinks
 
     public static string AccessDescription(string access) => access switch
     {
-        "tests" => "Run the project's prepare and test commands, once a person on that PC allows them. They run as that PC's user, with its files and logins.",
+        "tests" => "Run the tests the project's repo declares, in .agent-orange/tests.json, at a commit this PC sends. They run as that PC's user, with its files and logins.",
         _ => "",
     };
 
@@ -145,12 +152,17 @@ public static class MachineLinks
     public static bool JobMacMatches(byte[] key, TestRunInfo run) =>
         FixedTimeEquals(JobMac(key, run.Id, run.LinkId, run.ProjectId, run.Commit, run.Job), run.Mac);
 
-    /// <summary>
-    /// What a person allows: the repo and both commands, exactly. Lengths first, so no two
-    /// different sets of them can run together into the same text.
-    /// </summary>
-    public static string CommandsHash(string repoUrl, string prepare, string test) =>
-        Hex(SHA256.HashData(Encoding.UTF8.GetBytes($"{repoUrl.Length}:{repoUrl}|{prepare.Length}:{prepare}|{test.Length}:{test}")));
+    // Renewing
+
+    /// <summary>The PC linking's request to renew, over the link, a nonce, when it was sent and the expiry it asks for.</summary>
+    public static string RenewMac(byte[] key, string linkId, string nonce, long sentAt, long expiresAt) =>
+        Hex(HMACSHA256.HashData(key, Encoding.UTF8.GetBytes($"ao-link-renew|{linkId}|{nonce}|{sentAt.ToString(CultureInfo.InvariantCulture)}|{expiresAt.ToString(CultureInfo.InvariantCulture)}")));
+
+    /// <summary>The target's answer, over the request's nonce and the expiry the target set.</summary>
+    public static string RenewedMac(byte[] key, string linkId, string nonce, long expiresAt) =>
+        Hex(HMACSHA256.HashData(key, Encoding.UTF8.GetBytes($"ao-link-renewed|{linkId}|{nonce}|{expiresAt.ToString(CultureInfo.InvariantCulture)}")));
+
+    public static bool MacMatches(string expected, string given) => FixedTimeEquals(expected, given);
 
     private static string Hex(byte[] bytes) => Convert.ToHexString(bytes).ToLowerInvariant();
 
@@ -192,22 +204,6 @@ public static class MachineLinks
     /// <summary>Every link this PC holds a key for.</summary>
     public static List<string> KnownLinks(LocalDatabase database) =>
         [.. database.SettingKeysStartingWith(KeyPrefix).Select(key => key[KeyPrefix.Length..])];
-
-    // The commands a person on this PC allowed to run here, for a link and project.
-    private static string AllowedKey(string linkId, string projectId) => $"test_allowed:{linkId}:{projectId}";
-
-    public static bool IsAllowedHere(LocalDatabase database, string linkId, string projectId, string hash) =>
-        database.GetSetting(AllowedKey(linkId, projectId)) is { Length: > 0 } allowed && FixedTimeEquals(allowed, hash);
-
-    public static void AllowHere(LocalDatabase database, string linkId, string projectId, string hash) => database.SetSetting(AllowedKey(linkId, projectId), hash);
-
-    // The commands this PC last signed for a machine and project, which a person here saw.
-    private static string SignedKey(string machine, string projectId) => $"test_signed:{machine}:{projectId}";
-
-    public static bool SignedBefore(LocalDatabase database, string machine, string projectId, string hash) =>
-        database.GetSetting(SignedKey(machine, projectId)) == hash;
-
-    public static void RememberSigned(LocalDatabase database, string machine, string projectId, string hash) => database.SetSetting(SignedKey(machine, projectId), hash);
 
     // Run ids this PC has taken, so the same job can't be run twice. Kept well past the time a job
     // is good for, after which it'd be refused for its age anyway.

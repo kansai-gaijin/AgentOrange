@@ -9,11 +9,12 @@ using System.Text.Json;
 namespace AgentOrange;
 
 /// <summary>
-/// What a test machine is sent: a project's tests, at one pushed commit. The PC linking writes it,
-/// with a run id and the time it was sent, and signs it with the link's key. Plain commands, run
-/// in the project's folder, whatever the project is made with.
+/// What a test machine is sent: which commit of which repo to test, never what to run. The PC
+/// linking writes it, with a run id and the time it was sent, the repo URL from its own folder's
+/// origin, the access it needs and the tags it asked for, and signs it with the link's key. The
+/// commands are in the repo, in .agent-orange/tests.json at that commit.
 /// </summary>
-public sealed record TestJob(string Kind, string RunId, long SentAt, string ProjectId, string ProjectName, string RepoUrl, string Commit, string Prepare, string Test, int? CouldntRunCode, string[] Tags, int TimeoutMinutes)
+public sealed record TestJob(string Kind, string RunId, long SentAt, string ProjectId, string ProjectName, string RepoUrl, string Commit, string Access, string[] Tags)
 {
     public const string TestsKind = "tests";
 
@@ -46,18 +47,15 @@ public sealed record TestMachineSettings(
 /// <summary>A run this PC did, with exactly what it ran, kept on this PC so it can show them.</summary>
 public sealed record RunHere(string RunId, DateTimeOffset At, string From, string Project, string Commit, string Shell, string Folder, string Prepare, string Test, string Verdict, int? ExitCode, string? Note);
 
-/// <summary>What a person on this PC is asked to allow before a run's commands run here.</summary>
-public sealed record TestApproval(string RunId, string From, string Project, string RepoUrl, string Commit, string Prepare, string Test, string Shell, string Folder);
-
 /// <summary>
-/// Runs one job on this PC. It checks the job came over a link this PC holds, unexpired, with the
-/// access it needs, signed with that link's key, with a run id this PC hasn't run and sent within
-/// the last few hours. Commands a person here hasn't allowed for that link and project wait for
-/// one to allow them. Then it checks the commit out in its own folder under the work folder, runs
-/// prepare and test in a Windows job of their own with this PC's overrides, and streams the log.
-/// Whatever happens, the run ends on the server.
+/// Runs one job on this PC, with nobody needing to be at it. It checks the job came over a link
+/// this PC holds, unexpired, with the access it needs, signed with that link's key, with a run id
+/// this PC hasn't run and sent within the last few hours. Then it checks the signed commit out of
+/// the signed repo in its own folder under the work folder, reads the commands from the repo's
+/// .agent-orange/tests.json there, runs prepare and test in a Windows job of their own with this
+/// PC's overrides, and streams the log. Whatever happens, the run ends on the server.
 /// </summary>
-public sealed class TestRunner(LocalDatabase database, DeviceSession devices, TestMachineSettings settings, TestRunInfo run, Func<TestApproval, CancellationToken, Task<bool>> askToAllow)
+public sealed class TestRunner(LocalDatabase database, DeviceSession devices, TestMachineSettings settings, TestRunInfo run)
 {
     private static readonly TimeSpan HeartbeatEvery = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan LogEvery = TimeSpan.FromSeconds(1);
@@ -74,8 +72,6 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
     private volatile bool _truncated;
     private volatile bool _lost;
     private volatile bool _cancelled;
-    private volatile bool _waiting;
-    private volatile bool _beatNow;
 
     public TestRunInfo Run => run;
 
@@ -184,10 +180,11 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         {
             job = null;
         }
-        if (job is null || job.Kind != TestJob.TestsKind || job.ProjectId != run.ProjectId || !string.Equals(job.Commit, run.Commit, StringComparison.OrdinalIgnoreCase) || job.Test.Trim().Length == 0)
+        if (job is null || job.Kind != TestJob.TestsKind || job.ProjectId != run.ProjectId || !string.Equals(job.Commit, run.Commit, StringComparison.OrdinalIgnoreCase) || job.RepoUrl.Trim().Length == 0)
         {
             return Refuse("it isn't a test job this version can read.");
         }
+        if (!MachineLinks.Allows(key.Access, job.Access)) return Refuse($"it needs {MachineLinks.AccessLabel(job.Access)} access, more than the link gives.");
 
         // Signed, but it could still be one sent before, sent again.
         if (!string.Equals(job.RunId, run.Id, StringComparison.OrdinalIgnoreCase)) return Refuse("its run id isn't the one it was signed with.");
@@ -198,50 +195,15 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
 
         if (settings.WorkFolder.Trim().Length == 0 || !Path.IsPathFullyQualified(settings.WorkFolder)) return Refuse("this PC has no work folder set.");
         var folder = Path.Combine(settings.WorkFolder, FolderName(job));
-        var timeout = TimeSpan.FromMinutes(Math.Clamp(settings.TimeoutMinutes ?? job.TimeoutMinutes, 1, 24 * 60));
-        record = record with { Project = job.ProjectName, Folder = folder, Prepare = job.Prepare, Test = job.Test };
-
-        // Exactly what runs, first.
+        record = record with { Project = job.ProjectName, Folder = folder };
         Line($"Test run for {job.ProjectName}, from {run.LinkerLabel}, at {job.Commit}");
         Line($"Repo: {job.RepoUrl}");
         Line($"Folder: {folder}");
-        Line($"Shell: {settings.Shell}. Time limit: {(int)timeout.TotalMinutes} minutes.");
-        if (job.Prepare.Trim().Length > 0) Line($"Prepare: {job.Prepare}");
-        Line($"Test: {job.Test}");
-        foreach (var (name, _) in settings.Variables()) Line($"Environment: {name} is set by this PC.");
-        Line("");
 
-        // Commands come from synced data, which the server or any paired PC can change, so a person
-        // here allows them, once for each link and project, and again whenever they change.
-        var commands = MachineLinks.CommandsHash(job.RepoUrl, job.Prepare, job.Test);
-        if (!MachineLinks.IsAllowedHere(database, run.LinkId, job.ProjectId, commands))
-        {
-            Line("Waiting for someone on this PC to allow these commands.");
-            _waiting = true;
-            _beatNow = true;
-            bool allowed;
-            try
-            {
-                allowed = await askToAllow(new TestApproval(run.Id, run.LinkerLabel, job.ProjectName, job.RepoUrl, job.Commit, job.Prepare, job.Test, settings.Shell, folder), _stop.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                allowed = false;
-            }
-            _waiting = false;
-            _beatNow = true;
-            if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", null, record);
-            if (!allowed)
-            {
-                Line("Refused: a person on this PC didn't allow these commands.");
-                return ("refused", null, record with { Note = "A person on this PC didn't allow these commands." });
-            }
-            MachineLinks.AllowHere(database, run.LinkId, job.ProjectId, commands);
-            Line("Allowed by a person on this PC.");
-        }
-
+        // Until the repo says how long it may take, this PC's own limit, or a day at most.
+        var started = DateTimeOffset.UtcNow;
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
-        limit.CancelAfter(timeout);
+        limit.CancelAfter(TimeSpan.FromMinutes(settings.TimeoutMinutes ?? 24 * 60));
         var checkout = await GitTools.TestCheckoutAsync(job.RepoUrl, folder, job.Commit, limit.Token, Line);
         if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", null, record);
         if (limit.IsCancellationRequested) return ("timed_out", null, record);
@@ -251,25 +213,45 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
             return ("couldnt_run", null, record with { Note = checkout.Value });
         }
 
-        // Prepare failing means the tests never got to run.
-        if (job.Prepare.Trim().Length > 0)
+        // What to run is what the repo says at this commit, and nothing else.
+        var (setup, problem, exists) = TestsFile.Read(folder);
+        if (setup is null)
         {
-            Line($"> {job.Prepare}");
-            var prepared = await RunCommandAsync(job.Prepare, folder, limit.Token);
+            var why = exists ? problem! : $"This commit has no {TestsFile.RelativePath}, which says how its tests run. Add it to the repo, commit and push it.";
+            Line(why);
+            return ("couldnt_run", null, record with { Note = why });
+        }
+        var timeout = TimeSpan.FromMinutes(Math.Clamp(settings.TimeoutMinutes ?? setup.TimeoutMinutes, 1, 24 * 60));
+        limit.CancelAfter(timeout - (DateTimeOffset.UtcNow - started) is { } left && left > TimeSpan.Zero ? left : TimeSpan.Zero);
+        record = record with { Prepare = setup.Prepare, Test = setup.Test };
+
+        // Exactly what runs.
+        Line($"From {TestsFile.RelativePath} at this commit:");
+        Line($"Shell: {settings.Shell}. Time limit: {(int)timeout.TotalMinutes} minutes.");
+        if (setup.Prepare.Length > 0) Line($"Prepare: {setup.Prepare}");
+        Line($"Test: {setup.Test}");
+        foreach (var (name, _) in settings.Variables()) Line($"Environment: {name} is set by this PC.");
+        Line("");
+
+        // Prepare failing means the tests never got to run.
+        if (setup.Prepare.Length > 0)
+        {
+            Line($"> {setup.Prepare}");
+            var prepared = await RunCommandAsync(setup.Prepare, folder, limit.Token);
             if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", null, record);
             if (limit.IsCancellationRequested) return ("timed_out", null, record);
             if (prepared != 0) return ("couldnt_run", prepared, record with { Note = prepared is null ? "The shell couldn't be started." : "Prepare failed." });
         }
 
-        Line($"> {job.Test}");
-        var tested = await RunCommandAsync(job.Test, folder, limit.Token);
+        Line($"> {setup.Test}");
+        var tested = await RunCommandAsync(setup.Test, folder, limit.Token);
         if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", null, record);
         if (limit.IsCancellationRequested) return ("timed_out", null, record);
         return tested switch
         {
             null => ("couldnt_run", null, record with { Note = "The shell couldn't be started." }),
             0 => ("passed", 0, record),
-            var code when code == job.CouldntRunCode => ("couldnt_run", code, record),
+            var code when code == setup.CouldNotRunExitCode => ("couldnt_run", code, record),
             var code => ("failed", code, record),
         };
     }
@@ -398,10 +380,9 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
             try
             {
                 await FlushAsync();
-                if (!_beatNow && DateTimeOffset.UtcNow - lastBeat < HeartbeatEvery) continue;
-                _beatNow = false;
+                if (DateTimeOffset.UtcNow - lastBeat < HeartbeatEvery) continue;
                 lastBeat = DateTimeOffset.UtcNow;
-                Hear(await devices.HeartbeatAsync(run.Id, _waiting));
+                Hear(await devices.HeartbeatAsync(run.Id));
             }
             catch (Exception error)
             {

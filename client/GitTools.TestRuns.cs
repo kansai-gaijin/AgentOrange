@@ -21,14 +21,46 @@ public static partial class GitTools
     }
 
     /// <summary>
+    /// The folder's own origin, as this PC's Git has it, which is where a test machine fetches from.
+    /// Not the project's synced URL, which the server or another PC could change.
+    /// </summary>
+    public static async Task<(string? Url, string? Problem)> OriginForTestsAsync(string folder)
+    {
+        if (await RunAsync("git", folder, "remote", "get-url", "origin") is not { ExitCode: 0 } origin || origin.Output.Trim().Length == 0)
+        {
+            return (null, "This folder's repo has no origin remote, so a test machine would have nowhere to fetch it from.");
+        }
+        var url = origin.Output.Trim();
+#if DEBUG
+        if (IsLocalRepoForChecks(url)) return (url, null);
+#endif
+        return RepoUrlProblem(url) is { } problem ? (null, $"This folder's origin can't be sent to a test machine. {problem}") : (url, null);
+    }
+
+    /// <summary>A file's text as committed, or null if the commit doesn't have it.</summary>
+    public static async Task<string?> FileAtCommitAsync(string folder, string commit, string path) =>
+        IsCommitId(commit) && await RunAsync("git", folder, "show", $"{commit}:{path}") is { ExitCode: 0 } shown ? shown.Output : null;
+
+#if DEBUG
+    // Headless checks only: a bare repo in a scratch folder stands in for GitHub, as the checks
+    // mustn't push anywhere real. Git's file protocol is otherwise never allowed.
+    private static bool IsLocalRepoForChecks(string url) => Headless.Active && Path.IsPathFullyQualified(url) && Directory.Exists(url);
+#endif
+
+    /// <summary>
     /// Puts the commit in the folder, cloning the repo there first if it isn't yet: detached at the
     /// commit, with anything a run left behind removed, except ignored files such as build output,
     /// which can take long to make again. Then its submodules and large files, as a clone gets.
     /// </summary>
     public static async Task<GitResult> TestCheckoutAsync(string repoUrl, string folder, string commit, CancellationToken cancel, Action<string> progress)
     {
-        if (RepoUrlProblem(repoUrl) is { } problem) return new GitResult(false, problem);
+        var local = false;
+#if DEBUG
+        local = IsLocalRepoForChecks(repoUrl);
+#endif
+        if (!local && RepoUrlProblem(repoUrl) is { } problem) return new GitResult(false, problem);
         if (!IsCommitId(commit)) return new GitResult(false, "That isn't a commit id.");
+        Dictionary<string, string>? allowLocal = local ? new() { ["GIT_ALLOW_PROTOCOL"] = "https:ssh:file" } : null;
 
         var hasRepo = await Task.Run(() => Directory.Exists(Path.Combine(folder, ".git")));
         if (!hasRepo)
@@ -40,18 +72,21 @@ public static partial class GitTools
             var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(folder))!;
             await Task.Run(() => Directory.CreateDirectory(parent));
             progress($"Cloning {HideLogins(repoUrl)} into {folder}");
-            var cloned = await CloneAsync(repoUrl, parent, cancel, _ => { }, exactFolder: folder, progress: progress);
+            var cloned = local
+                ? await RunAsync("git", parent, null, ["clone", "--quiet", "--", repoUrl, folder], cancel, allowLocal) is { ExitCode: 0 } ? new GitResult(true, folder) : new GitResult(false, "Couldn't clone the local repo.")
+                : await CloneAsync(repoUrl, parent, cancel, _ => { }, exactFolder: folder, progress: progress);
             if (!cloned.Worked) return cloned;
         }
-        else if (await RunAsync("git", folder, "remote", "get-url", "origin") is not { ExitCode: 0 } origin || !SameRepo(origin.Output.Trim(), repoUrl))
+        else if (await RunAsync("git", folder, "remote", "get-url", "origin") is not { ExitCode: 0 } origin
+            || !(local ? string.Equals(Path.GetFullPath(origin.Output.Trim()), Path.GetFullPath(repoUrl), StringComparison.OrdinalIgnoreCase) : SameRepo(origin.Output.Trim(), repoUrl)))
         {
             return new GitResult(false, $"{folder} is a clone of another repo, so nothing was changed there. Remove it, or choose another work folder.");
         }
 
         if (cancel.IsCancellationRequested) return new GitResult(false, "Cancelled.");
         progress($"Fetching {commit[..Math.Min(12, commit.Length)]}");
-        if (await RunAsync("git", folder, null, ["fetch", "--quiet", "origin", commit], cancel) is not { ExitCode: 0 }
-            && await RunAsync("git", folder, null, ["fetch", "--quiet", "origin"], cancel) is { ExitCode: not 0 } fetched)
+        if (await RunAsync("git", folder, null, ["fetch", "--quiet", "origin", commit], cancel, allowLocal) is not { ExitCode: 0 }
+            && await RunAsync("git", folder, null, ["fetch", "--quiet", "origin"], cancel, allowLocal) is { ExitCode: not 0 } fetched)
         {
             return new GitResult(false, HideLogins(GitProblem("Couldn't fetch from origin", fetched.Errors)));
         }
