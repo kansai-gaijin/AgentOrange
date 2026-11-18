@@ -14,15 +14,17 @@ public sealed record MachineLinkInfo(string Id, string Machine, string MachineLa
 /// <summary>Me is this PC's install hash, as other PCs know it.</summary>
 public sealed record MachinesInfo(string Me, TestMachineInfo? ThisMachine, List<TestMachineInfo> Machines, List<MachineLinkInfo> Links);
 
-public sealed record PendingLinkRequest(string Id, string Linker, string LinkerLabel, string Access, string Nonce, string Proof);
+/// <summary>Key is the PC linking's ephemeral public key, which the proof covers.</summary>
+public sealed record PendingLinkRequest(string Id, string Linker, string LinkerLabel, string Access, string Nonce, string Proof, string Key);
 
-public sealed record LinkAnswer(string? Answer, string? LinkId, double? ExpiresAt);
+/// <summary>Key, ExpiresAt and Confirm are the target's, which the PC linking checks before keeping the link.</summary>
+public sealed record LinkAnswer(string? Answer, string? LinkId, double? ExpiresAt, string? Key, string? Confirm);
 
 /// <summary>A test run as the server keeps it. Job is the text the linker signed, which only the PCs read.</summary>
 public sealed record TestRunInfo(
     string Id, string LinkId, string Machine, string MachineLabel, string Linker, string LinkerLabel,
     string ProjectId, string Commit, string Job, string Mac, string Status, int? ExitCode, bool CancelRequested,
-    double CreatedAt, double? StartedAt, double? EndedAt, string? LinkAccess, double? LinkExpiresAt)
+    double CreatedAt, double? StartedAt, double? EndedAt, string? LinkAccess, double? LinkExpiresAt, bool WaitingApproval = false)
 {
     public bool Finished => Status is not ("queued" or "running");
 }
@@ -32,9 +34,9 @@ public sealed record RunLogLine(int Seq, string Text);
 public sealed record TestRunWithLog(
     string Id, string LinkId, string Machine, string MachineLabel, string Linker, string LinkerLabel,
     string ProjectId, string Commit, string Job, string Mac, string Status, int? ExitCode, bool CancelRequested,
-    double CreatedAt, double? StartedAt, double? EndedAt, string? LinkAccess, double? LinkExpiresAt, List<RunLogLine> Log)
+    double CreatedAt, double? StartedAt, double? EndedAt, string? LinkAccess, double? LinkExpiresAt, List<RunLogLine> Log, bool WaitingApproval = false)
 {
-    public TestRunInfo Run => new(Id, LinkId, Machine, MachineLabel, Linker, LinkerLabel, ProjectId, Commit, Job, Mac, Status, ExitCode, CancelRequested, CreatedAt, StartedAt, EndedAt, LinkAccess, LinkExpiresAt);
+    public TestRunInfo Run => new(Id, LinkId, Machine, MachineLabel, Linker, LinkerLabel, ProjectId, Commit, Job, Mac, Status, ExitCode, CancelRequested, CreatedAt, StartedAt, EndedAt, LinkAccess, LinkExpiresAt, WaitingApproval);
 }
 
 /// <summary>Whether to keep going with a run, as the server says.</summary>
@@ -63,8 +65,8 @@ public sealed partial class DeviceSession
     public Task<ServerAnswer<bool>> PublishMachineAsync(string label, IReadOnlyList<string> tags, bool accepting) =>
         AskAsync<bool>(HttpMethod.Put, "/v1/machines/me", new { label, tags, accepting });
 
-    public Task<ServerAnswer<IdAnswer>> RequestLinkAsync(string machine, string access, string nonce, string proof) =>
-        AskAsync<IdAnswer>(HttpMethod.Post, $"/v1/machines/{Uri.EscapeDataString(machine)}/link-requests", new { access, nonce, proof });
+    public Task<ServerAnswer<IdAnswer>> RequestLinkAsync(string machine, string access, string nonce, string proof, string key) =>
+        AskAsync<IdAnswer>(HttpMethod.Post, $"/v1/machines/{Uri.EscapeDataString(machine)}/link-requests", new { access, nonce, proof, key });
 
     public Task<ServerAnswer<List<PendingLinkRequest>>> PendingLinkRequestsAsync() =>
         AskAsync<List<PendingLinkRequest>>(HttpMethod.Get, "/v1/machines/me/link-requests");
@@ -72,8 +74,8 @@ public sealed partial class DeviceSession
     public Task<ServerAnswer<LinkAnswer>> LinkAnswerAsync(string request) =>
         AskAsync<LinkAnswer>(HttpMethod.Get, $"/v1/link-requests/{Uri.EscapeDataString(request)}");
 
-    public Task<ServerAnswer<ExpiresAnswer>> AcceptLinkAsync(string request, string linkId) =>
-        AskAsync<ExpiresAnswer>(HttpMethod.Post, $"/v1/link-requests/{Uri.EscapeDataString(request)}/accept", new { id = linkId });
+    public Task<ServerAnswer<ExpiresAnswer>> AcceptLinkAsync(string request, string linkId, string key, long expiresAt, string confirm) =>
+        AskAsync<ExpiresAnswer>(HttpMethod.Post, $"/v1/link-requests/{Uri.EscapeDataString(request)}/accept", new { id = linkId, key, expiresAt, confirm });
 
     public Task<ServerAnswer<bool>> RejectLinkAsync(string request) =>
         AskAsync<bool>(HttpMethod.Post, $"/v1/link-requests/{Uri.EscapeDataString(request)}/reject");
@@ -81,8 +83,8 @@ public sealed partial class DeviceSession
     public Task<ServerAnswer<bool>> RemoveLinkAsync(string link) =>
         AskAsync<bool>(HttpMethod.Delete, $"/v1/links/{Uri.EscapeDataString(link)}");
 
-    public Task<ServerAnswer<IdAnswer>> EnqueueRunAsync(string linkId, string projectId, string commit, string job, string mac) =>
-        AskAsync<IdAnswer>(HttpMethod.Post, "/v1/runs", new { linkId, projectId, commit, job, mac });
+    public Task<ServerAnswer<IdAnswer>> EnqueueRunAsync(string id, string linkId, string projectId, string commit, string job, string mac) =>
+        AskAsync<IdAnswer>(HttpMethod.Post, "/v1/runs", new { id, linkId, projectId, commit, job, mac });
 
     public Task<ServerAnswer<List<TestRunInfo>>> RunsAsync(string? projectId = null) =>
         AskAsync<List<TestRunInfo>>(HttpMethod.Get, projectId is null ? "/v1/runs" : $"/v1/runs?project={Uri.EscapeDataString(projectId)}");
@@ -97,8 +99,9 @@ public sealed partial class DeviceSession
     public Task<ServerAnswer<TestRunInfo>> ClaimRunAsync() =>
         AskAsync<TestRunInfo>(HttpMethod.Post, "/v1/machines/me/runs/next");
 
-    public Task<ServerAnswer<RunKeepGoing>> HeartbeatAsync(string run) =>
-        AskAsync<RunKeepGoing>(HttpMethod.Post, $"/v1/runs/{Uri.EscapeDataString(run)}/heartbeat");
+    /// <summary>Waiting says it's held for a person on this PC to allow its commands.</summary>
+    public Task<ServerAnswer<RunKeepGoing>> HeartbeatAsync(string run, bool waiting) =>
+        AskAsync<RunKeepGoing>(HttpMethod.Post, $"/v1/runs/{Uri.EscapeDataString(run)}/heartbeat", new { waiting });
 
     public Task<ServerAnswer<RunKeepGoing>> AppendLogAsync(string run, int seq, string text) =>
         AskAsync<RunKeepGoing>(HttpMethod.Post, $"/v1/runs/{Uri.EscapeDataString(run)}/log", new { seq, text });

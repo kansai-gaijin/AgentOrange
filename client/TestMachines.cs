@@ -22,6 +22,7 @@ public sealed class TestMachines
     private readonly ServerConnection _server;
     private readonly DeviceSession _devices;
     private readonly Func<bool> _hasSyncTurn;
+    private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
     private bool _ticking;
     private DateTimeOffset _refreshedAt;
     private DateTimeOffset _claimedAt;
@@ -55,6 +56,55 @@ public sealed class TestMachines
     public string? CodeProblem { get; private set; }
 
     public TestRunner? Running { get; private set; }
+
+    /// <summary>A run waiting for a person on this PC to allow its commands, and where the answer goes.</summary>
+    public (TestApproval Request, TaskCompletionSource<bool> Answer)? Approval { get; private set; }
+
+    /// <summary>A run's commands need a person here to allow them, so something should show them.</summary>
+    public event Action<TestApproval>? ApprovalNeeded;
+
+    /// <summary>The run that was waiting got its answer, or stopped waiting.</summary>
+    public event Action? ApprovalEnded;
+
+    /// <summary>The person's answer to the commands waiting.</summary>
+    public void AnswerApproval(string runId, bool allow)
+    {
+        if (Approval is { } waiting && waiting.Request.RunId == runId) waiting.Answer.TrySetResult(allow);
+    }
+
+    // Runs keep their awaits on the window's thread, but the UI only ever hears from it there.
+    private void OnWindow(Action action)
+    {
+        if (_dispatcher.CheckAccess()) action();
+        else _dispatcher.Invoke(action);
+    }
+
+    private async Task<bool> AskToAllowAsync(TestApproval request, CancellationToken cancel)
+    {
+        var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        OnWindow(() =>
+        {
+            Approval = (request, answer);
+            Changed?.Invoke();
+            ApprovalNeeded?.Invoke(request);
+        });
+        try
+        {
+            using (cancel.Register(() => answer.TrySetCanceled()))
+            {
+                return await answer.Task;
+            }
+        }
+        finally
+        {
+            OnWindow(() =>
+            {
+                Approval = null;
+                ApprovalEnded?.Invoke();
+                Changed?.Invoke();
+            });
+        }
+    }
 
     // This PC's own settings
 
@@ -115,9 +165,10 @@ public sealed class TestMachines
 
     // Link codes
 
+    /// <summary>A code for the one access level there is so far, which the person here chooses by making it.</summary>
     public LinkCode MakeCode()
     {
-        Code = new LinkCode();
+        Code = new LinkCode("tests");
         CodeProblem = null;
         _askedForRequestsAt = default;
         Changed?.Invoke();
@@ -195,6 +246,7 @@ public sealed class TestMachines
             if (published.Worked) _published = (settings.Label, tags, settings.Accepting);
         }
 
+        var askedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var answer = await _devices.MachinesAsync();
         Problem = DescribeProblem(answer.Status);
         if (answer.Value is { } latest)
@@ -202,8 +254,13 @@ public sealed class TestMachines
             Latest = latest;
 
             // A link the server no longer has was revoked from the other end, so its key is no use.
+            // Not one saved since the list was asked for, which the list can't have had yet.
             var current = latest.Links.Select(link => link.Id).ToHashSet();
-            foreach (var known in MachineLinks.KnownLinks(_database).Where(id => !current.Contains(id))) MachineLinks.ForgetKey(_database, known);
+            foreach (var known in MachineLinks.KnownLinks(_database).Where(id => !current.Contains(id)))
+            {
+                if (MachineLinks.ReadKey(_database, known) is { } key && key.SavedAt >= askedAt - 1) continue;
+                MachineLinks.ForgetKey(_database, known);
+            }
         }
         Changed?.Invoke();
     }
@@ -219,7 +276,8 @@ public sealed class TestMachines
         _ => "The server couldn't answer. The log on the server has details.",
     };
 
-    // As the target: each request is checked against the code this PC is showing, which is used once.
+    // As the target: each request is checked against the code this PC is showing, which is used
+    // once, and never gives more access than the code was made for.
     private async Task AnswerLinkRequestsAsync()
     {
         if (DateTimeOffset.UtcNow - _askedForRequestsAt < TimeSpan.FromSeconds(2)) return;
@@ -234,7 +292,7 @@ public sealed class TestMachines
                 await _devices.RejectLinkAsync(request.Id);
                 continue;
             }
-            if (!MachineLinks.AccessLevels.Contains(request.Access) || !MachineLinks.ProofMatches(code.Code, request, me))
+            if (request.Access != code.Access || !MachineLinks.ProofMatches(code.Code, code.Access, request, me))
             {
                 await _devices.RejectLinkAsync(request.Id);
                 code.WrongProofs++;
@@ -248,13 +306,25 @@ public sealed class TestMachines
                 continue;
             }
 
-            // Used now, whatever the server says, as it's been tried.
+            // Used now, whatever the server says, as it's been tried. The link's key comes from a
+            // key pair made for this one link, and its expiry is this PC's own.
             Code = null;
-            var linkId = MachineLinks.NewLinkId();
-            var accepted = await _devices.AcceptLinkAsync(request.Id, linkId);
-            if (accepted.Value is { } link)
+            var linkId = MachineLinks.NewId();
+            using var ephemeral = MachineLinks.NewEphemeral();
+            var machineKey = MachineLinks.PublicKey(ephemeral);
+            var expiresAt = (DateTimeOffset.UtcNow + MachineLinks.LinkLifetime).ToUnixTimeSeconds();
+            var transcript = MachineLinks.Transcript(request.Linker, me, code.Access, request.Nonce, request.Key, machineKey, linkId, expiresAt);
+            if (MachineLinks.LinkKey(ephemeral, request.Key, transcript) is not { } linkKey)
             {
-                MachineLinks.SaveKey(_database, new MachineLinkKey(linkId, MachineLinks.LinkKey(code.Code, linkId), request.Access, link.ExpiresAt, ThisPcIsMachine: true));
+                await _devices.RejectLinkAsync(request.Id);
+                CodeProblem = "The other PC's answer couldn't be read. Create a new link and try again.";
+                Changed?.Invoke();
+                continue;
+            }
+            var accepted = await _devices.AcceptLinkAsync(request.Id, linkId, machineKey, expiresAt, MachineLinks.Confirm(code.Code, linkKey, transcript));
+            if (accepted.Worked)
+            {
+                MachineLinks.SaveKey(_database, new MachineLinkKey(linkId, linkKey, code.Access, expiresAt, ThisPcIsMachine: true));
                 AppLog.Write($"Linked {request.LinkerLabel} to run tests on this PC.");
             }
             else
@@ -271,7 +341,15 @@ public sealed class TestMachines
         var claimed = await _devices.ClaimRunAsync();
         if (claimed.Value is not { } run) return;
 
-        var runner = new TestRunner(_database, _devices, settings, run);
+        // Before it goes in any path or name. One that isn't can't be told it's refused either, so
+        // it's left to be lost.
+        if (!MachineLinks.IsId(run.Id))
+        {
+            AppLog.Write("The server sent a test run whose id isn't one, so it was left alone.");
+            return;
+        }
+
+        var runner = new TestRunner(_database, _devices, settings, run, AskToAllowAsync);
         Running = runner;
         Changed?.Invoke();
         AppLog.Write($"Started test run {run.Id} for {run.LinkerLabel}.");
@@ -286,15 +364,26 @@ public sealed class TestMachines
             RememberRun(done);
             AppLog.Write($"Test run {run.Id} ended: {done.Verdict}.");
         }
-        catch (Exception error) when (error is System.IO.IOException or UnauthorizedAccessException or InvalidOperationException)
+        catch (Exception error)
         {
-            AppLog.Write($"Test run {run.Id} stopped: {error.Message}");
-            await _devices.EndRunAsync(run.Id, "couldnt_run", null);
+            // The runner ends its run itself whatever happens; this is only in case even that failed.
+            AppLog.Write($"Test run {run.Id} stopped: {error.GetType().Name}: {error.Message}");
+            try
+            {
+                await _devices.EndRunAsync(run.Id, "couldnt_run", null);
+            }
+            catch (Exception again)
+            {
+                AppLog.Write($"Test run {run.Id} couldn't be ended: {again.Message}");
+            }
         }
         finally
         {
-            Running = null;
-            Changed?.Invoke();
+            OnWindow(() =>
+            {
+                Running = null;
+                Changed?.Invoke();
+            });
         }
     }
 
@@ -302,7 +391,9 @@ public sealed class TestMachines
 
     /// <summary>
     /// Links this PC to another with the code shown there, which never goes to the server: only
-    /// proof of it does. Returns null once linked, or what went wrong, in T3's words where it has them.
+    /// proof of it does, with a key pair made for this one link. The target's answer is kept only
+    /// once its confirmation checks out. Returns null once linked, or what went wrong, in T3's
+    /// words where it has them.
     /// </summary>
     public async Task<string?> LinkAsync(TestMachineInfo machine, string typedCode, string access, CancellationToken cancel)
     {
@@ -310,8 +401,10 @@ public sealed class TestMachines
         if (Latest?.Me is not { } me) return "This PC could not reach the server.";
         if (machine.Install == me) return "That machine is this PC.";
 
-        var nonce = MachineLinks.NewNonce();
-        var asked = await _devices.RequestLinkAsync(machine.Install, access, nonce, MachineLinks.Proof(code, me, machine.Install, access, nonce));
+        var nonce = MachineLinks.NewId();
+        using var ephemeral = MachineLinks.NewEphemeral();
+        var linkerKey = MachineLinks.PublicKey(ephemeral);
+        var asked = await _devices.RequestLinkAsync(machine.Install, access, nonce, MachineLinks.Proof(code, me, machine.Install, access, nonce, linkerKey), linkerKey);
         if (asked.Value is not { } request)
         {
             return asked.Status switch
@@ -340,11 +433,24 @@ public sealed class TestMachines
             var answer = await _devices.LinkAnswerAsync(request.Id);
             if (answer.Status == HttpStatusCode.NotFound) break;
             if (answer.Value is not { Answer: { } said } got) continue;
-            if (said != "accepted" || got.LinkId is not { } linkId || got.ExpiresAt is not { } expires)
+            if (said != "accepted" || !MachineLinks.IsId(got.LinkId) || got.ExpiresAt is not { } expires || got.Key is not { } machineKey || got.Confirm is not { } confirm)
             {
                 return "The peer did not approve the link. Check the pairing code and try again.";
             }
-            MachineLinks.SaveKey(_database, new MachineLinkKey(linkId, MachineLinks.LinkKey(code, linkId), access, expires, ThisPcIsMachine: false));
+
+            // Only the target, with the code, could have made this, with the same key as here.
+            var linkId = got.LinkId!;
+            var expiresAt = (long)expires;
+            var transcript = MachineLinks.Transcript(me, machine.Install, access, nonce, linkerKey, machineKey, linkId, expiresAt);
+            var linkKey = MachineLinks.LinkKey(ephemeral, machineKey, transcript);
+            var sensible = expiresAt > DateTimeOffset.UtcNow.ToUnixTimeSeconds() && expiresAt <= (DateTimeOffset.UtcNow + MachineLinks.LinkLifetime + TimeSpan.FromDays(1)).ToUnixTimeSeconds();
+            if (linkKey is null || !sensible || !MachineLinks.ConfirmMatches(code, linkKey, transcript, confirm))
+            {
+                AppLog.Write($"A link to {machine.Label} was refused: its answer's confirmation didn't check out.");
+                await _devices.RemoveLinkAsync(linkId);
+                return $"The answer didn't come from {machine.Label} with that code, so the link wasn't kept. Create a new link there and try again.";
+            }
+            MachineLinks.SaveKey(_database, new MachineLinkKey(linkId, linkKey, access, expiresAt, ThisPcIsMachine: false));
             await RefreshAsync();
             return null;
         }
@@ -363,17 +469,28 @@ public sealed class TestMachines
 
     /// <summary>
     /// Sends a project's tests to a machine this PC is linked to, at a commit origin has, signed with
-    /// the link's key. Returns the run's id, or what went wrong.
+    /// the link's key, under a run id and time made here. The repo and commands come from synced
+    /// data, so when they differ from what this PC last signed for that machine, a person here sees
+    /// them first (confirm), and nothing is sent without a yes. Returns the run's id, or what went wrong.
     /// </summary>
-    public async Task<(string? RunId, string? Problem)> RunTestsAsync(MachineLinkInfo link, Project project, TestSetup setup, string commit)
+    public async Task<(string? RunId, string? Problem)> RunTestsAsync(MachineLinkInfo link, Project project, TestSetup setup, string commit, Func<TestApproval, Task<bool>> confirm)
     {
         if (MachineLinks.ReadKey(_database, link.Id) is not { ThisPcIsMachine: false } key) return (null, $"This PC has no key for its link to {link.MachineLabel}. Link it again.");
         if (link.Status == "expired" || key.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return (null, $"The link to {link.MachineLabel} expired. Link it again with a new pairing code from {link.MachineLabel}.");
         if (!setup.CanRun) return (null, "This project has no test command yet. Set one in Project settings › Tests.");
 
-        var job = JsonSerializer.Serialize(new TestJob(TestJob.TestsKind, project.Id, project.Name, project.RepoUrl, commit.ToLowerInvariant(), setup.Prepare.Trim(), setup.Test.Trim(), setup.CouldntRunCode, setup.Tags ?? [], setup.TimeoutMinutes), TestJob.Json);
-        var mac = MachineLinks.JobMac(key.Key, link.Id, project.Id, commit, job);
-        var sent = await _devices.EnqueueRunAsync(link.Id, project.Id, commit.ToLowerInvariant(), job, mac);
+        var (prepare, test) = (setup.Prepare.Trim(), setup.Test.Trim());
+        var commands = MachineLinks.CommandsHash(project.RepoUrl, prepare, test);
+        if (!MachineLinks.SignedBefore(_database, link.Machine, project.Id, commands))
+        {
+            if (!await confirm(new TestApproval("", link.MachineLabel, project.Name, project.RepoUrl, commit, prepare, test, "", ""))) return (null, null);
+            MachineLinks.RememberSigned(_database, link.Machine, project.Id, commands);
+        }
+
+        var runId = MachineLinks.NewId();
+        var job = JsonSerializer.Serialize(new TestJob(TestJob.TestsKind, runId, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), project.Id, project.Name, project.RepoUrl, commit.ToLowerInvariant(), prepare, test, setup.CouldntRunCode, setup.Tags ?? [], setup.TimeoutMinutes), TestJob.Json);
+        var mac = MachineLinks.JobMac(key.Key, runId, link.Id, project.Id, commit, job);
+        var sent = await _devices.EnqueueRunAsync(runId, link.Id, project.Id, commit.ToLowerInvariant(), job, mac);
         if (sent.Value is { } run) return (run.Id, null);
         return (null, sent.Status == HttpStatusCode.Conflict
             ? $"{link.MachineLabel} couldn't take it: the link may have ended, or ten runs are already waiting there."

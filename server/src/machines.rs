@@ -2,10 +2,16 @@
 //! Code's linked environments let one machine's agents work on another. PCs here rarely reach
 //! each other, but both always reach this server, so it carries the work as a mailbox.
 //!
-//! A link is made on the target PC with a one-time code that never comes here. The PC linking
-//! sends a proof that it knows the code, and the target checks it. Jobs carry a MAC made with a
-//! key both PCs derive from the code, so this server can relay and keep jobs but can't make a
-//! PC run anything of its own. What's run is plain commands, and nothing here knows what a
+//! A link is made on the target PC with a one-time code that never comes here. The two PCs swap
+//! ephemeral P-256 public keys through here, each authenticated with the code, and derive the
+//! link's key from their ECDH secret, so a code cracked later from what's stored here gives
+//! nothing. Jobs carry a MAC made with that key, over a run id and time the target won't take
+//! twice or late. So this server can relay, keep, delay or drop jobs, but can't write, change or
+//! replay one. It can change what a job holds before it's signed, though: the commands and repo
+//! come from synced data, which this server or any paired PC can rewrite. So the target asks a
+//! person before running commands it hasn't been allowed to run for that link and project, and
+//! the PC linking asks before signing ones it hasn't signed for that machine. Verdicts and logs
+//! come back unauthenticated. What's run is plain commands, and nothing here knows what a
 //! project, a tag or a command means.
 //!
 //! Everything is keyed by the PC (its install), not its login, as a PC has a login at each of
@@ -40,19 +46,26 @@ const MAX_LOG_ROWS_PER_READ: i64 = 400;
 const MAX_QUEUED_PER_LINK: i64 = 10;
 const MAX_UNANSWERED_PER_LINKER: i64 = 3;
 const ACCESS_LEVELS: [&str; 3] = ["tests", "agents", "full"];
-const RUN_ENDINGS: [&str; 5] = ["passed", "failed", "couldnt_run", "timed_out", "cancelled"];
+const RUN_ENDINGS: [&str; 6] = [
+    "passed",
+    "failed",
+    "couldnt_run",
+    "timed_out",
+    "cancelled",
+    "refused",
+];
 
-// Link proofs a target turned down, counted as wrong pairing keys are: per PC linking, and much
-// higher in all, against one PC guessing at another's code, or many at once.
+// Link proofs a target turned down, counted per PC linking, as wrong pairing keys are per caller.
+// There's no limit across all PCs, as one PC could then lock out every other: each PC is a
+// paired login, the target also throws a code away after 5 wrong proofs, and a code lasts 5
+// minutes, so guessing 60 bits gets nowhere either way.
 const MAX_REJECTED_LINKS: u32 = 5;
-const MAX_REJECTED_LINKS_IN_ALL: u32 = 100;
 const REJECTED_LINK_WINDOW: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 pub struct LinkLimit {
     window_started: Option<Instant>,
     rejected: HashMap<String, u32>,
-    total: u32,
 }
 
 impl LinkLimit {
@@ -63,14 +76,12 @@ impl LinkLimit {
         {
             *self = Self::default();
         }
-        self.total >= MAX_REJECTED_LINKS_IN_ALL
-            || self.rejected.get(linker).copied().unwrap_or(0) >= MAX_REJECTED_LINKS
+        self.rejected.get(linker).copied().unwrap_or(0) >= MAX_REJECTED_LINKS
     }
 
     fn record_rejection(&mut self, linker: &str) {
         self.window_started.get_or_insert_with(Instant::now);
         *self.rejected.entry(linker.to_string()).or_insert(0) += 1;
-        self.total += 1;
     }
 }
 
@@ -130,7 +141,14 @@ pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
             seq INTEGER NOT NULL,
             text TEXT NOT NULL,
             PRIMARY KEY (run_id, seq)
-         );",
+         );
+         -- Each PC's ephemeral public key, the target's expiry and its confirmation of the key.
+         ALTER TABLE machine_link_requests ADD COLUMN IF NOT EXISTS linker_key TEXT NOT NULL DEFAULT '';
+         ALTER TABLE machine_link_requests ADD COLUMN IF NOT EXISTS machine_key TEXT;
+         ALTER TABLE machine_link_requests ADD COLUMN IF NOT EXISTS machine_expires_at DOUBLE PRECISION;
+         ALTER TABLE machine_link_requests ADD COLUMN IF NOT EXISTS confirm TEXT;
+         -- Claimed, but waiting for a person on the target to allow its commands.
+         ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS waiting_approval BOOLEAN NOT NULL DEFAULT false;",
     )
     .await
 }
@@ -159,12 +177,14 @@ pub async fn forget_removed_pcs(db: &Client) -> Result<(), tokio_postgres::Error
     .await
 }
 
-/// A run whose machine stopped renewing its lease is lost. Settled whenever runs are looked at.
+/// A run whose machine stopped renewing its lease is lost, and one that waited a day without
+/// being started has expired. Settled whenever runs are looked at.
 async fn settle_lost_runs(db: &Client) -> Result<(), StatusCode> {
-    db.execute(
+    db.batch_execute(
         "UPDATE test_runs SET status = 'lost', ended_at = now()
-         WHERE status = 'running' AND lease_until < now()",
-        &[],
+            WHERE status = 'running' AND lease_until < now();
+         UPDATE test_runs SET status = 'expired', ended_at = now()
+            WHERE status = 'queued' AND created_at < now() - interval '24 hours';",
     )
     .await
     .map_err(internal_error)?;
@@ -374,11 +394,21 @@ fn is_hex(text: &str, length: usize) -> bool {
     text.len() == length && text.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+// A public key as base64 of its DER, which for P-256 is 124 characters. Opaque here.
+fn is_public_key(text: &str) -> bool {
+    (60..=256).contains(&text.len())
+        && text.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/' || byte == b'='
+        })
+}
+
 #[derive(Deserialize)]
 pub struct LinkRequestBody {
     access: String,
     nonce: String,
     proof: String,
+    /// The PC linking's ephemeral public key, which the proof covers.
+    key: String,
 }
 
 #[derive(Serialize)]
@@ -397,6 +427,7 @@ pub async fn request_link(
     if !ACCESS_LEVELS.contains(&body.access.as_str())
         || !is_hex(&body.nonce, 32)
         || !is_hex(&body.proof, 64)
+        || !is_public_key(&body.key)
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -438,8 +469,8 @@ pub async fn request_link(
     let inserted = state
         .db
         .execute(
-            "INSERT INTO machine_link_requests (id, machine_install, linker_install, access, nonce, proof)
-             SELECT $1, $2, $3, $4, $5, $6
+            "INSERT INTO machine_link_requests (id, machine_install, linker_install, access, nonce, proof, linker_key)
+             SELECT $1, $2, $3, $4, $5, $6, $8
              WHERE (SELECT count(*) FROM machine_link_requests WHERE linker_install = $3 AND answer IS NULL) < $7",
             &[
                 &id,
@@ -449,6 +480,7 @@ pub async fn request_link(
                 &body.nonce,
                 &body.proof,
                 &MAX_UNANSWERED_PER_LINKER,
+                &body.key,
             ],
         )
         .await
@@ -468,6 +500,7 @@ pub struct PendingLinkRequest {
     access: String,
     nonce: String,
     proof: String,
+    key: String,
 }
 
 /// Requests waiting on this PC's answer.
@@ -480,7 +513,7 @@ pub async fn pending_link_requests(
         .db
         .query(
             "SELECT r.id, r.linker_install, COALESCE((SELECT d.name FROM devices d WHERE d.install_hash = r.linker_install LIMIT 1), ''),
-                r.access, r.nonce, r.proof
+                r.access, r.nonce, r.proof, r.linker_key
              FROM machine_link_requests r
              WHERE r.machine_install = $1 AND r.answer IS NULL AND r.created_at > now() - interval '10 minutes'
              ORDER BY r.created_at",
@@ -497,6 +530,7 @@ pub async fn pending_link_requests(
                 access: row.get(3),
                 nonce: row.get(4),
                 proof: row.get(5),
+                key: row.get(6),
             })
             .collect(),
     ))
@@ -507,7 +541,10 @@ pub async fn pending_link_requests(
 pub struct LinkAnswer {
     answer: Option<String>,
     link_id: Option<String>,
+    /// As the target set it, which its confirmation covers.
     expires_at: Option<f64>,
+    key: Option<String>,
+    confirm: Option<String>,
 }
 
 /// The PC linking waits on this for the target's answer.
@@ -520,7 +557,7 @@ pub async fn link_request(
     let row = state
         .db
         .query_opt(
-            "SELECT r.answer, r.link_id, (SELECT EXTRACT(EPOCH FROM l.expires_at)::float8 FROM machine_links l WHERE l.id = r.link_id)
+            "SELECT r.answer, r.link_id, r.machine_expires_at, r.machine_key, r.confirm
              FROM machine_link_requests r
              WHERE r.id = $1 AND r.linker_install = $2 AND r.created_at > now() - interval '10 minutes'",
             &[&id, &me],
@@ -532,13 +569,23 @@ pub async fn link_request(
         answer: row.get(0),
         link_id: row.get(1),
         expires_at: row.get(2),
+        key: row.get(3),
+        confirm: row.get(4),
     }))
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcceptBody {
-    /// Made by the target, which derives the link's key from it.
+    /// Made by the target, and part of what the link's key is derived from.
     id: String,
+    /// The target's ephemeral public key.
+    key: String,
+    /// When the target says the link ends, which it decided itself.
+    expires_at: f64,
+    /// The target's MAC over the whole exchange, keyed with the code and the link's key, which
+    /// the PC linking checks before it keeps the link.
+    confirm: String,
 }
 
 #[derive(Serialize)]
@@ -556,14 +603,19 @@ pub async fn accept_link_request(
     Json(body): Json<AcceptBody>,
 ) -> Result<Json<Accepted>, StatusCode> {
     let me = caller(&state, &headers).await?;
-    if !is_hex(&body.id, 32) {
+    if !is_hex(&body.id, 32)
+        || !is_public_key(&body.key)
+        || !is_hex(&body.confirm, 64)
+        || !body.expires_at.is_finite()
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
     let row = state
         .db
         .query_opt(
             "WITH answered AS (
-                UPDATE machine_link_requests SET answer = 'accepted', link_id = $3
+                UPDATE machine_link_requests SET answer = 'accepted', link_id = $3,
+                    machine_key = $4, confirm = $5, machine_expires_at = $6
                 WHERE id = $1 AND machine_install = $2 AND answer IS NULL AND created_at > now() - interval '10 minutes'
                 RETURNING machine_install, linker_install, access
              )
@@ -572,7 +624,14 @@ pub async fn accept_link_request(
              ON CONFLICT (machine_install, linker_install) DO UPDATE SET
                 id = excluded.id, access = excluded.access, linked_at = now(), expires_at = excluded.expires_at
              RETURNING EXTRACT(EPOCH FROM expires_at)::float8",
-            &[&request, &me, &body.id],
+            &[
+                &request,
+                &me,
+                &body.id,
+                &body.key,
+                &body.confirm,
+                &body.expires_at,
+            ],
         )
         .await
         .map_err(internal_error)?
@@ -665,6 +724,8 @@ pub struct RunView {
     status: String,
     exit_code: Option<i32>,
     cancel_requested: bool,
+    /// Claimed, and waiting for a person on the target to allow its commands.
+    waiting_approval: bool,
     created_at: f64,
     started_at: Option<f64>,
     ended_at: Option<f64>,
@@ -681,7 +742,8 @@ const RUN_COLUMNS: &str = "r.id, r.link_id, r.machine_install,
     r.project_id, r.commit_sha, r.job, r.mac, r.status, r.exit_code, r.cancel_requested,
     EXTRACT(EPOCH FROM r.created_at)::float8, EXTRACT(EPOCH FROM r.started_at)::float8, EXTRACT(EPOCH FROM r.ended_at)::float8,
     (SELECT l.access FROM machine_links l WHERE l.id = r.link_id),
-    (SELECT EXTRACT(EPOCH FROM l.expires_at)::float8 FROM machine_links l WHERE l.id = r.link_id)";
+    (SELECT EXTRACT(EPOCH FROM l.expires_at)::float8 FROM machine_links l WHERE l.id = r.link_id),
+    r.waiting_approval";
 
 fn run_view(row: &Row) -> RunView {
     RunView {
@@ -703,12 +765,15 @@ fn run_view(row: &Row) -> RunView {
         ended_at: row.get(15),
         link_access: row.get(16),
         link_expires_at: row.get(17),
+        waiting_approval: row.get(18),
     }
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnqueueBody {
+    /// Made by the PC linking and covered by the MAC, so the target can refuse one it's run.
+    id: String,
     link_id: String,
     project_id: String,
     commit: String,
@@ -727,6 +792,7 @@ pub async fn enqueue(
     let commit_ok = (7..=64).contains(&body.commit.len())
         && body.commit.bytes().all(|byte| byte.is_ascii_hexdigit());
     if !commit_ok
+        || !is_hex(&body.id, 32)
         || !is_hex(&body.mac, 64)
         || body.job.len() > MAX_JOB_BYTES
         || body.project_id.is_empty()
@@ -748,7 +814,7 @@ pub async fn enqueue(
         .await
         .map_err(internal_error)?;
 
-    let id = random_hex::<16>();
+    let id = body.id.to_ascii_lowercase();
     let inserted = state
         .db
         .execute(
@@ -756,7 +822,8 @@ pub async fn enqueue(
              SELECT $1, l.id, l.machine_install, l.linker_install, $3, $4, $5, $6, 'queued'
              FROM machine_links l
              WHERE l.id = $2 AND l.linker_install = $7 AND l.expires_at > now()
-                AND (SELECT count(*) FROM test_runs q WHERE q.link_id = l.id AND q.status = 'queued') < $8",
+                AND (SELECT count(*) FROM test_runs q WHERE q.link_id = l.id AND q.status = 'queued') < $8
+             ON CONFLICT (id) DO NOTHING",
             &[
                 &id,
                 &body.link_id,
@@ -771,7 +838,7 @@ pub async fn enqueue(
         .await
         .map_err(internal_error)?;
     if inserted == 0 {
-        // Gone, expired, not this PC's, or too many waiting.
+        // Gone, expired, not this PC's, too many waiting, or that id is taken.
         return Err(StatusCode::CONFLICT);
     }
     Ok(Json(Created { id }))
@@ -953,10 +1020,18 @@ async fn running_run(db: &Client, id: &str, me: &str) -> Result<(bool, i64), Sta
     Ok((row.get(0), row.get(1)))
 }
 
+#[derive(Deserialize)]
+pub struct HeartbeatBody {
+    /// Waiting for a person on the target to allow its commands.
+    #[serde(default)]
+    waiting: bool,
+}
+
 pub async fn heartbeat(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    Json(body): Json<HeartbeatBody>,
 ) -> Result<Json<KeepGoing>, StatusCode> {
     let me = caller(&state, &headers).await?;
     settle_lost_runs(&state.db).await?;
@@ -964,8 +1039,9 @@ pub async fn heartbeat(
     state
         .db
         .execute(
-            "UPDATE test_runs SET lease_until = now() + interval '2 minutes' WHERE id = $1 AND status = 'running'",
-            &[&id],
+            "UPDATE test_runs SET lease_until = now() + interval '2 minutes', waiting_approval = $2
+             WHERE id = $1 AND status = 'running'",
+            &[&id, &body.waiting],
         )
         .await
         .map_err(internal_error)?;
@@ -1047,7 +1123,7 @@ pub async fn end_run(
     let ended = state
         .db
         .execute(
-            "UPDATE test_runs SET status = $3, exit_code = $4, ended_at = now(), lease_until = NULL
+            "UPDATE test_runs SET status = $3, exit_code = $4, ended_at = now(), lease_until = NULL, waiting_approval = false
              WHERE id = $1 AND machine_install = $2 AND status = 'running'",
             &[&id, &me, &body.status, &body.exit_code],
         )

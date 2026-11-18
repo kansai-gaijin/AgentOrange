@@ -1,4 +1,5 @@
-using System.Diagnostics;
+using System.Collections;
+using System.ComponentModel;
 using System.IO;
 using System.Net;
 using System.Security.Cryptography;
@@ -8,11 +9,11 @@ using System.Text.Json;
 namespace AgentOrange;
 
 /// <summary>
-/// What a test machine is sent: a project's tests, at one pushed commit. The PC linking writes it
-/// and signs it with the link's key. Plain commands, run in the project's folder, whatever the
-/// project is made with.
+/// What a test machine is sent: a project's tests, at one pushed commit. The PC linking writes it,
+/// with a run id and the time it was sent, and signs it with the link's key. Plain commands, run
+/// in the project's folder, whatever the project is made with.
 /// </summary>
-public sealed record TestJob(string Kind, string ProjectId, string ProjectName, string RepoUrl, string Commit, string Prepare, string Test, int? CouldntRunCode, string[] Tags, int TimeoutMinutes)
+public sealed record TestJob(string Kind, string RunId, long SentAt, string ProjectId, string ProjectName, string RepoUrl, string Commit, string Prepare, string Test, int? CouldntRunCode, string[] Tags, int TimeoutMinutes)
 {
     public const string TestsKind = "tests";
 
@@ -45,24 +46,36 @@ public sealed record TestMachineSettings(
 /// <summary>A run this PC did, with exactly what it ran, kept on this PC so it can show them.</summary>
 public sealed record RunHere(string RunId, DateTimeOffset At, string From, string Project, string Commit, string Shell, string Folder, string Prepare, string Test, string Verdict, int? ExitCode, string? Note);
 
+/// <summary>What a person on this PC is asked to allow before a run's commands run here.</summary>
+public sealed record TestApproval(string RunId, string From, string Project, string RepoUrl, string Commit, string Prepare, string Test, string Shell, string Folder);
+
 /// <summary>
-/// Runs one job on this PC: checks it came over a link this PC holds, unexpired, with the access it
-/// needs, and signed with that link's key; then checks out the commit in its own folder under the
-/// work folder, runs prepare and test with this PC's own overrides, and streams the log.
+/// Runs one job on this PC. It checks the job came over a link this PC holds, unexpired, with the
+/// access it needs, signed with that link's key, with a run id this PC hasn't run and sent within
+/// the last few hours. Commands a person here hasn't allowed for that link and project wait for
+/// one to allow them. Then it checks the commit out in its own folder under the work folder, runs
+/// prepare and test in a Windows job of their own with this PC's overrides, and streams the log.
+/// Whatever happens, the run ends on the server.
 /// </summary>
-public sealed class TestRunner(LocalDatabase database, DeviceSession devices, TestMachineSettings settings, TestRunInfo run)
+public sealed class TestRunner(LocalDatabase database, DeviceSession devices, TestMachineSettings settings, TestRunInfo run, Func<TestApproval, CancellationToken, Task<bool>> askToAllow)
 {
     private static readonly TimeSpan HeartbeatEvery = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan LogEvery = TimeSpan.FromSeconds(1);
-    private const int MaxChunkChars = 32_000;
+    private static readonly TimeSpan FutureSlack = TimeSpan.FromMinutes(10);
+
+    // Under the server's 64 KiB a part, counted in UTF-8 as it counts them.
+    private const int MaxChunkBytes = 60_000;
 
     private readonly CancellationTokenSource _stop = new();
     private readonly StringBuilder _pending = new();
     private readonly object _pendingLock = new();
+    private (int Seq, string Text)? _inFlight; // Sent again exactly as it was, under its own number, until it's taken.
     private int _nextSeq;
-    private bool _truncated;
-    private bool _lost;
-    private bool _cancelled;
+    private volatile bool _truncated;
+    private volatile bool _lost;
+    private volatile bool _cancelled;
+    private volatile bool _waiting;
+    private volatile bool _beatNow;
 
     public TestRunInfo Run => run;
 
@@ -75,14 +88,44 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
 
     public async Task<RunHere> RunAsync()
     {
+        var record = new RunHere(run.Id, DateTimeOffset.Now, run.LinkerLabel, run.ProjectId, run.Commit, settings.Shell, "", "", "", "couldnt_run", null, null);
+        var verdict = "couldnt_run";
+        int? exitCode = null;
         var keepAlive = KeepAliveAsync();
-        var (verdict, exitCode, record) = await RunJobAsync();
-        _stop.Cancel(); // Ends the heartbeat.
-        await keepAlive;
-        Line($"Verdict: {VerdictLabel(verdict)}{(exitCode is { } code ? $" (exit code {code})" : "")}");
-        await FlushAsync();
-        if (!_lost) await devices.EndRunAsync(run.Id, verdict, exitCode);
-        return record with { Verdict = _lost ? "lost" : verdict, ExitCode = exitCode };
+        try
+        {
+            (verdict, exitCode, record) = await RunJobAsync(record);
+        }
+        catch (Exception error)
+        {
+            // Whatever went wrong, the run still ends below, and nothing is left running.
+            Line($"The run stopped: {error.Message}");
+            AppLog.Write($"Test run {run.Id} stopped: {error.GetType().Name}: {error.Message}");
+            verdict = _cancelled ? "cancelled" : "couldnt_run";
+            exitCode = null;
+            record = record with { Note = error.Message };
+        }
+        finally
+        {
+            _stop.Cancel(); // Ends the heartbeat.
+            try
+            {
+                await keepAlive;
+                Line($"Verdict: {VerdictLabel(verdict)}{(exitCode is { } code ? $" (exit code {code})" : "")}");
+                await FlushAsync();
+            }
+            catch (Exception error)
+            {
+                AppLog.Write($"Test run {run.Id} couldn't send the end of its log: {error.Message}");
+            }
+            if (!_lost) await EndOnServerAsync(verdict, exitCode);
+        }
+        return record with
+        {
+            Verdict = _lost ? "lost" : verdict,
+            ExitCode = exitCode,
+            Note = _truncated ? $"{record.Note} Its log was cut short.".Trim() : record.Note,
+        };
     }
 
     public static string VerdictLabel(string status) => status switch
@@ -95,17 +138,33 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         "timed_out" => "Timed out",
         "cancelled" => "Cancelled",
         "lost" => "Lost",
+        "refused" => "Refused",
+        "expired" => "Expired, never started",
         _ => status,
     };
 
-    private async Task<(string Verdict, int? ExitCode, RunHere Record)> RunJobAsync()
+    // Until the server has it, as the PC that sent it is waiting. With no answer at all, it's
+    // tried again for a while; after that its lease runs out and it's called lost.
+    private async Task EndOnServerAsync(string verdict, int? exitCode)
     {
-        var record = new RunHere(run.Id, DateTimeOffset.Now, run.LinkerLabel, run.ProjectId, run.Commit, settings.Shell, "", "", "", "couldnt_run", null, null);
+        var wait = TimeSpan.FromSeconds(3);
+        for (var tries = 0; tries < 10; tries++)
+        {
+            var ended = await devices.EndRunAsync(run.Id, verdict, exitCode);
+            if (ended.Status is not null) return;
+            await Task.Delay(wait);
+            wait = TimeSpan.FromSeconds(Math.Min(30, wait.TotalSeconds * 2));
+        }
+        AppLog.Write($"Test run {run.Id} ended as {verdict}, but the server couldn't be told.");
+    }
+
+    private async Task<(string Verdict, int? ExitCode, RunHere Record)> RunJobAsync(RunHere record)
+    {
         (string, int?, RunHere) Refuse(string why)
         {
             Line($"Refused: {why}");
             AppLog.Write($"Refused test run {run.Id}: {why}");
-            return ("couldnt_run", null, record with { Note = why });
+            return ("refused", null, record with { Note = why });
         }
 
         // This PC's own record of the link is what counts, as the server can't make one up.
@@ -130,19 +189,56 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
             return Refuse("it isn't a test job this version can read.");
         }
 
+        // Signed, but it could still be one sent before, sent again.
+        if (!string.Equals(job.RunId, run.Id, StringComparison.OrdinalIgnoreCase)) return Refuse("its run id isn't the one it was signed with.");
+        var age = DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeSeconds(job.SentAt);
+        if (age > MachineLinks.JobMaxAge) return Refuse($"it was sent more than {MachineLinks.JobMaxAge.TotalHours:0} hours ago.");
+        if (age < -FutureSlack) return Refuse("it says it was sent in the future, so this PC's clock or the other's is wrong.");
+        if (!MachineLinks.TakeRunId(database, run.Id)) return Refuse("this PC has run it already.");
+
         if (settings.WorkFolder.Trim().Length == 0 || !Path.IsPathFullyQualified(settings.WorkFolder)) return Refuse("this PC has no work folder set.");
         var folder = Path.Combine(settings.WorkFolder, FolderName(job));
         var timeout = TimeSpan.FromMinutes(Math.Clamp(settings.TimeoutMinutes ?? job.TimeoutMinutes, 1, 24 * 60));
         record = record with { Project = job.ProjectName, Folder = folder, Prepare = job.Prepare, Test = job.Test };
 
-        // Exactly what runs, first, as any PC can change a project's synced commands.
+        // Exactly what runs, first.
         Line($"Test run for {job.ProjectName}, from {run.LinkerLabel}, at {job.Commit}");
+        Line($"Repo: {job.RepoUrl}");
         Line($"Folder: {folder}");
         Line($"Shell: {settings.Shell}. Time limit: {(int)timeout.TotalMinutes} minutes.");
         if (job.Prepare.Trim().Length > 0) Line($"Prepare: {job.Prepare}");
         Line($"Test: {job.Test}");
         foreach (var (name, _) in settings.Variables()) Line($"Environment: {name} is set by this PC.");
         Line("");
+
+        // Commands come from synced data, which the server or any paired PC can change, so a person
+        // here allows them, once for each link and project, and again whenever they change.
+        var commands = MachineLinks.CommandsHash(job.RepoUrl, job.Prepare, job.Test);
+        if (!MachineLinks.IsAllowedHere(database, run.LinkId, job.ProjectId, commands))
+        {
+            Line("Waiting for someone on this PC to allow these commands.");
+            _waiting = true;
+            _beatNow = true;
+            bool allowed;
+            try
+            {
+                allowed = await askToAllow(new TestApproval(run.Id, run.LinkerLabel, job.ProjectName, job.RepoUrl, job.Commit, job.Prepare, job.Test, settings.Shell, folder), _stop.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                allowed = false;
+            }
+            _waiting = false;
+            _beatNow = true;
+            if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", null, record);
+            if (!allowed)
+            {
+                Line("Refused: a person on this PC didn't allow these commands.");
+                return ("refused", null, record with { Note = "A person on this PC didn't allow these commands." });
+            }
+            MachineLinks.AllowHere(database, run.LinkId, job.ProjectId, commands);
+            Line("Allowed by a person on this PC.");
+        }
 
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
         limit.CancelAfter(timeout);
@@ -187,22 +283,23 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         return name.Length > 0 ? $"{name}-{id}" : id;
     }
 
-    // As GitHub Actions runs a step's script in each shell, so a command behaves here as it would there.
-    // Null when the shell couldn't be started.
+    // As GitHub Actions runs a step's script in each shell, so a command behaves here as it would
+    // there, in a Windows job of its own. Null when the shell couldn't be started, or was stopped.
     private async Task<int?> RunCommandAsync(string command, string folder, CancellationToken cancel)
     {
         var scripts = Path.Combine(Path.GetTempPath(), "agent-orange-test-runs");
         Directory.CreateDirectory(scripts);
         var name = Path.Combine(scripts, $"{run.Id}-{Guid.NewGuid():N}"[..48]);
 
-        ProcessStartInfo info;
+        string program;
+        string commandLine;
         switch (settings.Shell)
         {
             case TestMachineSettings.Cmd:
                 name += ".cmd";
                 await File.WriteAllTextAsync(name, command + "\r\n", new UTF8Encoding(false), CancellationToken.None);
-                info = new ProcessStartInfo(Environment.GetEnvironmentVariable("ComSpec") is { Length: > 0 } comSpec ? comSpec : "cmd.exe");
-                info.Arguments = $"/D /E:ON /V:OFF /S /C \"CALL \"{name}\"\"";
+                program = Environment.GetEnvironmentVariable("ComSpec") is { Length: > 0 } comSpec && Path.IsPathFullyQualified(comSpec) ? comSpec : Path.Combine(Environment.SystemDirectory, "cmd.exe");
+                commandLine = $"{JobProcess.Quote(program)} /D /E:ON /V:OFF /S /C \"CALL \"{name}\"\"";
                 break;
             case TestMachineSettings.Bash:
                 if (GitBash() is not { } bash)
@@ -212,65 +309,39 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
                 }
                 name += ".sh";
                 await File.WriteAllTextAsync(name, command.Replace("\r\n", "\n") + "\n", new UTF8Encoding(false), CancellationToken.None);
-                info = new ProcessStartInfo(bash);
-                foreach (var argument in new[] { "--noprofile", "--norc", "-eo", "pipefail", name.Replace('\\', '/') }) info.ArgumentList.Add(argument);
+                program = bash;
+                commandLine = $"{JobProcess.Quote(bash)} --noprofile --norc -eo pipefail {JobProcess.Quote(name.Replace('\\', '/'))}";
                 break;
             default:
-                name += ".ps1";
-                await File.WriteAllTextAsync(name, $"$ErrorActionPreference = 'stop'\r\n{command}\r\nif ((Test-Path -LiteralPath variable:\\LASTEXITCODE)) {{ exit $LASTEXITCODE }}\r\n", new UTF8Encoding(true), CancellationToken.None);
                 // -File rather than GitHub's -Command ". 'script'", as Windows PowerShell 5.1 turns
                 // the script's exit code into 1 that way.
-                info = new ProcessStartInfo("powershell.exe");
-                foreach (var argument in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name }) info.ArgumentList.Add(argument);
+                name += ".ps1";
+                await File.WriteAllTextAsync(name, $"$ErrorActionPreference = 'stop'\r\n{command}\r\nif ((Test-Path -LiteralPath variable:\\LASTEXITCODE)) {{ exit $LASTEXITCODE }}\r\n", new UTF8Encoding(true), CancellationToken.None);
+                program = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+                commandLine = $"{JobProcess.Quote(program)} -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {JobProcess.Quote(name)}";
                 break;
         }
-        info.WorkingDirectory = folder;
-        info.UseShellExecute = false;
-        info.CreateNoWindow = true;
-        info.RedirectStandardOutput = true;
-        info.RedirectStandardError = true;
-        info.RedirectStandardInput = true; // Closed at once, so nothing waits on someone typing.
-        info.StandardOutputEncoding = Encoding.UTF8;
-        info.StandardErrorEncoding = Encoding.UTF8;
-        foreach (var (key, value) in settings.Variables()) info.Environment[key] = value;
+
+        var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (DictionaryEntry variable in Environment.GetEnvironmentVariables()) environment[(string)variable.Key] = (string?)variable.Value ?? "";
+        foreach (var (key, value) in settings.Variables()) environment[key] = value;
 
         try
         {
-            using var process = new Process { StartInfo = info };
-            process.OutputDataReceived += (_, line) => { if (line.Data is not null) Line(line.Data); };
-            process.ErrorDataReceived += (_, line) => { if (line.Data is not null) Line(line.Data); };
+            JobProcess process;
             try
             {
-                process.Start();
+                process = JobProcess.Start(program, commandLine, folder, environment, Line);
             }
-            catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
+            catch (Win32Exception error)
             {
-                Line($"Couldn't start {settings.Shell}: {error.Message}");
+                Line($"{error.Message} {new Win32Exception(error.NativeErrorCode).Message}");
                 return null;
             }
-            ChildProcesses.Track(process);
-            process.StandardInput.Close();
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-            try
+            using (process)
             {
-                await process.WaitForExitAsync(cancel);
+                return await process.WaitAsync(cancel);
             }
-            catch (OperationCanceledException)
-            {
-                try
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception)
-                {
-                    // It ended by itself meanwhile.
-                }
-                await process.WaitForExitAsync(CancellationToken.None);
-                return process.ExitCode;
-            }
-            await process.WaitForExitAsync(CancellationToken.None); // The last of its output.
-            return process.ExitCode;
         }
         finally
         {
@@ -304,9 +375,10 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         return File.Exists(installed) ? installed : null;
     }
 
+    // The server can't keep a nul, and would refuse the whole part.
     private void Line(string text)
     {
-        lock (_pendingLock) _pending.Append(text).Append('\n');
+        lock (_pendingLock) _pending.Append(text.Replace('\0', '�')).Append('\n');
     }
 
     // Renews the lease, sends the log, and hears about a cancel, until the run ends.
@@ -323,11 +395,18 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
             {
                 return;
             }
-            await FlushAsync();
-            if (DateTimeOffset.UtcNow - lastBeat < HeartbeatEvery) continue;
-            lastBeat = DateTimeOffset.UtcNow;
-            var beat = await devices.HeartbeatAsync(run.Id);
-            Hear(beat);
+            try
+            {
+                await FlushAsync();
+                if (!_beatNow && DateTimeOffset.UtcNow - lastBeat < HeartbeatEvery) continue;
+                _beatNow = false;
+                lastBeat = DateTimeOffset.UtcNow;
+                Hear(await devices.HeartbeatAsync(run.Id, _waiting));
+            }
+            catch (Exception error)
+            {
+                AppLog.Write($"Test run {run.Id} couldn't reach the server: {error.Message}");
+            }
         }
     }
 
@@ -342,7 +421,7 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         }
         if (answer.Value is { } keepGoing)
         {
-            _truncated |= keepGoing.Truncated;
+            if (keepGoing.Truncated) _truncated = true;
             if (keepGoing.Cancel && !_cancelled)
             {
                 _cancelled = true;
@@ -351,27 +430,56 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         }
     }
 
-    // Sent in order, a part at a time, each numbered so one sent again is only kept once.
+    // Sent in order, a part at a time, each numbered. A part that got no answer goes again exactly
+    // as it was, under the same number. One the server refuses outright ends the log there.
     private async Task FlushAsync()
     {
-        while (true)
+        while (!_truncated)
         {
-            string chunk;
-            lock (_pendingLock)
+            if (_inFlight is null)
             {
-                if (_pending.Length == 0) return;
-                chunk = _pending.ToString(0, Math.Min(_pending.Length, MaxChunkChars));
+                lock (_pendingLock)
+                {
+                    if (_pending.Length == 0) return;
+                    _inFlight = (_nextSeq, TakeChunk());
+                }
             }
-            if (_truncated)
-            {
-                lock (_pendingLock) _pending.Clear();
-                return;
-            }
-            var sent = await devices.AppendLogAsync(run.Id, _nextSeq, chunk);
+            var (seq, text) = _inFlight.Value;
+            var sent = await devices.AppendLogAsync(run.Id, seq, text);
             Hear(sent);
-            if (!sent.Worked) return; // Tried again next time, with the same number.
-            _nextSeq++;
-            lock (_pendingLock) _pending.Remove(0, chunk.Length);
+            if (sent.Worked)
+            {
+                _inFlight = null;
+                _nextSeq++;
+                continue;
+            }
+            if (sent.Status is { } status && (int)status is >= 400 and < 500 && status is not (HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests or HttpStatusCode.Gone))
+            {
+                AppLog.Write($"Test run {run.Id}'s log was refused by the server ({(int)status}), so the rest isn't sent.");
+                _truncated = true;
+            }
+            return; // Tried again next time, if it can be.
         }
+        lock (_pendingLock) _pending.Clear();
+        _inFlight = null;
+    }
+
+    // As much from the front as fits in a part, by its UTF-8 size, never splitting a surrogate pair.
+    private string TakeChunk()
+    {
+        var bytes = 0;
+        var end = 0;
+        while (end < _pending.Length)
+        {
+            var letter = _pending[end];
+            var pair = char.IsHighSurrogate(letter) && end + 1 < _pending.Length && char.IsLowSurrogate(_pending[end + 1]);
+            var size = pair ? 4 : letter < 0x80 ? 1 : letter < 0x800 ? 2 : 3;
+            if (bytes + size > MaxChunkBytes) break;
+            bytes += size;
+            end += pair ? 2 : 1;
+        }
+        var chunk = _pending.ToString(0, end);
+        _pending.Remove(0, end);
+        return chunk;
     }
 }

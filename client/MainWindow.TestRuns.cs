@@ -12,6 +12,35 @@ namespace AgentOrange;
 /// </summary>
 public partial class MainWindow
 {
+    private TestCommandsWindow? _approvalWindow;
+
+    // On the PC running them: a window asking a person to allow a run's commands, closed if the
+    // run stops waiting some other way, such as from the settings page or a cancel.
+    private void WatchTestApprovals()
+    {
+        _testMachines.ApprovalNeeded += request =>
+        {
+            _approvalWindow?.Close();
+            var window = TestCommandsWindow.ToRunHere(request);
+            _approvalWindow = window;
+            _ = AnswerWhenToldAsync(window, request.RunId);
+            window.Show();
+#if DEBUG
+            if (!Headless.Active)
+#endif
+            window.Activate();
+        };
+        _testMachines.ApprovalEnded += () =>
+        {
+            var window = _approvalWindow;
+            _approvalWindow = null;
+            window?.Close();
+        };
+    }
+
+    private async Task AnswerWhenToldAsync(TestCommandsWindow window, string runId) =>
+        _testMachines.AnswerApproval(runId, await window.Result);
+
     // Into the row of what can be done with the folder, beside the git actions.
     private void AddTestRunButton(Panel row, Project project, string folder)
     {
@@ -114,10 +143,16 @@ public partial class MainWindow
             return;
         }
 
-        var (runId, failed) = await _testMachines.RunTestsAsync(link, project, _database.GetTestSetup(project.Id), commit);
+        var (runId, failed) = await _testMachines.RunTestsAsync(link, project, _database.GetTestSetup(project.Id), commit, async request =>
+        {
+            var window = TestCommandsWindow.ToSend(request);
+            window.Owner = this;
+            window.Show();
+            return await window.Result;
+        });
         if (runId is null)
         {
-            ShowPageProblem(project.Id, failed ?? "The tests couldn't be sent.");
+            if (failed is not null) ShowPageProblem(project.Id, failed); // Otherwise the person chose not to send them.
             return;
         }
         new TestRunWindow(_devices, runId, project.Name) { Owner = null }.Show();

@@ -110,7 +110,7 @@ public partial class SettingsModal
             Row("Environment variables", "Set for every run here, one KEY=VALUE a line.", environment),
             Row("Time limit", "Minutes a run may take here, over what the project asks. Empty uses the project's.", timeout),
         ];
-        var thisPc = Card([Row("Let other PCs run tests here", "Your other PCs linked to this one can send a project's tests to run here, in the background. Only the project's own prepare and test commands run, and each run here is listed below with exactly what it ran.", accepting), .. targetRows]);
+        var thisPc = Card([Row("Let other PCs run tests here", "Your other PCs linked to this one can send a project's tests to run here, in the background, as you. Before a project's commands first run here, and whenever they change, you're asked to allow them. Each run is listed below with exactly what it ran.", accepting), .. targetRows]);
         void ShowTargetRows()
         {
             var rows = (StackPanel)thisPc.Child;
@@ -231,7 +231,18 @@ public partial class SettingsModal
         {
             parts.Add(Section("Runs here"));
             var rows = new List<FrameworkElement>();
-            if (TestMachines.Running is { } running)
+            if (TestMachines.Approval is { } waiting)
+            {
+                var request = waiting.Request;
+                var allow = PrimaryButton("Allow", () => TestMachines.AnswerApproval(request.RunId, true));
+                var refuse = ActionButton("Refuse");
+                refuse.Click += (_, _) => TestMachines.AnswerApproval(request.RunId, false);
+                rows.Add(Row(
+                    $"{request.From} wants to run these commands here",
+                    $"For {request.Project}, in a clone of {request.RepoUrl} at {ShortCommit(request.Commit)}, in {request.Shell}. They'd run as you.{(request.Prepare.Length > 0 ? $"\nPrepare: {request.Prepare}" : "")}\nTest: {request.Test}",
+                    refuse, allow));
+            }
+            else if (TestMachines.Running is { } running)
             {
                 var stop = ActionButton("Cancel");
                 stop.Click += (_, _) => running.Cancel();

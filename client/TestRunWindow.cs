@@ -83,6 +83,9 @@ public sealed class TestRunWindow : Window
             await ReadAsync();
         };
         Closed += (_, _) => _poll.Stop();
+#if DEBUG
+        if (Headless.Active) Headless.KeepOffScreen(this);
+#endif
     }
 
     private async Task ReadAsync()
@@ -124,11 +127,14 @@ public sealed class TestRunWindow : Window
     private void Show(TestRunInfo run)
     {
         var verdict = TestRunner.VerdictLabel(run.Status);
-        _status.Text = run.Status == "running" && run.CancelRequested ? "Cancelling…" : run.ExitCode is { } code && run.Finished ? $"{verdict} (exit code {code})" : verdict;
+        _status.Text = run.Status == "running" && run.CancelRequested ? "Cancelling…"
+            : run.Status == "running" && run.WaitingApproval ? $"Waiting for someone on {run.MachineLabel} to allow these commands"
+            : run.ExitCode is { } code && run.Finished ? $"{verdict} (exit code {code})"
+            : verdict;
         _status.Foreground = run.Status switch
         {
             "passed" => new SolidColorBrush(Color.FromRgb(0x5F, 0xD0, 0x8A)),
-            "failed" or "lost" or "timed_out" or "couldnt_run" => new SolidColorBrush(Color.FromRgb(0xE8, 0x6B, 0x6B)),
+            "failed" or "lost" or "timed_out" or "couldnt_run" or "refused" or "expired" => new SolidColorBrush(Color.FromRgb(0xE8, 0x6B, 0x6B)),
             _ => (Brush)FindResource("TextStrong"),
         };
 
