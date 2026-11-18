@@ -51,7 +51,7 @@ public partial class SettingsModal
         label.Width = 300;
         label.MaxLength = MaxDeviceNameLength;
         AutomationProperties.SetName(label, "Test machine name");
-        label.LostFocus += (_, _) =>
+        label.LostKeyboardFocus += (_, _) =>
         {
             if (label.Text.Trim().Length == 0) label.Text = TestMachines.Settings.Label;
             else if (label.Text.Trim() != TestMachines.Settings.Label) Save(now => now with { Label = label.Text.Trim() });
@@ -60,7 +60,7 @@ public partial class SettingsModal
         var tags = Field(string.Join(", ", settings.Tags ?? []));
         tags.Width = 300;
         AutomationProperties.SetName(tags, "Tags");
-        tags.LostFocus += (_, _) => Save(now => now with { Tags = SplitTags(tags.Text) });
+        tags.LostKeyboardFocus += (_, _) => Save(now => now with { Tags = SplitTags(tags.Text) });
 
         var folder = FolderField(settings.WorkFolder);
         var changeFolder = ActionButton("Change");
@@ -82,12 +82,12 @@ public partial class SettingsModal
         environment.MinHeight = 64;
         environment.VerticalContentAlignment = VerticalAlignment.Top;
         AutomationProperties.SetName(environment, "Environment variables");
-        environment.LostFocus += (_, _) => Save(now => now with { Environment = environment.Text });
+        environment.LostKeyboardFocus += (_, _) => Save(now => now with { Environment = environment.Text });
 
         var timeout = Field(settings.TimeoutMinutes?.ToString() ?? "");
         timeout.Width = 80;
         AutomationProperties.SetName(timeout, "Time limit");
-        timeout.LostFocus += (_, _) =>
+        timeout.LostKeyboardFocus += (_, _) =>
         {
             var typed = timeout.Text.Trim();
             if (typed.Length == 0) Save(now => now with { TimeoutMinutes = null });
@@ -100,13 +100,37 @@ public partial class SettingsModal
             problem.Visibility = Visibility.Collapsed;
         };
 
-        var dynamic = new StackPanel();
+        // What only matters while this PC takes runs is shown only then.
+        FrameworkElement[] targetRows =
+        [
+            Row("Name", "Shown to your other PCs.", label),
+            Row("Tags", "What this PC offers, as words a project's tests can ask for, such as windows, gpu or node-22. Separate them with commas.", tags),
+            Row("Work folder", "Each project gets its own checkout here. A short path keeps clear of tools that can't take long file names.", folder, changeFolder),
+            Row("Shell", "What the commands run in here: PowerShell, cmd, or Git Bash.", shell),
+            Row("Environment variables", "Set for every run here, one KEY=VALUE a line.", environment),
+            Row("Time limit", "Minutes a run may take here, over what the project asks. Empty uses the project's.", timeout),
+        ];
+        var thisPc = Card([Row("Let other PCs run tests here", "Your other PCs linked to this one can send a project's tests to run here, in the background. Only the project's own prepare and test commands run, and each run here is listed below with exactly what it ran.", accepting), .. targetRows]);
+        void ShowTargetRows()
+        {
+            var rows = (StackPanel)thisPc.Child;
+            for (var i = 1; i < rows.Children.Count; i++) ((UIElement)rows.Children[i]).Visibility = accepting.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        }
+        accepting.Checked += (_, _) => ShowTargetRows();
+        accepting.Unchecked += (_, _) => ShowTargetRows();
+        ShowTargetRows();
+
+        var linker = new StackPanel();
+        var target = new StackPanel();
         void Redraw()
         {
             // Not under the person's typing, which drawing again would take away.
-            if (dynamic.IsKeyboardFocusWithin) return;
-            dynamic.Children.Clear();
-            foreach (var element in TestMachinesParts()) dynamic.Children.Add(element);
+            foreach (var (host, parts) in new[] { (linker, (Func<List<UIElement>>)LinkerParts), (target, TargetParts) })
+            {
+                if (host.IsKeyboardFocusWithin) continue;
+                host.Children.Clear();
+                foreach (var element in parts()) host.Children.Add(element);
+            }
         }
         _refreshTestMachines = Redraw;
         Redraw();
@@ -114,38 +138,61 @@ public partial class SettingsModal
 
         return
         [
+            linker,
             Section("This PC"),
-            Card(
-                Row("Let other PCs run tests here", "Your other PCs linked to this one can send a project's tests to run here, in the background. Only the project's own prepare and test commands run, and each run here is listed below with exactly what it ran.", accepting),
-                Row("Name", "Shown to your other PCs.", label),
-                Row("Tags", "What this PC offers, as words a project's tests can ask for, such as windows, gpu or node-22. Separate them with commas.", tags),
-                Row("Work folder", "Each project gets its own checkout here. A short path keeps clear of tools that can't take long file names.", folder, changeFolder),
-                Row("Shell", "What the commands run in here: PowerShell, cmd, or Git Bash.", shell),
-                Row("Environment variables", "Set for every run here, one KEY=VALUE a line.", environment),
-                Row("Time limit", "Minutes a run may take here, over what the project asks. Empty uses the project's.", timeout)),
+            thisPc,
             problem,
-            dynamic,
+            target,
         ];
     }
 
     private static string[] SplitTags(string typed) =>
         [.. typed.Split([',', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase)];
 
-    // The parts that change as the server answers, drawn again each time.
-    private List<UIElement> TestMachinesParts()
+    // The parts that change as the server answers, drawn again each time. As the PC linking: T3's
+    // Linked environments.
+    private List<UIElement> LinkerParts()
     {
         var parts = new List<UIElement>();
         var latest = TestMachines.Latest;
-        if (TestMachines.Problem is { } trouble)
+        var me = latest?.Me;
+        var link = ActionButton("Link");
+        link.Click += (_, _) => OpenLinkDialog(null);
+        parts.Add(SectionWithActions("Linked machines", null, link));
+        if (TestMachines.Problem is { } trouble && latest is not null)
         {
             var shown = ProblemText();
             ShowProblem(shown, trouble);
             parts.Add(shown);
         }
+        var linked = latest?.Links.Where(each => each.Linker == me).OrderBy(each => each.MachineLabel, StringComparer.CurrentCultureIgnoreCase).ToList();
+        if (latest is null)
+        {
+            parts.Add(Card(Row(TestMachines.Problem is null ? "Loading linked machines…" : "Could not load linked machines", TestMachines.Problem)));
+        }
+        else if (linked!.Count == 0)
+        {
+            parts.Add(Card(Row("No linked machines", "Link another of your PCs running Agent Orange, so this PC can run a project's tests there.")));
+        }
+        else
+        {
+            parts.Add(Card([.. linked.Select(LinkedMachineRow)]));
+        }
+        if (_linkedNote is { } note)
+        {
+            parts.Add(new TextBlock { Text = note, FontSize = 12.5, Foreground = (Brush)FindResource("TextNormal"), Margin = new Thickness(16, 8, 16, 0) });
+        }
+        return parts;
+    }
+
+    // As the target: T3's Authorized clients, with its pairing links first, then what ran here.
+    private List<UIElement> TargetParts()
+    {
+        var parts = new List<UIElement>();
+        var latest = TestMachines.Latest;
         var settings = TestMachines.Settings;
         var me = latest?.Me;
 
-        // As the target: T3's Authorized clients, with its pairing links first.
         if (settings.Accepting)
         {
             var clients = latest?.Links.Where(link => link.Machine == me).ToList() ?? [];
@@ -173,27 +220,6 @@ public partial class SettingsModal
             StartCodeClock(false);
         }
 
-        // As the PC linking: T3's Linked environments.
-        var link = ActionButton("Link");
-        link.Click += (_, _) => OpenLinkDialog(null);
-        parts.Add(SectionWithActions("Linked machines", null, link));
-        var linked = latest?.Links.Where(each => each.Linker == me).OrderBy(each => each.MachineLabel, StringComparer.CurrentCultureIgnoreCase).ToList();
-        if (latest is null)
-        {
-            parts.Add(Card(Row(TestMachines.Problem is null ? "Loading linked machines…" : "Could not load linked machines", TestMachines.Problem)));
-        }
-        else if (linked!.Count == 0)
-        {
-            parts.Add(Card(Row("No linked machines", "Link another of your PCs running Agent Orange, so this PC can run a project's tests there.")));
-        }
-        else
-        {
-            parts.Add(Card([.. linked.Select(LinkedMachineRow)]));
-        }
-        if (_linkedNote is { } note)
-        {
-            parts.Add(new TextBlock { Text = note, FontSize = 12.5, Foreground = (Brush)FindResource("TextNormal"), Margin = new Thickness(16, 8, 16, 0) });
-        }
 
         // Exactly what ran here, as any PC can change a project's synced commands.
         var runsHere = TestMachines.RunsHere();
@@ -322,15 +348,12 @@ public partial class SettingsModal
     // T3's "Pairing code" dialog: the value, Done and Copy code.
     private void ShowCodeDialog(LinkCode code)
     {
-        var value = new TextBox
+        var value = new TextBlock
         {
             Text = code.Code,
-            IsReadOnly = true,
             FontFamily = new FontFamily("Consolas"),
             FontSize = 26,
-            HorizontalContentAlignment = HorizontalAlignment.Center,
-            Background = Brushes.Transparent,
-            BorderThickness = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Center,
             Foreground = (Brush)FindResource("TextStrong"),
         };
         AutomationProperties.SetName(value, "Pairing code");

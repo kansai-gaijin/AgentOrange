@@ -160,15 +160,15 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         {
             Line($"> {job.Prepare}");
             var prepared = await RunCommandAsync(job.Prepare, folder, limit.Token);
-            if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", prepared, record);
-            if (limit.IsCancellationRequested) return ("timed_out", prepared, record);
+            if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", null, record);
+            if (limit.IsCancellationRequested) return ("timed_out", null, record);
             if (prepared != 0) return ("couldnt_run", prepared, record with { Note = prepared is null ? "The shell couldn't be started." : "Prepare failed." });
         }
 
         Line($"> {job.Test}");
         var tested = await RunCommandAsync(job.Test, folder, limit.Token);
-        if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", tested, record);
-        if (limit.IsCancellationRequested) return ("timed_out", tested, record);
+        if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", null, record);
+        if (limit.IsCancellationRequested) return ("timed_out", null, record);
         return tested switch
         {
             null => ("couldnt_run", null, record with { Note = "The shell couldn't be started." }),
@@ -218,8 +218,10 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
             default:
                 name += ".ps1";
                 await File.WriteAllTextAsync(name, $"$ErrorActionPreference = 'stop'\r\n{command}\r\nif ((Test-Path -LiteralPath variable:\\LASTEXITCODE)) {{ exit $LASTEXITCODE }}\r\n", new UTF8Encoding(true), CancellationToken.None);
+                // -File rather than GitHub's -Command ". 'script'", as Windows PowerShell 5.1 turns
+                // the script's exit code into 1 that way.
                 info = new ProcessStartInfo("powershell.exe");
-                foreach (var argument in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", $". '{name.Replace("'", "''")}'" }) info.ArgumentList.Add(argument);
+                foreach (var argument in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name }) info.ArgumentList.Add(argument);
                 break;
         }
         info.WorkingDirectory = folder;

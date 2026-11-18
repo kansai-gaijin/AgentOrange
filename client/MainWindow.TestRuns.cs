@@ -1,5 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media;
 using static AgentOrange.Ui;
 
 namespace AgentOrange;
@@ -28,52 +30,75 @@ public partial class MainWindow
         row.Children.Add(run);
     }
 
+    // A list under the button, as the git actions' menu is: one line a linked machine, then earlier runs.
     private void OpenTestMachineMenu(Button button, Project project, string folder, List<TestRunInfo> recent)
     {
         var setup = _database.GetTestSetup(project.Id);
-        var menu = new ContextMenu { PlacementTarget = button, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
+        var items = new StackPanel { MinWidth = 260 };
+        var menu = new Popup
+        {
+            PlacementTarget = button,
+            Placement = PlacementMode.Bottom,
+            StaysOpen = false,
+            AllowsTransparency = true,
+            Child = new Border
+            {
+                Background = (Brush)FindResource("SidebarBackground"),
+                BorderBrush = (Brush)FindResource("Line"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(4),
+                Margin = new Thickness(0, 4, 0, 0),
+                Child = items,
+            },
+        };
+        void Add(string text, Action? pick)
+        {
+            if (pick is null)
+            {
+                items.Children.Add(new TextBlock { Text = text, FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(10, 6, 10, 6), TextWrapping = TextWrapping.Wrap, MaxWidth = 360 });
+                return;
+            }
+            var item = Clickable("HeaderButton", text, () =>
+            {
+                menu.IsOpen = false;
+                pick();
+            });
+            item.HorizontalAlignment = HorizontalAlignment.Stretch;
+            item.HorizontalContentAlignment = HorizontalAlignment.Left;
+            items.Children.Add(item);
+        }
+
         var latest = _testMachines.Latest;
         var links = latest?.Links.Where(link => link.Linker == latest.Me).OrderBy(link => link.MachineLabel, StringComparer.CurrentCultureIgnoreCase).ToList() ?? [];
-        if (links.Count == 0)
-        {
-            menu.Items.Add(new MenuItem { Header = _testMachines.Problem ?? "No linked machines. Link one in Settings › Test machines.", IsEnabled = false });
-        }
+        if (links.Count == 0) Add(_testMachines.Problem ?? "No linked machines. Link one in Settings › Test machines.", null);
         foreach (var link in links)
         {
             var missing = (setup.Tags ?? []).Where(tag => !TestMachines.HasTags(link.MachineTags, [tag])).ToList();
-            var why = link.Status switch
+            var why = missing.Count > 0 ? $"doesn't offer {string.Join(", ", missing)}" : link.Status switch
             {
                 "expired" => "expired",
                 "unreachable" => "not answering right now",
                 "busy" => "running tests, so this waits its turn",
                 _ => null,
             };
-            if (missing.Count > 0) why = $"doesn't offer {string.Join(", ", missing)}";
-            var item = new MenuItem
-            {
-                Header = why is null ? link.MachineLabel : $"{link.MachineLabel} · {why}",
-                IsEnabled = link.Status is "reachable" or "busy" && missing.Count == 0,
-            };
-            item.Click += async (_, _) => await SendTestsAsync(link, project, folder);
-            menu.Items.Add(item);
+            var usable = link.Status is "reachable" or "busy" && missing.Count == 0;
+            Add(why is null ? link.MachineLabel : $"{link.MachineLabel} · {why}", usable ? async () => await SendTestsAsync(link, project, folder) : null);
         }
 
         // Earlier runs this PC sent, to open again.
         var sent = recent.Where(each => each.Linker == latest?.Me).Take(5).ToList();
         if (sent.Count > 0)
         {
-            menu.Items.Add(new Separator());
+            items.Children.Add(new Border { Height = 1, Background = (Brush)FindResource("Line"), Margin = new Thickness(4) });
             foreach (var each in sent)
             {
                 var when = DateTimeOffset.FromUnixTimeSeconds((long)each.CreatedAt).ToLocalTime();
-                var item = new MenuItem { Header = $"{TestRunner.VerdictLabel(each.Status)} on {each.MachineLabel}, {when:d MMM HH:mm}" };
-                item.Click += (_, _) => new TestRunWindow(_devices, each.Id, project.Name).Show();
-                menu.Items.Add(item);
+                Add($"{TestRunner.VerdictLabel(each.Status)} on {each.MachineLabel}, {when:d MMM HH:mm}", () => new TestRunWindow(_devices, each.Id, project.Name).Show());
             }
         }
         menu.IsOpen = true;
     }
-
     private async Task SendTestsAsync(MachineLinkInfo link, Project project, string folder)
     {
         // The machine fetches the commit from origin, so it has to be there.
