@@ -113,6 +113,7 @@ public partial class MainWindow
                     git.Margin = new Thickness(actions.Children.Count > 0 ? 8 : 0, 0, 0, 0);
                     actions.Children.Add(git);
                 }
+                if (!inSection) AddTestRunButton(actions, project, folder);
                 if (actions.Children.Count > 0) body.Children.Add(actions);
             }
             if (found.FolderMayNotMatch)

@@ -228,6 +228,8 @@ public partial class ProjectSettingsModal : UserControl
                     Row("Folder on this PC", "Doesn't sync, because it's different on each PC.", folder, browse, disconnect)),
                 Section("Game settings"),
                 GameSettingsCard(projectId),
+                Section("Tests"),
+                TestSetupCard(projectId),
                 Section("Images"),
                 Card(
                     ImageRow(projectId, "Thumbnail", "Shown on the project list.", ProjectImageKind.Thumbnail, 44, 66),
@@ -589,6 +591,48 @@ public partial class ProjectSettingsModal : UserControl
             SaveOnLeave(field, value, typed =>
             {
                 _database.SetGameSettings(projectId, set(_database.GetGameSettings(projectId), typed));
+                Changed?.Invoke();
+                return Task.FromResult<string?>(null);
+            });
+            rows.Add(Row(name, hint, field));
+        }
+        return Card([.. rows]);
+    }
+
+    // How its tests run on a test machine (#93): plain commands, whatever the project is made with.
+    // They sync, so any PC can send them; the machine shows exactly what it ran.
+    private Border TestSetupCard(string projectId)
+    {
+        var now = _database.GetTestSetup(projectId);
+        (string Name, string Hint, string Value, int Width, Func<TestSetup, string, (TestSetup?, string?)> Set)[] settings =
+        [
+            ("Prepare command", "Optional. Gets it ready first, such as npm ci, cargo build or the project's own build script. If it fails, the tests couldn't run.", now.Prepare, 300,
+                (all, value) => (all with { Prepare = value }, null)),
+            ("Test command", "Runs the tests, in the project's folder on the test machine. Its exit code is the verdict: 0 passed, anything else failed.", now.Test, 300,
+                (all, value) => (all with { Test = value }, null)),
+            ("Couldn't run exit code", "Optional. An exit code of the test command that means the tests couldn't run, rather than that they failed.", now.CouldntRunCode?.ToString() ?? "", 80,
+                (all, value) => value.Length == 0 ? (all with { CouldntRunCode = null }, null)
+                    : int.TryParse(value, out var code) && code != 0 ? (all with { CouldntRunCode = code }, null)
+                    : (null, "The couldn't run exit code is a whole number other than 0, or empty.")),
+            ("Tags needed", "Words a test machine has to offer, such as windows or gpu. Separate them with commas.", string.Join(", ", now.Tags ?? []), 300,
+                (all, value) => (all with { Tags = [.. value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase)] }, null)),
+            ("Time limit", "Minutes a run may take, from checking out to the last test. A test machine can set its own.", now.TimeoutMinutes.ToString(), 80,
+                (all, value) => int.TryParse(value, out var minutes) && minutes is >= 1 and <= 24 * 60 ? (all with { TimeoutMinutes = minutes }, null)
+                    : (null, "The time limit is in minutes, from 1 to 1440.")),
+        ];
+
+        var rows = new List<FrameworkElement>();
+        foreach (var (name, hint, value, width, set) in settings)
+        {
+            var field = Field(value);
+            field.Width = width;
+            if (width > 100) field.FontFamily = new FontFamily("Consolas");
+            System.Windows.Automation.AutomationProperties.SetName(field, name);
+            SaveOnLeave(field, value, typed =>
+            {
+                var (changed, problem) = set(_database.GetTestSetup(projectId), typed);
+                if (changed is null) return Task.FromResult(problem);
+                _database.SetTestSetup(projectId, changed);
                 Changed?.Invoke();
                 return Task.FromResult<string?>(null);
             });

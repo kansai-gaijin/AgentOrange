@@ -54,6 +54,9 @@ public sealed class SyncEngine
     /// <summary>Changes the server wouldn't take, set aside so everything else can still sync. They stay on this PC.</summary>
     public int RefusedChanges => _database.CountRefused();
 
+    /// <summary>This window is the one that syncs, so it's the one that does background work for the server, such as test runs.</summary>
+    public bool HasTurn => _hasSyncTurn;
+
     /// <summary>Another window of the app has the database's turn to sync.</summary>
     public bool OtherWindowSyncs { get; private set; }
 

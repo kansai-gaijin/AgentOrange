@@ -28,7 +28,7 @@ public sealed record DeviceInfo(string Id, string Name, bool Current, double Las
 public sealed record SyncResponse(long Cursor, bool HasMore, List<SyncChange> Changes, string? Epoch, bool TooFarBehind = false);
 
 /// <summary>This PC's login to the server. It's stored encrypted, per server address.</summary>
-public sealed class DeviceSession(LocalDatabase database, ServerConnection server)
+public sealed partial class DeviceSession(LocalDatabase database, ServerConnection server)
 {
     private sealed record PairResponse(string Id, string Token);
 

@@ -65,6 +65,18 @@ public sealed record GameSettings(
 }
 
 /// <summary>
+/// How a project's tests run on a test machine: plain commands in the project's folder, whatever
+/// it's made with. Prepare (optional) gets it ready, such as installing packages or building, then
+/// Test runs the tests, and its exit code is the verdict: 0 passed, CouldntRunCode (if set) means it
+/// couldn't run, anything else failed. Tags are what a machine must offer, as free-form words that
+/// only have to match. It syncs, so any PC can run them; each machine shows what it ran.
+/// </summary>
+public sealed record TestSetup(string Prepare = "", string Test = "", int? CouldntRunCode = null, string[]? Tags = null, int TimeoutMinutes = 30)
+{
+    public bool CanRun => Test.Trim().Length > 0;
+}
+
+/// <summary>
 /// The file that makes an asset delivered: where it is in the project's folder, which goes to other
 /// PCs with the project's repo, and what it was when it was given, so a changed file can be told apart.
 /// Only a person gives it, never an agent.
@@ -103,6 +115,7 @@ public sealed class LocalDatabase
     private const string ImagesCollection = "project_images";
     private const string EnginesCollection = "project_engines";
     private const string GameSettingsCollection = "game_settings";
+    private const string TestSetupsCollection = "test_setups";
     private const string TasksCollection = "tasks";
     private const string DocumentsCollection = "documents";
     private const string DocumentPicturesCollection = "document_pictures";
@@ -546,6 +559,22 @@ public sealed class LocalDatabase
 
     public void SetGameSettings(string projectId, GameSettings settings) =>
         SaveRecord(GameSettingsCollection, projectId, JsonSerializer.Serialize(settings, JsonOptions));
+
+    public TestSetup GetTestSetup(string projectId)
+    {
+        if (GetRecord(TestSetupsCollection, projectId) is not { Length: > 0 } stored) return new TestSetup();
+        try
+        {
+            return JsonSerializer.Deserialize<TestSetup>(stored, JsonOptions) ?? new TestSetup();
+        }
+        catch (JsonException)
+        {
+            return new TestSetup(); // It arrived from another PC and can't be read.
+        }
+    }
+
+    public void SetTestSetup(string projectId, TestSetup setup) =>
+        SaveRecord(TestSetupsCollection, projectId, JsonSerializer.Serialize(setup, JsonOptions));
 
     /// <summary>An asset's deliverable, or null until a person gives it one.</summary>
     public AssetDeliverable? GetAssetDeliverable(string cardId)
@@ -1020,6 +1049,7 @@ public sealed class LocalDatabase
             }
             if (GetRecord(EnginesCollection, projectId) is not null) SaveRecord(EnginesCollection, projectId, "", deleted: true);
             if (GetRecord(GameSettingsCollection, projectId) is not null) SaveRecord(GameSettingsCollection, projectId, "", deleted: true);
+            if (GetRecord(TestSetupsCollection, projectId) is not null) SaveRecord(TestSetupsCollection, projectId, "", deleted: true);
 
             // An edit made elsewhere can still arrive after the delete, which wins.
             foreach (var field in ProjectFields)
@@ -1322,7 +1352,7 @@ public sealed class LocalDatabase
     // Project ids have no colons, and what belongs to one is named after it, then a colon.
     private static string? ProjectIdOf(SyncChange change) => change.Collection switch
     {
-        ProjectsCollection or EnginesCollection or GameSettingsCollection => change.Id,
+        ProjectsCollection or EnginesCollection or GameSettingsCollection or TestSetupsCollection => change.Id,
         FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection or AssetDetailsCollection or AssetTagsCollection or AssetDeliverablesCollection or TasksCollection or MilestonesCollection or DocumentsCollection or DocumentPicturesCollection => change.Id.Split(':')[0],
         _ => null,
     };
@@ -1898,6 +1928,19 @@ public sealed class LocalDatabase
     {
         using var connection = Open();
         WriteSetting(connection, key, value);
+    }
+
+    /// <summary>The keys of every setting that's set and starts with this.</summary>
+    public List<string> SettingKeysStartingWith(string prefix)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT key FROM settings WHERE substr(key, 1, length($prefix)) = $prefix AND value <> ''";
+        command.Parameters.AddWithValue("$prefix", prefix);
+        var keys = new List<string>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read()) keys.Add(reader.GetString(0));
+        return keys;
     }
 
     public void RemoveSetting(string key)

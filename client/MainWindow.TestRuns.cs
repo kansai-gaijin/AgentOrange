@@ -1,0 +1,100 @@
+using System.Windows;
+using System.Windows.Controls;
+using static AgentOrange.Ui;
+
+namespace AgentOrange;
+
+/// <summary>
+/// "Run tests on…" on a project's page (#93): sends the project's tests, at the commit its folder
+/// has checked out, to one of the machines this PC is linked to, and opens the run's window.
+/// </summary>
+public partial class MainWindow
+{
+    // Into the row of what can be done with the folder, beside the git actions.
+    private void AddTestRunButton(Panel row, Project project, string folder)
+    {
+        if (!_database.GetTestSetup(project.Id).CanRun) return;
+        var run = ActionButton("Run tests on…");
+        run.VerticalAlignment = VerticalAlignment.Center;
+        run.Margin = new Thickness(row.Children.Count > 0 ? 8 : 0, 0, 0, 0);
+        run.IsEnabled = !IsBusyWith(project.Id);
+        run.Click += async (_, _) =>
+        {
+            run.IsEnabled = false;
+            var recent = await _devices.RunsAsync(project.Id);
+            run.IsEnabled = true;
+            OpenTestMachineMenu(run, project, folder, recent.Value ?? []);
+        };
+        row.Children.Add(run);
+    }
+
+    private void OpenTestMachineMenu(Button button, Project project, string folder, List<TestRunInfo> recent)
+    {
+        var setup = _database.GetTestSetup(project.Id);
+        var menu = new ContextMenu { PlacementTarget = button, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
+        var latest = _testMachines.Latest;
+        var links = latest?.Links.Where(link => link.Linker == latest.Me).OrderBy(link => link.MachineLabel, StringComparer.CurrentCultureIgnoreCase).ToList() ?? [];
+        if (links.Count == 0)
+        {
+            menu.Items.Add(new MenuItem { Header = _testMachines.Problem ?? "No linked machines. Link one in Settings › Test machines.", IsEnabled = false });
+        }
+        foreach (var link in links)
+        {
+            var missing = (setup.Tags ?? []).Where(tag => !TestMachines.HasTags(link.MachineTags, [tag])).ToList();
+            var why = link.Status switch
+            {
+                "expired" => "expired",
+                "unreachable" => "not answering right now",
+                "busy" => "running tests, so this waits its turn",
+                _ => null,
+            };
+            if (missing.Count > 0) why = $"doesn't offer {string.Join(", ", missing)}";
+            var item = new MenuItem
+            {
+                Header = why is null ? link.MachineLabel : $"{link.MachineLabel} · {why}",
+                IsEnabled = link.Status is "reachable" or "busy" && missing.Count == 0,
+            };
+            item.Click += async (_, _) => await SendTestsAsync(link, project, folder);
+            menu.Items.Add(item);
+        }
+
+        // Earlier runs this PC sent, to open again.
+        var sent = recent.Where(each => each.Linker == latest?.Me).Take(5).ToList();
+        if (sent.Count > 0)
+        {
+            menu.Items.Add(new Separator());
+            foreach (var each in sent)
+            {
+                var when = DateTimeOffset.FromUnixTimeSeconds((long)each.CreatedAt).ToLocalTime();
+                var item = new MenuItem { Header = $"{TestRunner.VerdictLabel(each.Status)} on {each.MachineLabel}, {when:d MMM HH:mm}" };
+                item.Click += (_, _) => new TestRunWindow(_devices, each.Id, project.Name).Show();
+                menu.Items.Add(item);
+            }
+        }
+        menu.IsOpen = true;
+    }
+
+    private async Task SendTestsAsync(MachineLinkInfo link, Project project, string folder)
+    {
+        // The machine fetches the commit from origin, so it has to be there.
+        var (commit, _, pushed, problem) = await GitTools.PushedHeadAsync(folder);
+        if (problem is not null)
+        {
+            ShowPageProblem(project.Id, problem);
+            return;
+        }
+        if (!pushed)
+        {
+            ShowPageProblem(project.Id, $"Push the commit checked out here first. {link.MachineLabel} fetches it from origin, and origin doesn't have {commit[..Math.Min(12, commit.Length)]} yet.");
+            return;
+        }
+
+        var (runId, failed) = await _testMachines.RunTestsAsync(link, project, _database.GetTestSetup(project.Id), commit);
+        if (runId is null)
+        {
+            ShowPageProblem(project.Id, failed ?? "The tests couldn't be sent.");
+            return;
+        }
+        new TestRunWindow(_devices, runId, project.Name) { Owner = null }.Show();
+    }
+}

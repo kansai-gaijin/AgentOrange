@@ -116,6 +116,7 @@ public partial class SettingsModal : UserControl
             ("Sync",
             [
                 new("Server", "", ServerPage),
+                new("Test machines", "", TestMachinesPage),
                 new("Local data", "", LocalDataPage),
             ]),
             (null,
@@ -173,6 +174,9 @@ public partial class SettingsModal : UserControl
         _refreshServerPage = null;
         _refreshEditorsPage = null;
         _refreshProviderDetails = null;
+        _refreshTestMachines = null;
+        StartCodeClock(false);
+        _linkedNote = null;
         _confirmingRestore = false;
         RestoreLabel.Text = "Restore defaults";
         RestoreDefaults.Visibility = page.Reset is null ? Visibility.Collapsed : Visibility.Visible;

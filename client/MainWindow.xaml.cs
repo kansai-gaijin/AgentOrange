@@ -25,6 +25,7 @@ public partial class MainWindow : Window
     private readonly ServerConnection _server;
     private readonly DeviceSession _devices;
     private readonly SyncEngine _sync;
+    private readonly TestMachines _testMachines;
 
     private UpdateInfo? _requiredUpdate;
     private string? _requiredVersion; // Can be known from an earlier run without the details to download it.
@@ -187,6 +188,10 @@ public partial class MainWindow : Window
             RefreshProjects();
         };
         Settings.Sync = _sync;
+
+        // Only the window that syncs takes test runs, so two windows never run the same one.
+        _testMachines = new TestMachines(_database, _server, _devices, () => _sync.HasTurn && _requiredVersion is null);
+        Settings.TestMachines = _testMachines;
         Settings.Start();
 
         // Dev builds aren't installed, so there's nothing for them to update.
