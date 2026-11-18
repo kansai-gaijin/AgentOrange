@@ -55,6 +55,7 @@ public sealed class TestRunWindow : Window
         _status.Text = "Waiting";
 
         _cancel.HorizontalAlignment = HorizontalAlignment.Right;
+        _cancel.VerticalAlignment = VerticalAlignment.Top;
         _cancel.Click += async (_, _) =>
         {
             _cancel.IsEnabled = false;
