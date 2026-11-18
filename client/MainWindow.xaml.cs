@@ -121,6 +121,7 @@ public partial class MainWindow : Window
         Settings.AppIsRestarting = () => _restarting = true;
         Closing += (_, closing) => closing.Cancel = !_restarting && (HideToTray() || !ConfirmStoppingClone("Closing"));
         StartTray();
+        StartInTrayIfAsked();
         StartScreenshotHotkey();
 #if DEBUG
         if (!Headless.Active)
@@ -439,7 +440,19 @@ public partial class MainWindow : Window
         _requiredVersion = version;
         _database.SetSetting(RequiredUpdateSetting, version);
         if (isNewVersion) ShowUpdateRequired(version);
+        UpdateByItselfIfUnattended();
         return true;
+    }
+
+    // A PC that takes test runs may have nobody at it to choose Download update, and it can't take
+    // runs until it has, as the server only works with its own release. So it updates by itself,
+    // once nothing it's doing would be cut short. The update restarts it, test runs included.
+    private void UpdateByItselfIfUnattended()
+    {
+        if (_downloading || _requiredVersion is null || !_testMachines.Settings.Accepting) return;
+        if (_testMachines.Running is not null || CloningProjectName() is not null || AnAgentIsWorking || ProjectWizard.IsCreatingRepo) return;
+        AppLog.Write($"Installing v{_requiredVersion} by itself, as this PC takes test runs.");
+        DownloadUpdate_Click(this, new RoutedEventArgs());
     }
 
     // Only one newer than this copy still counts, which also clears it once it's installed.

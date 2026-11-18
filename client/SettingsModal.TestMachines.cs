@@ -20,6 +20,7 @@ public partial class SettingsModal
     private Action? _refreshTestMachines;
     private DispatcherTimer? _codeClock;
     private string? _linkedNote;
+    private string? _startupNote;
 
     private static readonly Brush SuccessDot = new SolidColorBrush(Color.FromRgb(0x5F, 0xD0, 0x8A));
     private static readonly Brush WarningDot = new SolidColorBrush(Color.FromRgb(0xE8, 0xB0, 0x4B));
@@ -44,7 +45,17 @@ public partial class SettingsModal
 
         var accepting = Toggle(settings.Accepting);
         AutomationProperties.SetName(accepting, "Let other PCs run tests here");
-        accepting.Checked += (_, _) => Save(now => now with { Accepting = true });
+        accepting.Checked += (_, _) =>
+        {
+            Save(now => now with { Accepting = true });
+
+            // Nobody may be at this PC to start Agent Orange again after a restart.
+            if (StartWithWindows.Launcher is not null && !StartWithWindows.IsOn && StartWithWindows.Set(true) is null)
+            {
+                _startupNote = "Agent Orange now starts with Windows, in the tray, so this PC takes runs again after a restart. You can turn that off in Settings › General.";
+                _refreshTestMachines?.Invoke();
+            }
+        };
         accepting.Unchecked += (_, _) => Save(now => now with { Accepting = false });
 
         var label = Field(settings.Label);
@@ -196,6 +207,19 @@ public partial class SettingsModal
         var latest = TestMachines.Latest;
         var settings = TestMachines.Settings;
         var me = latest?.Me;
+
+        // Runs come in with nobody at this PC, so it has to be running and awake. Said, never changed.
+        if (settings.Accepting)
+        {
+            var notes = new List<string>();
+            if (_startupNote is { } started) notes.Add(started);
+            else if (StartWithWindows.Launcher is not null && !StartWithWindows.IsOn) notes.Add("Agent Orange doesn't start with Windows here, so after a restart this PC takes no runs until someone opens it. Settings › General can turn that on.");
+            if (PowerSettings.SleepsAfterPluggedIn() is { } sleep)
+            {
+                notes.Add($"This PC goes to sleep after {(int)Math.Round(sleep.TotalMinutes)} minutes without use (Windows power settings), and runs need it awake. Agent Orange doesn't change that: set sleep to Never in Windows Settings › System › Power if it should take runs while nobody's at it.");
+            }
+            foreach (var note in notes) parts.Add(new TextBlock { Text = note, FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(16, 10, 16, 0) });
+        }
 
         if (settings.Accepting)
         {

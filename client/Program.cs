@@ -10,7 +10,8 @@ public static class Program
     {
         // Must run first: during install and update, Velopack starts the app with
         // special arguments and exits here without opening a window.
-        VelopackApp.Build().Run();
+        // Uninstalling also stops Windows starting it.
+        VelopackApp.Build().OnBeforeUninstallFastCallback(_ => StartWithWindows.Remove()).Run();
 
         // Started by an agent session for Agent Orange's MCP server: only passes its messages on.
         var args = Environment.GetCommandLineArgs();
@@ -25,6 +26,9 @@ public static class Program
         if (!Headless.Active)
 #endif
         {
+            // Started with Windows while it's already running: there's nothing to do.
+            if (args.Contains(StartWithWindows.TrayArgument) && Tray.IsRunning()) return;
+
             // Its window was closed to the tray, and starting the app again is asking for it back.
             if (Tray.ShowHiddenWindow()) return;
         }

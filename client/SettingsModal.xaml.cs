@@ -177,6 +177,7 @@ public partial class SettingsModal : UserControl
         _refreshTestMachines = null;
         StartCodeClock(false);
         _linkedNote = null;
+        _startupNote = null;
         _confirmingRestore = false;
         RestoreLabel.Text = "Restore defaults";
         RestoreDefaults.Visibility = page.Reset is null ? Visibility.Collapsed : Visibility.Visible;
@@ -205,6 +206,8 @@ public partial class SettingsModal : UserControl
             Card(
                 Row("Current version", "Updates are required, and they install when you choose Download update.", Value(AppVersion)),
                 Row("Check for updates", "Checks on launch and every minute.", checkResult, check)),
+            Section("Startup"),
+            Card(StartWithWindowsRow()),
             Section("Notifications"),
             Card(
                 Row("Agent needs you", "Alert when an agent is waiting on an answer or an approval.", SettingToggle("notify_agent_needs_you", true)),
@@ -212,6 +215,19 @@ public partial class SettingsModal : UserControl
                 Row("Generation finished", "Alert when a generation run has results to review.", SettingToggle("notify_generation_finished", true)),
                 Row("Notification sounds", "Play a sound along with the alert.", SettingToggle("notify_sounds", false))),
         ];
+    }
+
+    // Only the installed app can, as a dev build isn't installed anywhere Windows could start it from.
+    private Grid StartWithWindowsRow()
+    {
+        var installed = StartWithWindows.Launcher is not null;
+        var toggle = Toggle(StartWithWindows.IsOn, enabled: installed);
+        System.Windows.Automation.AutomationProperties.SetName(toggle, "Start with Windows");
+        toggle.Checked += (_, _) => StartWithWindows.Set(true);
+        toggle.Unchecked += (_, _) => StartWithWindows.Set(false);
+        return Row("Start with Windows", installed
+            ? "Starts Agent Orange in the tray when you sign in, so a PC that runs tests for your other PCs takes them again after a restart."
+            : "Only the installed app can start with Windows.", toggle);
     }
 
     private void ResetGeneral()

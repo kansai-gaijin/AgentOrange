@@ -35,6 +35,26 @@ public partial class MainWindow
 
     private void TakeTrayIfFree() => _tray ??= Tray.TryCreate(ShowFromTray, QuitFromTray);
 
+    // Started with Windows: straight to the tray, with everything else, test runs included, as usual.
+    private void StartInTrayIfAsked()
+    {
+        if (!Environment.GetCommandLineArgs().Contains(StartWithWindows.TrayArgument)) return;
+        ShowActivated = false;
+        WindowState = WindowState.Minimized;
+        Loaded += (_, _) =>
+        {
+#if DEBUG
+            // Headless has no tray, and this is how its checks run the app with no window showing.
+            if (Headless.Active)
+            {
+                Hide();
+                return;
+            }
+#endif
+            if (HideToTray()) WindowState = WindowState.Normal;
+        };
+    }
+
     // False means the window should close the way it usually does.
     private bool HideToTray()
     {

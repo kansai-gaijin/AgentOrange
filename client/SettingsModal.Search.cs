@@ -19,6 +19,7 @@ public partial class SettingsModal
         ("Agent finished", "General"),
         ("Generation finished", "General"),
         ("Notification sounds", "General"),
+        ("Start with Windows", "General"),
         ("Add provider", "Providers"),
         ("Claude Code", "Providers"),
         ("Codex", "Providers"),

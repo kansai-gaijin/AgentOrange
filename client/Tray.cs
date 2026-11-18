@@ -29,6 +29,21 @@ internal sealed class Tray : IDisposable
     private Mutex? _hidden;
     private int _count = -1;
 
+    /// <summary>Whether a copy of the app is running here already, as one always has the icon.</summary>
+    public static bool IsRunning()
+    {
+        try
+        {
+            if (!Mutex.TryOpenExisting(OwnerName, out var owner)) return false;
+            owner.Dispose();
+            return true;
+        }
+        catch (Exception error) when (error is UnauthorizedAccessException or IOException)
+        {
+            return true; // One running as administrator has it.
+        }
+    }
+
     /// <summary>True if a hidden window was there and has been asked to come back, so this copy has nothing to do.</summary>
     public static bool ShowHiddenWindow()
     {

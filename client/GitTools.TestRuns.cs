@@ -16,7 +16,7 @@ public static partial class GitTools
             return ("", "", false, "This folder has no commits yet.");
         }
         sha = sha.Trim();
-        var pushed = await RunAsync("git", folder, "branch", "--remotes", "--contains", sha) is { ExitCode: 0 } branches && branches.Output.Trim().Length > 0;
+        var pushed = await RunAsync("git", folder, "branch", "--remotes", "--list", "origin/*", "--contains", sha) is { ExitCode: 0 } branches && branches.Output.Trim().Length > 0;
         return (sha, subject.Trim(), pushed, null);
     }
 
