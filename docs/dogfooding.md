@@ -535,18 +535,19 @@ The model baseline puts planning on Codex GPT-6.1-Sol, so this was the first rea
 ## Test machines: a project's tests on another PC, linked as T3 links machines (2026-11-18)
 
 Checking the game in its one editor held up new work (#93), so steps 1 to 4 of the design on the issue
-are built (step 4 is the job MAC and cancel): a PC can let the user's other PCs run a project's tests on it, linked the way T3 Code links
-environments, with the server as the mailbox between them. It's generic: plain commands, exit codes
-and free-form tags, nothing about any engine.
+are built (step 4 is the job MAC and cancel): a PC can let the user's other PCs run a project's tests on
+it, linked the way T3 Code links environments, with the server as the mailbox between them. It's
+generic: plain commands, exit codes and free-form tags, nothing about any engine. The user's real case
+is a laptop at home sending tests to a PC at the office that nobody is at, so it runs unattended.
 
 - **Settings › Test machines** (`SettingsModal.TestMachines.cs`), with T3's texts where T3 has the same
-  thing. Linked machines comes first (T3's Linked environments: status dot, access, "Expires in N days.
-  Link it again to renew.", Forget with T3's confirm, and its Link dialog: machine, pairing code, access).
-  Then This PC: "Let other PCs run tests here", and once on, a name, tags, a work folder, the shell
-  (PowerShell, cmd or Git Bash), environment variables and a time limit, all kept on this PC. Then T3's
-  Authorized clients: Create link makes a pairing link with T3's countdown, Show code, Copy code and
-  Revoke; linked PCs show as "Agent Orange · <PC>" with Revoke. Then Runs here, with exactly what each
-  run ran, as any PC can change a project's synced commands.
+  thing. Linked machines comes first (T3's Linked environments: status dot, access, expiry, Renew,
+  Forget with T3's confirm, and its Link dialog: machine, pairing code, access). Then This PC: "Let
+  other PCs run tests here", and once on, a name, tags, a work folder, the shell (PowerShell, cmd or Git
+  Bash), environment variables and a time limit, all kept on this PC, with notes when Agent Orange
+  doesn't start with Windows or the PC sleeps after some minutes. Then T3's Authorized clients: Create
+  link makes a pairing link with T3's countdown, Show code, Copy code and Revoke; linked PCs show as
+  "Agent Orange · <PC>" with Revoke. Then Runs here, with exactly what each run ran.
 - **Linking** (`MachineLinks.cs`, `TestMachines.cs`): the code is 12 characters in T3's alphabet, made
   for one access level (only Tests so far), lives only in the target's memory for 5 minutes and one
   use, and never reaches the server. The two PCs swap ephemeral P-256 keys through the server: the PC
@@ -557,42 +558,53 @@ and free-form tags, nothing about any engine.
   a proof the server kept gives nothing. 5 wrong proofs throw a code away, and the server holds off a PC
   whose proofs were turned down 5 times in a minute (per PC only, as a limit across all PCs let one PC
   lock everyone out). Keys are kept with DPAPI; either PC ending a link ends it for both.
-- **A project's tests** (Project settings › Tests, synced as `test_setups`): an optional prepare command,
-  the test command, an optional exit code meaning "couldn't run", the tags a machine must offer and a
-  time limit. **Run tests on…** on the project page lists the linked machines (and earlier runs) and
-  sends the commit checked out, once origin has it, under a run id and time it makes, signed with the
-  link's key. Its window shows the status (including "Waiting for someone on <PC> to allow these
-  commands") and the live log.
-- **A person allows the commands, on both PCs** (`TestCommandsWindow.cs`). The commands and repo come
-  from synced data, which the server or any paired PC can rewrite, and the PC sending signs whatever is
-  there. So before it signs a repo and commands that differ from the last it signed for that machine,
-  it shows them and asks; and the target keeps, outside sync, the hash of the repo and commands a person
-  allowed for each link and project. A job with any other waits, claimed, while a window says "<PC>
-  wants to run these commands here" with the exact repo, commit, commands, shell and folder, and Allow
-  or Refuse (also on the settings page). It's refused only if the person refuses.
+- **Renewing from the linking side:** while a link is still good, the PC linking sends a renewal MACed
+  with the link's key (link, nonce, time, wanted expiry); the target checks it, sets its own expiry
+  (now + 30 days at most) and answers with a MAC the PC linking checks. It happens by itself with under
+  a week left while both are online, or with Renew. An expired or revoked link needs a new code made on
+  the target.
+- **A project's tests live in its repo,** in `.agent-orange/tests.json` (`TestsFile.cs` has the schema:
+  prepare, test, couldNotRunExitCode, tags, timeoutMinutes). Project settings › Tests edits that file
+  in this PC's folder and says to commit and push it; it never commits. **Run tests on…** on the project
+  page sends a linked machine the commit checked out: the job says only the run id and time, the
+  commit, the repo URL from the folder's own git origin, the access and the tags, signed with the link's
+  key. It refuses, saying why, when the folder has no usable origin, the commit isn't on origin, or the
+  commit has no valid tests.json. Its window shows the status and the live log.
 - **The runner** (`TestRunner.cs`, `JobProcess.cs`) runs in the window that syncs, one run at a time,
-  only while the PC takes runs. It refuses a job whose link it has no key for, that's expired, below the
-  access it needs, whose MAC doesn't match, whose run id it has run before, or that was sent over 6
-  hours ago. It checks the commit out in its own clone under the work folder and runs prepare then test
-  as GitHub Actions runs a step in each shell, each in a Windows job of its own with kill-on-close: the
-  shell is created suspended, put in the job, then let run, and the job is ended when the shell exits,
-  on timeout and on cancel, so nothing it started outlives the run (the first version could hang
-  forever on a background process holding its output). It streams the log in parts cut by UTF-8 size,
-  renews its lease, and always ends the run on the server. Verdicts: passed, failed, couldn't run,
-  timed out, cancelled, refused, lost when the lease runs out, and expired when it waited a day unstarted.
-- **What holds, and what doesn't.** The server can relay, keep, delay or drop jobs, but can't write one,
-  change one after it's signed, or replay one; and a person on the target has seen and allowed any
-  commands before they run there, and a person on the sending PC has seen them before they're signed.
-  It doesn't hold that verdicts and logs are genuine: they come back unauthenticated, so the server or
-  the target could report anything. And Tests access is full code execution as the target's user, for
-  commands a person there allowed: allow only commands you'd run yourself.
+  only while the PC takes runs, with nobody needing to be there. It refuses a job whose link it has no
+  key for, that's expired, below the access it needs, whose MAC doesn't match, whose run id it has run
+  before, or that was sent over 6 hours ago. It checks the signed commit out of the signed repo in its
+  own clone under the work folder, reads tests.json there (couldn't run, saying why, if it's missing or
+  invalid), and runs prepare then test as GitHub Actions runs a step in each shell, each in a Windows job
+  of its own with kill-on-close: the shell is created suspended, put in the job, then let run, and the
+  job is ended when the shell exits, on timeout and on cancel, so nothing it started outlives the run
+  (an earlier version could hang forever on a background process holding its output). It streams the
+  log in parts cut by UTF-8 size, renews its lease, and always ends the run on the server. Verdicts:
+  passed, failed, couldn't run, timed out, cancelled, refused, lost when the lease runs out, and expired
+  when it waited a day unstarted.
+- **Unattended:** the runner lives with the app, not a window or page, and closing the window only hides
+  it to the tray. Settings › General › Start with Windows (installed app only) starts it in the tray at
+  sign-in through Velopack's launcher, so it survives updates; turning on "Let other PCs run tests here"
+  turns it on too, and says so. A required update installs by itself on a PC that takes runs, once
+  nothing it's doing would be cut short. Agent Orange never changes power settings; it only says when
+  the PC sleeps.
+- **What decides what runs.** Nothing the server or another paired PC can change: the target runs only
+  what's in the repo at a commit the linked PC signed, fetched from the repo URL that PC signed (its own
+  folder's origin). The trust left is whoever can push to that repo, which running its tests already
+  implies. The server can relay, keep, delay or drop jobs, but can't write, change or replay one.
+  Verdicts and logs still come back unauthenticated, so the server or the target could report anything,
+  and Tests access is full code execution as the target's user, for what the repo says.
+- **Approval windows came and went.** After a review found the server or any paired PC could rewrite the
+  synced commands the linking PC signed, both PCs briefly asked a person to allow new commands. The user
+  wants it unattended, so the commands moved into the repo instead, which removed the reason to ask.
 - **Windows PowerShell lost exit codes:** run as GitHub does (`-Command ". 'script'"`), 5.1 reports 1 for
   a script that exits 5. Scripts run with `-File` instead, which keeps it.
-- **Checked for real** against a local server and Postgres (no automated tests added): several PCs
-  played through the API (including a confirmation forged without the code, which the PC linking turns
-  down), then the headless app as the target with each shell (every verdict, approval asked once and
-  remembered, refused by the person, a forged job, a replayed and an old one refused, cancel, time limit,
-  and a background process holding the output, which is killed and doesn't hold the run up), and as
-  the PC linking (Link dialog, the Send confirmation, Run tests on…, the run window).
+- **Checked for real** against a local server and Postgres (no automated tests added), with a scratch
+  bare repo standing in for GitHub (allowed in headless debug runs only): several PCs played through the
+  API (including a forged link confirmation and renewal), then the headless app as the target with each
+  shell (every verdict, missing and invalid tests.json, a forged, replayed and old job refused, cancel,
+  time limit, a background process holding the output, renewal, and runs with its window hidden as in
+  the tray), and as the PC linking (Link dialog, the Tests editor, Run tests on… refusing an unpushed
+  commit and one with no tests.json, the run window, renewing by itself and with Renew).
 - Not built yet: agent tools for test runs and picking a machine by its tags (step 5), JUnit summaries
   and agent-level access (step 6, #94).

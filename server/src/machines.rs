@@ -780,7 +780,7 @@ pub async fn answer_renewal(
         .db
         .execute(
             "UPDATE machine_links SET renewed_nonce = $3, renewed_expires_at = $4, renewed_mac = $5,
-                expires_at = LEAST(to_timestamp($4::float8), now() + interval '30 days')
+                expires_at = LEAST(to_timestamp($4::bigint), now() + interval '30 days')
              WHERE id = $1 AND machine_install = $2 AND renew_nonce = $3 AND expires_at > now()",
             &[&id, &me, &body.nonce, &body.expires_at, &body.mac],
         )

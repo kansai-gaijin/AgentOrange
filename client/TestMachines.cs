@@ -489,6 +489,9 @@ public sealed class TestMachines
     // The renewals this PC asked for and hasn't had an answer to, by link: the nonce and when.
     private readonly Dictionary<string, (string Nonce, DateTimeOffset At)> _renewing = [];
 
+    // Renewal requests this PC turned down, so a bad one left on the server is looked at, and logged, once.
+    private readonly HashSet<string> _turnedDown = [];
+
     private bool RenewalPending(MachineLinkInfo link) =>
         _renewing.TryGetValue(link.Id, out var asked) && DateTimeOffset.UtcNow - asked.At < MachineLinks.RenewMaxAge;
 
@@ -531,7 +534,7 @@ public sealed class TestMachines
     /// <summary>As the target: answers a renewal the PC linking asked for, once its MAC checks out, with this PC's own new expiry.</summary>
     private async Task AnswerRenewalAsync(MachineLinkInfo link)
     {
-        if (link.Renewal is not { } asked || link.Renewed?.Nonce == asked.Nonce) return;
+        if (link.Renewal is not { } asked || link.Renewed?.Nonce == asked.Nonce || _turnedDown.Contains(asked.Nonce)) return;
         if (MachineLinks.ReadKey(_database, link.Id) is not { ThisPcIsMachine: true } key) return;
         var now = DateTimeOffset.UtcNow;
         if (key.ExpiresAt <= now.ToUnixTimeSeconds()) return; // Expired here: only a new code links them again.
@@ -539,6 +542,7 @@ public sealed class TestMachines
         if (age > MachineLinks.RenewMaxAge || age < -MachineLinks.RenewMaxAge || !MachineLinks.IsId(asked.Nonce)) return;
         if (!MachineLinks.MacMatches(MachineLinks.RenewMac(key.Key, link.Id, asked.Nonce, asked.SentAt, asked.ExpiresAt), asked.Mac))
         {
+            _turnedDown.Add(asked.Nonce);
             AppLog.Write($"A request to renew the link from {link.LinkerLabel} didn't check out, so it was ignored.");
             return;
         }
