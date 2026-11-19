@@ -18,6 +18,11 @@ no network calls. `run_in_blender.py` starts Blender in the background.
 it alone has, plus its art-direction notes and references, stay
 (`client/Skills/tools/blender/blender-skills-arjun988`).
 
+## apekshik's AnyMachine, AnyScene, AnyKit and AnyShot (MIT)
+
+Read on 2026-11-19, after this note. **Their free methods and scripts were taken, rewritten**, as five skills in
+`client/Skills/tools/blender/any-family`. See `any-family.md`.
+
 ## ahujasid/mcp-for-blender (MIT, `8f40787`)
 
 The community Blender MCP: a FastMCP server and a Blender add-on talking over TCP on localhost:9876,

@@ -608,3 +608,32 @@ is a laptop at home sending tests to a PC at the office that nobody is at, so it
   commit and one with no tests.json, the run window, renewing by itself and with Renew).
 - Not built yet: agent tools for test runs and picking a machine by its tags (step 5), JUnit summaries
   and agent-level access (step 6, #94).
+
+## Blender skills from the AnyMachine family (2026-11-19)
+
+Agents building Animal Planet's art will need what AO's Blender skills didn't give them: a way to model
+a complicated object to its concept art without drifting, props that match as a set, scenes with nothing
+floating, checks that catch a leg through a body or a skating foot, and trailer and store-page shots.
+apekshik's AnyMachine, AnyScene, AnyKit and AnyShot (MIT) do all of that, but as hosted services built
+on paid image, 3D, video and GPU services. Their free parts are now a fourth Blender pack,
+`client/Skills/tools/blender/any-family`, bundled and listed like the others:
+
+- **blender-reference-first:** references set by set, a parts list, the model as one script, compare
+  renders beside each reference (`compare_views.py`), a planned second pass, machine checks first.
+- **blender-kit-cohesion:** one style paragraph for every item, references checked on one sheet, a
+  lineup with a scale bar, a critic rubric with a pass rule, an asset library, a GLB normaliser.
+- **blender-placement-qa:** floating, sunk and clipping props found at their contact points, with
+  reasons for what's accepted and a JSON report.
+- **blender-shot-rig:** camrig's shot rigs from a shots.json, framing sheets, a camera clearance check,
+  chunked finals, libx264 encodes and ffmpeg grades, plus the Blender 5 and Cycles notes AO lacked.
+- **blender-motion-verify:** the exported GLB re-imported and matched pose by pose, joint sweeps, clashes
+  through every action, and foot slip.
+
+The scripts were rewritten, not copied: no bone, scene or project names, everything an argument, and
+nothing paid. Each ran headless on Blender 5.3 against a small generated scene and caught what was
+planted in it. Fixed on the way: the scene-ray helper from AnyScene's dressing script stepped past a
+prop's own bottom face and so missed the floor it lay on, and a settled box sank 30 cm; rays now test
+each support on its own. The
+framing stamp's see-through bar hid its white text on bright frames; it's opaque now. Not bundled:
+AnyMachine's `gait.py`, which is built for one robot (named in the pack's README as a reference). See
+`docs/research/any-family.md`.

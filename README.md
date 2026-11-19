@@ -51,6 +51,7 @@ Agent Orange is built on other people's work. Thank you to everyone below.
 - [EL4CTEO/blender-skills](https://github.com/EL4CTEO/blender-skills) (MIT): Agent Orange's main Blender skills and their scripts.
 - [arjun988/blender-skills](https://github.com/arjun988/blender-skills) (MIT): the Blender art-direction, style and asset-role skills, and the shared references.
 - [ahujasid/mcp-for-blender](https://github.com/ahujasid/mcp-for-blender) (MIT), by Siddharth Ahuja: the level design guide behind blender-level-design.
+- [apekshik/anymachine](https://github.com/apekshik/anymachine), [anyscene](https://github.com/apekshik/anyscene), [anykit](https://github.com/apekshik/anykit) and [anyshot](https://github.com/apekshik/anyshot) (MIT), by Apekshik Panigrahi: the reference-first, kit cohesion, placement QA, shot rig and motion verify Blender skills, and the camrig shot rig.
 
 **Tools Agent Orange sets up or works with:**
 
