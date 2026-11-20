@@ -6,7 +6,13 @@ using System.Text.Json.Nodes;
 namespace AgentOrange;
 
 /// <summary>How a project's tests run on a test machine, as its repo says at a commit.</summary>
-public sealed record TestSetup(string Prepare, string Test, int? CouldNotRunExitCode, string[] Tags, int TimeoutMinutes);
+public sealed record TestSetup(string Prepare, string Test, int? CouldNotRunExitCode, string[] Tags, int TimeoutMinutes, int? PrepareTimeoutMinutes = null)
+{
+    /// <summary>What the time limits cover, in a few words, as the run's log and the Tests editor say it.</summary>
+    public string LimitsText => PrepareTimeoutMinutes is { } prepare
+        ? $"{TestsFile.Minutes(prepare)} for checking out and prepare, then {TestsFile.Minutes(TimeoutMinutes)} for the test command"
+        : $"{TestsFile.Minutes(TimeoutMinutes)}, from checking out to the last test";
+}
 
 /// <summary>
 /// A project's test setup lives in its repo, so what a test machine runs is whatever's committed
@@ -19,7 +25,9 @@ public sealed record TestSetup(string Prepare, string Test, int? CouldNotRunExit
 ///   "test": "npm test",                // required: its exit code is the verdict, 0 passed, anything else failed
 ///   "couldNotRunExitCode": 3,          // optional: an exit code of test meaning the tests couldn't run, rather than failed (not 0)
 ///   "tags": ["windows", "gpu"],        // optional: words a test machine must offer to be picked
-///   "timeoutMinutes": 30               // optional: from checking out to the last test, 1 to 1440, 30 if left out
+///   "timeoutMinutes": 30,              // optional: from checking out to the last test, 1 to 1440, 30 if left out
+///   "prepareTimeoutMinutes": 90        // optional: a limit of its own for checking out and prepare, 1 to 1440;
+///                                      //   with it, timeoutMinutes covers only the test command, from when it starts
 /// }
 /// </code>
 ///
@@ -31,7 +39,9 @@ public static class TestsFile
     public const string RelativePath = ".agent-orange/tests.json";
     public const int DefaultTimeoutMinutes = 30;
     private const int MaxBytes = 64 * 1024;
-    private static readonly string[] Known = ["prepare", "test", "couldNotRunExitCode", "tags", "timeoutMinutes"];
+    private static readonly string[] Known = ["prepare", "test", "couldNotRunExitCode", "tags", "timeoutMinutes", "prepareTimeoutMinutes"];
+
+    public static string Minutes(int minutes) => minutes == 1 ? "1 minute" : $"{minutes} minutes";
 
     public static string PathIn(string folder) => Path.Combine(folder, ".agent-orange", "tests.json");
 
@@ -83,6 +93,9 @@ public static class TestsFile
         var timeout = Number("timeoutMinutes", out problem) ?? DefaultTimeoutMinutes;
         if (problem is not null) return (null, problem);
         if (timeout is < 1 or > 24 * 60) return (null, $"In {RelativePath}, \"timeoutMinutes\" must be from 1 to 1440.");
+        var prepareTimeout = Number("prepareTimeoutMinutes", out problem);
+        if (problem is not null) return (null, problem);
+        if (prepareTimeout is < 1 or > 24 * 60) return (null, $"In {RelativePath}, \"prepareTimeoutMinutes\" must be from 1 to 1440.");
 
         var tags = new List<string>();
         if (json["tags"] is JsonArray array)
@@ -100,7 +113,7 @@ public static class TestsFile
         {
             return (null, $"In {RelativePath}, \"tags\" must be a list, like [\"windows\", \"gpu\"].");
         }
-        return (new TestSetup(prepare, test, couldNotRun, [.. tags], timeout), null);
+        return (new TestSetup(prepare, test, couldNotRun, [.. tags], timeout, prepareTimeout), null);
     }
 
     /// <summary>
@@ -130,6 +143,7 @@ public static class TestsFile
         if (setup.CouldNotRunExitCode is { } code) json["couldNotRunExitCode"] = code;
         if (setup.Tags.Length > 0) json["tags"] = new JsonArray([.. setup.Tags.Select(tag => (JsonNode?)tag)]);
         json["timeoutMinutes"] = setup.TimeoutMinutes;
+        if (setup.PrepareTimeoutMinutes is { } prepare) json["prepareTimeoutMinutes"] = prepare;
         return json.ToJsonString(new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }) + "\n";
     }
 

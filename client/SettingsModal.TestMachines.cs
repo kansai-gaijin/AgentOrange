@@ -119,7 +119,7 @@ public partial class SettingsModal
             Row("Work folder", "Each project gets its own checkout here. A short path keeps clear of tools that can't take long file names.", folder, changeFolder),
             Row("Shell", "What the commands run in here: PowerShell, cmd, or Git Bash.", shell),
             Row("Environment variables", "Set for every run here, one KEY=VALUE a line.", environment),
-            Row("Time limit", "Minutes a run may take here, over what the project asks. Empty uses the project's.", timeout),
+            Row("Time limit", "Minutes a whole run may take here, from checking out to the last test, in place of the project's limits. Empty uses the project's.", timeout),
         ];
         var thisPc = Card([Row("Let other PCs run tests here", "Your other PCs linked to this one can send a commit of a project's repo to test here, in the background, as you, with nobody needing to be here. What runs is what the repo's .agent-orange/tests.json says at that commit, so anyone who can push to the repo decides it. Each run is listed below with exactly what it ran.", accepting), .. targetRows]);
         void ShowTargetRows()

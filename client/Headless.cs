@@ -39,6 +39,8 @@ namespace AgentOrange;
 ///   expect "text"       expectnot "text"   (fails unless something shown says exactly that, or nothing does)
 ///   inview "text"       (fails unless it's in sight, not scrolled away)
 ///   migrate             (gives assets without a status the one they have in effect, as starting does)
+///   testsfile "folder" "text"   (its .agent-orange/tests.json's time limits, or why it isn't valid, say that)
+///   testrun "folder" "Passed" "text"   (a test run's steps here, from the folder committed as a repo; the verdict and log say that)
 ///   mcp "Project" update_asset card "Asset 1" status "Needs review"   (an agent's MCP tool; mcprefused expects a refusal)
 /// </summary>
 internal static partial class Headless
@@ -338,6 +340,25 @@ internal static partial class Headless
             // Gives assets without a status the one they have in effect, as starting the app does.
             case "migrate":
                 say($"Gave {Main().GiveAssetsAStatusForChecks()} assets a status");
+                break;
+            // What a folder's .agent-orange/tests.json gives, its time limits or why it isn't valid: fails unless that says this.
+            case "testsfile":
+                var (testSetup, testsProblem, _) = TestsFile.Read(Path.Combine(DataFolder, parts[1]));
+                var testsSay = testSetup?.LimitsText ?? testsProblem ?? $"no {TestsFile.RelativePath}";
+                say($"{parts[1]}: {testsSay}");
+                if (!testsSay.Contains(parts[2], StringComparison.Ordinal)) throw new InvalidOperationException($"{parts[1]}'s tests file doesn't say {parts[2]}.");
+                break;
+            // A test run's steps on this PC, from a folder in the data folder committed as a repo, in
+            // PowerShell: testrun "repo" "Passed" "what the log says" ... Fails unless the verdict and every text match.
+            case "testrun":
+                var runRepo = Path.Combine(DataFolder, parts[1]);
+                var runCommit = await GitTools.CommitAllForChecksAsync(runRepo) ?? throw new InvalidOperationException($"{parts[1]} couldn't be committed.");
+                var runSettings = new TestMachineSettings(true, "Check PC", [], Path.Combine(DataFolder, "test-runs"));
+                var (runVerdict, runNote, runLog) = await TestRunner.RunStepsForChecksAsync(runSettings, runRepo, runCommit, "Check project");
+                say(runLog.TrimEnd());
+                say($"Verdict: {TestRunner.VerdictLabel(runVerdict)}{(runNote is null ? "" : $". {runNote}")}");
+                if (TestRunner.VerdictLabel(runVerdict) != parts[2]) throw new InvalidOperationException($"The run was {TestRunner.VerdictLabel(runVerdict)}, not {parts[2]}.");
+                if (parts.Skip(3).FirstOrDefault(text => !runLog.Contains(text, StringComparison.Ordinal)) is { } unsaid) throw new InvalidOperationException($"The run's log doesn't say {unsaid}.");
                 break;
             case "scroll":
                 foreach (var area in Visible<ScrollViewer>(window))

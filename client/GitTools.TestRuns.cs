@@ -45,6 +45,17 @@ public static partial class GitTools
     // Headless checks only: a bare repo in a scratch folder stands in for GitHub, as the checks
     // mustn't push anywhere real. Git's file protocol is otherwise never allowed.
     private static bool IsLocalRepoForChecks(string url) => Headless.Active && Path.IsPathFullyQualified(url) && Directory.Exists(url);
+
+    /// <summary>Headless checks only: makes a folder in the data folder a repo with everything in it committed, and gives the commit.</summary>
+    internal static async Task<string?> CommitAllForChecksAsync(string folder)
+    {
+        if (!Headless.Active || !folder.StartsWith(Headless.DataFolder, StringComparison.OrdinalIgnoreCase)) return null;
+        Directory.CreateDirectory(folder);
+        if (!Directory.Exists(Path.Combine(folder, ".git"))) await RunAsync("git", folder, "init", "--quiet");
+        await RunAsync("git", folder, "add", "--all");
+        await RunAsync("git", folder, "-c", "user.name=Agent Orange check", "-c", "user.email=agent-orange-check", "commit", "--quiet", "--allow-empty", "--message", "Check");
+        return await RunAsync("git", folder, "rev-parse", "HEAD") is { ExitCode: 0 } head ? head.Output.Trim() : null;
+    }
 #endif
 
     /// <summary>

@@ -1,5 +1,6 @@
 using System.Collections;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Security.Cryptography;
@@ -107,6 +108,7 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
             try
             {
                 await keepAlive;
+                SaySteps();
                 Line($"Verdict: {VerdictLabel(verdict)}{(exitCode is { } code ? $" (exit code {code})" : "")}");
                 await FlushAsync();
             }
@@ -194,6 +196,12 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         if (!MachineLinks.TakeRunId(database, run.Id)) return Refuse("this PC has run it already.");
 
         if (settings.WorkFolder.Trim().Length == 0 || !Path.IsPathFullyQualified(settings.WorkFolder)) return Refuse("this PC has no work folder set.");
+        return await RunStepsAsync(job, record);
+    }
+
+    // The job checked out: its steps, from checking out to the test command's exit code.
+    private async Task<(string Verdict, int? ExitCode, RunHere Record)> RunStepsAsync(TestJob job, RunHere record)
+    {
         var folder = Path.Combine(settings.WorkFolder, FolderName(job));
         record = record with { Project = job.ProjectName, Folder = folder };
         Line($"Test run for {job.ProjectName}, from {run.LinkerLabel}, at {job.Commit}");
@@ -203,10 +211,22 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         // Until the repo says how long it may take, this PC's own limit, or a day at most.
         var started = DateTimeOffset.UtcNow;
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+
+        // Which step the limit stopped, how far into the run, and which limit it was.
+        (string, int?, RunHere) TimedOut(string during, string why)
+        {
+            var note = $"Timed out during {during}, {Duration(DateTimeOffset.UtcNow - started)} into the run: {why}.";
+            Line(note);
+            return ("timed_out", null, record with { Note = note });
+        }
+
+        var pcLimitText = settings.TimeoutMinutes is { } own ? $"this PC's time limit gives the whole run {TestsFile.Minutes(own)}" : null;
         limit.CancelAfter(TimeSpan.FromMinutes(settings.TimeoutMinutes ?? 24 * 60));
+        var step = Stopwatch.StartNew();
         var checkout = await GitTools.TestCheckoutAsync(job.RepoUrl, folder, job.Commit, limit.Token, Line);
+        Took("Checking out", step);
         if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", null, record);
-        if (limit.IsCancellationRequested) return ("timed_out", null, record);
+        if (limit.IsCancellationRequested) return TimedOut("checking out", pcLimitText ?? "a run may take a day at most");
         if (!checkout.Worked)
         {
             Line(checkout.Value);
@@ -221,13 +241,20 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
             Line(why);
             return ("couldnt_run", null, record with { Note = why });
         }
-        var timeout = TimeSpan.FromMinutes(Math.Clamp(settings.TimeoutMinutes ?? setup.TimeoutMinutes, 1, 24 * 60));
-        limit.CancelAfter(timeout - (DateTimeOffset.UtcNow - started) is { } left && left > TimeSpan.Zero ? left : TimeSpan.Zero);
+
+        // This PC's own limit is for the whole run, in place of the repo's. Otherwise the repo's: one
+        // for the whole run, or, with prepareTimeoutMinutes, one for checking out and prepare and
+        // another for the test command, from when it starts.
+        var split = settings.TimeoutMinutes is null && setup.PrepareTimeoutMinutes is not null;
+        var wholeRunText = pcLimitText ?? $"timeoutMinutes in {TestsFile.RelativePath} gives the whole run {TestsFile.Minutes(setup.TimeoutMinutes)}, checking out and prepare included";
+        var prepareLimitText = split ? $"prepareTimeoutMinutes in {TestsFile.RelativePath} gives checking out and prepare {TestsFile.Minutes(setup.PrepareTimeoutMinutes!.Value)}" : wholeRunText;
+        var first = TimeSpan.FromMinutes(Math.Clamp(settings.TimeoutMinutes ?? setup.PrepareTimeoutMinutes ?? setup.TimeoutMinutes, 1, 24 * 60)) - (DateTimeOffset.UtcNow - started);
+        limit.CancelAfter(first > TimeSpan.Zero ? first : TimeSpan.Zero);
         record = record with { Prepare = setup.Prepare, Test = setup.Test };
 
         // Exactly what runs.
         Line($"From {TestsFile.RelativePath} at this commit:");
-        Line($"Shell: {settings.Shell}. Time limit: {(int)timeout.TotalMinutes} minutes.");
+        Line($"Shell: {settings.Shell}. Time limit: {(settings.TimeoutMinutes is { } shown ? $"{TestsFile.Minutes(shown)} for the whole run, set on this PC" : setup.LimitsText)}.");
         if (setup.Prepare.Length > 0) Line($"Prepare: {setup.Prepare}");
         Line($"Test: {setup.Test}");
         foreach (var (name, _) in settings.Variables()) Line($"Environment: {name} is set by this PC.");
@@ -237,16 +264,27 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         if (setup.Prepare.Length > 0)
         {
             Line($"> {setup.Prepare}");
+            step.Restart();
             var prepared = await RunCommandAsync(setup.Prepare, folder, limit.Token);
+            Took("Prepare", step);
             if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", null, record);
-            if (limit.IsCancellationRequested) return ("timed_out", null, record);
+            if (limit.IsCancellationRequested) return TimedOut("prepare", prepareLimitText);
             if (prepared != 0) return ("couldnt_run", prepared, record with { Note = prepared is null ? "The shell couldn't be started." : "Prepare failed." });
         }
 
+        // With a limit of its own, the test command's starts now.
+        var testLimitText = wholeRunText;
+        if (split)
+        {
+            limit.CancelAfter(TimeSpan.FromMinutes(setup.TimeoutMinutes));
+            testLimitText = $"timeoutMinutes in {TestsFile.RelativePath} gives the test command {TestsFile.Minutes(setup.TimeoutMinutes)}";
+        }
         Line($"> {setup.Test}");
+        step.Restart();
         var tested = await RunCommandAsync(setup.Test, folder, limit.Token);
+        Took("Test", step);
         if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", null, record);
-        if (limit.IsCancellationRequested) return ("timed_out", null, record);
+        if (limit.IsCancellationRequested) return TimedOut("the test command", testLimitText);
         return tested switch
         {
             null => ("couldnt_run", null, record with { Note = "The shell couldn't be started." }),
@@ -255,6 +293,42 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
             var code => ("failed", code, record),
         };
     }
+
+    // How long each step took, said as it ends and again before the verdict.
+    private readonly List<(string Step, TimeSpan Took)> _steps = [];
+
+    private void Took(string name, Stopwatch watch)
+    {
+        _steps.Add((name, watch.Elapsed));
+        Line($"{name} took {Duration(watch.Elapsed)}.");
+    }
+
+    private void SaySteps()
+    {
+        if (_steps.Count > 0) Line($"Steps: {string.Join(", ", _steps.Select(each => $"{each.Step.ToLowerInvariant()} {Duration(each.Took)}"))}.");
+    }
+
+#if DEBUG
+    /// <summary>
+    /// Headless checks only: a run's steps on this PC, from a local repo, without the server or a
+    /// link, which a real run never goes without. The verdict, its note and the whole log.
+    /// </summary>
+    internal static async Task<(string Verdict, string? Note, string Log)> RunStepsForChecksAsync(TestMachineSettings settings, string repo, string commit, string projectName)
+    {
+        var run = new TestRunInfo(MachineLinks.NewId(), "", "", "", "", "a check", "check-project", commit, "", "", "running", null, false, 0, null, null, null, null);
+        var runner = new TestRunner(null!, null!, settings, run);
+        var job = new TestJob(TestJob.TestsKind, run.Id, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), run.ProjectId, projectName, repo, commit, "tests", []);
+        var (verdict, _, record) = await runner.RunStepsAsync(job, new RunHere(run.Id, DateTimeOffset.Now, run.LinkerLabel, run.ProjectId, commit, settings.Shell, "", "", "", "couldnt_run", null, null));
+        runner.SaySteps();
+        lock (runner._pendingLock) return (verdict, record.Note, runner._pending.ToString());
+    }
+#endif
+
+    /// <summary>A length of time as the log says it: 8s, 2m 14s, 1h 02m.</summary>
+    public static string Duration(TimeSpan length) =>
+        length.TotalHours >= 1 ? $"{(int)length.TotalHours}h {length.Minutes:00}m"
+        : length.TotalMinutes >= 1 ? $"{(int)length.TotalMinutes}m {length.Seconds:00}s"
+        : $"{Math.Max(0, (int)length.TotalSeconds)}s";
 
     // A plain name, as the project's name comes from another PC, with a part of its id so two of the same name don't share.
     private static string FolderName(TestJob job)

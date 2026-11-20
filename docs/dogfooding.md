@@ -648,3 +648,16 @@ steps now have no limit of their own; the run's own limit (and Cancel) still sto
 The next run then failed on `index.lock`: the checkout the old limit had stopped left Git's lock behind, and
 every run after would fail on it until someone removed it by hand on the test PC. The runner owns its work
 folder and runs one test at a time, so it now removes Git's stale lock files there before checking out.
+
+## Test runs: the build ate the tests' time (2026-11-21)
+
+After many code changes the prepare step (a full build) took about an hour, and the repo's 90-minute
+`timeoutMinutes`, which covered checking out, prepare and the tests together, ended the run "Timed out"
+partway through the suite, with nothing saying it was the limit for the whole run (#119).
+`.agent-orange/tests.json` can now have `prepareTimeoutMinutes`: with it, checking out and prepare share
+that limit, and `timeoutMinutes` covers only the test command, from when it starts. Left out, one limit
+covers the whole run, as before. The Tests editor in Project settings has a Prepare time limit and says
+what each covers; a test machine's own limit is for the whole run, in place of the repo's. The run's log
+says how long each step took, and when a limit stops it, which step, how far into the run and which
+limit it was. `tools/checks/test-run-limits.txt` runs real steps from a local repo, one stopped by its
+prepare limit.

@@ -626,9 +626,13 @@ public partial class ProjectSettingsModal : UserControl
                     : (null, "The couldn't run exit code is a whole number other than 0, or empty.")),
             ("Tags needed", "Words a test machine has to offer, such as windows or gpu. Separate them with commas.", string.Join(", ", current.Tags), 300,
                 (all, value) => (all with { Tags = [.. value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Where(tag => tag.Length <= 40).Distinct(StringComparer.OrdinalIgnoreCase)] }, null)),
-            ("Time limit", "Minutes a run may take, from checking out to the last test. A test machine can set its own.", current.TimeoutMinutes.ToString(), 80,
+            ("Time limit", "Minutes a run may take, from checking out to the last test. With a prepare time limit, it's for the test command alone. A test machine can set its own for the whole run.", current.TimeoutMinutes.ToString(), 80,
                 (all, value) => int.TryParse(value, out var minutes) && minutes is >= 1 and <= 24 * 60 ? (all with { TimeoutMinutes = minutes }, null)
                     : (null, "The time limit is in minutes, from 1 to 1440.")),
+            ("Prepare time limit", "Optional. Minutes for checking out and the prepare command, such as a full build, apart from the tests' own time limit.", current.PrepareTimeoutMinutes?.ToString() ?? "", 80,
+                (all, value) => value.Length == 0 ? (all with { PrepareTimeoutMinutes = null }, null)
+                    : int.TryParse(value, out var minutes) && minutes is >= 1 and <= 24 * 60 ? (all with { PrepareTimeoutMinutes = minutes }, null)
+                    : (null, "The prepare time limit is in minutes, from 1 to 1440, or empty to share the time limit.")),
         ];
 
         var rows = new List<FrameworkElement> { Row(TestsFile.RelativePath, about) };

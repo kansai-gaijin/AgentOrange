@@ -1,0 +1,24 @@
+# A test run says how long each step took, and which step hit which time limit, and preparing can
+# have a time limit of its own, prepareTimeoutMinutes in .agent-orange/tests.json, so a long build
+# doesn't eat the tests' time (#119). Runs here use PowerShell and a folder committed as a repo.
+# A file's JSON is one word with no spaces, as the script's quotes can't hold quotes.
+file "limits/.agent-orange/tests.json" {"test":"Write-Output('tested')","prepareTimeoutMinutes":0}
+testsfile "limits" "must be from 1 to 1440"
+file "limits/.agent-orange/tests.json" {"test":"Write-Output('tested')","timeoutMinutes":5}
+testsfile "limits" "5 minutes, from checking out to the last test"
+file "limits/.agent-orange/tests.json" {"prepare":"Write-Output('built')","test":"Write-Output('tested')","timeoutMinutes":5,"prepareTimeoutMinutes":20}
+testsfile "limits" "20 minutes for checking out and prepare, then 5 minutes for the test command"
+# Each step's time, as it ends and all together before the verdict.
+testrun "limits" "Passed" "Time limit: 20 minutes for checking out and prepare, then 5 minutes for the test command." "Checking out took" "Prepare took" "Test took" "Steps: checking out"
+# Prepare stopped by its own limit says so, and which limit it was. This waits a minute.
+file "limits/.agent-orange/tests.json" {"prepare":"[Threading.Thread]::Sleep(90000)","test":"Write-Output('tested')","timeoutMinutes":5,"prepareTimeoutMinutes":1}
+testrun "limits" "Timed out" "Timed out during prepare" "prepareTimeoutMinutes in .agent-orange/tests.json gives checking out and prepare 1 minute" "Prepare took" "Steps: checking out"
+# The Tests editor in Project settings has it, and says what each limit covers.
+seed "Limits" 0 0 0
+file "projects/limits/.agent-orange/tests.json" {"test":"Write-Output('tested')","timeoutMinutes":45,"prepareTimeoutMinutes":90}
+open "Limits"
+click "Project settings"
+expect "Prepare time limit"
+expect "Optional. Minutes for checking out and the prepare command, such as a full build, apart from the tests' own time limit."
+scroll end
+shot tests-editor
