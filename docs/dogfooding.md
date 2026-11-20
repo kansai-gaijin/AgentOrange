@@ -721,3 +721,32 @@ most calls and tries:
   handoff note on the milestone or task with `write_handoff` before stopping with work left over; settling a
   conversation asks for one first and settles once it's written; a usage limit has Agent Orange write the
   note itself from the agent's plan and last words. The newest notes on open work go in the next briefing.
+
+## Test runs: the person carried results to the agent by hand (2026-11-21)
+
+In 12 conversations from 18 Nov to 21 Nov, the person passed test results from the linked machine back to
+the agent as typed messages (#117): a full suite with its failing scenarios, a run that failed before any
+scenario started, one that timed out, and "I start the full suite on that machine for that commit and send
+you any failures". Each was a retyped summary, so the cause reached the agent only as a sentence. Agents
+now have AO tools for it: `list_test_runs` (the linked machines and the project's runs, each with who
+started it), `run_tests` (a pushed commit, the one checked out or one named, on a machine by name) and
+`read_test_run` (verdict, checks and the end of the log, waiting up to 300 seconds for it to finish rather
+than sleeping). A run goes exactly as "Run tests on…" sends one, over this PC's own links with the same
+checks here and on the machine, and a machine already testing that commit gives that run back. The signed
+job says `"startedBy": "agent"`, and the run list and the run's window say "started by an agent".
+`tools/checks/agent-test-runs.txt` checks it with made-up links.
+
+## Test runs: checks that flip between pass and fail (2026-11-21)
+
+From the review of the dogfooding conversations (#105): most regression failures were in the checks, not
+the game (the real clock, the real weather, input counted twice on uneven frames), and agents added
+retries and exceptions instead of fixing the cause. A run only kept the test command's exit code, so the
+repo can now name where its test command writes how each check went, `"results"` in
+`.agent-orange/tests.json`: JUnit XML, which most test tools write, or lines of `passed name`, `failed
+name` or `skipped name`, from a file or a folder. Only results written once the test command started
+count, the path stays inside the repo, and XML with a DTD isn't read. The machine sends the names and
+outcomes with the verdict, and a check that passed and failed at the same commit is flagged: on one
+machine it flips, between machines it differs. The run list offers the ones that flip, the run's window
+says which of its checks are flagged, Check history shows each one's runs, and agents get the same through
+`read_test_run` and `check_history`, with a note to fix the cause before adding a retry.
+`tools/checks/test-run-checks.txt` runs it with real files, `agent-test-runs.txt` with made-up history.

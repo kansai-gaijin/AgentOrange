@@ -6,7 +6,7 @@ using System.Text.Json.Nodes;
 namespace AgentOrange;
 
 /// <summary>How a project's tests run on a test machine, as its repo says at a commit.</summary>
-public sealed record TestSetup(string Prepare, string Test, int? CouldNotRunExitCode, string[] Tags, int TimeoutMinutes, int? PrepareTimeoutMinutes = null)
+public sealed record TestSetup(string Prepare, string Test, int? CouldNotRunExitCode, string[] Tags, int TimeoutMinutes, int? PrepareTimeoutMinutes = null, string? Results = null)
 {
     /// <summary>What the time limits cover, in a few words, as the run's log and the Tests editor say it.</summary>
     public string LimitsText => PrepareTimeoutMinutes is { } prepare
@@ -26,8 +26,11 @@ public sealed record TestSetup(string Prepare, string Test, int? CouldNotRunExit
 ///   "couldNotRunExitCode": 3,          // optional: an exit code of test meaning the tests couldn't run, rather than failed (not 0)
 ///   "tags": ["windows", "gpu"],        // optional: words a test machine must offer to be picked
 ///   "timeoutMinutes": 30,              // optional: from checking out to the last test, 1 to 1440, 30 if left out
-///   "prepareTimeoutMinutes": 90        // optional: a limit of its own for checking out and prepare, 1 to 1440;
+///   "prepareTimeoutMinutes": 90,       // optional: a limit of its own for checking out and prepare, 1 to 1440;
 ///                                      //   with it, timeoutMinutes covers only the test command, from when it starts
+///   "results": "test-results"          // optional: a file or folder in the repo the test command writes how each
+///                                      //   check went to: JUnit XML, or lines of "passed name", "failed name" or
+///                                      //   "skipped name"; a folder's .xml and .txt files are read (#105)
 /// }
 /// </code>
 ///
@@ -39,7 +42,16 @@ public static class TestsFile
     public const string RelativePath = ".agent-orange/tests.json";
     public const int DefaultTimeoutMinutes = 30;
     private const int MaxBytes = 64 * 1024;
-    private static readonly string[] Known = ["prepare", "test", "couldNotRunExitCode", "tags", "timeoutMinutes", "prepareTimeoutMinutes"];
+    private static readonly string[] Known = ["prepare", "test", "couldNotRunExitCode", "tags", "timeoutMinutes", "prepareTimeoutMinutes", "results"];
+
+    /// <summary>Why a results path isn't one inside the repo, or null when it is.</summary>
+    public static string? ResultsProblem(string path)
+    {
+        var parts = path.Replace('\\', '/').Split('/');
+        return path.Length == 0 || path.Length > 260 || Path.IsPathRooted(path) || path.Contains(':') || parts.Any(part => part == "..") || path.IndexOfAny(Path.GetInvalidPathChars()) >= 0
+            ? $"In {RelativePath}, \"results\" must be a file or folder inside the repo, written as a path from its root, like \"test-results/junit.xml\"."
+            : null;
+    }
 
     public static string Minutes(int minutes) => minutes == 1 ? "1 minute" : $"{minutes} minutes";
 
@@ -96,6 +108,10 @@ public static class TestsFile
         var prepareTimeout = Number("prepareTimeoutMinutes", out problem);
         if (problem is not null) return (null, problem);
         if (prepareTimeout is < 1 or > 24 * 60) return (null, $"In {RelativePath}, \"prepareTimeoutMinutes\" must be from 1 to 1440.");
+        var results = Text("results", out problem);
+        if (problem is not null) return (null, problem);
+        if (results is { Length: 0 }) results = null;
+        if (results is not null && ResultsProblem(results) is { } badResults) return (null, badResults);
 
         var tags = new List<string>();
         if (json["tags"] is JsonArray array)
@@ -113,7 +129,7 @@ public static class TestsFile
         {
             return (null, $"In {RelativePath}, \"tags\" must be a list, like [\"windows\", \"gpu\"].");
         }
-        return (new TestSetup(prepare, test, couldNotRun, [.. tags], timeout, prepareTimeout), null);
+        return (new TestSetup(prepare, test, couldNotRun, [.. tags], timeout, prepareTimeout, results), null);
     }
 
     /// <summary>
@@ -144,6 +160,7 @@ public static class TestsFile
         if (setup.Tags.Length > 0) json["tags"] = new JsonArray([.. setup.Tags.Select(tag => (JsonNode?)tag)]);
         json["timeoutMinutes"] = setup.TimeoutMinutes;
         if (setup.PrepareTimeoutMinutes is { } prepare) json["prepareTimeoutMinutes"] = prepare;
+        if (setup.Results is { Length: > 0 } results) json["results"] = results;
         return json.ToJsonString(new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }) + "\n";
     }
 

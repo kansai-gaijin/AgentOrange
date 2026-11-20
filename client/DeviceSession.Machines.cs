@@ -27,13 +27,22 @@ public sealed record PendingLinkRequest(string Id, string Linker, string LinkerL
 /// <summary>Key, ExpiresAt and Confirm are the target's, which the PC linking checks before keeping the link.</summary>
 public sealed record LinkAnswer(string? Answer, string? LinkId, double? ExpiresAt, string? Key, string? Confirm);
 
-/// <summary>A test run as the server keeps it. Job is the text the linker signed, which only the PCs read.</summary>
+/// <summary>
+/// A test run as the server keeps it. Job is the text the linker signed, which only the PCs read.
+/// The checks are counted from the results file the repo names, when it names one (#105).
+/// </summary>
 public sealed record TestRunInfo(
     string Id, string LinkId, string Machine, string MachineLabel, string Linker, string LinkerLabel,
     string ProjectId, string Commit, string Job, string Mac, string Status, int? ExitCode, bool CancelRequested,
-    double CreatedAt, double? StartedAt, double? EndedAt, string? LinkAccess, double? LinkExpiresAt)
+    double CreatedAt, double? StartedAt, double? EndedAt, string? LinkAccess, double? LinkExpiresAt,
+    int ChecksPassed = 0, int ChecksFailed = 0, int ChecksSkipped = 0)
 {
     public bool Finished => Status is not ("queued" or "running");
+
+    /// <summary>Started by an agent with run_tests, as the signed job says (#117), rather than by a person.</summary>
+    public bool ByAgent => TestJob.StartedByIn(Job) == TestJob.ByAgent;
+
+    public int Checks => ChecksPassed + ChecksFailed + ChecksSkipped;
 }
 
 public sealed record RunLogLine(int Seq, string Text);
@@ -41,9 +50,10 @@ public sealed record RunLogLine(int Seq, string Text);
 public sealed record TestRunWithLog(
     string Id, string LinkId, string Machine, string MachineLabel, string Linker, string LinkerLabel,
     string ProjectId, string Commit, string Job, string Mac, string Status, int? ExitCode, bool CancelRequested,
-    double CreatedAt, double? StartedAt, double? EndedAt, string? LinkAccess, double? LinkExpiresAt, List<RunLogLine> Log)
+    double CreatedAt, double? StartedAt, double? EndedAt, string? LinkAccess, double? LinkExpiresAt, List<RunLogLine> Log,
+    int ChecksPassed = 0, int ChecksFailed = 0, int ChecksSkipped = 0)
 {
-    public TestRunInfo Run => new(Id, LinkId, Machine, MachineLabel, Linker, LinkerLabel, ProjectId, Commit, Job, Mac, Status, ExitCode, CancelRequested, CreatedAt, StartedAt, EndedAt, LinkAccess, LinkExpiresAt);
+    public TestRunInfo Run => new(Id, LinkId, Machine, MachineLabel, Linker, LinkerLabel, ProjectId, Commit, Job, Mac, Status, ExitCode, CancelRequested, CreatedAt, StartedAt, EndedAt, LinkAccess, LinkExpiresAt, ChecksPassed, ChecksFailed, ChecksSkipped);
 }
 
 /// <summary>Whether to keep going with a run, as the server says.</summary>
@@ -118,8 +128,19 @@ public sealed partial class DeviceSession
     public Task<ServerAnswer<RunKeepGoing>> AppendLogAsync(string run, int seq, string text) =>
         AskAsync<RunKeepGoing>(HttpMethod.Post, $"/v1/runs/{Uri.EscapeDataString(run)}/log", new { seq, text });
 
-    public Task<ServerAnswer<bool>> EndRunAsync(string run, string status, int? exitCode) =>
-        AskAsync<bool>(HttpMethod.Post, $"/v1/runs/{Uri.EscapeDataString(run)}/end", new { status, exitCode });
+    public Task<ServerAnswer<bool>> EndRunAsync(string run, string status, int? exitCode, IReadOnlyList<CheckResult>? checks = null) =>
+        AskAsync<bool>(HttpMethod.Post, $"/v1/runs/{Uri.EscapeDataString(run)}/end", new { status, exitCode, checks = checks ?? [] });
+
+    /// <summary>How each check went in a run, by name (#105).</summary>
+    public Task<ServerAnswer<List<CheckResult>>> RunChecksAsync(string run) =>
+        AskAsync<List<CheckResult>>(HttpMethod.Get, $"/v1/runs/{Uri.EscapeDataString(run)}/checks");
+
+    /// <summary>
+    /// A project's checks across its runs, newest first: one check's whole history, or with no name,
+    /// every check that failed at least once, its passes too.
+    /// </summary>
+    public Task<ServerAnswer<List<CheckHistoryRow>>> CheckHistoryAsync(string projectId, string? name = null) =>
+        AskAsync<List<CheckHistoryRow>>(HttpMethod.Get, $"/v1/check-history?project={Uri.EscapeDataString(projectId)}{(name is null ? "" : $"&name={Uri.EscapeDataString(name)}")}");
 
     public sealed record IdAnswer(string Id);
 

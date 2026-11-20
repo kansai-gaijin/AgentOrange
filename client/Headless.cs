@@ -26,7 +26,7 @@ namespace AgentOrange;
 ///   click "Button"      set 0 "text"       password "text"     select "Radio"
 ///   choose 0 "Item"     answer "path"      wait "text"         waitgone "text"
 ///   has "text"          say "note"         texts               shot name
-///   sleep 500           window "Title"     (the window the next lines act on, by its title)
+///   sleep 500           window "Title"     (the window the next lines act on, by its title; windowlike "Start" by the start of it)
 ///   scroll top          scroll end         (every scrolling area in the window)
 ///   usage               (each login's limits as last heard, without opening the Usage page; usage "Login" "text" fails unless its line says that)
 ///   login "Label" folder   (a Claude login whose program is a script in the data folder, saying what programs/folder/status.json says)
@@ -43,6 +43,7 @@ namespace AgentOrange;
 ///   migrate             (gives assets without a status the one they have in effect, as starting does)
 ///   testsfile "folder" "text"   (its .agent-orange/tests.json's time limits, or why it isn't valid, say that)
 ///   testmenu "Project" running   testrunstate passed   runwindows 1   (Run tests on…, as if linked to Office PC with a run in that state)
+///   testchecks "Project" failed   testrunwindow "Project" check-run   (made-up runs whose checks flip, and a run's window)
 ///   gitrepo "folder" "origin"   gitclone "from" "to"   borrow "folder"   fileis "path" "text"   (repos in the data folder, the clone testruns borrow from, a file's text)
 ///   testrun "folder" "Passed" "text"   (a test run's steps here, from the folder committed as a repo; the verdict and log say that)
 ///   mcp "Project" update_asset card "Asset 1" status "Needs review"   (an agent's MCP tool; mcprefused expects a refusal)
@@ -145,6 +146,12 @@ internal static partial class Headless
                 if (parts[0] == "window")
                 {
                     target = await UntilThereAsync(window, () => Application.Current.Windows.OfType<Window>().FirstOrDefault(each => each.Title == parts[1] && each.IsLoaded), $"the window {parts[1]}");
+                    continue;
+                }
+                // By the start of its title, for one whose title says a time.
+                if (parts[0] == "windowlike")
+                {
+                    target = await UntilThereAsync(window, () => Application.Current.Windows.OfType<Window>().FirstOrDefault(each => each.Title.StartsWith(parts[1], StringComparison.Ordinal) && each.IsLoaded), $"a window called {parts[1]}…");
                     continue;
                 }
                 await RunCommandAsync(target, parts, line => _log?.WriteLine(line), _output);
@@ -536,6 +543,15 @@ internal static partial class Headless
             // That made-up run changes state, as the server would say: testrunstate passed.
             case "testrunstate" when Active:
                 Main().SetTestRunForChecks(parts[1]);
+                break;
+            // As if linked to Office PC and Laptop, with runs of the project's commit whose checks flip,
+            // the latest by an agent in that state: testchecks "Project" failed.
+            case "testchecks" when Active:
+                await Main().SetUpTestChecksForChecks(parts[1], parts[2]);
+                break;
+            // Opens a made-up run's window, as the run list does: testrunwindow "Project" check-run.
+            case "testrunwindow" when Active:
+                Main().OpenTestRun(parts[2], parts[1]);
                 break;
             // Fails unless that many test run windows are open.
             case "runwindows":

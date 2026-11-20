@@ -440,20 +440,22 @@ public sealed class TestMachines
     }
 
     /// <summary>
-    /// What a commit in a project's folder would send: its repo, from the folder's own origin, and
-    /// the test setup it has committed. A problem, in words a person can act on, when it can't be
-    /// sent: no origin, not pushed, or no valid .agent-orange/tests.json at that commit.
+    /// What a commit in a project's folder would send, the one checked out unless another is named:
+    /// its repo, from the folder's own origin, and the test setup it has committed. A problem, in
+    /// words a person can act on, when it can't be sent: no origin, not pushed, or no valid
+    /// .agent-orange/tests.json at that commit.
     /// </summary>
-    public static async Task<(string? RepoUrl, string? Commit, TestSetup? Setup, string? Problem)> WhatToSendAsync(string folder)
+    public static async Task<(string? RepoUrl, string? Commit, TestSetup? Setup, string? Problem)> WhatToSendAsync(string folder, string? named = null)
     {
-        var (commit, _, pushed, problem) = await GitTools.PushedHeadAsync(folder);
+        var (commit, _, pushed, problem) = await GitTools.PushedHeadAsync(folder, named);
         if (problem is not null) return (null, null, null, problem);
         var (origin, originProblem) = await GitTools.OriginForTestsAsync(folder);
         if (origin is null) return (null, null, null, originProblem);
-        if (!pushed) return (null, null, null, $"Push the commit checked out here first. A test machine fetches it from origin, and origin doesn't have {commit[..Math.Min(12, commit.Length)]} yet.");
+        var which = named is null ? "the commit checked out here" : $"commit {commit[..Math.Min(12, commit.Length)]}";
+        if (!pushed) return (null, null, null, $"Push {which} first. A test machine fetches it from origin, and origin doesn't have {commit[..Math.Min(12, commit.Length)]} yet.");
         if (await GitTools.FileAtCommitAsync(folder, commit, TestsFile.RelativePath) is not { } text)
         {
-            return (null, null, null, $"The commit checked out here has no {TestsFile.RelativePath}, which says how the tests run. Set it up in Project settings › Tests, then commit and push it.");
+            return (null, null, null, $"{char.ToUpperInvariant(which[0])}{which[1..]} has no {TestsFile.RelativePath}, which says how the tests run. Set it up in Project settings › Tests, then commit and push it.");
         }
         var (setup, invalid) = TestsFile.Parse(text);
         return setup is null ? (null, null, null, $"{invalid} Fix it, then commit and push it.") : (origin, commit, setup, null);
@@ -474,15 +476,16 @@ public sealed class TestMachines
     /// with the link's key under a run id and time made here. Never the commands, which the target
     /// reads from the repo at that commit. Returns the run's id, or what went wrong. When that
     /// machine is already testing that commit, or has it waiting, nothing is sent and Existing is
-    /// that run.
+    /// that run. An agent's run (#117) goes the same way, with the same checks here and on the
+    /// target, and only says in the signed job that an agent started it.
     /// </summary>
-    public async Task<(string? RunId, string? Problem, TestRunInfo? Existing)> RunTestsAsync(MachineLinkInfo link, Project project, string folder)
+    public async Task<(string? RunId, string? Problem, TestRunInfo? Existing)> RunTestsAsync(MachineLinkInfo link, Project project, string folder, string? commit = null, string? startedBy = null)
     {
         var sending = $"{link.Id}|{project.Id}";
         if (!_sending.Add(sending)) return (null, $"The tests are already being sent to {link.MachineLabel}.", null);
         try
         {
-            return await SendRunAsync(link, project, folder);
+            return await SendRunAsync(link, project, folder, commit, startedBy);
         }
         finally
         {
@@ -490,11 +493,11 @@ public sealed class TestMachines
         }
     }
 
-    private async Task<(string? RunId, string? Problem, TestRunInfo? Existing)> SendRunAsync(MachineLinkInfo link, Project project, string folder)
+    private async Task<(string? RunId, string? Problem, TestRunInfo? Existing)> SendRunAsync(MachineLinkInfo link, Project project, string folder, string? named, string? startedBy)
     {
         if (MachineLinks.ReadKey(_database, link.Id) is not { ThisPcIsMachine: false } key) return (null, $"This PC has no key for its link to {link.MachineLabel}. Link it again.", null);
         if (link.Status == "expired" || key.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return (null, $"The link to {link.MachineLabel} expired. Link it again with a new pairing code from {link.MachineLabel}.", null);
-        var (repoUrl, commit, setup, problem) = await WhatToSendAsync(folder);
+        var (repoUrl, commit, setup, problem) = await WhatToSendAsync(folder, named);
         if (problem is not null || repoUrl is null || commit is null || setup is null) return (null, problem, null);
         var missing = setup.Tags.Where(tag => !HasTags(link.MachineTags, [tag])).ToList();
         if (missing.Count > 0) return (null, $"{link.MachineLabel} doesn't offer {string.Join(", ", missing)}, which {TestsFile.RelativePath} asks for.", null);
@@ -504,7 +507,7 @@ public sealed class TestMachines
         if (SameRun(runs.Value ?? [], link.Id, project.Id, commit) is { } same) return (null, null, same);
 
         var runId = MachineLinks.NewId();
-        var job = JsonSerializer.Serialize(new TestJob(TestJob.TestsKind, runId, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), project.Id, project.Name, repoUrl, commit.ToLowerInvariant(), "tests", setup.Tags), TestJob.Json);
+        var job = JsonSerializer.Serialize(new TestJob(TestJob.TestsKind, runId, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), project.Id, project.Name, repoUrl, commit.ToLowerInvariant(), "tests", setup.Tags, startedBy), TestJob.Json);
         var mac = MachineLinks.JobMac(key.Key, runId, link.Id, project.Id, commit, job);
         var sent = await _devices.EnqueueRunAsync(runId, link.Id, project.Id, commit.ToLowerInvariant(), job, mac);
         if (sent.Value is { } run) return (run.Id, null, null);

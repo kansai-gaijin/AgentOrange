@@ -108,6 +108,8 @@ async fn main() {
             .route("/v1/runs/{id}/heartbeat", post(machines::heartbeat))
             .route("/v1/runs/{id}/log", post(machines::append_log))
             .route("/v1/runs/{id}/end", post(machines::end_run))
+            .route("/v1/runs/{id}/checks", get(machines::run_checks))
+            .route("/v1/check-history", get(machines::check_history))
             .layer(map_response(mark_as_ours))
             .layer(Extension(route))
             .with_state(state.clone())

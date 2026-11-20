@@ -46,6 +46,12 @@ const MAX_LOG_ROWS_PER_READ: i64 = 400;
 const MAX_QUEUED_PER_LINK: i64 = 10;
 const MAX_UNANSWERED_PER_LINKER: i64 = 3;
 const ACCESS_LEVELS: [&str; 3] = ["tests", "agents", "full"];
+/// Checks a run can say how each went, from the results file its repo names.
+const MAX_CHECKS: usize = 5000;
+const MAX_CHECK_NAME_BYTES: usize = 1024;
+const CHECK_OUTCOMES: [&str; 3] = ["passed", "failed", "skipped"];
+const MAX_CHECK_HISTORY_ROWS: i64 = 5000;
+const MAX_ONE_CHECK_HISTORY_ROWS: i64 = 300;
 const RUN_ENDINGS: [&str; 6] = [
     "passed",
     "failed",
@@ -142,6 +148,14 @@ pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
             text TEXT NOT NULL,
             PRIMARY KEY (run_id, seq)
          );
+         -- How each check in a run went, as its results file said (#105). Only names and outcomes.
+         CREATE TABLE IF NOT EXISTS test_run_checks (
+            run_id TEXT NOT NULL REFERENCES test_runs (id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            PRIMARY KEY (run_id, name)
+         );
+         CREATE INDEX IF NOT EXISTS test_runs_project ON test_runs (project_id, created_at);
          -- Each PC's ephemeral public key, the target's expiry and its confirmation of the key.
          ALTER TABLE machine_link_requests ADD COLUMN IF NOT EXISTS linker_key TEXT NOT NULL DEFAULT '';
          ALTER TABLE machine_link_requests ADD COLUMN IF NOT EXISTS machine_key TEXT;
@@ -850,6 +864,10 @@ pub struct RunView {
     /// The link it was sent under, as it is now: its access, and when it ends. None once it's gone.
     link_access: Option<String>,
     link_expires_at: Option<f64>,
+    /// How many of its checks passed, failed or were skipped, when its repo names a results file.
+    checks_passed: i64,
+    checks_failed: i64,
+    checks_skipped: i64,
 }
 
 const RUN_COLUMNS: &str = "r.id, r.link_id, r.machine_install,
@@ -860,7 +878,15 @@ const RUN_COLUMNS: &str = "r.id, r.link_id, r.machine_install,
     r.project_id, r.commit_sha, r.job, r.mac, r.status, r.exit_code, r.cancel_requested,
     EXTRACT(EPOCH FROM r.created_at)::float8, EXTRACT(EPOCH FROM r.started_at)::float8, EXTRACT(EPOCH FROM r.ended_at)::float8,
     (SELECT l.access FROM machine_links l WHERE l.id = r.link_id),
-    (SELECT EXTRACT(EPOCH FROM l.expires_at)::float8 FROM machine_links l WHERE l.id = r.link_id)";
+    (SELECT EXTRACT(EPOCH FROM l.expires_at)::float8 FROM machine_links l WHERE l.id = r.link_id),
+    (SELECT count(*) FROM test_run_checks c WHERE c.run_id = r.id AND c.outcome = 'passed'),
+    (SELECT count(*) FROM test_run_checks c WHERE c.run_id = r.id AND c.outcome = 'failed'),
+    (SELECT count(*) FROM test_run_checks c WHERE c.run_id = r.id AND c.outcome = 'skipped')";
+
+// A machine's name as runs show it: the one it publishes, or else its PC's.
+const MACHINE_LABEL: &str =
+    "COALESCE((SELECT m.label FROM test_machines m WHERE m.install_hash = r.machine_install),
+             (SELECT d.name FROM devices d WHERE d.install_hash = r.machine_install LIMIT 1), '')";
 
 fn run_view(row: &Row) -> RunView {
     RunView {
@@ -882,6 +908,9 @@ fn run_view(row: &Row) -> RunView {
         ended_at: row.get(15),
         link_access: row.get(16),
         link_expires_at: row.get(17),
+        checks_passed: row.get(18),
+        checks_failed: row.get(19),
+        checks_skipped: row.get(20),
     }
 }
 
@@ -1214,9 +1243,18 @@ pub struct EndBody {
     status: String,
     #[serde(default)]
     exit_code: Option<i32>,
+    /// How each check went, when the repo names a results file. Each name once.
+    #[serde(default)]
+    checks: Vec<CheckBody>,
 }
 
-/// The target says how it went.
+#[derive(Deserialize, Serialize)]
+pub struct CheckBody {
+    name: String,
+    outcome: String,
+}
+
+/// The target says how it went, and how each check went if the repo's results file said.
 pub async fn end_run(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1224,7 +1262,15 @@ pub async fn end_run(
     Json(body): Json<EndBody>,
 ) -> Result<StatusCode, StatusCode> {
     let me = caller(&state, &headers).await?;
-    if !RUN_ENDINGS.contains(&body.status.as_str()) {
+    if !RUN_ENDINGS.contains(&body.status.as_str())
+        || body.checks.len() > MAX_CHECKS
+        || body.checks.iter().any(|check| {
+            check.name.is_empty()
+                || check.name.len() > MAX_CHECK_NAME_BYTES
+                || check.name.contains('\0')
+                || !CHECK_OUTCOMES.contains(&check.outcome.as_str())
+        })
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
     let ended = state
@@ -1239,5 +1285,127 @@ pub async fn end_run(
     if ended == 0 {
         return Err(StatusCode::GONE);
     }
+    if !body.checks.is_empty() {
+        let (names, outcomes): (Vec<&str>, Vec<&str>) = body
+            .checks
+            .iter()
+            .map(|check| (check.name.as_str(), check.outcome.as_str()))
+            .unzip();
+        state
+            .db
+            .execute(
+                "INSERT INTO test_run_checks (run_id, name, outcome)
+                 SELECT $1, name, outcome FROM UNNEST($2::text[], $3::text[]) AS given (name, outcome)
+                 ON CONFLICT DO NOTHING",
+                &[&id, &names, &outcomes],
+            )
+            .await
+            .map_err(internal_error)?;
+    }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// How each check went in a run, for either PC.
+pub async fn run_checks(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<CheckBody>>, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    let visible = state
+        .db
+        .query_opt(
+            "SELECT 1 FROM test_runs WHERE id = $1 AND (linker_install = $2 OR machine_install = $2)",
+            &[&id, &me],
+        )
+        .await
+        .map_err(internal_error)?;
+    if visible.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let rows = state
+        .db
+        .query(
+            "SELECT name, outcome FROM test_run_checks WHERE run_id = $1 ORDER BY name",
+            &[&id],
+        )
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(
+        rows.iter()
+            .map(|row| CheckBody {
+                name: row.get(0),
+                outcome: row.get(1),
+            })
+            .collect(),
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct CheckHistoryQuery {
+    project: String,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckHistoryRow {
+    name: String,
+    outcome: String,
+    run_id: String,
+    machine: String,
+    machine_label: String,
+    commit: String,
+    created_at: f64,
+}
+
+/// A project's checks across the runs this PC sent or ran, newest first: one check's whole
+/// history with a name, or else every check that failed at least once, with its passes too, so
+/// the PC can tell one that flips from one that's broken. What counts as flipping is the PC's.
+pub async fn check_history(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<CheckHistoryQuery>,
+) -> Result<Json<Vec<CheckHistoryRow>>, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    if query.project.is_empty() || query.project.len() > 128 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let most = if query.name.is_some() {
+        MAX_ONE_CHECK_HISTORY_ROWS
+    } else {
+        MAX_CHECK_HISTORY_ROWS
+    };
+    let rows = state
+        .db
+        .query(
+            &format!(
+                "SELECT c.name, c.outcome, r.id, r.machine_install, {MACHINE_LABEL}, r.commit_sha,
+                    EXTRACT(EPOCH FROM r.created_at)::float8
+                 FROM test_run_checks c JOIN test_runs r ON r.id = c.run_id
+                 WHERE (r.linker_install = $1 OR r.machine_install = $1) AND r.project_id = $2
+                    AND CASE WHEN $3::text IS NULL THEN c.name IN (
+                        SELECT f.name FROM test_run_checks f JOIN test_runs fr ON fr.id = f.run_id
+                        WHERE (fr.linker_install = $1 OR fr.machine_install = $1) AND fr.project_id = $2 AND f.outcome = 'failed')
+                    ELSE c.name = $3 END
+                 ORDER BY r.created_at DESC, c.name LIMIT $4"
+            ),
+            &[&me, &query.project, &query.name, &most],
+        )
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(
+        rows.iter()
+            .map(|row| CheckHistoryRow {
+                name: row.get(0),
+                outcome: row.get(1),
+                run_id: row.get(2),
+                machine: row.get(3),
+                machine_label: row.get(4),
+                commit: row.get(5),
+                created_at: row.get(6),
+            })
+            .collect(),
+    ))
 }
