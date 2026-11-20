@@ -43,6 +43,7 @@ namespace AgentOrange;
 ///   migrate             (gives assets without a status the one they have in effect, as starting does)
 ///   testsfile "folder" "text"   (its .agent-orange/tests.json's time limits, or why it isn't valid, say that)
 ///   testmenu "Project" running   testrunstate passed   runwindows 1   (Run tests on…, as if linked to Office PC with a run in that state)
+///   gitrepo "folder" "origin"   gitclone "from" "to"   borrow "folder"   fileis "path" "text"   (repos in the data folder, the clone testruns borrow from, a file's text)
 ///   testrun "folder" "Passed" "text"   (a test run's steps here, from the folder committed as a repo; the verdict and log say that)
 ///   mcp "Project" update_asset card "Asset 1" status "Needs review"   (an agent's MCP tool; mcprefused expects a refusal)
 /// </summary>
@@ -55,6 +56,7 @@ internal static partial class Headless
     private static readonly TimeSpan RunLimit = TimeSpan.FromMinutes(5);
 
     private static readonly Queue<string> Answers = new();
+    private static string? _borrowForRuns;
     private static string _script = "";
     private static string _output = "";
     private static StreamWriter? _log;
@@ -372,12 +374,30 @@ internal static partial class Headless
             case "testrun":
                 var runRepo = Path.Combine(DataFolder, parts[1]);
                 var runCommit = await GitTools.CommitAllForChecksAsync(runRepo) ?? throw new InvalidOperationException($"{parts[1]} couldn't be committed.");
-                var runSettings = new TestMachineSettings(true, "Check PC", [], Path.Combine(DataFolder, "test-runs"));
+                var runSettings = new TestMachineSettings(true, "Check PC", [], Path.Combine(DataFolder, "test-runs"), BorrowFrom: _borrowForRuns is { } borrowing ? new() { ["check-project"] = borrowing } : null);
                 var (runVerdict, runNote, runLog) = await TestRunner.RunStepsForChecksAsync(runSettings, runRepo, runCommit, "Check project");
                 say(runLog.TrimEnd());
                 say($"Verdict: {TestRunner.VerdictLabel(runVerdict)}{(runNote is null ? "" : $". {runNote}")}");
                 if (TestRunner.VerdictLabel(runVerdict) != parts[2]) throw new InvalidOperationException($"The run was {TestRunner.VerdictLabel(runVerdict)}, not {parts[2]}.");
                 if (parts.Skip(3).FirstOrDefault(text => !runLog.Contains(text, StringComparison.Ordinal)) is { } unsaid) throw new InvalidOperationException($"The run's log doesn't say {unsaid}.");
+                break;
+            // A folder in the data folder made a repo with all in it committed, and its origin set if given: gitrepo "folder" "origin".
+            case "gitrepo":
+                if (await GitTools.CommitAllForChecksAsync(Path.Combine(DataFolder, parts[1]), parts.Length > 2 ? parts[2] : null) is null) throw new InvalidOperationException($"{parts[1]} couldn't be committed.");
+                break;
+            // A clone of one folder in the data folder into another, as a person's own clone: gitclone "from" "to".
+            case "gitclone":
+                if (!await GitTools.CloneForChecksAsync(Path.Combine(DataFolder, parts[1]), Path.Combine(DataFolder, parts[2]))) throw new InvalidOperationException($"{parts[1]} couldn't be cloned.");
+                break;
+            // The clone later testruns borrow from, a folder in the data folder, or "" for none.
+            case "borrow":
+                _borrowForRuns = parts[1].Length > 0 ? Path.Combine(DataFolder, parts[1]) : null;
+                break;
+            // Fails unless a file in the data folder has exactly this text.
+            case "fileis":
+                var fileText = File.Exists(Path.Combine(DataFolder, parts[1])) ? await File.ReadAllTextAsync(Path.Combine(DataFolder, parts[1])) : null;
+                say($"{parts[1]}: {fileText ?? "not there"}");
+                if (fileText != parts[2]) throw new InvalidOperationException($"{parts[1]} doesn't say {parts[2]}.");
                 break;
             // Run tests on… for a project, as if linked to Office PC with a run of the commit in that state: testmenu "Project" running.
             case "testmenu" when Active:

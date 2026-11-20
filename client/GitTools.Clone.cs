@@ -20,7 +20,7 @@ public static partial class GitTools
     /// clone that must not be cleaned up. Its large files and submodules aren't fetched yet, and
     /// that's FinishDownloadAsync, once the folder is linked.
     /// </summary>
-    public static async Task<GitResult> CloneAsync(string url, string parentFolder, CancellationToken cancel, Action<string?> workingFolder, string? exactFolder = null, Action<string>? progress = null)
+    public static async Task<GitResult> CloneAsync(string url, string parentFolder, CancellationToken cancel, Action<string?> workingFolder, string? exactFolder = null, Action<string>? progress = null, string? borrowFrom = null)
     {
         if (RepoUrlProblem(url) is { } problem) return new GitResult(false, problem);
 
@@ -63,7 +63,10 @@ public static partial class GitTools
             var settings = await SshSettingsAsync(Path.GetTempPath()) ?? [];
             settings["GIT_LFS_SKIP_SMUDGE"] = "1";
 
-            var result = await RunAsync("git", parentFolder, null, ["clone", "--progress", "--config", "core.longpaths=true", "--", form, working], cancel, settings, ShowStage);
+            // Objects another clone on this PC already has are copied from it rather than downloaded,
+            // and the copy doesn't depend on it afterward.
+            string[] borrowing = borrowFrom is null ? [] : ["--reference-if-able", borrowFrom, "--dissociate"];
+            var result = await RunAsync("git", parentFolder, null, ["clone", "--progress", "--config", "core.longpaths=true", .. borrowing, "--", form, working], cancel, settings, ShowStage);
             if (result is null) return new GitResult(false, "Git wasn't found on this PC.");
 
             if (result.ExitCode != 0)
@@ -440,6 +443,14 @@ public static partial class GitTools
             return "This repo uses Git LFS, which isn't set up on this PC, so its big files are only small placeholders. Install it from git-lfs.com, run git lfs install, then run git lfs pull in the folder.";
         }
 
+        // Everything this commit needs may be here already, such as when a test machine took it from
+        // another clone on this PC. Then it's only put in place, and no server is asked for anything.
+        if (await AllLargeFilesHereAsync(folder))
+        {
+            progress?.Invoke("Putting large files in place from this PC");
+            if (await RunAsync("git", folder, null, ["lfs", "checkout"], cancel) is { ExitCode: 0 }) return null;
+        }
+
         // A repo can name where its large files come from, and this runs by itself after a clone.
         if (await IsLinkInFolderAsync(folder, ".lfsconfig")) return "The clone finished, but its large files weren't fetched, because its .lfsconfig is a link, which could lead onto a network share and send your Windows login there. Replace it with a real file, then try again.";
         var lfsConfig = await RunAsync("git", folder, "config", "--blob", "HEAD:.lfsconfig", "-z", "--list");
@@ -470,6 +481,28 @@ public static partial class GitTools
 
         var reason = cancel.IsCancellationRequested ? "That was cancelled." : GitFailureReason(pulled?.Errors ?? "");
         return $"The clone finished, but its large files didn't. {AsSentence(reason)} Run git lfs pull in the folder to carry on, which picks up where it left off.";
+    }
+
+    // Whether every large file the checked-out commit needs is in the repo's own Git LFS store, in
+    // its usual place on this PC (one moved elsewhere, as lfs.storage can, isn't looked in).
+    private static async Task<bool> AllLargeFilesHereAsync(string folder)
+    {
+        if (await RunAsync("git", folder, "config", "--get", "lfs.storage") is { ExitCode: 0 }) return false;
+        if (await LargeFileIdsAsync(folder) is not { Count: > 0 } ids) return false;
+        if (await RunAsync("git", folder, "rev-parse", "--path-format=absolute", "--git-common-dir") is not { ExitCode: 0 } common) return false;
+        var store = Path.Combine(Path.GetFullPath(common.Output.Trim()), "lfs", "objects");
+        if (await Task.Run(() => GitFolderSafety.LargeFileStoreProblem(Path.GetFullPath(common.Output.Trim()))) is not null) return false;
+        return await Task.Run(() => ids.All(id => File.Exists(Path.Combine(store, id[..2], id[2..4], id))));
+    }
+
+    /// <summary>The ids of the large files the checked-out commit needs, as Git LFS lists them, or null if it can't.</summary>
+    private static async Task<List<string>?> LargeFileIdsAsync(string folder)
+    {
+        if (await RunAsync("git", folder, "lfs", "ls-files", "--long") is not { ExitCode: 0 } listed) return null;
+        return [.. listed.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(line => line.Split(' ')[0])
+            .Where(id => id.Length == 64 && id.All(Uri.IsHexDigit))
+            .Distinct()];
     }
 
     private static string AsSentence(string reason) => reason.Length == 0 ? "" : $"{reason.TrimEnd('.')}.";

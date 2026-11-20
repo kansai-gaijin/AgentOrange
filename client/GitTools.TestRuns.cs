@@ -47,14 +47,22 @@ public static partial class GitTools
     private static bool IsLocalRepoForChecks(string url) => Headless.Active && Path.IsPathFullyQualified(url) && Directory.Exists(url);
 
     /// <summary>Headless checks only: makes a folder in the data folder a repo with everything in it committed, and gives the commit.</summary>
-    internal static async Task<string?> CommitAllForChecksAsync(string folder)
+    internal static async Task<string?> CommitAllForChecksAsync(string folder, string? origin = null)
     {
         if (!Headless.Active || !folder.StartsWith(Headless.DataFolder, StringComparison.OrdinalIgnoreCase)) return null;
         Directory.CreateDirectory(folder);
         if (!Directory.Exists(Path.Combine(folder, ".git"))) await RunAsync("git", folder, "init", "--quiet");
         await RunAsync("git", folder, "add", "--all");
         await RunAsync("git", folder, "-c", "user.name=Agent Orange check", "-c", "user.email=agent-orange-check", "commit", "--quiet", "--allow-empty", "--message", "Check");
+        if (origin is not null && await RunAsync("git", folder, "remote", "set-url", "origin", origin) is not { ExitCode: 0 }) await RunAsync("git", folder, "remote", "add", "origin", origin);
         return await RunAsync("git", folder, "rev-parse", "HEAD") is { ExitCode: 0 } head ? head.Output.Trim() : null;
+    }
+
+    /// <summary>Headless checks only: a clone of one folder in the data folder into another, as a person's own clone would be.</summary>
+    internal static async Task<bool> CloneForChecksAsync(string from, string to)
+    {
+        if (!Headless.Active || !from.StartsWith(Headless.DataFolder, StringComparison.OrdinalIgnoreCase) || !to.StartsWith(Headless.DataFolder, StringComparison.OrdinalIgnoreCase)) return false;
+        return await RunAsync("git", Headless.DataFolder, null, ["clone", "--quiet", "--", from, to], default, new() { ["GIT_ALLOW_PROTOCOL"] = "file" }) is { ExitCode: 0 };
     }
 #endif
 
@@ -63,7 +71,7 @@ public static partial class GitTools
     /// commit, with anything a run left behind removed, except ignored files such as build output,
     /// which can take long to make again. Then its submodules and large files, as a clone gets.
     /// </summary>
-    public static async Task<GitResult> TestCheckoutAsync(string repoUrl, string folder, string commit, CancellationToken cancel, Action<string> progress)
+    public static async Task<GitResult> TestCheckoutAsync(string repoUrl, string folder, string commit, CancellationToken cancel, Action<string> progress, string? borrowFrom = null)
     {
         var local = false;
 #if DEBUG
@@ -77,6 +85,9 @@ public static partial class GitTools
         // have no time limit of their own. The run's own limit, through cancel, still stops them.
         NoStepLimit.Value = true;
 
+        // Another clone of the same repo on this PC that the person chose to borrow from: only read.
+        var borrowing = borrowFrom is null ? null : await BorrowableAsync(borrowFrom, repoUrl, folder, local, progress);
+
         var hasRepo = await Task.Run(() => Directory.Exists(Path.Combine(folder, ".git")));
         if (!hasRepo)
         {
@@ -86,10 +97,11 @@ public static partial class GitTools
             }
             var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(folder))!;
             await Task.Run(() => Directory.CreateDirectory(parent));
-            progress($"Cloning {HideLogins(repoUrl)} into {folder}");
+            progress($"Cloning {HideLogins(repoUrl)} into {folder}{(borrowing is null ? "" : $", copying what it can from {borrowFrom}")}");
+            string[] borrowed = borrowing is null ? [] : ["--reference-if-able", borrowing, "--dissociate"];
             var cloned = local
-                ? await RunAsync("git", parent, null, ["clone", "--quiet", "--", repoUrl, folder], cancel, allowLocal) is { ExitCode: 0 } ? new GitResult(true, folder) : new GitResult(false, "Couldn't clone the local repo.")
-                : await CloneAsync(repoUrl, parent, cancel, _ => { }, exactFolder: folder, progress: progress);
+                ? await RunAsync("git", parent, null, ["clone", "--quiet", .. borrowed, "--", repoUrl, folder], cancel, new(allowLocal!) { ["GIT_LFS_SKIP_SMUDGE"] = "1" }) is { ExitCode: 0 } ? new GitResult(true, folder) : new GitResult(false, "Couldn't clone the local repo.")
+                : await CloneAsync(repoUrl, parent, cancel, _ => { }, exactFolder: folder, progress: progress, borrowFrom: borrowing);
             if (!cloned.Worked) return cloned;
         }
         else if (await RunAsync("git", folder, "remote", "get-url", "origin") is not { ExitCode: 0 } origin
@@ -127,6 +139,7 @@ public static partial class GitTools
         var cleaned = await RunStepAsync("Couldn't remove what an earlier run left", "clean", "-d", "--force", "--quiet");
         if (!cleaned.Worked) return cleaned;
 
+        if (borrowing is not null) await BorrowLargeFilesAsync(borrowing, folder, progress);
         progress("Fetching submodules and large files, if it has any");
         if (await FinishDownloadAsync(folder, cancel, progress) is { } missing) return new GitResult(false, missing);
         return new GitResult(true, folder);
@@ -138,6 +151,78 @@ public static partial class GitTools
             return done.ExitCode == 0 ? new GitResult(true, done.Output.Trim()) : new GitResult(false, HideLogins(GitProblem(failure, done.Errors.Length > 0 ? done.Errors : done.Output)));
         }
     }
+
+    /// <summary>
+    /// Whether a folder can be borrowed from for a test checkout: a clone whose origin is the same
+    /// repo, apart from the runner's own. Its Git folder (shared by its worktrees), or null, having
+    /// said why not. Only reads it; nothing there is ever changed.
+    /// </summary>
+    private static async Task<string?> BorrowableAsync(string from, string repoUrl, string folder, bool local, Action<string> progress)
+    {
+        string? Skip(string why)
+        {
+            progress($"Not copying from {from}: {why} Downloading instead.");
+            return null;
+        }
+        if (!Path.IsPathFullyQualified(from) || !await FolderExistsAsync(from)) return Skip("that folder isn't there.");
+        var mine = Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder));
+        var theirs = Path.TrimEndingDirectorySeparator(Path.GetFullPath(from));
+        if (theirs.StartsWith(mine, StringComparison.OrdinalIgnoreCase) || mine.StartsWith(theirs + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            return Skip("it's the test runs' own folder, or holds it.");
+        }
+        if (await RunAsync("git", from, "remote", "get-url", "origin") is not { ExitCode: 0 } origin) return Skip("it isn't a clone with an origin.");
+        var same = local
+            ? string.Equals(Path.GetFullPath(origin.Output.Trim()), Path.GetFullPath(repoUrl), StringComparison.OrdinalIgnoreCase)
+            : SameRepo(origin.Output.Trim(), repoUrl);
+        if (!same) return Skip("its origin is another repo.");
+        if (await RunAsync("git", from, "rev-parse", "--path-format=absolute", "--git-common-dir") is not { ExitCode: 0 } common || common.Output.Trim().Length == 0)
+        {
+            return Skip("Git couldn't say where its data is.");
+        }
+        return Path.GetFullPath(common.Output.Trim());
+    }
+
+    /// <summary>
+    /// The large files this commit needs that the borrowed clone already has, put in the test
+    /// checkout's own Git LFS store before it fetches, so they aren't downloaded again. Hard links
+    /// where both are on one drive (Git LFS never changes a file it has), copies otherwise.
+    /// </summary>
+    private static async Task BorrowLargeFilesAsync(string fromGitFolder, string folder, Action<string> progress)
+    {
+        if (await LargeFileIdsAsync(folder) is not { Count: > 0 } ids) return; // No Git LFS, or no large files.
+        if (await RunAsync("git", folder, "rev-parse", "--path-format=absolute", "--git-common-dir") is not { ExitCode: 0 } own) return;
+        var (linked, copied) = await Task.Run(() =>
+        {
+            int links = 0, copies = 0;
+            foreach (var id in ids)
+            {
+                string Place(string gitFolder) => Path.Combine(gitFolder, "lfs", "objects", id[..2], id[2..4], id);
+                var source = Place(fromGitFolder);
+                var target = Place(Path.GetFullPath(own.Output.Trim()));
+                if (File.Exists(target) || !File.Exists(source)) continue;
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                    if (CreateHardLinkW(target, source, 0)) links++;
+                    else
+                    {
+                        File.Copy(source, target);
+                        copies++;
+                    }
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+                {
+                    AppLog.Write($"Couldn't borrow a large file for a test checkout: {error.Message}");
+                }
+            }
+            return (links, copies);
+        });
+        if (linked + copied > 0) progress($"Took {linked + copied} of {ids.Count} large files from the borrowed clone{(copied > 0 ? $" ({copied} copied, as it's on another drive)" : "")}.");
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateHardLinkW(string fileName, string existingFileName, nint securityAttributes);
 
     // Set for the steps of a test checkout, and for what they call, only.
     private static readonly AsyncLocal<bool> NoStepLimit = new();

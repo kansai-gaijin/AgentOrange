@@ -662,6 +662,21 @@ says how long each step took, and when a limit stops it, which step, how far int
 limit it was. `tools/checks/test-run-limits.txt` runs real steps from a local repo, one stopped by its
 prepare limit.
 
+## Test machines: a second full clone of a repo already on the PC (2026-11-21)
+
+The office PC already had its own clone of the game, but a test machine's first run cloned the whole repo
+again, gigabytes of large files included, and rebuilt from scratch (#112). The runner still never works in
+the person's clone, as each run checks a commit out by force and cleans up. Instead, Settings › Test
+machines › Borrow from clones here lets the person pick, per project, a clone on that PC to copy from, and
+suggests a project's own folder when its origin is the project's repo. The first clone then uses
+`git clone --reference-if-able <its Git folder> --dissociate`, so it copies objects from there and doesn't
+depend on it afterward; before fetching large files, the ones the commit needs are hard-linked from its Git
+LFS store (copied when it's on another drive), and when all are there they're put in place without asking
+any server. Nothing in the borrowed folder is written. A folder whose origin is another repo, or that holds
+the work folder, isn't used, and the run's log says why. Build caches stay in the project's own settings or
+prepare command. `tools/checks/test-run-borrow.txt` runs it with local repos, a large file and uncommitted
+work in the borrowed clone. Not built: borrowing without `--dissociate` (sharing objects for good).
+
 ## Test runs: duplicate runs, a stale list and piles of windows (2026-11-21)
 
 A day of test-machine runs showed three things (#118). Choosing the machine again while it ran queued a

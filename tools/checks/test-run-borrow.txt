@@ -1,0 +1,35 @@
+# A test machine's first checkout of a project copies from a clone of the same repo already on the PC,
+# large files too, instead of downloading it all again, and never changes anything in that clone (#112).
+# The person picks it in Settings › Test machines, which suggests a project's own folder when it's a
+# clone of the project's repo. Repos here are folders in the data folder, standing in for GitHub.
+file "upstream/.gitattributes" "*.bin filter=lfs diff=lfs merge=lfs -text"
+file "upstream/big.bin" "pretend this is gigabytes"
+file "upstream/.agent-orange/tests.json" {"test":"Get-Content('big.bin')","timeoutMinutes":5}
+gitrepo "upstream"
+# The person's own clone, with work of theirs not committed.
+gitclone "upstream" "mine"
+file "mine/work.txt" "mine, not committed"
+borrow "mine"
+testrun "upstream" "Passed" "copying what it can from" "Took 1 of 1 large files from the borrowed clone." "pretend this is gigabytes"
+fileis "mine/work.txt" "mine, not committed"
+fileis "mine/big.bin" "pretend this is gigabytes"
+# A clone of another repo isn't borrowed from, and the run says so.
+file "other/readme.txt" "another repo"
+gitrepo "other"
+gitclone "other" "theirs"
+borrow "theirs"
+testrun "upstream" "Passed" "Not copying from" "its origin is another repo. Downloading instead."
+# Settings › Test machines suggests a project's folder that's a clone of its repo, and the person chooses it.
+seed "Borrow" 0 0 0
+gitrepo "projects/borrow" "https://github.com/example/borrow"
+click "Settings"
+click "Test machines"
+click "Let other PCs run tests here"
+wait "Borrow from clones here"
+expect "Borrow"
+click "Borrow from it"
+wait "Stop"
+scroll end
+shot borrow-chosen
+click "Stop"
+wait "Borrow from it"

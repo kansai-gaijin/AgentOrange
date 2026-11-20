@@ -30,8 +30,16 @@ public sealed record TestMachineSettings(
     string WorkFolder = "",
     string Shell = TestMachineSettings.PowerShell,
     string Environment = "",
-    int? TimeoutMinutes = null)
+    int? TimeoutMinutes = null,
+    Dictionary<string, string>? BorrowFrom = null)
 {
+    /// <summary>
+    /// The clone on this PC a project's first test checkout copies from instead of downloading the
+    /// whole repo, as the person chose it here, by project id (#112). Only ever read.
+    /// </summary>
+    public string? BorrowFor(string projectId) =>
+        BorrowFrom is not null && BorrowFrom.TryGetValue(projectId, out var folder) && folder.Trim().Length > 0 ? folder : null;
+
     public const string PowerShell = "PowerShell";
     public const string Cmd = "cmd";
     public const string Bash = "bash";
@@ -223,7 +231,7 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         var pcLimitText = settings.TimeoutMinutes is { } own ? $"this PC's time limit gives the whole run {TestsFile.Minutes(own)}" : null;
         limit.CancelAfter(TimeSpan.FromMinutes(settings.TimeoutMinutes ?? 24 * 60));
         var step = Stopwatch.StartNew();
-        var checkout = await GitTools.TestCheckoutAsync(job.RepoUrl, folder, job.Commit, limit.Token, Line);
+        var checkout = await GitTools.TestCheckoutAsync(job.RepoUrl, folder, job.Commit, limit.Token, Line, settings.BorrowFor(job.ProjectId));
         Took("Checking out", step);
         if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", null, record);
         if (limit.IsCancellationRequested) return TimedOut("checking out", pcLimitText ?? "a run may take a day at most");

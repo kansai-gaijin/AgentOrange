@@ -249,6 +249,8 @@ public partial class SettingsModal
         }
 
 
+        if (settings.Accepting) parts.AddRange(BorrowParts(settings));
+
         // Exactly what ran here, as any PC can change a project's synced commands.
         var runsHere = TestMachines.RunsHere();
         if (TestMachines.Running is not null || runsHere.Count > 0)
@@ -270,6 +272,78 @@ public partial class SettingsModal
             }
             parts.Add(Card([.. rows]));
         }
+        return parts;
+    }
+
+    // Projects whose folder on this PC is a clone of their repo, found once the page opens (#112).
+    private Dictionary<string, string>? _borrowSuggestions;
+
+    private async Task FindBorrowSuggestionsAsync()
+    {
+        var found = new Dictionary<string, string>();
+        foreach (var project in Database.ListProjects())
+        {
+            if (Database.GetProjectFolder(project.Id) is not { } folder || !System.IO.Directory.Exists(folder)) continue;
+            if (await GitTools.OriginForTestsAsync(folder) is ({ } origin, null) && GitTools.SameRepo(origin, project.RepoUrl)) found[project.Id] = folder;
+        }
+        _borrowSuggestions = found;
+        _refreshTestMachines?.Invoke();
+    }
+
+    // Clones on this PC a project's first test checkout can copy from instead of downloading the
+    // whole repo again. Only the person here chooses one; it's only ever read.
+    private List<UIElement> BorrowParts(TestMachineSettings settings)
+    {
+        var parts = new List<UIElement>();
+        if (_borrowSuggestions is null)
+        {
+            _borrowSuggestions = [];
+            _ = FindBorrowSuggestionsAsync();
+        }
+        // Empty is chosen not to, so it isn't suggested as if new.
+        void Choose(string projectId, string? folder)
+        {
+            var now = TestMachines.Settings;
+            TestMachines.Save(now with { BorrowFrom = new Dictionary<string, string>(now.BorrowFrom ?? []) { [projectId] = folder ?? "" } });
+        }
+
+        var rows = new List<FrameworkElement>();
+        foreach (var project in Database.ListProjects().OrderBy(each => each.Name, StringComparer.CurrentCultureIgnoreCase))
+        {
+            var chosen = settings.BorrowFor(project.Id);
+            var declined = settings.BorrowFrom?.TryGetValue(project.Id, out var said) == true && said.Length == 0;
+            var suggested = _borrowSuggestions.GetValueOrDefault(project.Id);
+            if (chosen is null && suggested is null) continue;
+
+            var pick = ActionButton(chosen is null ? "Choose…" : "Change");
+            pick.Click += (_, _) =>
+            {
+                if (PickFolder(chosen ?? suggested ?? "") is { } picked) Choose(project.Id, picked);
+            };
+            if (chosen is not null)
+            {
+                var stop = ActionButton("Stop");
+                stop.Click += (_, _) => Choose(project.Id, null);
+                rows.Add(Row(project.Name, $"Copies from {chosen}, so a first checkout here doesn't download the whole repo again, and its large files come from there when it has them. Nothing there is changed.", pick, stop));
+            }
+            else
+            {
+                var borrow = ActionButton("Borrow from it");
+                borrow.Click += (_, _) => Choose(project.Id, suggested);
+                rows.Add(Row(project.Name, $"{suggested} is a clone of its repo on this PC.{(declined ? " Not borrowed from, as chosen." : " A first checkout here could copy from it instead of downloading the whole repo again.")}", borrow, pick));
+            }
+        }
+        if (rows.Count == 0) return parts;
+        parts.Add(Section("Borrow from clones here"));
+        parts.Add(Card([.. rows]));
+        parts.Add(new TextBlock
+        {
+            Text = "Test runs never work in these folders, as each run checks a commit out by force and cleans up. They only copy from them. Build caches, such as an engine's shared cache, belong in the project's own settings or its prepare command.",
+            FontSize = 12.5,
+            Foreground = (Brush)FindResource("TextMuted"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(16, 8, 16, 0),
+        });
         return parts;
     }
 
