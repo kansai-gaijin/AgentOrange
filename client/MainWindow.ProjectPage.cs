@@ -42,6 +42,7 @@ public partial class MainWindow
         catch (SqliteException)
         {
             _databaseWasLost = true; // So the check runs again, as nothing else will finish it.
+            ProjectHeader.Child = null;
             ProjectPage.Children.Clear();
             var note = CenteredNote("The app's database can't be reached right now. This page comes back once it can be.");
             note.Margin = new Thickness(40, 40, 40, 0);

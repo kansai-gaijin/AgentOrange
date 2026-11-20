@@ -58,13 +58,15 @@
                 </Grid>
             </DockPanel>
 
-            <!-- An open project. Its top image runs edge to edge. -->
-            <ScrollViewer x:Name="ProjectView"
-                          Visibility="Collapsed"
-                          Margin="-40,-28,-40,0"
-                          VerticalScrollBarVisibility="Auto">
-                <StackPanel x:Name="ProjectPage" />
-            </ScrollViewer>
+            <!-- An open project. Its top image runs edge to edge, and stays put while the page scrolls under it. -->
+            <DockPanel x:Name="ProjectView"
+                       Visibility="Collapsed"
+                       Margin="-40,-28,-40,0">
+                <Border x:Name="ProjectHeader" DockPanel.Dock="Top" />
+                <ScrollViewer x:Name="ProjectScroll" VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="ProjectPage" />
+                </ScrollViewer>
+            </DockPanel>
 
             <Grid Grid.Row="1" Margin="0,12,0,0">
                 <StackPanel HorizontalAlignment="Left">

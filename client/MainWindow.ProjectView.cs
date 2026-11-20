@@ -26,10 +26,10 @@ public partial class MainWindow
             }
         }
 
-        var focused = Buttons(ProjectPage).FirstOrDefault(button => button.IsKeyboardFocusWithin)?.Content as string;
+        var focused = Buttons(ProjectView).FirstOrDefault(button => button.IsKeyboardFocusWithin)?.Content as string;
         RenderProject(project);
         if (focused is null) return;
-        _ = Dispatcher.InvokeAsync(() => Buttons(ProjectPage).FirstOrDefault(button => button.Content as string == focused)?.Focus(), System.Windows.Threading.DispatcherPriority.Loaded);
+        _ = Dispatcher.InvokeAsync(() => Buttons(ProjectView).FirstOrDefault(button => button.Content as string == focused)?.Focus(), System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
     private void RenderProject(Project project)
@@ -43,7 +43,8 @@ public partial class MainWindow
 
         _shownDownloadState = DownloadStateOf(_database.GetProjectFolder(project.Id));
         ProjectPage.Children.Clear();
-        ProjectPage.Children.Add(ProjectHero(project));
+        _fittedList = null;
+        ProjectHeader.Child = ProjectHero(project);
 
         // Stretched up to a limit, which puts it in the middle of a wide window.
         var body = new StackPanel { Margin = new Thickness(40, 2, 40, 0), MaxWidth = 840 };
