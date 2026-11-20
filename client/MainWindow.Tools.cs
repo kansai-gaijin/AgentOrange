@@ -159,18 +159,62 @@ public partial class MainWindow
     private async Task<object> ListToolsForAgentAsync(Project project)
     {
         var said = new StringBuilder();
+        var front = ToolWindows.ForegroundProcess();
         foreach (var editor in AgentTools(project))
         {
             var reachable = await ReachableAsync(editor);
-            said.AppendLine($"- {editor.Name}: {(IsOpen(editor) ? "open" : "not open")}, {(reachable ? "its MCP answers" : "its MCP doesn't answer yet")}.");
+            var processes = ToolProcessIds(editor);
+            var open = IsOpen(editor);
+            var window = !open ? "" : processes.Contains(front) ? ", its window is in front" : ", its window is behind others";
+            said.AppendLine($"- {editor.Name}: {(open ? "open" : "not open")}{window}, {(reachable ? "its MCP answers" : "its MCP doesn't answer yet")}.");
         }
         return said.Length == 0
             ? "No creative tools or engine are set up on this PC. The person sets them up in Settings › Engines and Settings › Tools."
-            : said + "\nopen_tool opens one in the project's folder. tool_tools says what one can do, and use_tool uses it.";
+            : said + "\nopen_tool opens one in the project's folder. tool_tools says what one can do, and use_tool uses it. focus_tool brings one's window in front, for timed work, as some tools slow down behind others.";
     }
 
-    private async Task<object> OpenToolForAgentAsync(Project project, JsonObject given) =>
-        await OpenToolAsync(ToolNamed(project, Required(given, "tool")), ProjectFolder(project.Id));
+    private async Task<object> OpenToolForAgentAsync(Project project, JsonObject given)
+    {
+        var editor = ToolNamed(project, Required(given, "tool"));
+        var opened = await OpenToolAsync(editor, ProjectFolder(project.Id));
+        return given["in_front"] is JsonValue front && front.TryGetValue<bool>(out var inFront) && inFront ? $"{opened} {await FocusToolAsync(editor)}" : opened;
+    }
+
+    // The tool's own running processes: the ones the editor monitor found, and any of its program's name.
+    private List<int> ToolProcessIds(EditorDefinition editor)
+    {
+        var ids = Settings.Editors.StatusOf(editor.Id)?.Instances.Select(instance => instance.ProcessId).ToList() ?? [];
+        var program = editor.Id == "unreal" ? "UnrealEditor" : Path.GetFileNameWithoutExtension(Settings.Editors.SettingsOf(editor).ProgramPath);
+        if (program.Length == 0) return ids;
+        foreach (var process in Process.GetProcessesByName(program))
+        {
+            using (process) ids.Add(process.Id);
+        }
+        return [.. ids.Distinct()];
+    }
+
+    private async Task<string> FocusToolAsync(EditorDefinition editor)
+    {
+        var processes = ToolProcessIds(editor);
+        var window = ToolWindows.WindowOf(processes);
+        if (window == 0)
+        {
+            return IsOpen(editor)
+                ? $"{editor.Name} is running, but has no window to show yet. It may still be loading: wait a little with wait_for, then focus_tool again."
+                : $"{editor.Name} isn't open, so its window can't be brought in front. Open it with open_tool, which can bring it in front with in_front.";
+        }
+        if (ToolWindows.ForegroundProcess() is var front && processes.Contains(front)) return $"{editor.Name}'s window is in front.";
+#if DEBUG
+        // A headless run never changes what's on the person's screen.
+        if (Headless.Active) return $"{editor.Name}'s window is behind others. (A headless run doesn't bring windows in front.)";
+#endif
+        return await ToolWindows.BringToFrontAsync(window)
+            ? $"{editor.Name}'s window is in front now."
+            : $"{editor.Name}'s window couldn't be brought in front: Windows kept {ToolWindows.ForegroundTitle()} there. Ask the person to click on {editor.Name}'s window, or to leave it in front, before the timed work.";
+    }
+
+    private async Task<object> FocusToolForAgentAsync(Project project, JsonObject given) =>
+        await FocusToolAsync(ToolNamed(project, Required(given, "tool")));
 
     private async Task<object> ToolToolsAsync(Project project, JsonObject given)
     {
