@@ -542,13 +542,15 @@ public sealed class LocalDatabase
         foreach (var project in ListProjects())
         {
             var details = ListAssetDetails(project.Id);
-            var delivered = DeliveredAssets(project.Id);
             foreach (var (id, saved) in ReadAll<CardData>(CardsCollection, project.Id))
             {
                 if (saved.Board?.EndsWith("/assets", StringComparison.Ordinal) != true) continue;
-                var now = details.GetValueOrDefault(id) ?? new AssetDetails();
+                if (details.GetValueOrDefault(id)?.Status is not null) continue;
+
+                // Read again just before, so a change made meanwhile, such as in its form, isn't undone.
+                var now = GetAssetDetails(id);
                 if (now.Status is not null) continue;
-                SetAssetDetails(id, now with { Status = AssetStatus.Of(now, delivered.Contains(id)) });
+                SetAssetDetails(id, now with { Status = AssetStatus.Of(now, GetAssetDeliverable(id) is not null) });
                 given++;
             }
         }

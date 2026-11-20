@@ -275,7 +275,7 @@ public partial class MainWindow
         foreach (var card in cards)
         {
             var details = page == AssetsPage ? _database.GetAssetDetails(card.Id) : new AssetDetails();
-            var cardStatus = AssetStatus.Of(details, _database.GetAssetDeliverable(card.Id) is not null);
+            var cardStatus = page == AssetsPage ? AssetStatus.Of(details, _database.GetAssetDeliverable(card.Id) is not null) : AssetStatus.ToDo;
             if (status is not null && cardStatus != status) continue;
             said.Append($"- {CardName(card, page)} (id {Short(card.Id)}): {WordsIn(_database.GetDocument(project.Id, LocalDatabase.CardBoardKey(card)))} words");
             if (_database.GetCardImage(card.Id) is not null) said.Append(", has a picture");
