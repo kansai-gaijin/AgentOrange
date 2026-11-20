@@ -88,6 +88,26 @@ public partial class MainWindow
         return (text, result["isError"]?.GetValue<bool>() == true);
     }
 
+    /// <summary>What an agent session of the project is given, written as a session's are, without a login to start one.</summary>
+    internal string AgentSetupForChecks(string projectName)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        var agentFolder = Settings.Folders.AgentFolder;
+        var mcp = AgentMcpConfig.Write(Settings.Editors, agentFolder, project.Id);
+        var settings = WriteClaudeSettings(mcp, AgentSkills.List(agentFolder), agentFolder);
+        var briefing = AgentBriefing.Write(Settings.Editors, agentFolder, project.Id, []);
+        return string.Join("\n", new[] { settings, mcp, briefing }.Select(file => $"{Path.GetFileName(file)}:\n{File.ReadAllText(file)}"));
+    }
+
+    /// <summary>Writes a file in the project's folder, by a path inside it.</summary>
+    internal void WriteFileForChecks(string projectName, string path, string text)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        var file = Path.Combine(ProjectFolder(project.Id) ?? throw new InvalidOperationException($"{projectName} has no folder."), path);
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        File.AppendAllText(file, text);
+    }
+
     internal int GiveAssetsAStatusForChecks()
     {
         var given = _database.GiveAssetsAStatus();

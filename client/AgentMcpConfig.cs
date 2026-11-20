@@ -16,7 +16,7 @@ public static class AgentMcpConfig
 
     // The program agents start as Agent Orange's MCP relay. A dev build runs it from a copy of
     // itself, as its own files are rebuilt while agents run, and a relay running from them locks them.
-    private static string RelayProgram(string agentFolder)
+    internal static string RelayProgram(string agentFolder)
     {
 #if DEBUG
         var copy = Path.Combine(agentFolder, "mcp-relay");

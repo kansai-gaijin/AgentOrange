@@ -146,14 +146,15 @@ public partial class MainWindow
         _sessionSkills[conversation.Id] = [.. AgentSkills.List(agentFolder), .. others];
         return new AgentConversation.Setup(provider, mcp, servers, AgentSkills.ClaudePlugin(agentFolder, conversation.ProjectId, others),
             AgentBriefing.Write(Settings.Editors, agentFolder, conversation.ProjectId, others), AttachmentsFolder,
-            WriteClaudeSettings(mcp, _sessionSkills[conversation.Id]),
+            WriteClaudeSettings(mcp, _sessionSkills[conversation.Id], agentFolder),
             [.. _sessionSkills[conversation.Id].Select(skill => Path.GetFullPath(skill.Folder))]);
     }
 
     // The briefing points the agent at each skill's SKILL.md, wherever it is (Agent Orange's folder, the
     // engine's, a tool's), so reading those folders never needs asking. Claude Code matches Windows
-    // paths in their POSIX form, "//c/Program Files/...".
-    private static string WriteClaudeSettings(string mcpConfig, IEnumerable<AgentSkill> skills)
+    // paths in their POSIX form, "//c/Program Files/...". Every shell command, the agent's and its
+    // helpers', goes past Agent Orange's check for patch scripts first (PatchScripts).
+    private static string WriteClaudeSettings(string mcpConfig, IEnumerable<AgentSkill> skills, string agentFolder)
     {
         var rules = new JsonArray();
         foreach (var folder in skills.Select(skill => Path.GetDirectoryName(Path.GetFullPath(skill.Folder))).OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase))
@@ -163,7 +164,12 @@ public partial class MainWindow
             rules.Add($"Read({posix.TrimEnd('/')}/**)");
         }
         var path = Path.ChangeExtension(mcpConfig, null) + "-settings.json";
-        File.WriteAllText(path, new JsonObject { ["permissions"] = new JsonObject { ["allow"] = rules } }.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        var settings = new JsonObject
+        {
+            ["permissions"] = new JsonObject { ["allow"] = rules },
+            ["hooks"] = PatchScripts.Hooks(AgentMcpConfig.RelayProgram(agentFolder)),
+        };
+        File.WriteAllText(path, settings.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         return path;
     }
 
