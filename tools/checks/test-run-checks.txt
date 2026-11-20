@@ -1,0 +1,34 @@
+# A test run reads how each check went from the results its repo names, "results" in
+# .agent-orange/tests.json (#105): JUnit XML, which most test tools write, or plain lines of passed,
+# failed or skipped and a name, from a file or a folder. Only results the test command wrote count,
+# so ones left from before or committed aren't taken for this run's, and the path stays in the repo.
+# Runs here use PowerShell and a folder committed as a repo. The JUnit file is in the repo, and the
+# test command writes it out again, as a test tool would.
+file "checks/fixtures/junit.xml" "<?xml version='1.0'?><testsuites><testsuite name='Game'><testcase classname='Clock' name='DayNight'><failure message='it was night'/></testcase><testcase classname='Input' name='Jump'/><testcase classname='Audio' name='Mute'><skipped/></testcase></testsuite></testsuites>"
+file "checks/run-tests.ps1" "New-Item -ItemType Directory -Force out | Out-Null; Get-Content fixtures/junit.xml | Set-Content out/junit.xml; Set-Content -Path out/results.txt -Value 'passed Save.Load','failed Net.Sync','skipped Net.Lag','not a result'; exit 1"
+file "checks/.agent-orange/tests.json" {"test":"./run-tests.ps1","results":"out"}
+testsfile "checks" "30 minutes"
+testrun "checks" "Failed" "Results file: out" "Results: 6 checks from out: 2 passed, 2 failed, 2 skipped." "Failed check: Clock.DayNight" "Failed check: Net.Sync"
+# A results file the test command didn't write, here one committed, is left out.
+file "checks/.agent-orange/tests.json" {"test":"Write-Output('tested')","results":"fixtures/junit.xml"}
+testrun "checks" "Passed" "Results: fixtures/junit.xml wasn't written by this run's test command, so it was left out and only the verdict is kept."
+file "checks/.agent-orange/tests.json" {"test":"Write-Output('tested')","results":"nowhere/junit.xml"}
+testrun "checks" "Passed" "Results: the test command didn't write nowhere/junit.xml, so only the verdict is kept."
+# XML that asks for a DTD or outside files isn't read.
+file "checks/fixtures/evil.xml" "<?xml version='1.0'?><!DOCTYPE x [<!ENTITY e SYSTEM 'file:///C:/Windows/win.ini'>]><testsuite><testcase name='&e;'/></testsuite>"
+file "checks/bad-results.ps1" "New-Item -ItemType Directory -Force bad | Out-Null; Get-Content fixtures/evil.xml | Set-Content bad/evil.xml"
+file "checks/.agent-orange/tests.json" {"test":"./bad-results.ps1","results":"bad"}
+testrun "checks" "Passed" "evil.xml couldn't be read" "has no checks in it"
+# A path out of the repo is refused before anything runs.
+file "checks/.agent-orange/tests.json" {"test":"x","results":"../elsewhere"}
+testsfile "checks" "must be a file or folder inside the repo"
+file "checks/.agent-orange/tests.json" {"test":"x","results":"C:/Windows"}
+testsfile "checks" "must be a file or folder inside the repo"
+# The Tests editor in Project settings has it.
+seed "Results" 0 0 0
+file "projects/results/.agent-orange/tests.json" {"test":"npm-test","results":"test-results/junit.xml"}
+open "Results"
+click "Project settings"
+expect "Results"
+scroll end
+shot tests-editor-results

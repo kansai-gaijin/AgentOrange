@@ -6,6 +6,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace AgentOrange;
 
@@ -13,13 +14,30 @@ namespace AgentOrange;
 /// What a test machine is sent: which commit of which repo to test, never what to run. The PC
 /// linking writes it, with a run id and the time it was sent, the repo URL from its own folder's
 /// origin, the access it needs and the tags it asked for, and signs it with the link's key. The
-/// commands are in the repo, in .agent-orange/tests.json at that commit.
+/// commands are in the repo, in .agent-orange/tests.json at that commit. StartedBy is "agent" for a
+/// run an agent started with run_tests (#117), and left out for a person's, so the run list can
+/// say which, signed with the rest. It changes nothing about what runs or who may run it.
 /// </summary>
-public sealed record TestJob(string Kind, string RunId, long SentAt, string ProjectId, string ProjectName, string RepoUrl, string Commit, string Access, string[] Tags)
+public sealed record TestJob(string Kind, string RunId, long SentAt, string ProjectId, string ProjectName, string RepoUrl, string Commit, string Access, string[] Tags,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? StartedBy = null)
 {
     public const string TestsKind = "tests";
+    public const string ByAgent = "agent";
 
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    /// <summary>Who a job says started it, "agent" or null for a person, or null when it can't be read.</summary>
+    public static string? StartedByIn(string job)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<TestJob>(job, Json)?.StartedBy;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 }
 
 /// <summary>How this PC runs tests for others: its own, never synced, and applied over what a job asks for.</summary>
@@ -78,6 +96,7 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
     private readonly object _pendingLock = new();
     private (int Seq, string Text)? _inFlight; // Sent again exactly as it was, under its own number, until it's taken.
     private int _nextSeq;
+    private List<CheckResult> _checks = [];
     private volatile bool _truncated;
     private volatile bool _lost;
     private volatile bool _cancelled;
@@ -156,7 +175,7 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         var wait = TimeSpan.FromSeconds(3);
         for (var tries = 0; tries < 10; tries++)
         {
-            var ended = await devices.EndRunAsync(run.Id, verdict, exitCode);
+            var ended = await devices.EndRunAsync(run.Id, verdict, exitCode, _checks);
             if (ended.Status is not null) return;
             await Task.Delay(wait);
             wait = TimeSpan.FromSeconds(Math.Min(30, wait.TotalSeconds * 2));
@@ -265,6 +284,7 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         Line($"Shell: {settings.Shell}. Time limit: {(settings.TimeoutMinutes is { } shown ? $"{TestsFile.Minutes(shown)} for the whole run, set on this PC" : setup.LimitsText)}.");
         if (setup.Prepare.Length > 0) Line($"Prepare: {setup.Prepare}");
         Line($"Test: {setup.Test}");
+        if (setup.Results is { } resultsAt) Line($"Results file: {resultsAt}");
         foreach (var (name, _) in settings.Variables()) Line($"Environment: {name} is set by this PC.");
         Line("");
 
@@ -289,10 +309,19 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         }
         Line($"> {setup.Test}");
         step.Restart();
+        var testStarted = DateTime.UtcNow;
         var tested = await RunCommandAsync(setup.Test, folder, limit.Token);
         Took("Test", step);
         if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", null, record);
         if (limit.IsCancellationRequested) return TimedOut("the test command", testLimitText);
+
+        // How each check went, when the repo names where its test command writes that (#105).
+        if (tested is not null && setup.Results is { } results)
+        {
+            var (checks, said) = TestChecks.Read(folder, results, testStarted);
+            _checks = checks;
+            Line(said);
+        }
         return tested switch
         {
             null => ("couldnt_run", null, record with { Note = "The shell couldn't be started." }),

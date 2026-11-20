@@ -633,6 +633,10 @@ public partial class ProjectSettingsModal : UserControl
                 (all, value) => value.Length == 0 ? (all with { PrepareTimeoutMinutes = null }, null)
                     : int.TryParse(value, out var minutes) && minutes is >= 1 and <= 24 * 60 ? (all with { PrepareTimeoutMinutes = minutes }, null)
                     : (null, "The prepare time limit is in minutes, from 1 to 1440, or empty to share the time limit.")),
+            ("Results", "Optional. A file or folder in the repo where the test command writes how each check went: JUnit XML, which most test tools can write, or lines of passed, failed or skipped and the check's name. Then a check that flips between pass and fail is flagged, with its history.", current.Results ?? "", 300,
+                (all, value) => value.Length == 0 ? (all with { Results = null }, null)
+                    : TestsFile.ResultsProblem(value) is { } badResults ? (null, badResults)
+                    : (all with { Results = value.Replace('\\', '/') }, null)),
         ];
 
         var rows = new List<FrameworkElement> { Row(TestsFile.RelativePath, about) };
