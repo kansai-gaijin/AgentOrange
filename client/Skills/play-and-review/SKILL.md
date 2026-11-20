@@ -22,12 +22,24 @@ Use the game's engine through Agent Orange (`open_tool`, `tool_tools`, `use_tool
 unattended where the engine's own skills say how (for Unreal, `unreal-headless-run`). Do most of the
 listed operations, not only start-up, and run the core loop end to end at least once.
 
+- **Play as a client too.** In a game for several players, the host's view hides bugs that only
+  other players see. Check each operation from a client as well as the host.
+- **Freeze real-world inputs.** Fix the clock, the weather and anything else read from outside the
+  game for the check, so it gives the same answer every time it runs.
+- **Skip time only on a copy.** Run long time skips on a copy of a save or level, never on one
+  others share.
+- **Bring the tool to the front** for timed checks: some editors slow down in the background.
+
 ## 3. Capture evidence and look at it
 
 Take screenshots from the engine at the moments that matter, or a short low-resolution recording where
 the engine can make one: idle, moving, turning, the main verb, any vehicle, an effect firing, each UI
 screen, a scene change. Look at every picture yourself. Never judge the game from its source or from
 one screenshot.
+
+Say what render or quality settings each picture was taken at. Don't pass a lighting check from a
+picture whose settings hide lighting, such as a low-quality, unlit or preview mode. Where a data
+probe can answer, such as a light's direction or an overlap test, prefer it to the eye.
 
 ## 4. Review against this list
 
