@@ -358,6 +358,12 @@ internal static partial class Headless
             case "agentsetup":
                 say(Main().AgentSetupForChecks(parts[1]));
                 break;
+            // Fetches ripgrep's release into the agent files folder, as the app does for sessions. It
+            // downloads from GitHub, so it's for trying by hand, not for the checks.
+            case "ripgrep":
+                var agentFolder = Path.Combine(DataFolder, "agent");
+                say((await Ripgrep.EnsureAsync(agentFolder)) is { } failed ? $"ripgrep: {failed}" : $"ripgrep: {(Ripgrep.IsIn(Ripgrep.Folder(agentFolder)) ? "in " + Ripgrep.Folder(agentFolder) : "on PATH already")}");
+                break;
             // Writes a file in the project's folder, such as one an agent waits for.
             case "writefile":
                 Main().WriteFileForChecks(parts[1], parts[2], Unescape(parts[3]));

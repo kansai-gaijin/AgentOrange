@@ -96,14 +96,22 @@ public partial class MainWindow
         var mcp = AgentMcpConfig.Write(Settings.Editors, agentFolder, project.Id);
         var settings = WriteClaudeSettings(mcp, AgentSkills.List(agentFolder), agentFolder);
         var briefing = AgentBriefing.Write(Settings.Editors, agentFolder, project.Id, []);
-        return string.Join("\n", new[] { settings, mcp, briefing }.Select(file => $"{Path.GetFileName(file)}:\n{File.ReadAllText(file)}"));
+
+        // How its program would be started, by a made-up login that's never run.
+        var login = new AgentProvider("check", ProviderKind.Claude, "Check", "claude", Path.Combine(agentFolder, "check-login"), true);
+        var start = AgentProviders.SessionStartInfo(login, "-p", ProjectFolder(project.Id) ?? agentFolder, Ripgrep.Folder(agentFolder));
+        var started = $"Started as: {start.FileName} {start.Arguments}\n" + string.Join("\n", new[] { "PYTHONUTF8", "PYTHONIOENCODING", "VSLANG", "DOTNET_CLI_UI_LANGUAGE", "LANG", "PATH" }
+            .Select(name => $"{name}={(start.Environment.TryGetValue(name, out var value) ? value : "")}"));
+        return string.Join("\n", new[] { settings, mcp, briefing }.Select(file => $"{Path.GetFileName(file)}:\n{File.ReadAllText(file)}")) + "\n" + started;
     }
 
-    /// <summary>Writes a file in the project's folder, by a path inside it.</summary>
+    /// <summary>Writes a file in the project's folder, by a path inside it, or in the agent files folder, for a project called "(agent files)".</summary>
     internal void WriteFileForChecks(string projectName, string path, string text)
     {
-        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
-        var file = Path.Combine(ProjectFolder(project.Id) ?? throw new InvalidOperationException($"{projectName} has no folder."), path);
+        var folder = projectName == "(agent files)"
+            ? Settings.Folders.AgentFolder
+            : ProjectFolder((_database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.")).Id);
+        var file = Path.Combine(folder ?? throw new InvalidOperationException($"{projectName} has no folder."), path);
         Directory.CreateDirectory(Path.GetDirectoryName(file)!);
         File.AppendAllText(file, text);
     }

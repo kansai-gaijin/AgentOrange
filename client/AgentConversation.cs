@@ -229,7 +229,7 @@ public sealed partial class AgentConversation
     }
 
     /// <summary>Everything a session needs set up first, made fresh each time so it matches what's set up now.</summary>
-    public sealed record Setup(AgentProvider Provider, string McpConfig, IReadOnlyList<string> McpServers, string SkillsPlugin, string Briefing, string AttachmentsFolder, string ClaudeSettings, IReadOnlyList<string> SkillFolders);
+    public sealed record Setup(AgentProvider Provider, string McpConfig, IReadOnlyList<string> McpServers, string SkillsPlugin, string Briefing, string AttachmentsFolder, string ClaudeSettings, IReadOnlyList<string> SkillFolders, string? ToolsFolder = null);
 
     /// <summary>
     /// Sends a message, starting the agent program if it isn't running. What the person is looking at
@@ -341,7 +341,7 @@ public sealed partial class AgentConversation
         Process? process;
         try
         {
-            process = Process.Start(AgentProviders.SessionStartInfo(setup.Provider, arguments, Folder!));
+            process = Process.Start(AgentProviders.SessionStartInfo(setup.Provider, arguments, Folder!, setup.ToolsFolder));
         }
         catch (Exception error) when (error is Win32Exception or IOException or UnauthorizedAccessException)
         {

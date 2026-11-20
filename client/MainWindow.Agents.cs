@@ -147,7 +147,7 @@ public partial class MainWindow
         return new AgentConversation.Setup(provider, mcp, servers, AgentSkills.ClaudePlugin(agentFolder, conversation.ProjectId, others),
             AgentBriefing.Write(Settings.Editors, agentFolder, conversation.ProjectId, others), AttachmentsFolder,
             WriteClaudeSettings(mcp, _sessionSkills[conversation.Id], agentFolder),
-            [.. _sessionSkills[conversation.Id].Select(skill => Path.GetFullPath(skill.Folder))]);
+            [.. _sessionSkills[conversation.Id].Select(skill => Path.GetFullPath(skill.Folder))], Ripgrep.Folder(agentFolder));
     }
 
     // The briefing points the agent at each skill's SKILL.md, wherever it is (Agent Orange's folder, the
