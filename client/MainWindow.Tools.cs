@@ -15,7 +15,8 @@ namespace AgentOrange;
 /// </summary>
 public partial class MainWindow
 {
-    private readonly Dictionary<string, McpClient> _toolClients = [];
+    // Each tool's session, or the one being made, shared by every call to it.
+    private readonly Dictionary<string, Task<McpClient>> _toolClients = [];
 
     // The creative tools set up on this PC, and the game's own engine.
     private IEnumerable<EditorDefinition> AgentTools(Project project) =>
@@ -75,11 +76,14 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>Opens the tool in the project's folder if it isn't open, and waits for its MCP to answer.</summary>
+    /// <summary>
+    /// Opens the tool in the project's folder if it isn't open, and waits until its MCP answers a real
+    /// call, not only until its port takes connections, as a tool still starting turns calls away.
+    /// </summary>
     internal async Task<string> OpenToolAsync(EditorDefinition editor, string? folder)
     {
         var settings = Settings.Editors.SettingsOf(editor);
-        if (await ReachableAsync(editor)) return $"{editor.Name} is open, and its MCP answers.";
+        if (await ReadinessAsync(editor, folder) is { NotYet: null } ready) return $"{editor.Name} is open, and its MCP answers calls, with {ready.Tools} tools. tool_tools lists them.";
         if (editor.Id == "unreal") return await OpenUnrealAsync(editor, folder);
         if (!File.Exists(settings.ProgramPath)) return $"{editor.Name}'s program isn't where Agent Orange has it ({settings.ProgramPath}). It's set in Settings › Tools.";
 
@@ -104,6 +108,10 @@ public partial class MainWindow
         }
         if (!running)
         {
+#if DEBUG
+            // A headless run shows nothing on the person's screen.
+            if (Headless.Active) start.CreateNoWindow = true;
+#endif
             try
             {
                 Process.Start(start);
@@ -114,12 +122,8 @@ public partial class MainWindow
             }
         }
 
-        for (var waited = 0; waited < 120; waited++)
-        {
-            await Task.Delay(1000);
-            if (await ReachableAsync(editor)) return $"Opened {editor.Name}, and its MCP answers.";
-        }
-        return $"{editor.Name} was started, but its MCP hasn't answered in two minutes. It may still be loading, or its MCP may be off in it.";
+        // Open but not answering yet is still starting, so it's waited for too.
+        return await UntilReadyAsync(editor, folder, TimeSpan.FromMinutes(2), started: !running);
     }
 
     // The game's own project, in its engine, which takes a while to load.
@@ -131,29 +135,46 @@ public partial class MainWindow
         }
         if (Process.GetProcessesByName("UnrealEditor").Length > 0)
         {
-            return "Unreal is open, but its MCP doesn't answer on Agent Orange's port. It may be another project, or still loading. Ask the person to open this one with Open in Unreal Engine, on the project's page.";
+            // Its port taking connections, or an editor started a little while ago, is this one still loading.
+            if (await ReachableAsync(editor) || InStartUp(editor)) return await UntilReadyAsync(editor, folder, TimeSpan.FromMinutes(10), started: false);
+            return "Unreal is open, but its MCP doesn't answer on Agent Orange's port. It may be another project. Ask the person to open this one with Open in Unreal Engine, on the project's page.";
         }
         if (UnrealProject.Open(uproject) is { } problem) return problem;
 
-        for (var waited = 0; waited < 600; waited++)
-        {
-            await Task.Delay(1000);
-            if (await ReachableAsync(editor)) return $"Opened {Path.GetFileName(uproject)} in Unreal, and its MCP answers.";
-        }
-        return "Unreal was started, but its MCP hasn't answered in ten minutes. The first open of a project compiles shaders, which can take longer. Try open_tool again in a while.";
+        var opened = await UntilReadyAsync(editor, folder, TimeSpan.FromMinutes(10), started: true);
+        return opened.Contains("after 10 min", StringComparison.Ordinal) ? $"{opened} The first open of a project compiles shaders, which can take longer." : opened;
     }
 
-    private async Task<McpClient> ToolClientAsync(EditorDefinition editor, string? folder)
+    // Its session, made once and shared by the calls to it. One that couldn't be made is made again next time.
+    private async Task<McpClient> ToolClientAsync(EditorDefinition editor, string? folder, CancellationToken cancel = default)
     {
-        if (_toolClients.TryGetValue(editor.Id, out var kept)) return kept;
-        var client = await McpClient.ConnectAsync(Settings.Editors.SettingsOf(editor), folder, editor.Id == "blender" ? BlenderMcp.ServerProgram(Settings.Folders.AgentFolder) : null);
-        _toolClients[editor.Id] = client;
-        return client;
+        if (!_toolClients.TryGetValue(editor.Id, out var connecting) || connecting.IsFaulted || connecting.IsCanceled)
+        {
+            var settings = Settings.Editors.SettingsOf(editor);
+            var server = editor.Id == "blender" ? BlenderMcp.ServerProgram(Settings.Folders.AgentFolder) : null;
+            _toolClients[editor.Id] = connecting = ConnectToolAsync(settings, folder, server);
+        }
+        try
+        {
+            return await connecting.WaitAsync(cancel);
+        }
+        catch when (connecting.IsFaulted || connecting.IsCanceled)
+        {
+            if (_toolClients.GetValueOrDefault(editor.Id) == connecting) _toolClients.Remove(editor.Id);
+            throw;
+        }
+
+        // Not tied to any one call, which may be cancelled while others wait on it too.
+        static async Task<McpClient> ConnectToolAsync(EditorSettings settings, string? folder, string? server)
+        {
+            using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            return await McpClient.ConnectAsync(settings, folder, server, limit.Token);
+        }
     }
 
     private void ForgetToolClient(EditorDefinition editor)
     {
-        if (_toolClients.Remove(editor.Id, out var gone)) gone.Dispose();
+        if (_toolClients.Remove(editor.Id, out var gone) && gone.IsCompletedSuccessfully) gone.Result.Dispose();
     }
 
     private async Task<object> ListToolsForAgentAsync(Project project)
@@ -168,9 +189,13 @@ public partial class MainWindow
             var window = !open ? "" : processes.Contains(front) ? ", its window is in front" : ", its window is behind others";
             said.AppendLine($"- {editor.Name}: {(open ? "open" : "not open")}{window}, {(reachable ? "its MCP answers" : "its MCP doesn't answer yet")}.");
         }
-        return said.Length == 0
-            ? "No creative tools or engine are set up on this PC. The person sets them up in Settings › Engines and Settings › Tools."
-            : said + "\nopen_tool opens one in the project's folder. tool_tools says what one can do, and use_tool uses it. focus_tool brings one's window in front, for timed work, as some tools slow down behind others.";
+        if (said.Length == 0) return "No creative tools or engine are set up on this PC. The person sets them up in Settings › Engines and Settings › Tools.";
+        if (CallsOf(project).ToList() is { Count: > 0 } calls)
+        {
+            said.AppendLine("\nCalls start_tool_call started:");
+            foreach (var call in calls) said.AppendLine($"- {call.Line}");
+        }
+        return said + "\nopen_tool opens one in the project's folder, and close_tool closes it. tool_tools says what one can do, and use_tool uses it; start_tool_call runs a long call without a time limit. focus_tool brings one's window in front, for timed work, as some tools slow down behind others.";
     }
 
     private async Task<object> OpenToolForAgentAsync(Project project, JsonObject given)
@@ -180,15 +205,21 @@ public partial class MainWindow
         return given["in_front"] is JsonValue front && front.TryGetValue<bool>(out var inFront) && inFront ? $"{opened} {await FocusToolAsync(editor)}" : opened;
     }
 
-    // The tool's own running processes: the ones the editor monitor found, and any of its program's name.
+    // The tool's own running processes: the ones the editor monitor found, and any of its program's
+    // name, but not copies running as its MCP relay, which aren't the tool being open.
     private List<int> ToolProcessIds(EditorDefinition editor)
     {
         var ids = Settings.Editors.StatusOf(editor.Id)?.Instances.Select(instance => instance.ProcessId).ToList() ?? [];
-        var program = editor.Id == "unreal" ? "UnrealEditor" : Path.GetFileNameWithoutExtension(Settings.Editors.SettingsOf(editor).ProgramPath);
+        var settings = Settings.Editors.SettingsOf(editor);
+        var program = editor.Id == "unreal" ? "UnrealEditor" : Path.GetFileNameWithoutExtension(settings.ProgramPath);
         if (program.Length == 0) return ids;
         foreach (var process in Process.GetProcessesByName(program))
         {
-            using (process) ids.Add(process.Id);
+            using (process)
+            {
+                if (settings.Kind == McpKind.Relay && EditorMonitor.IsRelay(process.Id, settings)) continue;
+                ids.Add(process.Id);
+            }
         }
         return [.. ids.Distinct()];
     }
@@ -220,14 +251,24 @@ public partial class MainWindow
     {
         var editor = ToolNamed(project, Required(given, "tool"));
         if (!await AnswersAsync(editor)) return $"{editor.Name}'s MCP doesn't answer. Open it with open_tool first.";
-        var client = await ToolClientAsync(editor, ProjectFolder(project.Id));
-        var listed = await client.RequestAsync("tools/list", []);
+        var notes = new List<string>();
+        JsonNode? listed;
+        try
+        {
+            using var limit = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+            listed = await RelayAsync(editor, ProjectFolder(project.Id), "tools/list", [], UseToolLimits, notes, limit.Token);
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or System.Net.Http.HttpRequestException or OperationCanceledException)
+        {
+            return ToolResult($"{editor.Name} didn't list its tools: {Why(error)}.{(notes.Count > 0 ? $" ({string.Join(" ", notes)})" : "")}", error: true);
+        }
         var said = new StringBuilder($"{editor.Name}'s tools, for use_tool:\n");
         foreach (var tool in (listed?["tools"] as JsonArray ?? []).OfType<JsonObject>())
         {
             said.AppendLine($"- {tool["name"]}: {tool["description"]?.GetValue<string>()?.Replace("\n", " ")}");
             if (tool["inputSchema"]?["properties"] is JsonObject properties && properties.Count > 0) said.AppendLine($"  Arguments: {properties.ToJsonString()}");
         }
+        if (notes.Count > 0) said.AppendLine($"({string.Join(" ", notes)})");
         return said.ToString();
     }
 
@@ -237,40 +278,17 @@ public partial class MainWindow
         var name = Required(given, "name");
         var arguments = given["arguments"] as JsonObject ?? [];
         if (!await AnswersAsync(editor)) return ToolResult($"{editor.Name}'s MCP doesn't answer. Open it with open_tool first.", error: true);
-
-        McpClient? client = null;
-        try
-        {
-            client = await ToolClientAsync(editor, ProjectFolder(project.Id));
-            var result = await client.RequestAsync("tools/call", new JsonObject { ["name"] = name, ["arguments"] = arguments.DeepClone() });
-            if (result is not JsonObject passed) return ToolResult(result?.ToJsonString() ?? "");
-            var answer = (JsonObject)passed.DeepClone();
-            if (answer["isError"] is JsonValue failed && failed.TryGetValue<bool>(out var isError) && isError && await ArgumentsHintAsync(client, editor, name, arguments) is { } hint)
-            {
-                if (answer["content"] is not JsonArray content) answer["content"] = content = [];
-                content.Add(new JsonObject { ["type"] = "text", ["text"] = hint });
-            }
-            return answer;
-        }
-        catch (InvalidOperationException error) when (client is not null)
-        {
-            // The tool answered, with an error of its own, such as an argument it doesn't take.
-            var hint = await ArgumentsHintAsync(client, editor, name, arguments);
-            return ToolResult($"{editor.Name} couldn't do that: {error.Message}{(hint is null ? "" : $"\n{hint}")}", error: true);
-        }
-        catch (Exception error) when (error is IOException or InvalidOperationException or System.Net.Http.HttpRequestException)
-        {
-            ForgetToolClient(editor); // A tool closed and opened again needs a new session.
-            return ToolResult($"{editor.Name} couldn't do that: {error.Message}", error: true);
-        }
+        return await RelayToolCallAsync(editor, ProjectFolder(project.Id), name, arguments, UseToolLimits, CancellationToken.None);
     }
 
     // When a relayed call fails: the tool's real name and arguments, from its own list, if what was given doesn't match them.
-    private static async Task<string?> ArgumentsHintAsync(McpClient client, EditorDefinition editor, string name, JsonObject arguments)
+    private async Task<string?> ArgumentsHintAsync(EditorDefinition editor, string? folder, string name, JsonObject arguments)
     {
         try
         {
-            var tools = ((await client.RequestAsync("tools/list", []))?["tools"] as JsonArray ?? []).OfType<JsonObject>().ToList();
+            using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var client = await ToolClientAsync(editor, folder, limit.Token);
+            var tools = ((await client.RequestAsync("tools/list", [], limit.Token))?["tools"] as JsonArray ?? []).OfType<JsonObject>().ToList();
             if (tools.FirstOrDefault(tool => tool["name"]?.GetValue<string>() == name) is not { } tool)
             {
                 var names = tools.Select(each => each["name"]?.GetValue<string>()).OfType<string>().ToList();
@@ -278,7 +296,7 @@ public partial class MainWindow
             }
             return ArgumentsMismatch(name, tool["inputSchema"] as JsonObject, arguments);
         }
-        catch (Exception error) when (error is IOException or InvalidOperationException or System.Net.Http.HttpRequestException or System.Text.Json.JsonException)
+        catch (Exception error) when (error is IOException or InvalidOperationException or System.Net.Http.HttpRequestException or System.Text.Json.JsonException or OperationCanceledException)
         {
             return null;
         }

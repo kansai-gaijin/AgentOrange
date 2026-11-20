@@ -349,6 +349,10 @@ public sealed partial class EditorMonitor
     private static bool Same(EditorStatus a, EditorStatus b) =>
         a.ProgramFound == b.ProgramFound && a.Mcp == b.Mcp && a.McpHolder == b.McpHolder && a.Relays == b.Relays && a.Instances.SequenceEqual(b.Instances);
 
+    /// <summary>Whether a process of a relay tool's program is a copy running as its MCP relay, started with its relay arguments.</summary>
+    internal static bool IsRelay(int processId, EditorSettings settings) =>
+        settings.Kind == McpKind.Relay && settings.Address.Length > 0 && CommandLineOf(processId) is { } line && EndsWithArguments(line, settings.Address);
+
     // Its program can be quoted or not, so only what comes after it is compared.
     private static bool EndsWithArguments(string commandLine, string arguments) =>
         commandLine.TrimEnd().EndsWith(" " + arguments.Trim(), StringComparison.OrdinalIgnoreCase);
