@@ -288,7 +288,7 @@ public sealed partial class AgentsWindow : Window
             Child = surface,
         };
         Panel.SetZIndex(_composer, 2);
-        var composerLane = new StackPanel { MaxWidth = ColumnWidth, Margin = new Thickness(48, 4, 48, 20), Children = { _note, _banners, _composer } };
+        var composerLane = new StackPanel { MaxWidth = ColumnWidth, Margin = new Thickness(48, 4, 48, 20), Children = { _note, _workLine, _banners, _composer } };
 
         var conversationArea = new DockPanel { Background = Ocean.Canvas };
         DockPanel.SetDock(header, Dock.Top);
@@ -347,6 +347,7 @@ public sealed partial class AgentsWindow : Window
             if (pressed.Key == Key.Escape && _overlay.Visibility == Visibility.Visible)
             {
                 _overlay.Visibility = Visibility.Collapsed;
+                _workPanelOpen = false;
                 pressed.Handled = true;
             }
         };
@@ -356,6 +357,7 @@ public sealed partial class AgentsWindow : Window
             ShowSees();
             ShowTurns();
             ShowConversationStates();
+            ShowWorkLine();
         };
         _tick.Start();
         Activated += (_, _) =>
@@ -616,6 +618,8 @@ public sealed partial class AgentsWindow : Window
         ShowNote(null);
         _stepsOpen = conversation?.Steps?.Any(step => step.Status != "completed") == true;
         ShowUsage();
+        if (_workPanelOpen) CloseWorkPanel();
+        ShowWorkLine();
         _follow = true;
         ScrollToEnd();
         if (conversation is not null) _ = Dispatcher.InvokeAsync(() => _input.Focus(), DispatcherPriority.Input);
@@ -729,6 +733,7 @@ public sealed partial class AgentsWindow : Window
         ShowControls();
         ShowUsage();
         ShowTurns();
+        ShowWorkLine();
         if (_open is not null && IsActive) _open.Unseen = false;
         if (_follow) ScrollToEnd();
     }

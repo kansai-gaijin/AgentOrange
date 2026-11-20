@@ -239,6 +239,7 @@ public sealed partial class AgentsWindow
     // The Usage page, as T3 Code's: a panel over the window with a card for each limit of each login.
     private void ShowUsagePage()
     {
+        _workPanelOpen = false;
         var refresh = Ocean.IconButton("refresh-cw", () => _ = _main.ProbeUsageAsync(), "Check again", 28, 16, Ocean.MutedText);
         var close = Ocean.IconButton("x", () => _overlay.Visibility = Visibility.Collapsed, "Close", 28, 16, Ocean.MutedText);
         var tools = new StackPanel { Orientation = Orientation.Horizontal, Children = { refresh, close } };

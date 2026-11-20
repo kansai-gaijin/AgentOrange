@@ -13,15 +13,35 @@ said "Command running: Run the test suite until it finishes | npm test -- --repo
 said "Agent running: Review the level layout"
 # Each once, however many ways Claude Code tells of it.
 notsaid "Command completed"
+# The line above the box, the list's row, and the panel from Details.
+expect "Waiting"
+expect "Run the test suite until it finishes and 1 more"
+expect "Waiting on 2 jobs"
+shot waiting-line
+click "Details"
+expect "Background work"
+expect "npm test -- --reporter=dot"
+expect "Helper agent (general-purpose) · running for 0s"
+shot work-panel
+click "Close"
+# Stop asks Claude Code to stop each of it.
+click "Stop all"
+agentstate
+said "stop_task\q,\qtask_id\q:\qb1"
+said "stop_task\q,\qtask_id\q:\qa1"
 # The helper agent ends, and Claude Code takes that up in a turn of its own: still waiting on the tests.
 feed "background-work.jsonl" "agent-done"
 agentstate
 said "Working: no, background work running: 1, waiting on it: yes, unseen: no"
 said "Agent completed: Review the level layout"
+expect "Waiting on 1 job"
 # The tests end too, and that turn ends with nothing left: now it's done, and the person is told.
 feed "background-work.jsonl" "tests-done"
 agentstate
 said "Working: no, background work running: 0, waiting on it: no, unseen: yes"
+expect "Done"
+expectnot "Stop all"
+shot finished
 # Codex: a helper agent is a thread of its own, and what it does stays out of this timeline.
 agent "Background project" "Get the forest level's notes written" codex
 feed "background-work.jsonl" "codex-started"

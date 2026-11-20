@@ -93,7 +93,9 @@ public sealed partial class AgentsWindow
         var next = _rowOrder.Count > 1 ? _rowOrder[(_rowOrder.IndexOf(conversation) + 1) % _rowOrder.Count] : null;
         if (!conversation.Settle(true))
         {
-            ShowNote("Stop it, or answer what it's asking, before settling it.");
+            ShowNote(conversation.IsWaitingOnWork
+                ? "It's still waiting on work it started in the background. Stop that from the line above the box, or let it finish, before settling it."
+                : "Stop it, or answer what it's asking, before settling it.");
             return;
         }
         if (_open == conversation) Show(next is not null && next != conversation ? next : _main.NewConversation(_main.AgentProjects().First(project => project.Id == conversation.ProjectId)));
@@ -130,7 +132,7 @@ public sealed partial class AgentsWindow
         if (folder is not null && repo is null && RepoAsked.Add(folder)) _ = RefreshRepoAsync(conversation.ProjectId, fetch: false);
 
         // Quiet when it isn't the open one and has nothing new to say.
-        var muted = !selected && (conversation.IsWorking || !conversation.Unseen && !conversation.IsWaiting);
+        var muted = !selected && (conversation.IsWorking || conversation.IsWaitingOnWork || !conversation.Unseen && !conversation.IsWaiting);
         var failed = conversation.Unseen && conversation.Items.LastOrDefault()?.Kind == AgentItemKind.Problem;
 
         // Line 1: the project, and the status or time, which the mouse swaps for the actions.
@@ -259,10 +261,15 @@ public sealed partial class AgentsWindow
             return asking ? Status("message-circle-question", "Input", Indigo) : Status("shield-question", "Approval", Ocean.Warning);
         }
         if (conversation.IsWorking) return Status("circle-dashed", "Working", Ocean.Info, Took(DateTimeOffset.UtcNow - conversation.WorkingSince));
+
+        // Its turn ended, but it isn't done: work it started is still going.
+        if (conversation.IsWaitingOnWork) return Status("terminal", WaitingOn(conversation.BackgroundJobs), Ocean.Info);
         if (conversation.Unseen && conversation.Items.LastOrDefault()?.Kind == AgentItemKind.Problem) return Status("circle-alert", "Failed", Ocean.Error);
         if (conversation.Unseen) return Status("circle-check", "Done", Ocean.Success);
         return Ocean.Text(Ago(conversation.Updated), Ocean.Secondary, 12);
     }
+
+    internal static string WaitingOn(int jobs) => jobs == 1 ? "Waiting on 1 job" : $"Waiting on {jobs} jobs";
 
     // Each second, and when Ctrl comes and goes: the rows' states, so "Working 12s" counts.
     private void ShowConversationStates()
