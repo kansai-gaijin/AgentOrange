@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
@@ -262,6 +263,8 @@ public partial class MainWindow
             if (!open) continue;
 
             if (milestone.Goal is { Length: > 0 } goal) lines.Add(new ListLine($"goal:{id}", goal, () => InPage(Note(goal, 0), TasksWidth)));
+            if (milestone.Notes is { Length: > 0 } notes) lines.Add(new ListLine($"notes:{id}", notes, () => InPage(Note($"Notes: {notes}", 0), TasksWidth)));
+            if (milestone.Handoff is { } handoff) lines.Add(new ListLine($"handoff:{id}", handoff.ToString(), () => InPage(Note($"Handoff note, {HandoffShown(handoff)}", 0), TasksWidth)));
             var shown = data.ShowFinished ? inIt : inIt.Where(each => !each.Task.Done).ToList();
             foreach (var (taskId, task) in shown) lines.Add(TaskLine(project, view, data, taskId, task, overdue: false));
             if (shown.Count == 0 && inIt.Count > 0)
@@ -435,7 +438,8 @@ public partial class MainWindow
     private ListLine TaskLine(Project project, TasksPageView view, TasksData data, string id, ProjectTask task, bool overdue, string? milestoneName = null)
     {
         var card = task.Card is { } cardId && data.Cards.TryGetValue(cardId, out var belongs) ? CardName(belongs.Card, belongs.Page) : null;
-        return new ListLine($"task:{id}", $"{task}|{overdue}|{milestoneName}|{card}", () => InPage(MadeTaskRow(project, view, data, id, task, overdue, milestoneName), TasksWidth));
+        // A list in a record says only its type, so its evidence is said by how much there is.
+        return new ListLine($"task:{id}", $"{task}|{overdue}|{milestoneName}|{card}|{EvidenceCount(task.Evidence)}",() => InPage(MadeTaskRow(project, view, data, id, task, overdue, milestoneName), TasksWidth));
     }
 
     private ListLine AssetTaskLine(Project project, AssetTask task, bool overdue) =>
@@ -477,7 +481,7 @@ public partial class MainWindow
         var words = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         words.Children.Add(new TextBlock { Text = task.Title, FontSize = 14, Foreground = (Brush)FindResource(task.Done ? "TextMuted" : "TextStrong"), TextWrapping = TextWrapping.Wrap, TextDecorations = task.Done ? TextDecorations.Strikethrough : null });
         // Away from its milestone, it says which one it's in.
-        var aside = string.Join(" · ", new[] { milestoneName, task.Notes?.Split('\n')[0] }.Where(each => each is { Length: > 0 }));
+        var aside = string.Join(" · ", new[] { milestoneName, task.Notes?.Split('\n')[0], EvidenceCount(task.Evidence), task.Handoff is null ? null : "Handoff note" }.Where(each => each is { Length: > 0 }));
         if (aside.Length > 0)
         {
             words.Children.Add(new TextBlock { Text = aside, FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 1, 0, 0) });
@@ -529,6 +533,15 @@ public partial class MainWindow
             PlaceTask(project, stage, moved, GroupOf(milestoneIds, task), at + (below ? 1 : 0));
         });
         return frame;
+    }
+
+    // Such as "2 pictures, 1 file", or nothing when it has none.
+    private static string? EvidenceCount(TaskEvidence[]? evidence)
+    {
+        if (evidence is not { Length: > 0 }) return null;
+        var pictures = evidence.Count(each => each.Picture is not null);
+        var files = evidence.Length - pictures;
+        return string.Join(", ", new[] { pictures > 0 ? $"{pictures} {(pictures == 1 ? "picture" : "pictures")}" : null, files > 0 ? $"{files} {(files == 1 ? "file" : "files")}" : null }.OfType<string>());
     }
 
     // Moving tasks and milestones: dragged, or Alt+Up and Alt+Down on what has the keyboard.
@@ -741,6 +754,49 @@ public partial class MainWindow
         rows.Children.Add(cardButton);
         rows.Children.Add(cardList);
 
+        // What shows its work, such as an agent's screenshots: a click opens one, and each can be taken off.
+        var evidence = new List<TaskEvidence>(task?.Evidence ?? []);
+        var attaching = new List<string>();
+        var evidenceRows = new StackPanel();
+        void ShowEvidence()
+        {
+            evidenceRows.Children.Clear();
+            foreach (var each in evidence) evidenceRows.Children.Add(EvidenceRow(project, each, () => { evidence.Remove(each); ShowEvidence(); }));
+            foreach (var file in attaching) evidenceRows.Children.Add(EvidenceRow(project, new TaskEvidence("", null, file), () => { attaching.Remove(file); ShowEvidence(); }));
+        }
+        ShowEvidence();
+        var attach = TextButton("Attach a file", () =>
+        {
+            if (Dialogs.PickFile("Attach a file that shows the work", "Pictures and files|*.*", ProjectFolder(project.Id)) is not { } file) return;
+            attaching.Add(file);
+            ShowEvidence();
+        });
+        attach.HorizontalAlignment = HorizontalAlignment.Left;
+        attach.ToolTip = "A picture is kept with the project, so every PC sees it. Another file is kept by its path.";
+        rows.Children.Add(FormLabel("Evidence", above: 12));
+        rows.Children.Add(evidenceRows);
+        rows.Children.Add(attach);
+
+        // Where the last conversation on it left off, for the next one, until it's cleared or written again.
+        var handoff = task?.Handoff;
+        if (handoff is not null)
+        {
+            var handoffRows = new StackPanel();
+            var clear = TextButton("Clear", () => { });
+            clear.HorizontalAlignment = HorizontalAlignment.Left;
+            clear.Click += (_, _) =>
+            {
+                handoff = null;
+                handoffRows.Children.Clear();
+                handoffRows.Children.Add(Note("Cleared once saved.", 0));
+            };
+            AutomationProperties.SetName(clear, "Clear the handoff note");
+            handoffRows.Children.Add(Note(HandoffShown(handoff), 0));
+            handoffRows.Children.Add(clear);
+            rows.Children.Add(FormLabel("Handoff note", above: 12));
+            rows.Children.Add(handoffRows);
+        }
+
         void Save()
         {
             var typed = title.Text.Trim();
@@ -755,7 +811,23 @@ public partial class MainWindow
                 ? task.Order
                 : _database.ListTasks(project.Id, stage).Where(each => each.Task.Milestone == chosen).Select(each => each.Task.Order).DefaultIfEmpty(0).Max() + 1;
             var notesText = notes.Text.Trim();
-            _database.SaveTask(project.Id, existing?.Id, new ProjectTask(stage, typed, notesText.Length > 0 ? notesText : null, DayText(due), task?.Done ?? false, chosen, order, card));
+            if (attaching.Count > 0)
+            {
+                try
+                {
+                    evidence.AddRange(KeepEvidence(project, attaching));
+                    attaching.Clear();
+                }
+                catch (McpException problemWithFile)
+                {
+                    ShowProblem(problem, problemWithFile.Message.Replace("evidence: ", ""));
+                    return;
+                }
+            }
+            // What the form doesn't change, such as whether it's done, stays as it is.
+            var saved = (task ?? new ProjectTask(stage, typed)) with { Title = typed, Notes = notesText.Length > 0 ? notesText : null, Due = DayText(due), Milestone = chosen, Order = order, Card = card, Evidence = evidence.Count > 0 ? [.. evidence] : null, Handoff = handoff };
+            foreach (var picture in (task?.Evidence ?? []).Except(evidence).Select(each => each.Picture).OfType<string>()) _database.DeleteDocumentPicture(picture);
+            _database.SaveTask(project.Id, existing?.Id, saved);
 
             // A task added to a closed milestone opens it, so the task can be seen.
             if (chosen is not null && chosen != task?.Milestone) SetMilestoneOpen(project.Id, chosen, true);
@@ -809,6 +881,66 @@ public partial class MainWindow
         asked.IsOpen = true;
     }
 
+    // One piece of a task's evidence in its form: a picture small, or a file by its name, which a click
+    // opens, and a button to take it off.
+    private DockPanel EvidenceRow(Project project, TaskEvidence evidence, Action remove)
+    {
+        var name = evidence.Path is { } path ? Path.GetFileName(path) : "A picture";
+        FrameworkElement shown = evidence.Picture is { } picture && _database.GetDocumentPicture(picture) is { } stored && ProjectImages.ToImage(Convert.FromBase64String(stored), 240) is { } image
+            ? new Image { Source = image, MaxHeight = 90, MaxWidth = 160, Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left }
+            : new TextBlock { Text = name, FontSize = 13, Foreground = (Brush)FindResource("TextStrong"), TextTrimming = TextTrimming.CharacterEllipsis };
+        var open = new Button { Style = (Style)FindResource("HeaderButton"), Content = shown, HorizontalAlignment = HorizontalAlignment.Left, HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(2) };
+        open.ToolTip = evidence.Path ?? "A picture";
+        AutomationProperties.SetName(open, $"Open {name}");
+        open.Click += (_, _) => OpenEvidence(project, evidence);
+        var off = TextButton("Remove", remove);
+        off.VerticalAlignment = VerticalAlignment.Top;
+        AutomationProperties.SetName(off, $"Remove {name}");
+        var row = new DockPanel { Margin = new Thickness(0, 0, 0, 4) };
+        DockPanel.SetDock(off, Dock.Right);
+        row.Children.Add(off);
+        row.Children.Add(open);
+        return row;
+    }
+
+    // A picture opens in whatever opens pictures on this PC, from a copy in the temporary folder, and a file as it is.
+    private void OpenEvidence(Project project, TaskEvidence evidence)
+    {
+        string? file = null;
+        if (evidence.Picture is { } picture && _database.GetDocumentPicture(picture) is { } stored)
+        {
+            var bytes = Convert.FromBase64String(stored);
+            var folder = Path.Combine(Path.GetTempPath(), "AgentOrange-Evidence");
+            Directory.CreateDirectory(folder);
+            file = Path.Combine(folder, $"{Short(picture)}{(bytes.Length > 3 && bytes[0] == 0x89 && bytes[1] == 0x50 ? ".png" : ".jpg")}");
+            File.WriteAllBytes(file, bytes);
+        }
+        else if (evidence.Path is { } path)
+        {
+            file = Path.IsPathRooted(path) ? path : ProjectFolder(project.Id) is { } inFolder ? Path.Combine(inFolder, path) : null;
+        }
+        if (file is null || !File.Exists(file))
+        {
+            Dialogs.Notify(evidence.Path is { } missing ? $"{missing} isn't on this PC." : "That picture isn't on this PC yet.");
+            return;
+        }
+#if DEBUG
+        if (Headless.Active) return;
+#endif
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(file) { UseShellExecute = true });
+        }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            Dialogs.Notify($"Nothing on this PC opens {Path.GetFileName(file)}.");
+        }
+    }
+
+    // As the Tasks page and forms show a handoff note: when, who from, and what it says.
+    private static string HandoffShown(HandoffNote note) =>
+        $"{HandoffWhen(note)}{(note.From is { Length: > 0 } from ? $", from {from}" : "")}\n{note.Text.Trim()}";
+
     /// <summary>Adds a milestone, or changes one: its name, what it's for, and when it's done.</summary>
     private void OpenMilestoneForm(UIElement by, Project project, string stage, (string Id, Milestone Milestone)? existing)
     {
@@ -840,6 +972,25 @@ public partial class MainWindow
         var name = Box("Name", milestone?.Name, lines: false);
         var goal = Box("What it's for", milestone?.Goal, lines: true);
         var doneWhen = Box("Done when", milestone?.DoneWhen, lines: true);
+        var notes = Box("Notes", milestone?.Notes, lines: true);
+        var handoff = milestone?.Handoff;
+        if (handoff is not null)
+        {
+            var handoffRows = new StackPanel();
+            var clear = TextButton("Clear", () => { });
+            clear.HorizontalAlignment = HorizontalAlignment.Left;
+            clear.Click += (_, _) =>
+            {
+                handoff = null;
+                handoffRows.Children.Clear();
+                handoffRows.Children.Add(Note("Cleared once saved.", 0));
+            };
+            AutomationProperties.SetName(clear, "Clear the handoff note");
+            handoffRows.Children.Add(Note(HandoffShown(handoff), 0));
+            handoffRows.Children.Add(clear);
+            rows.Children.Add(FormLabel("Handoff note", above: 12));
+            rows.Children.Add(handoffRows);
+        }
 
         static string? Kept(TextBox box) => box.Text.Trim() is { Length: > 0 } text ? text : null;
 
@@ -853,7 +1004,7 @@ public partial class MainWindow
                 return;
             }
             var order = milestone?.Order ?? _database.ListMilestones(project.Id, stage).Select(each => each.Milestone.Order).DefaultIfEmpty(0).Max() + 1;
-            _database.SaveMilestone(project.Id, existing?.Id, new Milestone(stage, typed, Kept(goal), Kept(doneWhen), order));
+            _database.SaveMilestone(project.Id, existing?.Id, (milestone ?? new Milestone(stage, typed)) with { Name = typed, Goal = Kept(goal), DoneWhen = Kept(doneWhen), Order = order, Notes = Kept(notes), Handoff = handoff });
             asked.IsOpen = false;
             RedrawProject(project);
         }

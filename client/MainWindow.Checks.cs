@@ -78,11 +78,17 @@ public partial class MainWindow
     /// Calls one of the MCP tools agents get, in this app, as an agent's session would through the
     /// relay, which a check can't use as it would reach whichever copy of the app is running.
     /// </summary>
-    internal async Task<(string Text, bool Refused)> CallMcpForChecks(string projectName, string tool, IReadOnlyList<string> pairs)
+    internal Task<(string Text, bool Refused)> CallMcpForChecks(string projectName, string tool, IReadOnlyList<string> pairs)
     {
-        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
         var given = new System.Text.Json.Nodes.JsonObject();
         for (var i = 0; i + 1 < pairs.Count; i += 2) given[pairs[i]] = pairs[i + 1];
+        return CallMcpForChecks(projectName, tool, given);
+    }
+
+    /// <summary>The same, with the arguments as JSON, for lists such as add_cards' cards.</summary>
+    internal async Task<(string Text, bool Refused)> CallMcpForChecks(string projectName, string tool, System.Text.Json.Nodes.JsonObject given)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
         var result = await McpCallAsync(project.Id, tool, given);
         var text = string.Join("\n", (result["content"] as System.Text.Json.Nodes.JsonArray ?? []).Select(part => part?["text"]?.GetValue<string>()).OfType<string>());
         return (text, result["isError"]?.GetValue<bool>() == true);
@@ -114,6 +120,26 @@ public partial class MainWindow
         var file = Path.Combine(folder ?? throw new InvalidOperationException($"{projectName} has no folder."), path);
         Directory.CreateDirectory(Path.GetDirectoryName(file)!);
         File.AppendAllText(file, text);
+    }
+
+    /// <summary>A small picture in the project's folder, such as a screenshot an agent took.</summary>
+    internal void WritePictureForChecks(string projectName, string path)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        var file = Path.Combine(ProjectFolder(project.Id) ?? throw new InvalidOperationException($"{projectName} has no folder."), path);
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        File.WriteAllBytes(file, SeedPicture() ?? throw new InvalidOperationException("The picture couldn't be made."));
+    }
+
+    /// <summary>A project's task, milestone and lessons records as stored, for a check to see what was kept.</summary>
+    internal string StoredForChecks(string projectName)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        var stage = _database.ProjectStage(project.Id);
+        var said = new System.Text.StringBuilder();
+        foreach (var (id, milestone) in _database.ListMilestones(project.Id, stage)) said.AppendLine($"milestone {Short(id)}: {System.Text.Json.JsonSerializer.Serialize(milestone)}");
+        foreach (var (id, task) in _database.ListTasks(project.Id, stage)) said.AppendLine($"task {Short(id)}: {System.Text.Json.JsonSerializer.Serialize(task)}");
+        return said.ToString();
     }
 
     /// <summary>Agent Orange's MCP tools as a session lists them.</summary>

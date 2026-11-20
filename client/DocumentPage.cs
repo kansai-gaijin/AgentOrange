@@ -150,7 +150,7 @@ internal sealed class DocumentPage : Grid
 
     // Pictures
 
-    private static readonly string[] PictureEndings = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"];
+    internal static readonly string[] PictureEndings =[".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"];
 
     private static List<string> PictureFiles(IDataObject data) =>
         data.GetData(DataFormats.FileDrop) is string[] files ? [.. files.Where(file => PictureEndings.Contains(Path.GetExtension(file).ToLowerInvariant()))] : [];

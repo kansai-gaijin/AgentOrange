@@ -1,0 +1,10 @@
+# After bulk-tasks.txt, with the same data folder: the evidence and the milestone's notes are kept
+# across a restart, and the order update_tasks gave.
+open "Bulk project"
+click "Tasks"
+expect "Notes: The cave is lit from the entrance only."
+expect "1 picture"
+shot kept
+mcp "Bulk project" list_tasks milestone "Milestone 2" status "open" fields "title"
+said "- Sound in the cave (task"
+said ")\n- Light the cave (task"

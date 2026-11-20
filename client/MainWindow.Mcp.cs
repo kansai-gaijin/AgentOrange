@@ -77,7 +77,7 @@ public partial class MainWindow
     }
     private const string CardNote = "The card's name, or its id. Leave out for the Overview.";
 
-    private List<McpTool> McpTools =>
+    private List<McpTool> McpTools => WithBulkTools(
     [
         new("get_project", "Start here: the project at a glance. Its engine, stage, folder and game settings, every page's cards, the milestones and how far the tasks are, and the project's own documents.", [], [], (project, _) => DescribeProject(project)),
         new("list_cards", "The cards on a page, with how much is written in each. For assets, also their status, type, what they belong to, when they're due and their deliverable once they have one. For assets, status leaves out all but one status.",
@@ -116,14 +116,23 @@ public partial class MainWindow
         new("remove_card", "Deletes a card from a page, with its document, picture and board, as the page's Delete does. It can't be undone, so only when the person asked for it or the card is being replaced by others. A delivered asset, or a card that assets belong to, isn't deleted.",
             new JsonObject { ["page"] = Text("Story, Characters, Levels, Mechanics or Assets."), ["card"] = Text("The card's whole name, or its id.") },
             ["page", "card"], (project, given) => RemoveCardFor(project, given)),
-        new("list_tasks", "The milestones, each with what it's for and when it's done, and their tasks with ids, ticks, dates and the cards they're about.",
-            new JsonObject { ["milestone"] = Text("Only this milestone, by its name or the start of it."), ["open_only"] = Flag("Leave out tasks that are done.") }, [], (project, given) => ListTasksFor(project, given)),
+        new("list_tasks", "The milestones, each with what it's for, when it's done and its notes, and their tasks with ids, ticks, dates and the cards they're about. milestone, status and fields keep it short.",
+            new JsonObject
+            {
+                ["milestone"] = Text("Only this milestone, by its name or the start of it; empty for only the tasks with no milestone."),
+                ["status"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("open", "done", "all"), ["description"] = "open, done or all: only the tasks not done yet, only those done, or every one. all when not given." },
+                ["fields"] = Text($"What to give for each task, separated by commas, from: {string.Join(", ", TaskFields)}. Its id is always given. All of them when not given; for a short list, such as title, done."),
+                ["open_only"] = Flag("Leave out tasks that are done, as status open does."),
+            }, [], (project, given) => ListTasksFor(project, given)),
         new("add_task", "Adds a task, such as one found while working.",
-            new JsonObject { ["title"] = Text("What's to be done."), ["notes"] = Text("Anything more about it."), ["milestone"] = Text("Its milestone, by name or the start of it."), ["page"] = Text("The page of the card it's about."), ["card"] = Text("The card it's about, by name or id."), ["due"] = Text("A day to have it done by, as yyyy-mm-dd.") },
+            new JsonObject { ["title"] = Text("What's to be done."), ["notes"] = Text("Anything more about it."), ["milestone"] = Text("Its milestone, by name or the start of it."), ["page"] = Text("The page of the card it's about."), ["card"] = Text("The card it's about, by name or id."), ["due"] = Text("A day to have it done by, as yyyy-mm-dd."), ["evidence"] = EvidenceArgument() },
             ["title"], (project, given) => AddTaskFor(project, given)),
-        new("update_task", "Changes a task: ticks it done (or not), or changes what it says, its notes, date, milestone, card or place in the list.",
-            new JsonObject { ["id"] = Text("The task's id, from list_tasks."), ["done"] = Flag("Whether it's done."), ["title"] = Text("What's to be done."), ["notes"] = Text("Its notes, replacing the old ones."), ["due"] = Text("yyyy-mm-dd, or empty for none."), ["milestone"] = Text("Its milestone, by name, or empty for none."), ["page"] = Text("The page of the card it's about."), ["card"] = Text("The card it's about, or empty for none."), ["position"] = Number("Where it goes among its milestone's tasks, 1 for first; they're listed in this order.") },
+        new("update_task", "Changes a task: ticks it done (or not), or changes what it says, its notes, date, milestone, card or place in the list, or adds evidence of its work.",
+            new JsonObject { ["id"] = Text("The task's id, from list_tasks."), ["done"] = Flag("Whether it's done."), ["title"] = Text("What's to be done."), ["notes"] = Text("Its notes, replacing the old ones."), ["due"] = Text("yyyy-mm-dd, or empty for none."), ["milestone"] = Text("Its milestone, by name, or empty for none."), ["page"] = Text("The page of the card it's about."), ["card"] = Text("The card it's about, or empty for none."), ["position"] = Number("Where it goes among its milestone's tasks, 1 for first; they're listed in this order."), ["evidence"] = EvidenceArgument() },
             ["id"], (project, given) => UpdateTaskFor(project, given)),
+        new("update_milestone", "Changes a milestone's notes: what's worth knowing about it as a whole, such as how its parts fit, what was tried, or what it waits on. Its name, what it's for and when it's done are the person's to change.",
+            new JsonObject { ["milestone"] = Text("The milestone, by its name or the start of it."), ["notes"] = Text("Its notes, in Markdown, replacing the old ones; empty for none."), ["mode"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("replace", "append"), ["description"] = "replace or append: swap the notes for these, or add these at their end. replace when not given." } },
+            ["milestone"], (project, given) => UpdateMilestoneFor(project, given)),
         new("search", "Finds words anywhere in the design: every document, card name and task, with where each is.",
             new JsonObject { ["text"] = Text("What to find. Not case-sensitive.") }, ["text"], (project, given) => Search(project, Required(given, "text"))),
         new("read_picture", "A picture to look at: one from a document, given as ![](picture:id) in its Markdown, or a card's own picture, such as its concept art, given by read_card as picture:card-id.",
@@ -144,7 +153,7 @@ public partial class MainWindow
 
         // Waiting, instead of sleep.
         WaitForTool(),
-    ];
+    ]);
 
     private async Task<JsonObject> McpCallAsync(string projectId, string name, JsonObject given)
     {
@@ -243,6 +252,7 @@ public partial class MainWindow
         if (task.Due is { } due) said.Append($", by {due}");
         if (task.Card is { } cardId && AssetOwnerChoices(_database, project.Id, stage).FirstOrDefault(choice => choice.Card.Id == cardId) is { Card: not null } belongs) said.Append($", about the {KindOfCard(belongs.Page)} {CardName(belongs.Card, belongs.Page)}");
         if (task.Notes is { Length: > 0 } notes) said.Append($". Notes: {notes.Replace("\n", " ")}");
+        if (task.Evidence is { Length: > 0 } evidence) said.Append($". Evidence: {EvidenceList(evidence)}");
         return said.ToString();
     }
 
@@ -509,31 +519,43 @@ public partial class MainWindow
         return $"{(replace ? "Replaced" : "Added to")} the document of {name}. It has {WordsIn(written)} words now.";
     }
 
-    // Shown at once if it's open, unless someone's writing in it, and sent to other PCs.
+    // Shown at once if it's open, unless someone's writing in it, and sent to other PCs. A call that
+    // makes many changes at once shows and sends them once, at its end.
     private void McpChanged(Project project)
     {
+        if (_mcpChangesHeld > 0) return;
         _ = _sync.SyncNowAsync();
         if (_openProject?.Id == project.Id) RenderProjectKeepingFocus(_openProject);
     }
+
+    // What list_tasks can give for each task, besides its id.
+    private static readonly string[] TaskFields = ["title", "done", "due", "card", "notes", "evidence", "handoff"];
 
     private string ListTasksFor(Project project, JsonObject given)
     {
         var stage = _database.ProjectStage(project.Id);
         var openOnly = given["open_only"] is JsonValue flag && flag.TryGetValue<bool>(out var onlyOpen) && onlyOpen;
+        var status = Given(given, "status") is { Length: > 0 } asked ? asked : openOnly ? "open" : "all";
+        if (openOnly && status == "done") throw new McpException(-32602, "open_only: it leaves out the tasks that are done, and status done asks for only those. Give one of them.");
+        var fields = Given(given, "fields") is { Length: > 0 } named ? FieldsAsked(named) : [.. TaskFields];
         var only = Given(given, "milestone");
         var tasks = _database.ListTasks(project.Id, stage);
         var milestones = _database.ListMilestones(project.Id, stage);
         var cards = AssetOwnerChoices(_database, project.Id, stage);
         var said = new StringBuilder();
+        bool Shown(ProjectTask task) => status switch { "open" => !task.Done, "done" => task.Done, _ => true };
 
         void Write(string id, ProjectTask task)
         {
-            if (openOnly && task.Done) return;
-            said.Append($"- [{(task.Done ? "x" : " ")}] {task.Title} (task {Short(id)})");
-            if (task.Due is { } due) said.Append($", by {due}");
-            if (task.Card is { } cardId && cards.FirstOrDefault(choice => choice.Card.Id == cardId) is { Card: not null } belongs) said.Append($", about the {KindOfCard(belongs.Page)} {CardName(belongs.Card, belongs.Page)}");
+            said.Append("- ");
+            if (fields.Contains("done")) said.Append($"[{(task.Done ? "x" : " ")}] ");
+            said.Append(fields.Contains("title") ? $"{task.Title} (task {Short(id)})" : $"task {Short(id)}");
+            if (fields.Contains("due") && task.Due is { } due) said.Append($", by {due}");
+            if (fields.Contains("card") && task.Card is { } cardId && cards.FirstOrDefault(choice => choice.Card.Id == cardId) is { Card: not null } belongs) said.Append($", about the {KindOfCard(belongs.Page)} {CardName(belongs.Card, belongs.Page)}");
             said.AppendLine();
-            if (task.Notes is { Length: > 0 } notes) said.AppendLine($"  Notes: {notes.Replace("\n", " ")}");
+            if (fields.Contains("notes") && task.Notes is { Length: > 0 } notes) said.AppendLine($"  Notes: {notes.Replace("\n", " ")}");
+            if (fields.Contains("evidence") && task.Evidence is { Length: > 0 } evidence) said.AppendLine($"  Evidence: {EvidenceList(evidence)}");
+            if (fields.Contains("handoff") && task.Handoff is { } handoff) said.AppendLine($"  {HandoffLine(handoff)}");
         }
 
         var onlyId = only is null ? null : MilestoneId(project, only);
@@ -543,19 +565,32 @@ public partial class MainWindow
             said.AppendLine($"## {milestone.Name} ({inIt.Count(each => each.Task.Done)} of {inIt.Count} done)");
             if (milestone.Goal is { } goal) said.AppendLine($"For: {goal}");
             if (milestone.DoneWhen is { } doneWhen) said.AppendLine($"Done when: {doneWhen}");
-            foreach (var (taskId, task) in inIt) Write(taskId, task);
+            if (fields.Contains("notes") && milestone.Notes is { Length: > 0 } milestoneNotes) said.AppendLine($"Notes: {milestoneNotes.Trim()}");
+            if (fields.Contains("handoff") && milestone.Handoff is { } handoff) said.AppendLine(HandoffLine(handoff));
+            foreach (var (taskId, task) in inIt.Where(each => Shown(each.Task))) Write(taskId, task);
             said.AppendLine();
         }
-        if (only is null)
+        if (only is null or "")
         {
-            var loose = tasks.Where(each => each.Task.Milestone is null || milestones.All(milestone => milestone.Id != each.Task.Milestone)).ToList();
+            var loose = tasks.Where(each => each.Task.Milestone is null || milestones.All(milestone => milestone.Id != each.Task.Milestone)).Where(each => Shown(each.Task)).ToList();
             if (loose.Count > 0)
             {
-                said.AppendLine("## Other tasks");
+                said.AppendLine(only is null ? "## Other tasks" : "## Tasks with no milestone");
                 foreach (var (taskId, task) in loose) Write(taskId, task);
             }
         }
         return said.Length > 0 ? said.ToString() : "No tasks match.";
+    }
+
+    // The fields named, each one list_tasks has.
+    private static HashSet<string> FieldsAsked(string named)
+    {
+        var asked = named.Split([',', ' ', ';'], StringSplitOptions.RemoveEmptyEntries).Select(each => each.Trim().ToLowerInvariant()).ToList();
+        foreach (var field in asked.Where(field => !TaskFields.Contains(field)))
+        {
+            throw new McpException(-32602, $"fields: there's no field called {field}{(Closest(field, TaskFields) is { } close ? $" (did you mean {close}?)" : "")}. The fields: {string.Join(", ", TaskFields)}. The id is always given.");
+        }
+        return [.. asked];
     }
 
     private string? MilestoneId(Project project, string? asked)
@@ -597,7 +632,9 @@ public partial class MainWindow
         var order = _database.ListTasks(project.Id, stage).Where(each => each.Task.Milestone == milestone).Select(each => each.Task.Order).DefaultIfEmpty(0).Max() + 1;
         var card = CardId(project, given) is { Length: > 0 } cardId ? cardId : null;
         var due = Day(Given(given, "due"), "due") is { Length: > 0 } day ? day : null;
-        var id = _database.SaveTask(project.Id, null, new ProjectTask(stage, Required(given, "title"), Given(given, "notes") is { Length: > 0 } notes ? notes : null, due, false, milestone, order, card));
+        var title = Required(given, "title");
+        var evidence = EvidenceFiles(project, given["evidence"]) is { Count: > 0 } files ? KeepEvidence(project, files) : null;
+        var id = _database.SaveTask(project.Id, null, new ProjectTask(stage, title, Given(given, "notes") is { Length: > 0 } notes ? notes : null, due, false, milestone, order, card, evidence));
         McpChanged(project);
         return $"Added: {TaskSummary(project, id, _database.ListTasks(project.Id, stage).First(each => each.Id == id).Task)}";
     }
@@ -622,6 +659,22 @@ public partial class MainWindow
             var before = at > 0 ? others[at - 1] : (others.Count > 0 ? others[0] - 2 : 0);
             var after = at < others.Count ? others[at] : before + 2;
             task = task with { Order = (before + after) / 2 };
+        }
+
+        // Checked with the rest before any picture is kept. An empty list takes all it had off.
+        if (EvidenceFiles(project, given["evidence"]) is { } files)
+        {
+            if (files.Count == 0)
+            {
+                foreach (var picture in (task.Evidence ?? []).Select(each => each.Picture).OfType<string>()) _database.DeleteDocumentPicture(picture);
+                task = task with { Evidence = null };
+            }
+            else
+            {
+                if ((task.Evidence?.Length ?? 0) + files.Count > MostEvidence)
+                    throw new McpException(-32602, $"evidence: a task keeps up to {MostEvidence}, and it has {task.Evidence?.Length ?? 0}. Take them off with evidence as an empty list, then give the ones that matter.");
+                task = task with { Evidence = [.. task.Evidence ?? [], .. KeepEvidence(project, files)] };
+            }
         }
         _database.SaveTask(project.Id, found.Id, task);
         McpChanged(project);

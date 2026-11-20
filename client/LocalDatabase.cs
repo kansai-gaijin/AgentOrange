@@ -48,12 +48,30 @@ public static class AssetStatus
 /// <summary>
 /// A task someone made, in a stage of a project: what's to be done, with notes, a day to have it done
 /// by, a milestone and the card it's about, if it has them. Ticked off by hand. Order is its place
-/// among its milestone's.
+/// among its milestone's. Evidence is what shows the work, such as a screenshot, and Handoff where
+/// the last conversation on it left off.
 /// </summary>
-public sealed record ProjectTask(string Stage, string Title, string? Notes = null, string? Due = null, bool Done = false, string? Milestone = null, double Order = 0, string? Card = null);
+public sealed record ProjectTask(string Stage, string Title, string? Notes = null, string? Due = null, bool Done = false, string? Milestone = null, double Order = 0, string? Card = null, TaskEvidence[]? Evidence = null, HandoffNote? Handoff = null);
 
-/// <summary>A milestone in a stage: what it's for, and what has to be true for it to be done.</summary>
-public sealed record Milestone(string Stage, string Name, string? Goal = null, string? DoneWhen = null, double Order = 0);
+/// <summary>
+/// A milestone in a stage: what it's for, what has to be true for it to be done, notes about it, and
+/// where the last conversation on it left off.
+/// </summary>
+public sealed record Milestone(string Stage, string Name, string? Goal = null, string? DoneWhen = null, double Order = 0, string? Notes = null, HandoffNote? Handoff = null);
+
+/// <summary>
+/// Something that shows a task's work: a picture, kept with the project's document pictures so every
+/// PC sees it, or a file, by its path (inside the project's folder when it can be, which travels with
+/// the repo). At is when it was given, as an ISO time.
+/// </summary>
+public sealed record TaskEvidence(string At, string? Picture = null, string? Path = null);
+
+/// <summary>
+/// Where a conversation left off: its state, what's open, the decisions made and the next step, for
+/// the next conversation to start from. From says who wrote it: the conversation's title, or Agent
+/// Orange when the agent couldn't, such as when a usage limit stopped it.
+/// </summary>
+public sealed record HandoffNote(string Text, string At, string? From = null);
 
 /// <summary>
 /// The game's technical targets, such as its frame rate and platforms: settings of the game rather
@@ -604,7 +622,26 @@ public sealed class LocalDatabase
         return id;
     }
 
-    public void DeleteTask(string id) => SaveRecord(TasksCollection, id, "", deleted: true);
+    /// <summary>With the pictures given as its evidence, which nothing else shows.</summary>
+    public void DeleteTask(string id)
+    {
+        if (GetRecord(TasksCollection, id) is { Length: > 0 } stored)
+        {
+            try
+            {
+                foreach (var picture in JsonSerializer.Deserialize<ProjectTask>(stored, JsonOptions)?.Evidence?.Select(each => each.Picture).OfType<string>() ?? [])
+                    SaveRecord(DocumentPicturesCollection, picture, "", deleted: true);
+            }
+            catch (JsonException)
+            {
+                // It arrived from another PC and can't be read, so its pictures stay.
+            }
+        }
+        SaveRecord(TasksCollection, id, "", deleted: true);
+    }
+
+    /// <summary>A picture kept as a task's evidence, which goes when it's taken off the task.</summary>
+    public void DeleteDocumentPicture(string id) => SaveRecord(DocumentPicturesCollection, id, "", deleted: true);
 
     public List<(string Id, Milestone Milestone)> ListMilestones(string projectId, string stage) =>
         [.. ReadAll<Milestone>(MilestonesCollection, projectId).Where(each => each.Data.Stage == stage).OrderBy(each => each.Data.Order).Select(each => (each.Id, each.Data))];
