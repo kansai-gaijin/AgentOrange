@@ -1,0 +1,47 @@
+# Each asset has a status, a person can set it, the Assets page filters by it, and the project's
+# Assets delivered count goes by it (#115). Assets saved before there were statuses get the one
+# they had in effect: delivered once they have their deliverable, to do until then.
+# Run asset-status-again.txt after it, with the same data folder, to see the filter kept.
+seed "Status project" 0 0 16
+open "Status project"
+# Assets 4, 8, 12 and 16 have their deliverable, and 7, 8, 15 and 16 have no status yet.
+migrate
+expect "4"
+expect "Assets delivered"
+shot overview
+click "Assets"
+expect "16"
+expect "To do"
+expect "In progress"
+expect "Needs review"
+expect "Delivered"
+shot assets
+choose 0 "Needs review"
+expect "2 of 16"
+shot needs-review
+choose 0 "To do"
+expect "6 of 16"
+choose 0 "Delivered"
+expect "4 of 16"
+# A person sets one, from its card's menu: Asset 2 is delivered.
+choose 0 "All statuses"
+expect "16"
+click "More for Asset 2"
+click "Delivered"
+click "← Status project"
+expect "5"
+click "Assets"
+choose 0 "Needs review"
+expect "2 of 16"
+shot filtered
+# Agents set it through AO's tools, but only the person makes an asset delivered, or works on one again.
+mcp "Status project" update_asset card "Asset 1" status "Needs review"
+expect "3 of 16"
+mcprefused "Status project" update_asset card "Asset 5" status "Delivered"
+mcprefused "Status project" update_asset card "Asset 4" status "In progress"
+mcp "Status project" add_card page Assets name "Asset 17" status "In progress"
+mcprefused "Status project" add_card page Assets name "Asset 18" status "Delivered"
+mcp "Status project" list_cards page Assets status "Needs review"
+mcp "Status project" read_card page Assets card "Asset 17"
+choose 0 "In progress"
+expect "4 of 17"

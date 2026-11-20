@@ -1,0 +1,32 @@
+# Milestones fold away from their headers, a closed one still says how far along it is, and
+# finished tasks are left out unless asked for (#116). Run milestones-again.txt after it, with
+# the same data folder, to see that's all kept across a restart.
+# 30 tasks under 3 milestones: Milestone 1's are all done, and every third task is done.
+seed "Milestone project" 30 3 0
+open "Milestone project"
+click "Tasks"
+# Finished, so it starts closed, saying so.
+expect "Milestone 1"
+expect "9 of 9 done"
+expectnot "Task 1"
+# Open ones leave out their finished tasks.
+expect "Task 2"
+expect "Task 3"
+expectnot "Task 13"
+shot milestones
+# Closed from its header, it still says how far along it is.
+click "Milestone 2"
+expectnot "Task 2"
+expect "0 of 9 done"
+shot milestone-2-closed
+# Task 10 has no milestone, and is done.
+expectnot "Task 10"
+click "Show finished tasks"
+expect "Task 10"
+expect "Hide finished"
+click "Milestone 1"
+expect "Task 1"
+expect "Task 13"
+shot finished-shown
+click "Milestone 1"
+expectnot "Task 1"

@@ -1,0 +1,32 @@
+# The Tasks and Assets pages stay quick on a big project (#113): 300 tasks under 12 milestones,
+# and 300 assets. Each change has to settle, and the window has to answer, within the time given.
+# The first open of each page also starts up code that hasn't run yet, so it's given longer.
+seed "Big project" 300 12 300
+timed 3000 open "Big project"
+timed 1500 click "Tasks"
+expect "Tasks"
+expect "Milestone 2"
+# Only what's in view is built, so the last milestone isn't, until it's scrolled to.
+expectnot "Milestone 12"
+timed 400 click "Done: Task 14"
+timed 400 click "Done: Task 26"
+timed 400 click "Milestone 2"
+timed 400 click "Milestone 2"
+timed 400 click "Show finished tasks"
+timed 400 click "Hide finished tasks"
+timed 400 click "Show by date"
+timed 400 click "Show by milestone"
+scroll end
+sleep 300
+shot tasks-end
+timed 400 click "← Big project"
+timed 1500 click "Assets"
+expect "Assets"
+expect "300"
+shot assets
+timed 400 click "More for Asset 3"
+timed 400 click "In progress"
+scroll end
+sleep 300
+shot assets-end
+timed 400 click "← Big project"

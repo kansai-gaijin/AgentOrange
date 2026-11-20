@@ -1,0 +1,40 @@
+# The page header, with the way back and the page's own buttons, stays in view while the page
+# scrolls under it, on every project page (#114).
+seed "Long project" 200 6 200
+open "Long project"
+scroll end
+sleep 300
+inview "← Projects"
+inview "Project settings"
+shot project-scrolled
+click "Tasks"
+expect "Milestone 2"
+scroll end
+sleep 300
+inview "← Long project"
+inview "Tasks"
+inview "Add task"
+shot tasks-scrolled
+click "← Long project"
+click "Assets"
+expect "Assets"
+scroll end
+sleep 300
+inview "← Long project"
+inview "Assets"
+inview "Edit tags"
+inview "All statuses"
+shot assets-scrolled
+click "← Long project"
+click "Characters"
+expect "Characters"
+scroll end
+sleep 300
+inview "← Long project"
+inview "Characters"
+click "← Long project"
+click "References"
+scroll end
+sleep 300
+inview "← Long project"
+shot references-scrolled

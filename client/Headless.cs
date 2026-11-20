@@ -29,6 +29,13 @@ namespace AgentOrange;
 ///   sleep 500           window "Title"     (the window the next lines act on, by its title)
 ///   scroll top          scroll end         (every scrolling area in the window)
 ///   usage               (each login's limits as last heard, without opening the Usage page)
+///   seed "Name" 300 12 300   (a made-up project with that many tasks, milestones and assets)
+///   open "Name"         (its page, as if its repo's check had found everything in order)
+///   timed 500 click "X" (any command, then how long until the page settles, failing past 500 ms)
+///   expect "text"       expectnot "text"   (fails unless something shown says exactly that, or nothing does)
+///   inview "text"       (fails unless it's in sight, not scrolled away)
+///   migrate             (gives assets without a status the one they have in effect, as starting does)
+///   mcp "Project" update_asset card "Asset 1" status "Needs review"   (an agent's MCP tool; mcprefused expects a refusal)
 /// </summary>
 internal static partial class Headless
 {
@@ -135,6 +142,44 @@ internal static partial class Headless
 
     private static async Task RunCommandAsync(Window window, string[] parts, Action<string> say, string output)
     {
+        await RunOneAsync(window, parts, say, output);
+        await Task.Delay(100);
+    }
+
+    private static MainWindow Main() =>
+        Application.Current.Windows.OfType<MainWindow>().FirstOrDefault() ?? throw new InvalidOperationException("The main window isn't open.");
+
+    // How long a command takes until the page has settled, and the longest the window couldn't
+    // answer meanwhile, which is what feels like a freeze.
+    private static async Task TimedAsync(Window window, int limit, string[] command, Action<string> say, string output)
+    {
+        var longest = 0.0;
+        using var stop = new CancellationTokenSource();
+        var dispatcher = window.Dispatcher;
+        var watcher = Task.Run(async () =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                var waited = System.Diagnostics.Stopwatch.StartNew();
+                await dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Input);
+                longest = Math.Max(longest, waited.Elapsed.TotalMilliseconds);
+                await Task.Delay(5);
+            }
+        });
+        var took = System.Diagnostics.Stopwatch.StartNew();
+        await RunOneAsync(window, command, say, output);
+        var main = Main();
+        do await dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        while (main.PageIsLoading && took.Elapsed < WaitLimit && await Task.Delay(10).ContinueWith(_ => true));
+        took.Stop();
+        stop.Cancel();
+        await watcher;
+        say($"{string.Join(' ', command)}: settled in {took.ElapsedMilliseconds} ms, the longest the window didn't answer was {longest:0} ms");
+        if (took.ElapsedMilliseconds > limit || longest > limit) throw new InvalidOperationException($"{string.Join(' ', command)} took longer than {limit} ms.");
+    }
+
+    private static async Task RunOneAsync(Window window, string[] parts, Action<string> say, string output)
+    {
         switch (parts[0])
         {
             case "click":
@@ -227,6 +272,42 @@ internal static partial class Headless
             case "sleep":
                 await Task.Delay(int.Parse(parts[1]));
                 break;
+            // A made-up project of this many tasks, milestones and assets, to try big pages on.
+            case "seed":
+                Main().SeedForChecks(parts[1], int.Parse(parts[2]), int.Parse(parts[3]), int.Parse(parts[4]));
+                say($"Made {parts[1]}");
+                break;
+            // Its page, without a check of its repo, which would ask GitHub.
+            case "open":
+                Main().OpenForChecks(parts[1]);
+                break;
+            case "timed":
+                await TimedAsync(window, int.Parse(parts[1]), parts[2..], say, output);
+                break;
+            // Fails unless something shown says exactly this, or, with expectnot, unless nothing does.
+            case "expect":
+                await WaitUntilAsync(() => Texts(window).Contains(parts[1]), $"{parts[1]} to be shown", window);
+                break;
+            case "expectnot":
+                await WaitUntilAsync(() => !Texts(window).Contains(parts[1]), $"{parts[1]} to go", window);
+                break;
+            // Fails unless it's in sight: not scrolled away, nor under anything that scrolls.
+            case "inview":
+                var seen = Visible<TextBlock>(window).Where(block => block.Text == parts[1]).Any(block => InSight(window, block));
+                say($"{parts[1]} in view: {(seen ? "yes" : "NO")}");
+                if (!seen) throw new InvalidOperationException($"{parts[1]} isn't in view.");
+                break;
+            // One of the MCP tools agents get, with its arguments in pairs: mcp "Project" update_asset card "Asset 1" status "To do".
+            // mcp fails if the tool refuses, and mcprefused fails unless it does.
+            case "mcp" or "mcprefused":
+                var (answer, refused) = await Main().CallMcpForChecks(parts[1], parts[2], parts[3..]);
+                say($"{parts[2]}{(refused ? " refused" : "")}: {answer}");
+                if (refused != (parts[0] == "mcprefused")) throw new InvalidOperationException(refused ? $"{parts[2]} refused: {answer}" : $"{parts[2]} wasn't refused.");
+                break;
+            // Gives assets without a status the one they have in effect, as starting the app does.
+            case "migrate":
+                say($"Gave {Main().GiveAssetsAStatusForChecks()} assets a status");
+                break;
             case "scroll":
                 foreach (var area in Visible<ScrollViewer>(window))
                 {
@@ -237,7 +318,6 @@ internal static partial class Headless
             default:
                 throw new InvalidOperationException($"Unknown command: {parts[0]}");
         }
-        await Task.Delay(100);
     }
 
     // A card's settings button is hidden until hovered, and there's no mouse here.
@@ -259,6 +339,31 @@ internal static partial class Headless
         }
     }
 
+    private static async Task WaitUntilAsync(Func<bool> done, string what, Window window)
+    {
+        var limit = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (!done())
+        {
+            if (DateTime.UtcNow > limit) throw new InvalidOperationException($"Waited for {what}. On screen: {string.Join(" | ", Texts(window))}");
+            await Task.Delay(100);
+        }
+    }
+
+    // Inside the window, and inside every scrolling area it's in.
+    private static bool InSight(Window window, FrameworkElement element)
+    {
+        if (window.Content is not FrameworkElement content) return false;
+        var bounds = element.TransformToVisual(content).TransformBounds(new Rect(element.RenderSize));
+        if (!new Rect(content.RenderSize).Contains(bounds)) return false;
+        for (var parent = VisualTreeHelper.GetParent(element); parent is not null; parent = VisualTreeHelper.GetParent(parent))
+        {
+            if (parent is not ScrollViewer scroll) continue;
+            var view = scroll.TransformToVisual(content).TransformBounds(new Rect(new Size(scroll.ViewportWidth, scroll.ViewportHeight)));
+            if (!view.Contains(bounds)) return false;
+        }
+        return true;
+    }
+
     private static async Task WaitForAsync(Window window, string text, bool present)
     {
         var limit = DateTime.UtcNow + WaitLimit;
@@ -274,8 +379,12 @@ internal static partial class Headless
         || control.Content as string == name
         || Descendants(control).OfType<TextBlock>().Any(block => block.Text == name);
 
+    // A text written as runs, such as a count with smaller words after it, is read whole.
     private static List<string> Texts(Window window) =>
-        Visible<TextBlock>(window).Select(block => block.Text).Where(text => !string.IsNullOrWhiteSpace(text)).ToList();
+        Visible<TextBlock>(window)
+            .Select(block => block.Text is { Length: > 0 } text ? text : new System.Windows.Documents.TextRange(block.ContentStart, block.ContentEnd).Text)
+            .Where(text => !string.IsNullOrWhiteSpace(text))
+            .ToList();
 
     private static IEnumerable<T> Visible<T>(DependencyObject root) where T : FrameworkElement =>
         Descendants(root).OfType<T>().Where(element => element.IsVisible);

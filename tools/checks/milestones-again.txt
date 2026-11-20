@@ -1,0 +1,13 @@
+# After milestones.txt, with the same data folder: which milestones are open, and finished tasks
+# showing, are kept for the project across a restart.
+open "Milestone project"
+click "Tasks"
+expect "Hide finished"
+expectnot "Task 1"
+expectnot "Task 2"
+expect "Task 3"
+expect "Task 10"
+shot kept
+click "Hide finished tasks"
+expectnot "Task 10"
+expect "Task 3"
