@@ -29,6 +29,7 @@ public partial class MainWindow
         + "Settle nothing that's the person's to decide: ask them, then write it down. Never mark an asset as delivered. "
         + "For many at once, use add_cards, add_tasks, update_tasks and remove_cards rather than a call each. "
         + "When a tool isn't as you expected, add a lesson with add_lesson; before you stop with work left over, write a handoff note with write_handoff. "
+        + "When a milestone or task is ready for the person to judge, put its pictures, clips, decisions and what you didn't check on its review page with write_review, and read_review for their answer. "
         + "To wait for a file, a log line, a port or a process, use wait_for rather than sleep. "
         + "To test a pushed commit on a linked test machine, use run_tests, then read_test_run with seconds for its verdict; check_history before adding a retry to a check.";
 
@@ -178,6 +179,9 @@ public partial class MainWindow
 
         // Test runs on the PCs this one is linked to.
         .. TestRunTools(),
+
+        // A work slice's review page, for the person to judge it on.
+        .. ReviewTools(),
     ]);
 
     private async Task<JsonObject> McpCallAsync(string projectId, string name, JsonObject given)

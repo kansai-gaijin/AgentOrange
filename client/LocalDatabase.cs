@@ -74,6 +74,37 @@ public sealed record TaskEvidence(string At, string? Picture = null, string? Pat
 public sealed record HandoffNote(string Text, string At, string? From = null);
 
 /// <summary>
+/// A work slice's review page, kept beside its milestone or task and named as it is: what an agent
+/// gathered for the person to judge (what the slice did, its pictures, short clips and compare
+/// renders, the decisions it made and what it didn't check), and the person's answer: Verdict is
+/// null while it waits for them, then <see cref="Accepted"/> or <see cref="ChangesAsked"/>. Writing
+/// it again sets it waiting again and keeps the comments.
+/// </summary>
+public sealed record SliceReview(string Stage, string? Summary, ReviewShot[]? Shots, string[]? Decisions, string[]? NotChecked, string At, string? From = null,
+    string? Verdict = null, string? VerdictAt = null, ReviewComment[]? Comments = null)
+{
+    public const string Accepted = "accepted";
+    public const string ChangesAsked = "changes";
+}
+
+/// <summary>
+/// One thing on a review page to look at: a picture, a short clip, or a compare (the picture beside
+/// the one before it, such as the reference or the last render). Pictures are kept with the
+/// project's document pictures, so every PC sees them; a clip by its path. Settings is what it was
+/// taken at, such as quality, shadows, resolution and camera, as a picture judged at settings that
+/// draw no shadows can't show a lighting bug.
+/// </summary>
+public sealed record ReviewShot(string Kind, string Caption, string Settings, string? Picture = null, string? Path = null, string? BeforePicture = null, string? BeforePath = null)
+{
+    public const string PictureKind = "picture";
+    public const string ClipKind = "clip";
+    public const string CompareKind = "compare";
+}
+
+/// <summary>Something said on a review page, when, and by whom: the person, or an agent's conversation.</summary>
+public sealed record ReviewComment(string Text, string At, string Who);
+
+/// <summary>
 /// The game's technical targets, such as its frame rate and platforms: settings of the game rather
 /// than design to lay out on a board. Each is written as the person likes, and empty until decided.
 /// </summary>
@@ -146,6 +177,8 @@ public sealed class LocalDatabase
     private const string DocumentsCollection = "documents";
     private const string DocumentPicturesCollection = "document_pictures";
     private const string MilestonesCollection = "milestones";
+    // A milestone's or task's review page, named as it is.
+    private const string ReviewsCollection = "reviews";
 
     // Edits to a project, one record per field, so two PCs changing different things both
     // count. The project's own record is only written to create or delete it, so an edit made
@@ -638,7 +671,40 @@ public sealed class LocalDatabase
             }
         }
         SaveRecord(TasksCollection, id, "", deleted: true);
+        DeleteReview(id);
     }
+
+    /// <summary>The review page of a milestone or task, by its id, or null when it has none.</summary>
+    public SliceReview? GetReview(string sliceId)
+    {
+        if (GetRecord(ReviewsCollection, sliceId) is not { Length: > 0 } stored) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<SliceReview>(stored, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null; // It arrived from another PC and can't be read.
+        }
+    }
+
+    public void SaveReview(string sliceId, SliceReview review) => SaveRecord(ReviewsCollection, sliceId, JsonSerializer.Serialize(review, JsonOptions));
+
+    /// <summary>The review pages of a stage's milestones and tasks, by the id of each one's slice.</summary>
+    public Dictionary<string, SliceReview> ListReviews(string projectId, string stage) =>
+        ReadAll<SliceReview>(ReviewsCollection, projectId).Where(each => each.Data.Stage == stage).ToDictionary(each => each.Id, each => each.Data);
+
+    /// <summary>With the pictures on it, which nothing else shows.</summary>
+    public void DeleteReview(string sliceId)
+    {
+        if (GetReview(sliceId) is not { } review) return;
+        foreach (var picture in ReviewPictures(review)) SaveRecord(DocumentPicturesCollection, picture, "", deleted: true);
+        SaveRecord(ReviewsCollection, sliceId, "", deleted: true);
+    }
+
+    /// <summary>Every picture a review page shows.</summary>
+    public static IEnumerable<string> ReviewPictures(SliceReview review) =>
+        (review.Shots ?? []).SelectMany(shot => new[] { shot.Picture, shot.BeforePicture }).OfType<string>();
 
     /// <summary>A picture kept as a task's evidence, which goes when it's taken off the task.</summary>
     public void DeleteDocumentPicture(string id) => SaveRecord(DocumentPicturesCollection, id, "", deleted: true);
@@ -661,6 +727,7 @@ public sealed class LocalDatabase
             SaveTask(projectId, taskId, task with { Milestone = null });
         }
         SaveRecord(MilestonesCollection, id, "", deleted: true);
+        DeleteReview(id);
     }
 
     // Records that arrive from another PC and can't be read are left out.
@@ -1459,7 +1526,7 @@ public sealed class LocalDatabase
     private static string? ProjectIdOf(SyncChange change) => change.Collection switch
     {
         ProjectsCollection or EnginesCollection or GameSettingsCollection => change.Id,
-        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection or AssetDetailsCollection or AssetTagsCollection or AssetDeliverablesCollection or TasksCollection or MilestonesCollection or DocumentsCollection or DocumentPicturesCollection => change.Id.Split(':')[0],
+        FieldsCollection or ImagesCollection or NodesCollection or NodeLinksCollection or NodeImagesCollection or StagesCollection or CardsCollection or CardImagesCollection or AssetDetailsCollection or AssetTagsCollection or AssetDeliverablesCollection or TasksCollection or MilestonesCollection or ReviewsCollection or DocumentsCollection or DocumentPicturesCollection => change.Id.Split(':')[0],
         _ => null,
     };
 

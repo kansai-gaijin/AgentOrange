@@ -316,6 +316,7 @@ public partial class MainWindow
         {
             parts.Add(section.Name);
             if (OpenCardOf(project) is { } card && CardPages.ContainsKey(section.Name)) parts.Add(CardName(card, section.Name));
+            if (section.Name == ReviewPage && OpenReviewOf(project) is { } review) parts.Add(review.Name);
         }
         return string.Join(" › ", parts);
     }

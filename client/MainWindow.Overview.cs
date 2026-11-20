@@ -373,6 +373,11 @@ public partial class MainWindow
             AddLessonsPage(body, project);
             return;
         }
+        if (name == ReviewPage)
+        {
+            AddReviewPage(body, project);
+            return;
+        }
         if (CardPages.ContainsKey(name))
         {
             // An asset's own screen comes later. Until then it keeps its board, with its deliverable.

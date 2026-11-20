@@ -227,7 +227,10 @@ public partial class MainWindow
         {
             // From a card's own board, back is to the page of cards it's on.
             var card = OpenCardOf(project);
-            var toProject = card is null
+            // A review page is reached from the Tasks page, so back is to there.
+            var toProject = section.Name == ReviewPage
+                ? OverlayButton($"← {TasksPage}", () => OpenTasks(project))
+                : card is null
                 ? OverlayButton($"← {project.Name}", () =>
                 {
                     _openSection = null;

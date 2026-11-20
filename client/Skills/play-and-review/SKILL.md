@@ -69,6 +69,12 @@ still wrong in a task (`add_task`) rather than leaving it in a reply. If somethi
 say so; never call it playable on the strength of the code alone. Keep evidence files out of the
 game's folder unless the person wants them there.
 
+When a milestone or task is ready for the person to judge, put the review on its review page with
+`write_review` rather than in a long reply: what it did, the pictures, short clips and before-and-after
+compares that show it, each with the render settings it was taken at, the decisions you made, and what
+you didn't check. The person looks at it all in one place and accepts it or asks for changes there;
+`read_review` gives their answer.
+
 ---
 
 Adapted for Agent Orange from GameFactory-3A's game-generation guide (`agent_skills/setting_overview.md`,

@@ -57,7 +57,7 @@ public partial class MainWindow
     /// <summary>What a session's briefing says about this project beyond what every one says: its rules and lessons, and where the last conversations left off.</summary>
     internal string? ProjectBriefingNotes(string projectId)
     {
-        var parts = new[] { ProjectLessons.BriefingSection(_database.GetDocument(projectId, ProjectLessons.Key)), HandoffsForBriefing(projectId) }.OfType<string>().ToList();
+        var parts = new[] { ProjectLessons.BriefingSection(_database.GetDocument(projectId, ProjectLessons.Key)), HandoffsForBriefing(projectId), ReviewsForBriefing(projectId) }.OfType<string>().ToList();
         return parts.Count > 0 ? string.Join("\n\n", parts) : null;
     }
 

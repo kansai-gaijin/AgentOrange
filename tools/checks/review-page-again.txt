@@ -1,0 +1,10 @@
+# After review-page.txt, as the app started again: the review pages and the person's comments are kept.
+open "Review project"
+click "Tasks"
+expect "Review · to look at"
+click "Open the review of Milestone 1"
+expect "Waiting for you"
+expect "1. The arch on the low preset."
+expect "The arch has no shadow on the low preset. Fix that before the path."
+mcp "Review project" read_review milestone "Milestone 1"
+said "The arch's shadow now draws on the low preset too."

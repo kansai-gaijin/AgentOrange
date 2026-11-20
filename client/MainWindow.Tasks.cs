@@ -51,8 +51,12 @@ public partial class MainWindow
         List<(string Id, Milestone Milestone)> Milestones,
         Dictionary<string, (BoardCard Card, string Page)> Cards,
         Dictionary<string, bool> Open,
-        bool ShowFinished)
+        bool ShowFinished,
+        Dictionary<string, SliceReview> Reviews)
     {
+        // What a line says about its slice's review page, so the line is built again when that changes.
+        public string ReviewKey(string sliceId) => Reviews.TryGetValue(sliceId, out var review) ? $"{review.Verdict}|{review.At}" : "";
+
         public int DoneCount => Assets.Count(task => task.Done) + Made.Count(each => each.Task.Done);
 
         public int AllCount => Assets.Count + Made.Count;
@@ -71,7 +75,7 @@ public partial class MainWindow
             .OrderBy(task => task.Due)
             .ThenBy(task => task.Asset.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
-        return new TasksData(stage, assets, _database.ListTasks(projectId, stage), _database.ListMilestones(projectId, stage), owners, MilestonesOpen(projectId), ShowsFinished(projectId));
+        return new TasksData(stage, assets, _database.ListTasks(projectId, stage), _database.ListMilestones(projectId, stage), owners, MilestonesOpen(projectId), ShowsFinished(projectId), _database.ListReviews(projectId, stage));
     }
 
     // What an asset is, and what it belongs to.
@@ -261,7 +265,7 @@ public partial class MainWindow
             var inIt = data.Made.Where(each => each.Task.Milestone == id).ToList();
             var done = inIt.Count(each => each.Task.Done);
             var open = IsOpen(data, id, done, inIt.Count);
-            lines.Add(new ListLine($"m:{id}", $"{milestone}|{done}|{inIt.Count}|{open}|{data.Milestones.Count}", () => InPage(MilestoneHeader(project, view, data, id, milestone, done, inIt.Count, open), TasksWidth)));
+            lines.Add(new ListLine($"m:{id}", $"{milestone}|{done}|{inIt.Count}|{open}|{data.Milestones.Count}|{data.ReviewKey(id)}", () => InPage(MilestoneHeader(project, view, data, id, milestone, done, inIt.Count, open), TasksWidth)));
             if (!open) continue;
 
             if (milestone.Goal is { Length: > 0 } goal) lines.Add(new ListLine($"goal:{id}", goal, () => InPage(Note(goal, 0), TasksWidth)));
@@ -372,6 +376,7 @@ public partial class MainWindow
         add.Click += (_, _) => OpenTaskForm(add, project, stage, null, id);
         AutomationProperties.SetName(add, $"Add a task to {milestone.Name}");
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Children = { add, edit } };
+        if (data.Reviews.TryGetValue(id, out var review)) buttons.Children.Insert(0, ReviewLink(project, id, milestone.Name, review));
 
         var finished = count > 0 && done == count;
         var chevron = AgentIcons.Line(open ? "chevron-down" : "chevron-right", 16, (Brush)FindResource("TextMuted"), 2);
@@ -441,7 +446,7 @@ public partial class MainWindow
     {
         var card = task.Card is { } cardId && data.Cards.TryGetValue(cardId, out var belongs) ? CardName(belongs.Card, belongs.Page) : null;
         // A list in a record says only its type, so its evidence is said by how much there is.
-        return new ListLine($"task:{id}", $"{task}|{overdue}|{milestoneName}|{card}|{EvidenceCount(task.Evidence)}",() => InPage(MadeTaskRow(project, view, data, id, task, overdue, milestoneName), TasksWidth));
+        return new ListLine($"task:{id}", $"{task}|{overdue}|{milestoneName}|{card}|{EvidenceCount(task.Evidence)}|{data.ReviewKey(id)}", () => InPage(MadeTaskRow(project, view, data, id, task, overdue, milestoneName), TasksWidth));
     }
 
     private ListLine AssetTaskLine(Project project, AssetTask task, bool overdue) =>
@@ -521,6 +526,16 @@ public partial class MainWindow
             AutomationProperties.SetName(link, $"Open {cardName}, for {task.Title}");
             DockPanel.SetDock(link, Dock.Right);
             row.Children.Add(link);
+        }
+
+        // Its review page, once an agent has filled one.
+        if (data.Reviews.TryGetValue(id, out var review))
+        {
+            var reviewLink = ReviewLink(project, id, task.Title, review);
+            reviewLink.VerticalAlignment = VerticalAlignment.Top;
+            reviewLink.Margin = new Thickness(8, 2, 0, 0);
+            DockPanel.SetDock(reviewLink, Dock.Right);
+            row.Children.Add(reviewLink);
         }
         row.Children.Add(open);
 

@@ -62,6 +62,13 @@ public partial class MainWindow
             {
                 said.AppendLine("Page: Lessons, the person's standing rules for this project and what agents learned about its tools, which your briefing has. Add a lesson with add_lesson.");
             }
+            else if (section.Name == ReviewPage)
+            {
+                var review = OpenReviewOf(project);
+                said.AppendLine(review is { } slice
+                    ? $"Page: the review page of the {(slice.IsTask ? "task" : "milestone")} \"{slice.Name}\", where the person looks at its pictures, clips, decisions and what wasn't checked, and accepts it or asks for changes. read_review gives what's on it and what they said."
+                    : "Page: a review page whose milestone or task isn't here any more.");
+            }
             else
             {
                 said.AppendLine($"Page: {section.Name}, a board.");
