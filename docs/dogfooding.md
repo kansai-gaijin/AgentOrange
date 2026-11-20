@@ -637,3 +637,10 @@ each support on its own. The
 framing stamp's see-through bar hid its white text on bright frames; it's opaque now. Not bundled:
 AnyMachine's `gait.py`, which is built for one robot (named in the pack's README as a reference). See
 `docs/research/any-family.md`.
+
+## Test machines: a big repo's checkout timed out (2026-11-20)
+
+The first run on the office PC after new commits ended "Couldn't run": `Couldn't check out <commit>: timeout`.
+Every Git command AO runs has a 30-second limit unless it's a clone, and the run's fetch, checkout and clean
+went through that path. Checking out a new commit of a 5 GB game repo on a cold disk takes longer. Those
+steps now have no limit of their own; the run's own limit (and Cancel) still stops them.

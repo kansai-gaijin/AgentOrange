@@ -62,6 +62,10 @@ public static partial class GitTools
         if (!IsCommitId(commit)) return new GitResult(false, "That isn't a commit id.");
         Dictionary<string, string>? allowLocal = local ? new() { ["GIT_ALLOW_PROTOCOL"] = "https:ssh:file" } : null;
 
+        // A fetch, checkout or clean of a big repo on a cold disk can take minutes, so these steps
+        // have no time limit of their own. The run's own limit, through cancel, still stops them.
+        NoStepLimit.Value = true;
+
         var hasRepo = await Task.Run(() => Directory.Exists(Path.Combine(folder, ".git")));
         if (!hasRepo)
         {
@@ -95,15 +99,25 @@ public static partial class GitTools
             return new GitResult(false, $"Origin doesn't have the commit {commit}. Push it, then run the tests again.");
         }
 
-        var checkedOut = await GitStepAsync(folder, $"Couldn't check out {commit}", "-c", "advice.detachedHead=false", "checkout", "--quiet", "--force", "--detach", commit);
+        var checkedOut = await RunStepAsync($"Couldn't check out {commit}", "-c", "advice.detachedHead=false", "checkout", "--quiet", "--force", "--detach", commit);
         if (!checkedOut.Worked) return checkedOut;
-        var cleaned = await GitStepAsync(folder, "Couldn't remove what an earlier run left", "clean", "-d", "--force", "--quiet");
+        var cleaned = await RunStepAsync("Couldn't remove what an earlier run left", "clean", "-d", "--force", "--quiet");
         if (!cleaned.Worked) return cleaned;
 
         progress("Fetching submodules and large files, if it has any");
         if (await FinishDownloadAsync(folder, cancel, progress) is { } missing) return new GitResult(false, missing);
         return new GitResult(true, folder);
+
+        async Task<GitResult> RunStepAsync(string failure, params string[] arguments)
+        {
+            if (cancel.IsCancellationRequested) return new GitResult(false, "Cancelled.");
+            if (await RunAsync("git", folder, null, arguments, cancel) is not { } done) return new GitResult(false, "Git wasn't found on this PC.");
+            return done.ExitCode == 0 ? new GitResult(true, done.Output.Trim()) : new GitResult(false, HideLogins(GitProblem(failure, done.Errors.Length > 0 ? done.Errors : done.Output)));
+        }
     }
+
+    // Set for the steps of a test checkout, and for what they call, only.
+    private static readonly AsyncLocal<bool> NoStepLimit = new();
 
     private static bool IsCommitId(string text) => text.Length is >= 7 and <= 64 && text.All(Uri.IsHexDigit);
 }
