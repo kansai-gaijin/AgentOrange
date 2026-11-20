@@ -288,7 +288,7 @@ public sealed partial class AgentsWindow : Window
             Child = surface,
         };
         Panel.SetZIndex(_composer, 2);
-        var composerLane = new StackPanel { MaxWidth = ColumnWidth, Margin = new Thickness(48, 4, 48, 20), Children = { _note, _banners, _composer } };
+        var composerLane = new StackPanel { MaxWidth = ColumnWidth, Margin = new Thickness(48, 4, 48, 20), Children = { _note, _workLine, _banners, _composer } };
 
         var conversationArea = new DockPanel { Background = Ocean.Canvas };
         DockPanel.SetDock(header, Dock.Top);
@@ -344,6 +344,12 @@ public sealed partial class AgentsWindow : Window
         };
         PreviewKeyDown += (_, pressed) =>
         {
+            if (pressed.Key == Key.Escape && _workSections is not null)
+            {
+                CloseWorkDialog();
+                pressed.Handled = true;
+                return;
+            }
             if (pressed.Key == Key.Escape && _overlay.Visibility == Visibility.Visible)
             {
                 _overlay.Visibility = Visibility.Collapsed;
@@ -356,6 +362,7 @@ public sealed partial class AgentsWindow : Window
             ShowSees();
             ShowTurns();
             ShowConversationStates();
+            ShowWorkLine();
         };
         _tick.Start();
         Activated += (_, _) =>
@@ -377,6 +384,15 @@ public sealed partial class AgentsWindow : Window
     }
 
     internal bool IsLookingAt(AgentConversation conversation) => IsActive && _open == conversation;
+
+#if DEBUG
+    /// <summary>For headless checks: opens a conversation, as clicking its row does.</summary>
+    internal void ShowForChecks(AgentConversation conversation)
+    {
+        Show(conversation);
+        ShowConversations();
+    }
+#endif
 
     // Minimise, maximise and close, as Windows draws them, in the top bar.
     private FrameworkElement CaptionButtons()
@@ -419,7 +435,7 @@ public sealed partial class AgentsWindow : Window
     }
 
     // As T3 Code says how long: 5s, 2m 05s, 1h 03m.
-    private static string Took(TimeSpan span) =>
+    internal static string Took(TimeSpan span) =>
         span < TimeSpan.FromMinutes(1) ? $"{Math.Max(0, (int)span.TotalSeconds)}s"
         : span < TimeSpan.FromHours(1) ? $"{(int)span.TotalMinutes}m {span.Seconds:00}s"
         : $"{(int)span.TotalHours}h {span.Minutes:00}m";
@@ -609,6 +625,8 @@ public sealed partial class AgentsWindow : Window
         ShowNote(null);
         _stepsOpen = conversation?.Steps?.Any(step => step.Status != "completed") == true;
         ShowUsage();
+        CloseWorkDialog();
+        ShowWorkLine();
         _follow = true;
         ScrollToEnd();
         if (conversation is not null) _ = Dispatcher.InvokeAsync(() => _input.Focus(), DispatcherPriority.Input);
@@ -722,6 +740,7 @@ public sealed partial class AgentsWindow : Window
         ShowControls();
         ShowUsage();
         ShowTurns();
+        ShowWorkLine();
         if (_open is not null && IsActive) _open.Unseen = false;
         if (_follow) ScrollToEnd();
     }
@@ -1327,23 +1346,12 @@ public sealed partial class AgentsWindow : Window
         return model?.Name ?? endpoint.Model ?? "Default model";
     }
 
-    // Under the timeline, before the next message: the switch of login it'll carry everything across,
-    // and the commands it left running in the background, which it goes on with when they end.
+    // Under the timeline, before the next message: the switch of login it'll carry everything across.
+    // What it left running in the background is on the line above the box.
     private void ShowPendingHandoff()
     {
         var under = new StackPanel();
         if (_open is { PendingFrom: { } from, PendingTo: { } to } conversation) under.Children.Add(HandoffRow(from, to with { Model = conversation.Model }, pending: true));
-        if (_open is { IsWorking: false, BackgroundJobs: > 0 and var jobs })
-        {
-            // What it started may be something it waits for, such as a build, or a service it leaves
-            // running, such as a local server: only that it's running is known, so only that's said.
-            var command = _open.LastBackgroundCommand is { } last ? Flatten(last) : null;
-            if (command is { Length: > 80 }) command = command[..80] + "…";
-            var waiting = WorkRow("clock", (jobs == 1 ? "1 command it started is still running in the background" : $"{jobs} commands it started are still running in the background")
-                + (command is null ? "" : $" ({command})") + ". It goes on by itself if it was waiting for one.", Ocean.Info);
-            AutomationProperties.SetName(waiting, "Background commands still running");
-            under.Children.Add(waiting);
-        }
         _pendingHandoff.Child = under.Children.Count > 0 ? under : null;
         _pendingHandoff.Visibility = under.Children.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }

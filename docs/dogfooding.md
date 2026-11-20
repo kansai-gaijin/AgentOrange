@@ -750,3 +750,21 @@ machine it flips, between machines it differs. The run list offers the ones that
 says which of its checks are flagged, Check history shows each one's runs, and agents get the same through
 `read_test_run` and `check_history`, with a note to fix the cause before adding a retry.
 `tools/checks/test-run-checks.txt` runs it with real files, `agent-test-runs.txt` with made-up history.
+
+## Agents: a pause read as a finish, and nothing said what it waited on (2026-11-21)
+
+A review of all 47 saved conversations found agents ending their turn while a long job ran in the
+background (a 55-minute test suite) and going on when it ended, and Agent Orange showing both as Done
+(#111). Real finishes went unnoticed and pauses were taken for finishes, and long waits folded into
+"Worked for 1h 53m" with nothing saying what was still going. It counted only background commands, by
+their tool use, so helper agents and Monitors weren't counted, and a Codex helper agent's own turn ending
+ended the conversation's turn.
+
+Now each conversation keeps its background work from its provider's own events, copied from T3 Code's
+code: Claude Code's task events (and its set of running tasks, which wins) and Codex's subagent threads and
+commands still running after a turn. Once a turn ends with any of it going, a line above the box says what,
+for how long, with Details (the Background work dialog) and Stop. T3's rule settles the earlier worry about
+a dev server read as a job: subagents hold the conversation, and a command does only once the agent says it
+waits on it (the new `background_wait` tool, which the briefing asks for before ending a turn on tests or a
+build), so a server it leaves running shows Running but the conversation is Done. While held, the list row
+says Waiting, settling is refused, and the finished notice waits until nothing held is left.

@@ -45,6 +45,12 @@ public partial class MainWindow
         _conversations!.Add(conversation);
         conversation.LimitsReported += (provider, limits, complete) => Usage.Update(provider, limits, complete);
         conversation.SkillUsed += (skill, how) => RecordSkillUse(conversation, skill, how);
+        // Done, with nothing it started still running, or wanting something, with no one looking at it.
+        // A turn that ends while its background work goes on isn't done, so that says nothing yet.
+        conversation.Finished += () =>
+        {
+            if (_agentsWindow?.IsLookingAt(conversation) != true) conversation.Unseen = true;
+        };
         conversation.StateChanged += () => ConversationChanged(conversation);
     }
 
@@ -64,8 +70,9 @@ public partial class MainWindow
             conversation.Settle(true);
             return; // Settling says so again.
         }
-        // Done, or wanting something, with no one looking at it.
-        if ((!conversation.IsWorking || conversation.IsWaiting) && _agentsWindow?.IsLookingAt(conversation) != true) conversation.Unseen = true;
+        // Wanting something, with no one looking at it. Being done says so through Finished, once
+        // nothing it started is still running.
+        if (conversation.IsWaiting && _agentsWindow?.IsLookingAt(conversation) != true) conversation.Unseen = true;
         conversation.Save(ConversationsFolder);
         _agentsWindow?.ShowConversations();
     }

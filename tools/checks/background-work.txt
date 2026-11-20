@@ -1,0 +1,81 @@
+# What an agent is doing and waiting on (#111), copied from T3 Code's background work. Once a turn
+# ends with work it started still going, a line above the box sums it up with Details and Stop.
+# Subagents, and commands the agent says it waits on (background_wait), hold the conversation:
+# the list says Waiting, not Done, and the finished notice waits until none is left. A command it
+# leaves running, such as a dev server, only runs. Claude Code's and Codex's own events are fed in
+# from background-work.jsonl beside this.
+seed "Background project" 0 0 0
+click "Agents"
+window "Agents"
+agent "Background project" "Run the tests and get the level layout reviewed"
+feed "background-work.jsonl" "started"
+agentstate
+said "Working: no, in the background: 2, waited on: 1, waiting on it: yes, unseen: no"
+said "Command running: Run the test suite until it finishes | npm test -- --reporter=dot"
+said "Subagent running: Review the level layout"
+# Each once, however many ways Claude Code tells of it.
+notsaid "Command ended"
+# The line: a subagent holds it, so it's waiting, with the subagent's latest progress after it.
+expect "Waiting"
+inview "Details"
+wait "Waiting on 1 subagent and 1 command  Review the level layout: Reading levels/forest.md"
+expectnot "Done"
+shot waiting-line
+# The agent says it goes on once the tests end.
+mcp "Background project" background_wait task_ids "b1"
+said "Waiting on b1"
+mcprefused "Background project" background_wait task_ids "nothing-like-it"
+said "Not running in the background here: nothing-like-it"
+click "Details"
+expect "Background work"
+expect "npm test -- --reporter=dot"
+expect "Review the level layout"
+expect "Running"
+shot work-dialog
+click "Close"
+# The subagent ends, and Claude Code takes that up in a turn of its own: still waiting on the tests.
+feed "background-work.jsonl" "agent-done"
+agentstate
+said "Working: no, in the background: 1, waited on: 1, waiting on it: yes, unseen: no"
+said "Command running, awaited: Run the test suite until it finishes"
+wait "Waiting · Run the test suite until it finishes"
+# The tests end too, and that turn ends with nothing left: now it's done, and the person is told.
+feed "background-work.jsonl" "tests-done"
+agentstate
+said "Working: no, in the background: 0, waited on: 0, waiting on it: no, unseen: yes"
+expect "Done"
+expectnot "Details"
+shot finished
+# A dev server it leaves running only runs: the list says Done, and the line Running. A command run
+# in the foreground isn't background work at all. Stop ends its program, and everything with it.
+agent "Background project" "Start the game's dev server"
+feed "background-work.jsonl" "server"
+agentstate
+said "Working: no, in the background: 1, waited on: 0, waiting on it: no, unseen: yes"
+notsaid "Lint"
+wait "Running · Start the dev server"
+expect "Done"
+shot running-line
+click "Stop"
+agentstate
+said "Sent: (its program ended)"
+wait "Stopping..."
+# Codex: a subagent is a thread of its own, and what it does stays out of this timeline. Its command
+# still running as the turn ends is a background command, shown without its shell.
+agent "Background project" "Get the forest level's notes written" codex
+feed "background-work.jsonl" "codex-started"
+agentstate
+said "Working: no, in the background: 2, waited on: 1, waiting on it: yes, unseen: no"
+said "Subagent running: Write the design notes for the forest level"
+expectnot "rg forest docs"
+wait "Waiting on 1 subagent and 1 command  Write the design notes for the forest level: Running rg forest docs"
+feed "background-work.jsonl" "codex-done"
+sleep 6000
+agentstate
+said "Working: no, in the background: 1, waited on: 0, waiting on it: no, unseen: yes"
+wait "Running · npm run dev"
+shot codex-running
+click "Stop"
+agentstate
+said "thread/backgroundTerminals/terminate"
+said "proc-1"

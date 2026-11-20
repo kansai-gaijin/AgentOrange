@@ -31,6 +31,40 @@ public partial class MainWindow
         },
         [], (_, _) => "", (project, given) => WaitForAsync(project, given));
 
+    /// <summary>
+    /// T3 Code's background wait: a command or Monitor an agent started in the background, which it goes
+    /// on with once it ends (tests, a build), keeps its conversation waiting rather than done. Only the
+    /// agent knows whether a command is that or something it leaves running (a dev server), so it says.
+    /// </summary>
+    private McpTool BackgroundWaitTool() => new("background_wait",
+        "Keeps this conversation Waiting, not done, while background work you started runs: a command or Monitor you go on with once it ends, such as tests or a build. Give its task ID once it's started (Claude Code says it, as in \"running in background with ID: b1a2c3\"), before you end your turn. "
+        + "Not for work you leave running, such as a dev server or a watcher. waiting false clears it. It doesn't stop anything. Claude Code only.",
+        new JsonObject
+        {
+            ["task_ids"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" }, ["description"] = "The background tasks' IDs, 1 to 20." },
+            ["waiting"] = Flag("False to stop waiting on them. True if not given."),
+        },
+        ["task_ids"], (project, given) => Dispatcher.Invoke(() => BackgroundWait(project, given)));
+
+    private string BackgroundWait(Project project, JsonObject given)
+    {
+        var ids = given["task_ids"] switch
+        {
+            JsonArray list => list.Select(each => each is JsonValue value && value.TryGetValue<string>(out var id) ? id.Trim() : null).OfType<string>().Where(id => id.Length > 0).ToList(),
+            JsonValue one when one.TryGetValue<string>(out var words) => [.. words.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+            _ => [],
+        };
+        if (ids.Count is 0 or > 20) throw new McpException(-32602, $"task_ids: give 1 to 20 background task IDs{(ids.Count > 20 ? $", not {ids.Count}" : "")}, such as [\"b1a2c3\"].");
+        var waiting = given["waiting"] is null || Yes(given, "waiting");
+        var conversations = Conversations.Where(each => each.ProjectId == project.Id).ToList();
+        var matched = ids.Where(id => conversations.Any(conversation => conversation.Await(id, waiting))).ToList();
+        var unmatched = ids.Except(matched).ToList();
+        var said = matched.Count == 0 ? "" : waiting ? $"Waiting on {string.Join(", ", matched)}: the conversation stays Waiting until it ends." : $"No longer waiting on {string.Join(", ", matched)}.";
+        if (unmatched.Count > 0) said += $"{(said.Length > 0 ? " " : "")}Not running in the background here: {string.Join(", ", unmatched)}. Give the ID of a background command or Monitor of yours that's still running.";
+        if (matched.Count == 0) throw new McpException(-32602, said);
+        return said;
+    }
+
     private async Task<object> WaitForAsync(Project project, JsonObject given)
     {
         var file = Given(given, "file") is { Length: > 0 } named ? named : null;
