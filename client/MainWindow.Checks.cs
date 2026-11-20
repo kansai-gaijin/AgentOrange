@@ -115,6 +115,19 @@ public partial class MainWindow
         return (briefing, skills);
     }
 
+    /// <summary>
+    /// A Claude login whose program is a script in the data folder: its version, then for its login
+    /// status whatever programs/folder/status.json says, and nothing at all when asked its usage.
+    /// </summary>
+    internal void AddLoginForChecks(string label, string folder)
+    {
+        var place = Path.Combine(Headless.DataFolder, "programs", folder);
+        Directory.CreateDirectory(place);
+        var program = Path.Combine(place, "claude.cmd");
+        File.WriteAllText(program, "@echo off\r\nif \"%~1\"==\"--version\" (echo 9.9.9 ^(Claude Code^)& exit /b 0)\r\nif \"%~1\"==\"auth\" (type \"%~dp0status.json\"& exit /b 0)\r\nexit /b 0\r\n");
+        Settings.Providers.Save(new AgentProvider(Guid.NewGuid().ToString("N"), ProviderKind.Claude, label, program, Settings.Providers.NewLoginFolder(ProviderKind.Claude), true));
+    }
+
     internal int GiveAssetsAStatusForChecks()
     {
         var given = _database.GiveAssetsAStatus();

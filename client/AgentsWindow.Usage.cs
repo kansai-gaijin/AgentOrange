@@ -260,11 +260,11 @@ public sealed partial class AgentsWindow
             var heading = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, content.Children.Count == 0 ? 0 : 20, 0, 12), Children = { glyph, Ocean.Text(claude ? "Claude" : "Codex", Ocean.Foreground, 14, FontWeights.Medium), Ocean.Text($"  {login.Label}", Ocean.MutedText, 14) } };
             content.Children.Add(heading);
             var limits = _main.Usage.For(login.Id).Where(limit => limit.Used is not null && limit.Kind != "overage").ToList();
-            if (limits.Count == 0)
+            if (UsageNote(login, limits.Count > 0) is { } note)
             {
-                var checkedAt = _main.Usage.CheckedAt(login.Id);
-                content.Children.Add(Ocean.Wrapped(checkedAt is null ? "Checking…" : "It didn't say. Signed out, or a login without a subscription?", Ocean.MutedText, 13, 20));
-                continue;
+                var said = Ocean.Wrapped(note, Ocean.MutedText, 13, 20);
+                said.Margin = new Thickness(0, 0, 0, limits.Count > 0 ? 12 : 0);
+                content.Children.Add(said);
             }
             foreach (var limit in limits) content.Children.Add(LimitCard(limit, claude ? Ocean.Claude : Ocean.Foreground, login));
         }
@@ -290,6 +290,24 @@ public sealed partial class AgentsWindow
             Effect = new System.Windows.Media.Effects.DropShadowEffect { Color = Colors.Black, BlurRadius = 50, ShadowDepth = 20, Direction = 270, Opacity = 0.4 },
         });
         _overlay.Visibility = Visibility.Visible;
+    }
+
+    // Said above a login's limits: signed out, as its program says, or that they're as last heard,
+    // and when. A login that's run out of its limit can stop saying them, and keeps what was heard (#120).
+    private string? UsageNote(AgentProvider login, bool hasLimits)
+    {
+        var usage = _main.Usage;
+        var signedOut = usage.NotSignedIn(login.Id) is { } why ? $"{why}, as its program says. Sign in again in Settings › Providers." : null;
+        if (!hasLimits)
+        {
+            return signedOut
+                ?? (usage.CheckedAt(login.Id) is null ? "Checking…" : "It didn't say its limits. A login that's run out of its limit can stop saying them until it resets.");
+        }
+        if (!usage.AsLastHeard(login.Id) || usage.HeardAt(login.Id) is not { } heard) return signedOut;
+        var asHeard = $"As last heard, {When(heard)}.";
+        return signedOut is not null ? $"{signedOut} {asHeard}"
+            : usage.CheckedAt(login.Id) is null ? $"{asHeard} Checking…"
+            : $"{asHeard} The latest check didn't say them, as a login that's run out of its limit can do.";
     }
 
     // A limit's card: what's left in big numbers, and its bar, as T3 Code's pooled limits.

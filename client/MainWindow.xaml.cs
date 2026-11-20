@@ -102,6 +102,7 @@ public partial class MainWindow : Window
         Settings.Folders = folders;
         Settings.Database = _database;
         Settings.Providers = new AgentProviders(_database, folders.AgentFolder);
+        Usage.KeepIn(Path.Combine(folders.AgentFolder, "usage.json"));
         Settings.Services = _services = new ThirdParty(_database);
         Settings.Editors = new EditorMonitor(_database);
         Settings.AppVersion = _updates.IsInstalled ? _updates.CurrentVersion?.ToString() ?? "Unknown" : "Dev build";

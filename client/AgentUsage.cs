@@ -45,6 +45,10 @@ public sealed record AgentLimit(string Kind, double? Used, DateTimeOffset? Reset
 /// Each login's subscription limits, as its agent program last said them. Claude Code says them when
 /// asked (get_usage, which uses none of the limits up), and as they change while it works
 /// (rate_limit_event). Without a conversation running, a program is started just to ask.
+///
+/// What was last heard is kept on this PC, with when, so a check that doesn't answer (as a login
+/// that's run out of its limit may not) or a restart doesn't lose a login's limits and reset times.
+/// Only the program's own login status says a login is signed out (#120).
 /// </summary>
 public sealed class AgentUsage
 {
@@ -52,6 +56,10 @@ public sealed class AgentUsage
 
     private readonly Dictionary<string, Dictionary<string, AgentLimit>> _byProvider = [];
     private readonly Dictionary<string, DateTimeOffset> _checked = [];
+    private readonly Dictionary<string, DateTimeOffset> _heard = [];
+    private readonly HashSet<string> _heardSinceStarting = [];
+    private readonly Dictionary<string, string> _notSignedIn = [];
+    private string? _file;
 
     /// <summary>On the window's thread: a login's limits changed.</summary>
     public event Action? Changed;
@@ -63,6 +71,19 @@ public sealed class AgentUsage
 
     public DateTimeOffset? CheckedAt(string providerId) => _checked.TryGetValue(providerId, out var at) ? at : null;
 
+    /// <summary>When its program last said any of its limits, here or before Agent Orange last started.</summary>
+    public DateTimeOffset? HeardAt(string providerId) => _heard.TryGetValue(providerId, out var at) ? at : null;
+
+    /// <summary>
+    /// Its limits are as last heard, not as just said: the latest check didn't say them, or none
+    /// has since Agent Orange started.
+    /// </summary>
+    public bool AsLastHeard(string providerId) =>
+        HeardAt(providerId) is { } heard && (!_heardSinceStarting.Contains(providerId) || CheckedAt(providerId) is { } asked && asked > heard);
+
+    /// <summary>Why it isn't signed in, as its program's login status says, or null when it is or that couldn't be told.</summary>
+    public string? NotSignedIn(string providerId) => _notSignedIn.TryGetValue(providerId, out var why) ? why : null;
+
     /// <summary>When a login that ran out can be used again: the latest of its limits that's run out, or null if none has.</summary>
     public DateTimeOffset? BlockedUntil(string? providerId) =>
         For(providerId).Where(limit => limit.Blocked || limit.Used >= 100).Select(limit => limit.ResetsAt).Max();
@@ -71,14 +92,77 @@ public sealed class AgentUsage
     public void Update(string providerId, IEnumerable<AgentLimit> limits, bool complete)
     {
         if (!_byProvider.TryGetValue(providerId, out var known)) known = _byProvider[providerId] = [];
-        if (complete) _checked[providerId] = DateTimeOffset.UtcNow;
+        var now = DateTimeOffset.UtcNow;
+        if (complete) _checked[providerId] = now;
+        var said = false;
         foreach (var limit in limits)
         {
+            said = true;
             known[limit.Kind] = known.TryGetValue(limit.Kind, out var before)
                 ? limit with { Used = limit.Used ?? (limit.Blocked ? 100 : before.Used), ResetsAt = limit.ResetsAt ?? before.ResetsAt }
                 : limit;
         }
+        if (said)
+        {
+            _heard[providerId] = now;
+            _heardSinceStarting.Add(providerId);
+            _notSignedIn.Remove(providerId); // Only a login that's signed in says its limits.
+            Save();
+        }
         Changed?.Invoke();
+    }
+
+    /// <summary>What its program's login status said after a check that didn't say its limits: null when signed in, or when it couldn't be told.</summary>
+    public void SetNotSignedIn(string providerId, string? why)
+    {
+        if (NotSignedIn(providerId) == why) return;
+        if (why is null) _notSignedIn.Remove(providerId);
+        else _notSignedIn[providerId] = why;
+        Changed?.Invoke();
+    }
+
+    // Kept on this PC: each login's limits as last said, and when.
+    private sealed record Kept(DateTimeOffset HeardAt, List<KeptLimit> Limits);
+
+    private sealed record KeptLimit(string Kind, double? Used, DateTimeOffset? ResetsAt, bool Blocked);
+
+    private static readonly System.Text.Json.JsonSerializerOptions KeptJson = new(System.Text.Json.JsonSerializerDefaults.Web);
+
+    /// <summary>Keeps what's heard in this file from now on, and takes back what was kept there.</summary>
+    public void KeepIn(string file)
+    {
+        _file = file;
+        try
+        {
+            if (!File.Exists(file)) return;
+            var kept = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, Kept>>(File.ReadAllText(file), KeptJson) ?? [];
+            foreach (var (providerId, login) in kept)
+            {
+                if (_heard.ContainsKey(providerId) || login.Limits is null) continue; // Heard since, which is newer.
+                _byProvider[providerId] = login.Limits.ToDictionary(limit => limit.Kind, limit => new AgentLimit(limit.Kind, limit.Used, limit.ResetsAt, limit.Blocked));
+                _heard[providerId] = login.HeardAt;
+            }
+            Changed?.Invoke();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            AppLog.Write($"Couldn't read the usage last heard: {error.Message}");
+        }
+    }
+
+    private void Save()
+    {
+        if (_file is null) return;
+        try
+        {
+            var kept = _heard.ToDictionary(pair => pair.Key, pair => new Kept(pair.Value, [.. For(pair.Key).Select(limit => new KeptLimit(limit.Kind, limit.Used, limit.ResetsAt, limit.Blocked))]));
+            Directory.CreateDirectory(Path.GetDirectoryName(_file)!);
+            File.WriteAllText(_file, System.Text.Json.JsonSerializer.Serialize(kept, KeptJson));
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Write($"Couldn't keep the usage last heard: {error.Message}");
+        }
     }
 
     /// <summary>The limits in a get_usage reply, whose use is already in percent.</summary>
@@ -126,14 +210,24 @@ public sealed class AgentUsage
         return limits;
     }
 
-    /// <summary>Asks a login's agent program for its limits, without sending anything to a model.</summary>
-    public async Task ProbeAsync(AgentProvider provider, string folder)
+    /// <summary>Asks a login's agent program for its limits, without sending anything to a model. Whether it said any.</summary>
+    public async Task<bool> ProbeAsync(AgentProvider provider, string folder)
     {
-        if (provider.Kind == ProviderKind.Codex)
+        var before = HeardAt(provider.Id);
+        if (provider.Kind == ProviderKind.Codex) await ProbeCodexAsync(provider, folder);
+        else await ProbeClaudeAsync(provider, folder);
+        if (HeardAt(provider.Id) == before)
         {
-            await ProbeCodexAsync(provider, folder);
-            return;
+            // Asked, and nothing said: what was last heard stays, marked as that.
+            _checked[provider.Id] = DateTimeOffset.UtcNow;
+            Changed?.Invoke();
+            return false;
         }
+        return true;
+    }
+
+    private async Task ProbeClaudeAsync(AgentProvider provider, string folder)
+    {
         Process? process = null;
         try
         {
@@ -156,6 +250,7 @@ public sealed class AgentUsage
                 if (!line.Contains("\"control_response\"", StringComparison.Ordinal)) continue;
                 if (JsonNode.Parse(line)?["response"] is not JsonObject response || Str(response, "request_id") != "usage") continue;
                 if (Str(response, "subtype") == "success") Update(provider.Id, FromUsage(response["response"] as JsonObject), complete: true);
+                else AppLog.Write($"{provider.Label} didn't say its usage: {Str(response, "error") ?? Str(response, "subtype") ?? "no reason given"}");
                 break;
             }
         }

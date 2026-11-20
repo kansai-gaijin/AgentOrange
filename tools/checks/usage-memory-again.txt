@@ -1,0 +1,18 @@
+# Started again: the limits are kept, as last heard. Run after usage-memory.txt.
+usage "Claude (check)" "Weekly 0% left"
+usage "Claude (check)" "as last heard"
+# The Usage page checks again, and the login says nothing: still its limits, and when they were heard.
+click "Agents"
+window "Agents"
+click "Usage"
+wait "The latest check didn't say them"
+expect "Weekly"
+expect "Session"
+expectnot "It didn't say. Signed out, or a login without a subscription?"
+shot usage-as-last-heard
+# Only the program's own login status says it's signed out, and the last known limits stay.
+file "programs/claude-check/status.json" {"loggedIn":false}
+click "Check again"
+wait "Not signed in, as its program says."
+expect "Weekly"
+shot usage-signed-out

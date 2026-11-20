@@ -28,7 +28,9 @@ namespace AgentOrange;
 ///   has "text"          say "note"         texts               shot name
 ///   sleep 500           window "Title"     (the window the next lines act on, by its title)
 ///   scroll top          scroll end         (every scrolling area in the window)
-///   usage               (each login's limits as last heard, without opening the Usage page)
+///   usage               (each login's limits as last heard, without opening the Usage page; usage "Login" "text" fails unless its line says that)
+///   login "Label" folder   (a Claude login whose program is a script in the data folder, saying what programs/folder/status.json says)
+///   heard "Login" seven_day 100 30   (as if its program said a limit: percent used, hours until it resets)
 ///   seed "Name" 300 12 300   (a made-up project with that many tasks, milestones and assets; a fifth word names its engine)
 ///   file "path" "text"  (a file in the data folder)
 ///   tool blender "program" "reference"   (sets a tool up, its paths in the data folder; a blank reference is where it usually keeps one)
@@ -239,14 +241,30 @@ internal static partial class Headless
                 break;
             // Each login's limits as the app last heard them, without opening the Usage page.
             case "usage":
+                // usage "Login" "text" fails unless that login's line says it.
                 if (Application.Current.Windows.OfType<MainWindow>().FirstOrDefault() is not { } main) throw new InvalidOperationException("The main window isn't open.");
                 foreach (var login in main.AllAgentLogins())
                 {
                     var limits = main.Usage.For(login.Id).Where(limit => limit.Used is not null).ToList();
                     var known = limits.Select(limit =>
                         $"{limit.Name} {100 - limit.Used:0}% left" + (limit.ResetsAt is { } at ? $", resets {at.ToLocalTime():M/d HH:mm}" : "") + (limit.Blocked ? ", blocked" : ""));
-                    say($"{login.Label}: " + (limits.Count > 0 ? string.Join("; ", known) : main.Usage.CheckedAt(login.Id) is null ? "not checked yet" : "it didn't say"));
+                    var usageLine = $"{login.Label}: " + (limits.Count > 0 ? string.Join("; ", known) : main.Usage.CheckedAt(login.Id) is null ? "not checked yet" : "it didn't say")
+                        + (limits.Count > 0 && main.Usage.AsLastHeard(login.Id) && main.Usage.HeardAt(login.Id) is { } heard ? $" (as last heard, {heard.ToLocalTime():M/d HH:mm})" : "")
+                        + (main.Usage.NotSignedIn(login.Id) is { } why ? $"; {why}" : "");
+                    say(usageLine);
+                    if (parts.Length > 2 && login.Label == parts[1] && !usageLine.Contains(parts[2], StringComparison.Ordinal)) throw new InvalidOperationException($"{login.Label}'s usage doesn't say {parts[2]}.");
                 }
+                break;
+            // A login whose program is a script in the data folder, saying whatever programs/<folder>/status.json
+            // says about its login, and nothing about its usage: login "Claude (check)" claude-check. Checks only.
+            case "login" when Active:
+                Main().AddLoginForChecks(parts[1], parts[2]);
+                break;
+            // As if a login's program said one of its limits: heard "Login" seven_day 100 30 (percent used, hours until it resets).
+            case "heard" when Active:
+                var heardLogin = Main().AllAgentLogins().First(each => each.Label == parts[1]);
+                var used = double.Parse(parts[3], System.Globalization.CultureInfo.InvariantCulture);
+                Main().Usage.Update(heardLogin.Id, [new AgentLimit(parts[2], used, DateTimeOffset.UtcNow.AddHours(double.Parse(parts[4], System.Globalization.CultureInfo.InvariantCulture)), used >= 100)], complete: true);
                 break;
             // The words in each visible document editor, whole, as a person reads by scrolling it.
             case "read":

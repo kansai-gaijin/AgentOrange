@@ -661,3 +661,12 @@ what each covers; a test machine's own limit is for the whole run, in place of t
 says how long each step took, and when a limit stops it, which step, how far into the run and which
 limit it was. `tools/checks/test-run-limits.txt` runs real steps from a local repo, one stopped by its
 prepare limit.
+
+## Usage: a login out of its weekly limit read as signed out (2026-11-21)
+
+A Claude login whose weekly limit was used up showed "It didn't say. Signed out, or a login without a
+subscription?" on the Usage page, where earlier it had shown Weekly 0% with its reset time (#120). Limits
+lived only in memory, and once a login runs out its program can stop saying them, so after a restart there
+was nothing to show and the page guessed. Each login's last known limits are now kept on this PC with when
+they were heard, and shown "As last heard, <time>" when the latest check didn't say them. Only the
+program's own login status says a login is signed out; it's asked only when a check says nothing.

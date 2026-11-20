@@ -1,0 +1,11 @@
+# A login that ran out of its limit keeps its last known limits and reset times, marked with when
+# they were last heard, instead of reading as signed out (#120). Run usage-memory-again.txt after it,
+# with the same data folder, to see them kept across a restart and a check that says nothing.
+# The login's program is a script that says nothing about its usage, as an exhausted login can.
+login "Claude (check)" claude-check
+file "programs/claude-check/status.json" {"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}
+heard "Claude (check)" five_hour 20 2
+heard "Claude (check)" seven_day 100 30
+usage "Claude (check)" "Session 80% left"
+usage "Claude (check)" "Weekly 0% left"
+usage "Claude (check)" "blocked"

@@ -256,7 +256,12 @@ public partial class MainWindow
         {
             // One running already says it as it goes.
             if (_conversations?.Any(each => each.IsWorking && each.ProviderId == login.Id) == true) continue;
-            await Usage.ProbeAsync(login, folder);
+            if (await Usage.ProbeAsync(login, folder)) continue;
+
+            // It didn't say. Only its own login status says it's signed out, as a login that's run
+            // out of its limit can also say nothing.
+            var status = await Settings.Providers.CheckAsync(login);
+            Usage.SetNotSignedIn(login.Id, status.ProgramFound && !status.SignedIn && status.Detail != "Couldn't read the login status" ? status.Detail : null);
         }
     }
 
