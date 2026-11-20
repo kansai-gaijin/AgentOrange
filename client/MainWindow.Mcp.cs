@@ -25,7 +25,7 @@ public partial class MainWindow
     private const string McpInstructions =
         "Agent Orange holds the whole design of the game: there is no separate design document. Start with get_project, "
         + "then read the cards that matter to your work with read_card (a card's document is its design, in Markdown), and the tasks with list_tasks. "
-        + "Keep it current as you work: tick tasks you finish with update_task, add tasks you find with add_task, add cards the design needs with add_card (such as the assets a slice needs), and write what you settle into the card's document with write_card. "
+        + "Keep it current as you work: tick tasks you finish with update_task, add tasks you find with add_task, add cards the design needs with add_card (such as the assets a slice needs), set an asset's status with update_asset as you work on it (In progress, then Needs review when it's ready for the person to judge), and write what you settle into the card's document with write_card. "
         + "Settle nothing that's the person's to decide: ask them, then write it down. Never mark an asset as delivered.";
 
     private async Task<JsonNode?> McpAnswerAsync(string projectId, string method, JsonNode? parameters) => method switch
@@ -59,13 +59,26 @@ public partial class MainWindow
     private static JsonObject Number(string description) => new() { ["type"] = "integer", ["description"] = description };
 
     private const string PageNote = "The page: Overview, Story, Characters, Levels, Mechanics or Assets.";
+
+    private static string StatusNote(string start) =>
+        start + string.Join(", ", AssetStatus.All.Select(each => each.Name)) + ". Delivered is only ever set by the person.";
+
+    // A status by its name or id. An agent can't make an asset delivered, which is the person's to judge.
+    private static string StatusId(string asked, bool forAgent)
+    {
+        var status = AssetStatus.All.FirstOrDefault(each => each.Id.Equals(asked.Replace(' ', '_'), StringComparison.OrdinalIgnoreCase) || each.Name.Equals(asked, StringComparison.OrdinalIgnoreCase)).Id
+            ?? throw new McpException(-32602, $"There's no status called {asked}. The statuses: {string.Join(", ", AssetStatus.All.Select(each => each.Name))}.");
+        if (forAgent && status == AssetStatus.Delivered)
+            throw new McpException(-32602, "Only the person marks an asset delivered, once they've judged it. Set it to Needs review when it's ready for them.");
+        return status;
+    }
     private const string CardNote = "The card's name, or its id. Leave out for the Overview.";
 
     private List<McpTool> McpTools =>
     [
         new("get_project", "Start here: the project at a glance. Its engine, stage, folder and game settings, every page's cards, the milestones and how far the tasks are, and the project's own documents.", [], [], (project, _) => DescribeProject(project)),
-        new("list_cards", "The cards on a page, with how much is written in each. For assets, also their type, what they belong to, when they're due and whether they're delivered.",
-            new JsonObject { ["page"] = Text(PageNote) }, ["page"], (project, given) => ListCardsFor(project, Page(given))),
+        new("list_cards", "The cards on a page, with how much is written in each. For assets, also their status, type, what they belong to, when they're due and their deliverable once they have one. For assets, status leaves out all but one status.",
+            new JsonObject { ["page"] = Text(PageNote), ["status"] = Text(StatusNote("Only assets with this status: ")) }, ["page"], (project, given) => ListCardsFor(project, Page(given), Given(given, "status") is { Length: > 0 } status ? StatusId(status, forAgent: false) : null)),
         new("read_card", "A card's document, which is its design, in Markdown, with the tasks about it. Or the Overview's document, with page Overview.",
             new JsonObject { ["page"] = Text(PageNote), ["card"] = Text(CardNote) }, ["page"], (project, given) => ReadCard(project, given)),
         new("write_card", "Writes a card's document, or the Overview's, in Markdown. mode replace swaps the whole document for this; append adds this at its end. Write what's been settled, in the document's own style, with ## and ### headings.",
@@ -82,12 +95,14 @@ public partial class MainWindow
                 ["belongs_to"] = Text("For an asset: the card it belongs to, by name or id."),
                 ["due"] = Text("For an asset: a day to deliver it by, as yyyy-mm-dd. Makes it a task."),
                 ["tags"] = Text("For an asset: its tags, by name, separated by commas, such as Forest, Sound. Use the ones list_cards Assets shows when they fit; new ones are made."),
+                ["status"] = Text(StatusNote("For an asset: where it is in being made, To do if not given. ")),
             },
             ["page", "name"], (project, given) => AddCardFor(project, given)),
-        new("update_asset", "Changes an asset's type, the card it belongs to, its tags or its day to deliver it by. Only what's given changes. Never its deliverable: only the person fills that.",
+        new("update_asset", "Changes an asset's status, type, the card it belongs to, its tags or its day to deliver it by. Only what's given changes. Never its deliverable, and never Delivered: only the person does those.",
             new JsonObject
             {
                 ["card"] = Text("The asset, by name or id."),
+                ["status"] = Text(StatusNote("Where it is in being made: ")),
                 ["type"] = Text("What it is as a file, one of " + string.Join(", ", AssetTypes.SelectMany(group => group.Types).Select(type => type.Name)) + "."),
                 ["belongs_to_page"] = Text("The page of the card it belongs to (Story, Characters, Levels or Mechanics)."),
                 ["belongs_to"] = Text("The card it belongs to, by name or id, or empty for none."),
@@ -249,28 +264,32 @@ public partial class MainWindow
         return said.ToString();
     }
 
-    private string ListCardsFor(Project project, string page)
+    private string ListCardsFor(Project project, string page, string? status)
     {
         if (page == "Overview") return "The Overview isn't a page of cards. Read it with read_card page Overview.";
+        if (status is not null && page != AssetsPage) throw new McpException(-32602, "status is for the Assets page only.");
         var stage = _database.ProjectStage(project.Id);
         var cards = _database.ListCards(project.Id, stage, page.ToLowerInvariant());
         if (cards.Count == 0) return $"{page} has no cards yet.";
         var said = new StringBuilder();
         foreach (var card in cards)
         {
+            var details = page == AssetsPage ? _database.GetAssetDetails(card.Id) : new AssetDetails();
+            var cardStatus = AssetStatus.Of(details, _database.GetAssetDeliverable(card.Id) is not null);
+            if (status is not null && cardStatus != status) continue;
             said.Append($"- {CardName(card, page)} (id {Short(card.Id)}): {WordsIn(_database.GetDocument(project.Id, LocalDatabase.CardBoardKey(card)))} words");
             if (_database.GetCardImage(card.Id) is not null) said.Append(", has a picture");
             if (page == AssetsPage)
             {
-                var details = _database.GetAssetDetails(card.Id);
-                said.Append($"; {AssetTypeName(details.Type) ?? "no type"}");
+                said.Append($"; {AssetStatus.NameOf(cardStatus)}, {AssetTypeName(details.Type) ?? "no type"}");
                 if (AssetOwnerChoices(_database, project.Id, stage).FirstOrDefault(choice => choice.Card.Id == details.Owner) is { Card: not null } owner) said.Append($", belongs to {CardName(owner.Card, owner.Page)}");
                 if (DueOf(details) is { } due) said.Append($", due {due:yyyy-MM-dd}");
                 if (TagNames(project, details) is { Count: > 0 } tagged) said.Append($", tagged {string.Join(", ", tagged)}");
-                said.Append(_database.GetAssetDeliverable(card.Id) is { } given ? $", delivered as {given.Path}" : ", not delivered");
+                if (_database.GetAssetDeliverable(card.Id) is { } given) said.Append($", its deliverable is {given.Path}");
             }
             said.AppendLine();
         }
+        if (said.Length == 0) said.AppendLine($"No assets are {AssetStatus.NameOf(status!)}.");
         if (page == AssetsPage) said.AppendLine(_database.ListAssetTags(project.Id) is { Count: > 0 } all ? $"The project's tags: {string.Join(", ", all.Select(tag => tag.Name))}." : "The project has no tags yet.");
         return said.ToString();
     }
@@ -332,11 +351,12 @@ public partial class MainWindow
             var due = Given(given, "due") is { Length: > 0 } day
                 ? (DateOnly.TryParseExact(day, "yyyy-MM-dd", out _) ? day : throw new McpException(-32602, "Give due as yyyy-mm-dd."))
                 : null;
-            details = new AssetDetails(Type: type, Owner: owner, Tags: TagIds(project, Given(given, "tags")), Due: due);
+            var status = Given(given, "status") is { Length: > 0 } askedStatus ? StatusId(askedStatus, forAgent: true) : AssetStatus.ToDo;
+            details = new AssetDetails(Type: type, Owner: owner, Tags: TagIds(project, Given(given, "tags")), Due: due, Status: status);
         }
-        else if (Given(given, "type") is { Length: > 0 } || Given(given, "belongs_to") is { Length: > 0 } || Given(given, "due") is { Length: > 0 } || Given(given, "tags") is { Length: > 0 })
+        else if (Given(given, "type") is { Length: > 0 } || Given(given, "belongs_to") is { Length: > 0 } || Given(given, "due") is { Length: > 0 } || Given(given, "tags") is { Length: > 0 } || Given(given, "status") is { Length: > 0 })
         {
-            throw new McpException(-32602, "type, belongs_to, tags and due are for assets only.");
+            throw new McpException(-32602, "type, belongs_to, tags, due and status are for assets only.");
         }
 
         var added = _database.AddCard(project.Id, stage, part, name);
@@ -369,7 +389,7 @@ public partial class MainWindow
             if (owned.Count > 0) throw new McpException(-32602, $"These assets belong to {name}: {string.Join(", ", owned)}. Change what they belong to, or remove them, first.");
         }
         _database.DeleteCard(project.Id, card);
-        _cardPictures.Remove(card.Id);
+        ForgetCardPicture(card.Id);
         McpChanged(project);
         return $"Deleted {name} from {page}.";
     }
@@ -380,6 +400,13 @@ public partial class MainWindow
         var details = _database.GetAssetDetails(card.Id);
 
         // Everything is checked before anything is saved, so a mistake changes nothing.
+        if (Given(given, "status") is { Length: > 0 } askedStatus)
+        {
+            var status = StatusId(askedStatus, forAgent: true);
+            if (AssetStatus.Of(details, _database.GetAssetDeliverable(card.Id) is not null) == AssetStatus.Delivered && status != AssetStatus.Delivered)
+                throw new McpException(-32602, $"{CardName(card, AssetsPage)} is delivered, which the person decided. Ask them before it's worked on again; they can change its status on the Assets page.");
+            details = details with { Status = status };
+        }
         if (Given(given, "type") is { Length: > 0 } asked)
         {
             details = details with

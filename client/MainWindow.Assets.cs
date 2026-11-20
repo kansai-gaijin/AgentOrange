@@ -99,46 +99,80 @@ public partial class MainWindow
         return (button, list);
     }
 
-    // Under an asset's name, here and on the board: what it is and what it belongs to, then its tags.
-    internal static StackPanel AssetCardLines(LocalDatabase database, string projectId, BoardCard card)
-    {
-        var details = database.GetAssetDetails(card.Id);
-        var said = AssetTypeName(details.Type) ?? "No type";
-        var owner = AssetOwnerChoices(database, projectId, card.Board.Split('/')[0]).FirstOrDefault(choice => choice.Card.Id == details.Owner);
-        if (owner.Card is not null) said += $" · {CardName(owner.Card, owner.Page)}";
+    // Every card in a stage an asset or a task could belong to, by id, from the stage's cards read at once.
+    internal static Dictionary<string, (BoardCard Card, string Page)> OwnerIndex(Dictionary<string, List<BoardCard>> stageCards) =>
+        AssetOwnerPages.SelectMany(page => stageCards.GetValueOrDefault(page.ToLowerInvariant(), []).Select(card => (card, page))).ToDictionary(each => each.card.Id, each => (each.card, each.page));
 
-        // A dot first, filled once a person has given it its deliverable.
-        var delivered = database.GetAssetDeliverable(card.Id) is not null;
-        var dot = new System.Windows.Shapes.Ellipse
-        {
-            Width = 8,
-            Height = 8,
-            Fill = delivered ? (Brush)Application.Current.FindResource("Accent") : Brushes.Transparent,
-            Stroke = (Brush)Application.Current.FindResource(delivered ? "Accent" : "TextMuted"),
-            StrokeThickness = 1.2,
-            Margin = new Thickness(0, 1, 7, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-            ToolTip = delivered ? "Delivered" : "Not delivered yet",
-        };
-        AutomationProperties.SetName(dot, delivered ? "Delivered" : "Not delivered yet");
+    /// <summary>What an asset's card says under its name: its status and day, what it is and belongs to, and its tags.</summary>
+    internal sealed record AssetLook(string Status, string Said, DateOnly? Due, bool Late, string[] Tags)
+    {
+        public string Version => $"{Status}|{Said}|{Due}|{Late}|{string.Join(",", Tags)}";
+    }
+
+    internal static AssetLook LookOf(AssetDetails details, bool delivered, Dictionary<string, (BoardCard Card, string Page)> owners, List<AssetTag> tags)
+    {
+        var said = AssetTypeName(details.Type) ?? "No type";
+        if (details.Owner is { } ownerId && owners.TryGetValue(ownerId, out var owner)) said += $" · {CardName(owner.Card, owner.Page)}";
+        var status = AssetStatus.Of(details, delivered);
+        var due = DueOf(details);
+        return new AssetLook(status, said, due, due is { } day && status != AssetStatus.Delivered && day < DateOnly.FromDateTime(DateTime.Today), [.. tags.Where(tag => details.Tags?.Contains(tag.Id) == true).Select(tag => tag.Name)]);
+    }
+
+    // To do is an empty ring, and the others a dot in their own colour.
+    internal static Brush StatusBrush(string status) => (Brush)Application.Current.FindResource(status switch
+    {
+        AssetStatus.InProgress => "StatusInProgress",
+        AssetStatus.NeedsReview => "StatusNeedsReview",
+        AssetStatus.Delivered => "Accent",
+        _ => "TextMuted",
+    });
+
+    internal static System.Windows.Shapes.Ellipse StatusDot(string status, double size = 8) => new()
+    {
+        Width = size,
+        Height = size,
+        Fill = status == AssetStatus.ToDo ? Brushes.Transparent : StatusBrush(status),
+        Stroke = StatusBrush(status),
+        StrokeThickness = 1.2,
+        VerticalAlignment = VerticalAlignment.Center,
+    };
+
+    // Under an asset's name on a board's node, read for the one card.
+    internal static StackPanel AssetCardLines(LocalDatabase database, string projectId, BoardCard card) =>
+        AssetCardLines(LookOf(
+            database.GetAssetDetails(card.Id),
+            database.GetAssetDeliverable(card.Id) is not null,
+            OwnerIndex(database.ListStageCards(projectId, card.Board.Split('/')[0])),
+            database.ListAssetTags(projectId)));
+
+    // Under an asset's name, here and on the board: its status and when it's due, what it is and
+    // what it belongs to, then its tags.
+    internal static StackPanel AssetCardLines(AssetLook look)
+    {
+        var status = AssetStatus.NameOf(look.Status);
+        var dot = StatusDot(look.Status);
+        dot.Margin = new Thickness(0, 1, 7, 0);
+        dot.ToolTip = status;
         var first = new DockPanel();
         DockPanel.SetDock(dot, Dock.Left);
         first.Children.Add(dot);
-        first.Children.Add(new TextBlock { Text = said, Foreground = (Brush)Application.Current.FindResource("TextMuted"), FontSize = 12.5, TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = said });
+        var statusLine = new StackPanel { Orientation = Orientation.Horizontal };
+        statusLine.Children.Add(new TextBlock { Text = status, FontSize = 12.5, Foreground = look.Status == AssetStatus.ToDo ? (Brush)Application.Current.FindResource("TextMuted") : StatusBrush(look.Status) });
+        if (look.Due is { } due)
+        {
+            statusLine.Children.Add(new TextBlock { Text = $" · Due {DueText(due)}", FontSize = 12.5, Foreground = (Brush)Application.Current.FindResource(look.Late ? "Danger" : "TextMuted"), TextTrimming = TextTrimming.CharacterEllipsis });
+        }
+        first.Children.Add(statusLine);
+        AutomationProperties.SetName(first, status);
 
         var lines = new StackPanel { Margin = new Thickness(2, 2, 2, 0) };
         lines.Children.Add(first);
-        if (DueOf(details) is { } due)
-        {
-            var late = !delivered && due < DateOnly.FromDateTime(DateTime.Today);
-            lines.Children.Add(new TextBlock { Text = $"Due {DueText(due)}", Foreground = (Brush)Application.Current.FindResource(late ? "Danger" : "TextMuted"), FontSize = 12.5, Margin = new Thickness(15, 2, 0, 0) });
-        }
+        lines.Children.Add(new TextBlock { Text = look.Said, Foreground = (Brush)Application.Current.FindResource("TextMuted"), FontSize = 12.5, TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = look.Said, Margin = new Thickness(15, 2, 0, 0) });
 
-        var tags = database.ListAssetTags(projectId).Where(tag => details.Tags?.Contains(tag.Id) == true).ToList();
-        if (tags.Count > 0)
+        if (look.Tags.Length > 0)
         {
             var row = new WrapPanel { Margin = new Thickness(0, 5, 0, 0) };
-            foreach (var tag in tags)
+            foreach (var tag in look.Tags)
             {
                 row.Children.Add(new Border
                 {
@@ -147,12 +181,21 @@ public partial class MainWindow
                     CornerRadius = new CornerRadius(9),
                     Padding = new Thickness(7, 1, 7, 2),
                     Margin = new Thickness(0, 0, 4, 4),
-                    Child = new TextBlock { Text = tag.Name, FontSize = 11, Foreground = (Brush)Application.Current.FindResource("TextMuted") },
+                    Child = new TextBlock { Text = tag, FontSize = 11, Foreground = (Brush)Application.Current.FindResource("TextMuted") },
                 });
             }
             lines.Children.Add(row);
         }
         return lines;
+    }
+
+    // A person sets an asset's status here, on its card's menu and in its form.
+    private void SetAssetStatus(Project project, BoardCard card, string status)
+    {
+        var details = _database.GetAssetDetails(card.Id);
+        if (details.Status == status) return;
+        _database.SetAssetDetails(card.Id, details with { Status = status });
+        RedrawProject(project);
     }
 
     // Small parts the asset form and the tag editor are made of.
@@ -300,6 +343,15 @@ public partial class MainWindow
         rows.Children.Add(FormLabel("Type", above: card is null ? 12 : 0));
         rows.Children.Add(type);
 
+        // Where it is in being made.
+        var nowStatus = card is null ? AssetStatus.ToDo : AssetStatus.Of(details, _database.GetAssetDeliverable(card.Id) is not null);
+        var status = new ComboBox { Style = (Style)FindResource("Choice"), Width = double.NaN };
+        AutomationProperties.SetName(status, "Status");
+        foreach (var (id, statusName) in AssetStatus.All) status.Items.Add(new ComboBoxItem { Content = statusName, Tag = id });
+        status.SelectedItem = status.Items.OfType<ComboBoxItem>().First(item => (string)item.Tag! == nowStatus);
+        rows.Children.Add(FormLabel("Status", above: 12));
+        rows.Children.Add(status);
+
         // What it belongs to, searched for in a list that opens under it.
         var (ownerButton, ownerList) = CardPicker(project.Id, stage, owner, picked => owner = picked);
         rows.Children.Add(FormLabel("Belongs to", above: 12));
@@ -404,8 +456,8 @@ public partial class MainWindow
             // Only tags that are still there.
             var stillThere = _database.ListAssetTags(project.Id).Select(tag => tag.Id).ToHashSet();
             var tags = chosenTags.Where(stillThere.Contains).Order(StringComparer.Ordinal).ToArray();
-            var changed = new AssetDetails((string?)(type.SelectedItem as ComboBoxItem)?.Tag, owner, tags.Length > 0 ? tags : null, due?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
-            var same = changed.Type == details.Type && changed.Owner == details.Owner && changed.Due == details.Due && tags.SequenceEqual((details.Tags ?? []).Where(stillThere.Contains).Order(StringComparer.Ordinal));
+            var changed = new AssetDetails((string?)(type.SelectedItem as ComboBoxItem)?.Tag, owner, tags.Length > 0 ? tags : null, due?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), (string?)(status.SelectedItem as ComboBoxItem)?.Tag ?? nowStatus);
+            var same = card is not null && changed.Type == details.Type && changed.Owner == details.Owner && changed.Due == details.Due && changed.Status == details.Status && tags.SequenceEqual((details.Tags ?? []).Where(stillThere.Contains).Order(StringComparer.Ordinal));
 
             saved = true;
             asked.IsOpen = false;
@@ -434,7 +486,7 @@ public partial class MainWindow
         // Esc closes a list that's open under a field first, then the form.
         asked.PreviewKeyDown += (_, pressed) =>
         {
-            if (pressed.Key != Key.Escape || type.IsDropDownOpen) return;
+            if (pressed.Key != Key.Escape || type.IsDropDownOpen || status.IsDropDownOpen) return;
             pressed.Handled = true;
             if (ownerList.IsKeyboardFocusWithin)
             {
@@ -604,29 +656,39 @@ public partial class MainWindow
 
     // Filters
 
-    // What the Assets page is filtered to in each project: a type (null for any, "" for none) and tags it must all have.
-    private readonly Dictionary<string, (string? Type, HashSet<string> Tags)> _assetFilters = [];
-
-    private (string? Type, HashSet<string> Tags) AssetFilterOf(string projectId) => _assetFilters.GetValueOrDefault(projectId, (null, []));
-
-    private bool AssetsFiltered(string projectId) => AssetFilterOf(projectId) is var (type, tags) && (type is not null || tags.Count > 0);
-
-    private bool AssetShown(string projectId, BoardCard card)
+    /// <summary>
+    /// What the Assets page is filtered to: a type (null for any, "" for none), tags an asset must all
+    /// have, and a status (null for any).
+    /// </summary>
+    private sealed record AssetFilter(string? Type, HashSet<string> Tags, string? Status)
     {
-        var (type, tags) = AssetFilterOf(projectId);
-        var details = _database.GetAssetDetails(card.Id);
-        if (type is not null && (details.Type ?? "") != type) return false;
-        return tags.All(tag => details.Tags?.Contains(tag) == true);
+        public bool Any => Type is not null || Tags.Count > 0 || Status is not null;
+
+        public bool Shows(AssetDetails details, string status) =>
+            (Type is null || (details.Type ?? "") == Type) && Tags.All(tag => details.Tags?.Contains(tag) == true) && (Status is null || status == Status);
     }
 
-    private void FilterAssets(Project project, string? type, HashSet<string> tags, string focusTag)
-    {
-        _assetFilters[project.Id] = (type, tags);
-        if (_openProject?.Id != project.Id) return;
-        RenderProject(_openProject);
+    // Each project's type and tags while the app runs. Its status is kept on this PC between visits.
+    private readonly Dictionary<string, (string? Type, HashSet<string> Tags)> _assetFilters = [];
 
-        // The filter that was just used keeps the keyboard, as the page is drawn again.
-        _ = Dispatcher.InvokeAsync(() => FindTagged(ProjectPage, focusTag)?.Focus(), System.Windows.Threading.DispatcherPriority.Loaded);
+    private static string StatusFilterSetting(string projectId) => $"assets_status_filter:{projectId}";
+
+    private AssetFilter AssetFilterOf(string projectId)
+    {
+        var (type, tags) = _assetFilters.GetValueOrDefault(projectId, (null, []));
+        var status = _database.GetSetting(StatusFilterSetting(projectId)) is { Length: > 0 } kept && AssetStatus.All.Any(each => each.Id == kept) ? kept : null;
+        return new AssetFilter(type, tags, status);
+    }
+
+    // The filter just used keeps the keyboard once the page is drawn again with it.
+    private string? _filterToFocus;
+
+    private void FilterAssets(Project project, AssetFilter filter, string focusTag)
+    {
+        _assetFilters[project.Id] = (filter.Type, filter.Tags);
+        _database.SetSetting(StatusFilterSetting(project.Id), filter.Status ?? "");
+        _filterToFocus = focusTag;
+        if (_openProject?.Id == project.Id) RenderProject(_openProject);
     }
 
     private static Control? FindTagged(DependencyObject root, string tag)
@@ -640,15 +702,26 @@ public partial class MainWindow
         return null;
     }
 
-    // A type to pick, from those in use, and a chip for each tag in use to turn on and off.
-    private WrapPanel AssetFilterBar(Project project, List<BoardCard> cards)
+    // A status and a type to pick, from those in use, and a chip for each tag in use to turn on and off.
+    private WrapPanel AssetFilterBar(Project project, CardPageData data)
     {
-        var (type, chosenTags) = AssetFilterOf(project.Id);
-        var everyDetails = cards.Select(card => _database.GetAssetDetails(card.Id)).ToList();
+        var filter = AssetFilterOf(project.Id);
+        var everyDetails = data.Cards.Select(card => data.Details.GetValueOrDefault(card.Id) ?? new AssetDetails()).ToList();
         var typesInUse = everyDetails.Select(details => details.Type).OfType<string>().ToHashSet();
         var tagsInUse = everyDetails.SelectMany(details => details.Tags ?? []).ToHashSet();
 
         var bar = new WrapPanel { Margin = new Thickness(0, -4, 0, 18) };
+
+        var statuses = new ComboBox { Style = (Style)FindResource("Choice"), Tag = "filter:status", Margin = new Thickness(0, 0, 10, 6), VerticalAlignment = VerticalAlignment.Center };
+        AutomationProperties.SetName(statuses, "Filter by status");
+        statuses.Items.Add(new ComboBoxItem { Content = "All statuses", Tag = null });
+        foreach (var (id, statusName) in AssetStatus.All) statuses.Items.Add(new ComboBoxItem { Content = statusName, Tag = id });
+        statuses.SelectedItem = statuses.Items.OfType<ComboBoxItem>().FirstOrDefault(item => (string?)item.Tag == filter.Status) ?? statuses.Items[0];
+        statuses.SelectionChanged += (_, _) =>
+        {
+            if (statuses.SelectedItem is ComboBoxItem picked && (string?)picked.Tag != filter.Status) FilterAssets(project, filter with { Status = (string?)picked.Tag }, "filter:status");
+        };
+        bar.Children.Add(statuses);
 
         var types = new ComboBox { Style = (Style)FindResource("Choice"), Tag = "filter:type", Margin = new Thickness(0, 0, 10, 6), VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetName(types, "Filter by type");
@@ -656,22 +729,22 @@ public partial class MainWindow
         types.Items.Add(new ComboBoxItem { Content = "No type", Tag = "" });
         foreach (var (group, inGroup) in AssetTypes)
         {
-            var listed = inGroup.Where(each => typesInUse.Contains(each.Id) || each.Id == type).ToList();
+            var listed = inGroup.Where(each => typesInUse.Contains(each.Id) || each.Id == filter.Type).ToList();
             if (listed.Count == 0) continue;
             types.Items.Add(new ComboBoxItem { Content = group, IsEnabled = false, FontSize = 11.5, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextMuted") });
             foreach (var (id, typeName) in listed) types.Items.Add(new ComboBoxItem { Content = typeName, Tag = id, Padding = new Thickness(14, 3, 8, 3) });
         }
-        types.SelectedItem = types.Items.OfType<ComboBoxItem>().FirstOrDefault(item => item.IsEnabled && (string?)item.Tag == type) ?? types.Items[0];
+        types.SelectedItem = types.Items.OfType<ComboBoxItem>().FirstOrDefault(item => item.IsEnabled && (string?)item.Tag == filter.Type) ?? types.Items[0];
         types.SelectionChanged += (_, _) =>
         {
-            if (types.SelectedItem is ComboBoxItem { IsEnabled: true } picked && (string?)picked.Tag != type) FilterAssets(project, (string?)picked.Tag, chosenTags, "filter:type");
+            if (types.SelectedItem is ComboBoxItem { IsEnabled: true } picked && (string?)picked.Tag != filter.Type) FilterAssets(project, filter with { Type = (string?)picked.Tag }, "filter:type");
         };
         bar.Children.Add(types);
 
         // A tag no asset has is left out, unless it's on.
-        foreach (var tag in _database.ListAssetTags(project.Id).Where(tag => tagsInUse.Contains(tag.Id) || chosenTags.Contains(tag.Id)))
+        foreach (var tag in data.Tags.Where(tag => tagsInUse.Contains(tag.Id) || filter.Tags.Contains(tag.Id)))
         {
-            var on = chosenTags.Contains(tag.Id);
+            var on = filter.Tags.Contains(tag.Id);
             var chip = new Button
             {
                 Style = (Style)FindResource("ControlButton"),
@@ -685,16 +758,16 @@ public partial class MainWindow
             AutomationProperties.SetName(chip, on ? $"{tag.Name}, filtering by it" : $"Filter by {tag.Name}");
             chip.Click += (_, _) =>
             {
-                var tags = new HashSet<string>(chosenTags);
+                var tags = new HashSet<string>(filter.Tags);
                 if (!tags.Remove(tag.Id)) tags.Add(tag.Id);
-                FilterAssets(project, type, tags, $"filter:tag:{tag.Id}");
+                FilterAssets(project, filter with { Tags = tags }, $"filter:tag:{tag.Id}");
             };
             bar.Children.Add(chip);
         }
 
-        if (AssetsFiltered(project.Id))
+        if (filter.Any)
         {
-            var clear = TextButton("Clear filters", () => FilterAssets(project, null, [], "filter:type"));
+            var clear = TextButton("Clear filters", () => FilterAssets(project, new AssetFilter(null, [], null), "filter:status"));
             clear.VerticalAlignment = VerticalAlignment.Center;
             clear.Margin = new Thickness(4, 0, 0, 6);
             bar.Children.Add(clear);
@@ -702,3 +775,4 @@ public partial class MainWindow
         return bar;
     }
 }
+

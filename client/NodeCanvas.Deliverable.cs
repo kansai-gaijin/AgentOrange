@@ -150,6 +150,10 @@ internal sealed partial class NodeCanvas
             string sha256;
             using (var stream = File.OpenRead(picked)) sha256 = Convert.ToHexString(SHA256.HashData(stream));
             _database.SetAssetDeliverable(cardId, new AssetDeliverable(inFolder.Replace('\\', '/'), new FileInfo(picked).Length, sha256, DateTimeOffset.UtcNow));
+
+            // Given its deliverable, it's delivered.
+            var details = _database.GetAssetDetails(cardId);
+            if (details.Status != AssetStatus.Delivered) _database.SetAssetDetails(cardId, details with { Status = AssetStatus.Delivered });
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {

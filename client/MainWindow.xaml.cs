@@ -185,9 +185,17 @@ public partial class MainWindow : Window
         otherWindowTimer.Start();
         _sync.RecordsChanged += async arrived =>
         {
-            await Task.Run(() => _database.CleanUpDeletedProjects(arrived));
+            await Task.Run(() =>
+            {
+                _database.CleanUpDeletedProjects(arrived);
+                GiveAssetsAStatus();
+            });
             RefreshProjects();
         };
+
+        // Assets made before they had a status get the one they have in effect, which goes to the
+        // server and other PCs like any change. Away from the window, as it reads every asset.
+        _ = Task.Run(GiveAssetsAStatus);
         Settings.Sync = _sync;
 
         // Only the window that syncs takes test runs, so two windows never run the same one.

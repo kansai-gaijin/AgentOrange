@@ -97,7 +97,8 @@ public partial class MainWindow
     private string DescribeAsset(Project project, BoardCard card)
     {
         var details = _database.GetAssetDetails(card.Id);
-        var parts = new List<string> { $"type {AssetTypeName(details.Type) ?? "not set"}" };
+        var status = AssetStatus.Of(details, _database.GetAssetDeliverable(card.Id) is not null);
+        var parts = new List<string> { $"status {AssetStatus.NameOf(status)}", $"type {AssetTypeName(details.Type) ?? "not set"}" };
         var owner = AssetOwnerChoices(_database, project.Id, card.Board.Split('/')[0]).FirstOrDefault(choice => choice.Card.Id == details.Owner);
         if (owner.Card is not null) parts.Add($"belongs to the {CardPages[owner.Page].One} \"{CardName(owner.Card, owner.Page)}\"");
         if (DueOf(details) is { } due) parts.Add($"to be delivered by {due:yyyy-MM-dd}");

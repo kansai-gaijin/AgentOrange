@@ -9,6 +9,8 @@
     <SolidColorBrush x:Key="ModalBorder" Color="#2F3E4C" />
     <SolidColorBrush x:Key="Accent" Color="#5BD0D6" />
     <SolidColorBrush x:Key="Danger" Color="#C8433F" />
+    <SolidColorBrush x:Key="StatusInProgress" Color="#E3B35C" />
+    <SolidColorBrush x:Key="StatusNeedsReview" Color="#B295F0" />
     <SolidColorBrush x:Key="TextStrong" Color="#FFFFFF" />
     <SolidColorBrush x:Key="TextNormal" Color="#E4E8EC" />
     <SolidColorBrush x:Key="TextMuted" Color="#A9B4BF" />
