@@ -221,7 +221,8 @@ public partial class MainWindow
                 ids.Add(process.Id);
             }
         }
-        return [.. ids.Distinct()];
+        // The monitor's last look can be a few seconds old.
+        return [.. ids.Distinct().Where(id => !HasEnded(id))];
     }
 
     private async Task<string> FocusToolAsync(EditorDefinition editor)

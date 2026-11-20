@@ -90,7 +90,7 @@ public partial class MainWindow
 
     // What went wrong, in words.
     private static string Why(Exception error) =>
-        error is HttpRequestException { StatusCode: { } status } ? $"it answered {(int)status} {status}"
+        error is HttpRequestException { StatusCode: { } status } ? $"it answered {(int)status} {Regex.Replace(status.ToString(), "(?<=[a-z])(?=[A-Z])", " ")}"
         : SocketErrorIn(error) switch
         {
             SocketError.ConnectionRefused => "it didn't take the connection",
@@ -391,6 +391,7 @@ public partial class MainWindow
         }
         finally
         {
+            call.Running.Stop();
             call.EndedAt = DateTime.UtcNow;
         }
     }

@@ -34,6 +34,7 @@ namespace AgentOrange;
 ///   seed "Name" 300 12 300   (a made-up project with that many tasks, milestones and assets; a fifth word names its engine)
 ///   file "path" "text"  (a file in the data folder)
 ///   tool blender "program" "reference"   (sets a tool up, its paths in the data folder; a blank reference is where it usually keeps one)
+///   faketool godot      (a made-up tool as Godot, its MCP served in the app and a windowless program running; then 404 3, busy 2, program or cancelled)
 ///   briefing "Project" "text"   briefingnot "Project" "text"   (what the project's agents are told says that, or doesn't)
 ///   skillsays "Project" skill-name "text"   (the project's agents get that skill, and it says that)
 ///   open "Name"         (its page, as if its repo's check had found everything in order)
@@ -399,6 +400,10 @@ internal static partial class Headless
             // An engine or tool set up with its program and the API reference the person chose, both in the data folder.
             case "tool":
                 Main().SetUpToolForChecks(parts[1], parts[2], parts[3]);
+                break;
+            // A made-up tool, its MCP served here, set up as this engine or tool: faketool godot [404 3 | busy 2 | program | cancelled].
+            case "faketool":
+                say(Main().FakeToolForChecks(parts[1], parts[2..]));
                 break;
             // Fails unless the briefing a project's agents get says this, or, with briefingnot, unless it doesn't.
             case "briefing" or "briefingnot":

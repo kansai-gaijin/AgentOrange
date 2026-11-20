@@ -1,0 +1,70 @@
+# The tool relay (#100), against a made-up tool as Godot, the seeded project's engine: its MCP is
+# served in the app, and its program is a windowless copy of ping, so nothing shows on screen.
+seed "Relay project" 0 0 0
+faketool godot
+mcptools
+said "\qname\q:\qstart_tool_call\q"
+said "\qname\q:\qpoll_tool_call\q"
+said "\qname\q:\qcancel_tool_call\q"
+said "\qname\q:\qclose_tool\q"
+# open_tool says ready only once the tool answers a real call: it turns the first three away, as a
+# tool still starting does, and its port takes connections all along.
+faketool godot 404 3
+mcp "Relay project" open_tool tool "Godot"
+said "It's ready now: its MCP answers calls, with 3 tools"
+mcp "Relay project" open_tool tool "Godot"
+said "Godot is open, and its MCP answers calls, with 3 tools"
+# A call turned away while it starts is sent again by itself.
+faketool godot 404 2
+mcpjson "Relay project" use_tool "{\qtool\q:\qGodot\q,\qname\q:\qecho\q,\qarguments\q:{\qtext\q:\qhello\q}}"
+said "echo: hello"
+said "Agent Orange sent it again once"
+said "as Godot was still starting (it answered 404 Not Found)"
+# A busy answer is waited out as it asks.
+faketool godot busy 2
+mcpjson "Relay project" use_tool "{\qtool\q:\qGodot\q,\qname\q:\qecho\q,\qarguments\q:{\qtext\q:\qagain\q}}"
+said "echo: again"
+said "Godot said it was busy, so Agent Orange waited as it asked and sent it again twice"
+# A long call runs as a job, polled for its answer.
+mcpjson "Relay project" start_tool_call "{\qtool\q:\qGodot\q,\qname\q:\qslow\q,\qarguments\q:{\qseconds\q:12}}"
+said "It has no time limit"
+keep CALL "as (call-\w+)\."
+mcp "Relay project" poll_tool_call call "$CALL"
+said "Still running: slow in Godot"
+mcp "Relay project" list_tools
+said "$CALL: slow in Godot, running for"
+mcp "Relay project" poll_tool_call call "$CALL" seconds 30
+said "slow in Godot ended after"
+said "slow done after 12 s"
+# Cancelled, it tells the tool, as MCP has it, and the tool stops.
+mcpjson "Relay project" start_tool_call "{\qtool\q:\qGodot\q,\qname\q:\qslow\q,\qarguments\q:{\qseconds\q:60}}"
+keep LONG "as (call-\w+)\."
+mcp "Relay project" cancel_tool_call call "$LONG"
+said "Cancelled $LONG (slow in Godot"
+faketool godot cancelled
+said "Told of 1 cancelled calls."
+mcprefused "Relay project" poll_tool_call call "$LONG"
+said "Cancelled slow"
+mcprefused "Relay project" poll_tool_call call "call-nothing"
+said "call: there's no call call-nothing. The calls start_tool_call started:"
+mcprefused "Relay project" poll_tool_call call "$CALL" seconds 900
+said "seconds must be from 0 to 300"
+# A call that quits the tool says it closed, not Canceled.
+mcpjson "Relay project" use_tool "{\qtool\q:\qGodot\q,\qname\q:\qquit\q}"
+said "Godot closed while doing quit, so it gave no answer of its own: its program has ended"
+notsaid "couldn't"
+mcp "Relay project" close_tool tool "Godot"
+said "Godot isn't open: none of its programs are running"
+# close_tool waits for the program to end. This one has no window to close, so it takes force.
+faketool godot program
+mcprefused "Relay project" close_tool tool "Godot" seconds 2
+said "Godot has no window to close, so it couldn't be asked to. close_tool with force true ends its program"
+mcp "Relay project" close_tool tool "Godot" seconds 1 force "true"
+said "so Agent Orange ended it, as force asked. Its program has ended"
+mcp "Relay project" close_tool tool "Godot"
+said "Godot isn't open"
+mcprefused "Relay project" close_tool tool "Godot" seconds 900
+said "seconds must be from 1 to 300"
+agentsetup "Relay project"
+said "use start_tool_call, then poll_tool_call with seconds"
+said "use close_tool, which waits until its program has ended"

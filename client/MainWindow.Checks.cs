@@ -106,6 +106,34 @@ public partial class MainWindow
     }
 
     /// <summary>
+    /// A made-up tool set up as the engine or tool given (<see cref="FakeTool"/>), with its MCP served in
+    /// the app and its program running: faketool godot, then faketool godot 404 3 to turn the next 3
+    /// requests away, busy 2 for the next 2 calls to say busy, program to start its program again, or
+    /// cancelled to say how many calls it was told were cancelled.
+    /// </summary>
+    internal string FakeToolForChecks(string id, string[] how)
+    {
+        var editor = EditorMonitor.Definitions.FirstOrDefault(each => each.Id == id) ?? throw new InvalidOperationException($"There's no tool called {id}.");
+        var tool = FakeTool.Start(Path.Combine(Headless.DataFolder, "programs", "aofaketool.exe"));
+        if (Settings.Editors.SettingsOf(editor).Address != tool.Address) Settings.Editors.Save(editor, new EditorSettings(tool.ProgramPath, McpKind.Http, tool.Address));
+        switch (how.FirstOrDefault())
+        {
+            case "404":
+                tool.TurnAway(int.Parse(how[1], CultureInfo.InvariantCulture));
+                break;
+            case "busy":
+                tool.Busy(int.Parse(how[1], CultureInfo.InvariantCulture));
+                break;
+            case "cancelled":
+                lock (tool.Cancelled) return $"Told of {tool.Cancelled.Count} cancelled calls.";
+            default:
+                tool.StartProgram();
+                break;
+        }
+        return $"{editor.Name} is made up, at {tool.Address}, its program {(tool.Program is { HasExited: false } ? "running" : "not running")}.";
+    }
+
+    /// <summary>
     /// What a project's agent sessions would be given, without starting one: the briefing's text, and
     /// each skill's SKILL.md in the session's Claude Code plugin, by name.
     /// </summary>
