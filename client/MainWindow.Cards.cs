@@ -12,6 +12,8 @@ namespace AgentOrange;
 /// <summary>
 /// The pages that are a grid of cards: one card per character, level or mechanic, dragged into
 /// any order, each with a picture and a board of nodes of its own. Each stage has its own cards.
+/// A page is read away from the window and only the rows of cards in view are built, so one with
+/// hundreds of cards stays quick to change.
 /// </summary>
 public partial class MainWindow
 {
@@ -27,15 +29,19 @@ public partial class MainWindow
     };
     private const string PictureFiles = "Pictures|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff";
     private const double CardDragStartsAfter = 6;
+    private const double CardPageWidth = 1240;
 
     // Which card's own board is open, on which page of which project.
     private (string ProjectId, string Section, string CardId)? _openCard;
 
-    // Each card's picture is opened once, and again only when it changes.
-    private readonly Dictionary<string, (string Stored, ImageSource? Picture)> _cardPictures = [];
+    // Each card's picture is opened once at each size, and again only when it changes.
+    private readonly Dictionary<(string CardId, int Width), (long Version, ImageSource? Picture)> _cardPictures = [];
 
-    private Button? _draggedBoardCard;
-    private (Button Card, Point At)? _pressedBoardCard;
+    // A card being dragged to a new place: which, on which page, and the order it's making.
+    private string? _draggedBoardCard;
+    private CardPageView? _dragView;
+    private List<BoardCard> _dragOrder = [];
+    private (string CardId, Point At)? _pressedBoardCard;
     private bool _cardOrderChanged;
     private DateTimeOffset _cardDragEnded;
 
@@ -53,23 +59,136 @@ public partial class MainWindow
         if (_openProject?.Id == project.Id) RenderProject(_openProject);
     }
 
+    /// <summary>What a page of cards shows, read at once away from the window.</summary>
+    private sealed record CardPageData(
+        List<BoardCard> Cards,
+        List<BoardCard> Shown,
+        bool Filtering,
+        Dictionary<string, string> Sizes,
+        Dictionary<string, AssetLook> Assets,
+        Dictionary<string, AssetDetails> Details,
+        List<AssetTag> Tags,
+        Dictionary<string, long> PictureVersions,
+        Dictionary<string, ImageSource?> NewPictures);
+
+    /// <summary>A page of cards as last read, and the list showing it, kept so it keeps its place.</summary>
+    private sealed class CardPageView(string projectId, string page, LazyList list)
+    {
+        public string ProjectId { get; } = projectId;
+
+        public string Page { get; } = page;
+
+        public LazyList List { get; } = list;
+
+        public StackPanel Heading { get; } = new() { MaxWidth = CardPageWidth, Margin = new Thickness(40, 22, 40, 0) };
+
+        public CardPageData? Data { get; set; }
+
+        public int PerRow { get; set; }
+    }
+
+    private readonly Dictionary<string, CardPageView> _cardPageViews = [];
+
+    private CardPageView CardPageViewFor(Project project, string stage, string name)
+    {
+        var key = $"{project.Id}|{stage}|{name}";
+        if (_cardPageViews.TryGetValue(key, out var kept)) return kept;
+
+        var view = new CardPageView(project.Id, name, new LazyList());
+        view.List.SizeChanged += (_, _) =>
+        {
+            if (view.Data is not null && PerRowFor(view) != view.PerRow && _openProject?.Id == view.ProjectId) ShowCards(_openProject, view);
+        };
+        WatchCardDrags(view);
+        return _cardPageViews[key] = view;
+    }
+
     private void AddCardPage(StackPanel body, Project project, string name)
     {
-        var (one, width, height) = CardPages[name];
         var stage = _database.ProjectStage(project.Id);
-        var part = name.ToLowerInvariant();
-        var cards = _database.ListCards(project.Id, stage, part);
-        var nodes = _database.CountNodesByBoard(project.Id);
+        var view = CardPageViewFor(project, stage, name);
+
+        // Edge to edge, so the list scrolls at the window's edge, with its cards in the middle.
+        body.MaxWidth = double.PositiveInfinity;
+        body.Margin = new Thickness(0);
+        (view.Heading.Parent as Panel)?.Children.Remove(view.Heading);
+        body.Children.Add(view.Heading);
+        AddFittedList(body, view.List);
+
+        // What was read last time shows straight away, and what's read now replaces it.
+        FillCardHeading(project, view);
+        if (view.Data is not null) ShowCards(project, view);
+
+        var filter = name == AssetsPage ? AssetFilterOf(project.Id) : new AssetFilter(null, [], null);
+        var width = PictureWidth(name);
+        var known = _cardPictures.Where(each => each.Key.Width == width).ToDictionary(each => each.Key.CardId, each => each.Value.Version);
+        LoadPage($"cards|{project.Id}|{stage}|{name}", () => ReadCardPage(project.Id, stage, name, filter, known, width), data =>
+        {
+            foreach (var (cardId, picture) in data.NewPictures) _cardPictures[(cardId, width)] = (data.PictureVersions[cardId], picture);
+            foreach (var gone in _cardPictures.Keys.Where(each => each.Width == width && data.Cards.Any(card => card.Id == each.CardId) && !data.PictureVersions.ContainsKey(each.CardId)).ToList()) _cardPictures.Remove(gone);
+            view.Data = data;
+            if (_openProject?.Id != project.Id) return;
+            FillCardHeading(project, view);
+            ShowCards(project, view);
+            if (_filterToFocus is { } focusTag)
+            {
+                _filterToFocus = null;
+                _ = Dispatcher.InvokeAsync(() => FindTagged(view.Heading, focusTag)?.Focus(), System.Windows.Threading.DispatcherPriority.Loaded);
+            }
+        });
+    }
+
+    private static int PictureWidth(string page) => (int)(CardPages[page].Width * 2);
+
+    // Away from the window: the page's cards, what each says, its filters, and any picture that changed.
+    private CardPageData ReadCardPage(string projectId, string stage, string name, AssetFilter filter, Dictionary<string, long> knownPictures, int pictureWidth)
+    {
+        var stageCards = _database.ListStageCards(projectId, stage);
+        var cards = stageCards.GetValueOrDefault(name.ToLowerInvariant()) ?? [];
+
+        var versions = _database.CardImageVersions(projectId);
+        var pictures = new Dictionary<string, ImageSource?>();
+        foreach (var card in cards)
+        {
+            if (versions.TryGetValue(card.Id, out var version) && knownPictures.GetValueOrDefault(card.Id) != version) pictures[card.Id] = OpenCardPicture(_database.GetCardImage(card.Id), pictureWidth);
+        }
+
+        var sizes = new Dictionary<string, string>();
+        var looks = new Dictionary<string, AssetLook>();
+        var details = new Dictionary<string, AssetDetails>();
+        var tags = new List<AssetTag>();
+        if (name == AssetsPage)
+        {
+            details = _database.ListAssetDetails(projectId);
+            var delivered = _database.DeliveredAssets(projectId);
+            var owners = OwnerIndex(stageCards);
+            tags = _database.ListAssetTags(projectId);
+            foreach (var card in cards) looks[card.Id] = LookOf(details.GetValueOrDefault(card.Id) ?? new AssetDetails(), delivered.Contains(card.Id), owners, tags);
+        }
+        else
+        {
+            var nodes = _database.CountNodesByBoard(projectId);
+            var documents = _database.ListDocuments(projectId).ToDictionary(each => each.BoardKey, each => each.Markdown);
+            foreach (var card in cards)
+            {
+                var boardKey = LocalDatabase.CardBoardKey(card);
+                sizes[card.Id] = CardSize(documents.GetValueOrDefault(boardKey), nodes.GetValueOrDefault(boardKey));
+            }
+        }
 
         // Assets can be filtered, and while they are they can't be dragged into order, as most aren't there.
-        var filtering = name == AssetsPage && AssetsFiltered(project.Id);
-        var shown = filtering ? cards.Where(card => AssetShown(project.Id, card)).ToList() : cards;
+        var filtering = name == AssetsPage && filter.Any;
+        var shown = filtering ? cards.Where(card => filter.Shows(details.GetValueOrDefault(card.Id) ?? new AssetDetails(), looks[card.Id].Status)).ToList() : cards;
+        return new CardPageData(cards, shown, filtering, sizes, looks, details, tags, versions, pictures);
+    }
 
-        body.MaxWidth = 1240;
-        body.Margin = new Thickness(40, 22, 40, 30);
-
+    // The page's title, how many cards it has, and for assets the tags and filters.
+    private void FillCardHeading(Project project, CardPageView view)
+    {
+        var name = view.Page;
+        var data = view.Data;
         var heading = new DockPanel { Margin = new Thickness(0, 0, 0, 18) };
-        var hint = new TextBlock { Text = filtering ? "Clear the filters to reorder · right-click for more" : cards.Count > 1 ? "Drag to reorder · right-click for more" : "", Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 18, 3) };
+        var hint = new TextBlock { Text = data is null ? "" : data.Filtering ? "Clear the filters to reorder · right-click for more" : data.Cards.Count > 1 ? "Drag to reorder · right-click for more" : "", Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 18, 3) };
         DockPanel.SetDock(hint, Dock.Right);
         heading.Children.Add(hint);
         if (name == AssetsPage)
@@ -87,72 +206,116 @@ public partial class MainWindow
             Children =
             {
                 new TextBlock { Text = name, Foreground = (Brush)FindResource("TextStrong"), FontSize = 24, FontWeight = FontWeights.SemiBold },
-                new TextBlock { Text = filtering ? $"{shown.Count} of {cards.Count}" : cards.Count.ToString(), Foreground = (Brush)FindResource("TextMuted"), FontSize = 15, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(10, 0, 0, 4) },
+                new TextBlock { Text = data is null ? "" : data.Filtering ? $"{data.Shown.Count} of {data.Cards.Count}" : data.Cards.Count.ToString(), Foreground = (Brush)FindResource("TextMuted"), FontSize = 15, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(10, 0, 0, 4) },
             },
         });
-        body.Children.Add(heading);
-        if (name == AssetsPage && cards.Count > 0) body.Children.Add(AssetFilterBar(project, cards));
+        view.Heading.Children.Clear();
+        view.Heading.Children.Add(heading);
+        if (name == AssetsPage && data is { Cards.Count: > 0 }) view.Heading.Children.Add(AssetFilterBar(project, data));
+    }
 
-        var grid = new WrapPanel();
-        foreach (var card in shown) grid.Children.Add(CardTile(project, name, card, grid, nodes.GetValueOrDefault(LocalDatabase.CardBoardKey(card)), reorderable: !filtering));
-        grid.Children.Add(AddCardTile(project, stage, part, one, width, height));
-        body.Children.Add(grid);
+    // As many cards to a row as fit, up to the page's width, beside the list's scroll bar.
+    private int PerRowFor(CardPageView view)
+    {
+        var width = (view.List.ActualWidth > 0 ? view.List.ActualWidth : ProjectScroll.ActualWidth) - SystemParameters.VerticalScrollBarWidth;
+        var room = Math.Min(CardPageWidth, width - 80);
+        return Math.Max(1, (int)(room / (CardPages[view.Page].Width + 20)));
+    }
 
-        if (filtering && shown.Count == 0)
+    // Rows of cards, then the tile to add one. Each row says which cards are in it and how they look,
+    // so a row is only built again when one of its cards has changed.
+    private void ShowCards(Project project, CardPageView view)
+    {
+        if (view.Data is not { } data) return;
+        var name = view.Page;
+        var (one, width, height) = CardPages[name];
+        var stage = data.Cards.FirstOrDefault()?.Board.Split('/')[0] ?? _database.ProjectStage(project.Id);
+        var part = name.ToLowerInvariant();
+        var dragging = _draggedBoardCard is not null && ReferenceEquals(_dragView, view);
+        var order = dragging ? _dragOrder : data.Shown;
+        var reorderable = !data.Filtering;
+        view.PerRow = PerRowFor(view);
+
+        string Version(BoardCard card) =>
+            $"{card.Id}|{card.Name}|{data.PictureVersions.GetValueOrDefault(card.Id)}|{(data.Assets.TryGetValue(card.Id, out var look) ? look.Version : data.Sizes.GetValueOrDefault(card.Id))}|{(dragging && card.Id == _draggedBoardCard ? "dragged" : "")}|{reorderable}";
+
+        var lines = new List<ListLine>();
+        var tiles = order.Cast<BoardCard?>().Append(null).ToList(); // The last is the tile to add one.
+        for (var at = 0; at < tiles.Count; at += view.PerRow)
         {
-            body.Children.Add(new TextBlock { Text = "No assets match these filters.", Foreground = (Brush)FindResource("TextMuted"), FontSize = 13.5, Margin = new Thickness(0, 4, 0, 0) });
+            var inRow = tiles.Skip(at).Take(view.PerRow).ToList();
+            lines.Add(new ListLine($"row:{at / view.PerRow}", string.Join(";", inRow.Select(card => card is null ? $"add|{stage}" : Version(card))), () =>
+            {
+                var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Left };
+                foreach (var card in inRow)
+                {
+                    row.Children.Add(card is null
+                        ? AddCardTile(project, stage, part, one, width, height)
+                        : CardTile(project, view, card, data.Assets.GetValueOrDefault(card.Id), data.Sizes.GetValueOrDefault(card.Id), reorderable));
+                }
+                return InPage(row, CardPageWidth);
+            }));
         }
 
-        if (cards.Count == 0)
+        if (data.Filtering && data.Shown.Count == 0) lines.Add(NoteLine("none", "No assets match these filters.", CardPageWidth));
+        if (data.Cards.Count == 0) lines.Add(NoteLine("empty", $"Each {one} gets a card here, with a picture and a board of its own to plan it on.", CardPageWidth));
+        lines.Add(EndLine());
+        view.List.Show(lines);
+
+        if (_cardToFocus is { } focus && focus.Until > DateTime.UtcNow && order.FindIndex(card => card.Id == focus.Id) is var place and >= 0)
         {
-            body.Children.Add(new TextBlock
-            {
-                Text = $"Each {one} gets a card here, with a picture and a board of its own to plan it on.",
-                Foreground = (Brush)FindResource("TextMuted"),
-                FontSize = 13.5,
-                Margin = new Thickness(0, 4, 0, 0),
-            });
+            view.List.BringLineIntoView($"row:{place / view.PerRow}");
+            _ = Dispatcher.InvokeAsync(() => Buttons(view.List).FirstOrDefault(button => button.Tag is BoardCard card && card.Id == focus.Id)?.Focus(), System.Windows.Threading.DispatcherPriority.Loaded);
         }
     }
 
     // How much is in it: its document's words, and anything on its board.
-    private string CardSize(Project project, BoardCard card, int nodeCount)
+    private static string CardSize(string? markdown, int nodeCount)
     {
-        var words = _database.GetDocument(project.Id, LocalDatabase.CardBoardKey(card)) is { } markdown
-            ? System.Text.RegularExpressions.Regex.Matches(markdown, @"[\p{L}\p{N}]+").Count
-            : 0;
+        var words = markdown is null ? 0 : System.Text.RegularExpressions.Regex.Matches(markdown, @"[\p{L}\p{N}]+").Count;
         var parts = new List<string>();
         if (words > 0) parts.Add(words == 1 ? "1 word" : $"{words:N0} words");
         if (nodeCount > 0) parts.Add(nodeCount == 1 ? "1 node on its board" : $"{nodeCount} nodes on its board");
         return parts.Count > 0 ? string.Join(" · ", parts) : "Nothing written yet";
     }
 
-    private ImageSource? CardPicture(string cardId, int decodeWidth)
+    // It arrived from another PC, and may not be a picture.
+    private static ImageSource? OpenCardPicture(string? stored, int decodeWidth)
     {
-        if (_database.GetCardImage(cardId) is not { } stored)
-        {
-            _cardPictures.Remove(cardId);
-            return null;
-        }
-        if (_cardPictures.TryGetValue(cardId, out var opened) && opened.Stored == stored) return opened.Picture;
-
-        ImageSource? picture = null;
+        if (stored is null) return null;
         try
         {
-            picture = ProjectImages.ToImage(Convert.FromBase64String(stored), decodeWidth);
+            return ProjectImages.ToImage(Convert.FromBase64String(stored), decodeWidth);
         }
         catch (FormatException)
         {
-            // It arrived from another PC, and isn't a picture.
+            return null;
         }
-        _cardPictures[cardId] = (stored, picture);
+    }
+
+    private ImageSource? CardPicture(string cardId, int decodeWidth)
+    {
+        if (_database.CardImageVersion(cardId) is not { } version)
+        {
+            ForgetCardPicture(cardId);
+            return null;
+        }
+        if (_cardPictures.TryGetValue((cardId, decodeWidth), out var opened) && opened.Version == version) return opened.Picture;
+        var picture = OpenCardPicture(_database.GetCardImage(cardId), decodeWidth);
+        _cardPictures[(cardId, decodeWidth)] = (version, picture);
         return picture;
     }
 
-    private Button CardTile(Project project, string page, BoardCard card, WrapPanel grid, int nodeCount, bool reorderable)
+    private void ForgetCardPicture(string cardId)
     {
+        foreach (var gone in _cardPictures.Keys.Where(each => each.CardId == cardId).ToList()) _cardPictures.Remove(gone);
+    }
+
+    private Button CardTile(Project project, CardPageView view, BoardCard card, AssetLook? asset, string? size, bool reorderable)
+    {
+        var page = view.Page;
         var (one, width, height) = CardPages[page];
-        var picture = CardPicture(card.Id, (int)(width * 2));
+        var picture = _cardPictures.GetValueOrDefault((card.Id, PictureWidth(page))).Picture;
         var shownName = card.Name.Length > 0 ? card.Name : $"Untitled {one}";
 
         var cover = new Border
@@ -190,10 +353,11 @@ public partial class MainWindow
             },
         };
         // An asset says what it is instead of how much is on its board.
-        content.Children.Add(page == AssetsPage
-            ? AssetCardLines(_database, project.Id, card)
-            : new TextBlock { Text = CardSize(project, card, nodeCount), Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0) });
+        content.Children.Add(asset is not null
+            ? AssetCardLines(asset)
+            : new TextBlock { Text = size ?? "", Foreground = (Brush)FindResource("TextMuted"), FontSize = 12.5, Margin = new Thickness(2, 2, 2, 0) });
         var tile = new Button { Style = (Style)FindResource("ProjectCard"), Content = content, Tag = card, Width = width, Margin = new Thickness(0, 0, 20, 24), VerticalAlignment = VerticalAlignment.Top };
+        if (_draggedBoardCard == card.Id) tile.Opacity = 0.5;
         AutomationProperties.SetName(tile, shownName);
 
         void Open()
@@ -230,10 +394,10 @@ public partial class MainWindow
             OpenMenu(atMouse: true);
         };
 
-        // Dragged past a few pixels, it follows the mouse through the others.
+        // Dragged past a few pixels, it's picked up, and the list it's in moves it through the others.
         tile.PreviewMouseLeftButtonDown += (_, press) =>
         {
-            if (!ReferenceEquals(press.Source, more)) _pressedBoardCard = (tile, press.GetPosition(grid));
+            if (!ReferenceEquals(press.Source, more)) _pressedBoardCard = (card.Id, press.GetPosition(view.List));
         };
         tile.PreviewMouseMove += (_, move) =>
         {
@@ -242,38 +406,14 @@ public partial class MainWindow
                 _pressedBoardCard = null;
                 return;
             }
-            var at = move.GetPosition(grid);
-            if (reorderable && _draggedBoardCard is null && _pressedBoardCard is { } pressed && ReferenceEquals(pressed.Card, tile) && (at - pressed.At).Length >= CardDragStartsAfter)
-            {
-                _draggedBoardCard = tile;
-                _cardOrderChanged = false;
-                tile.Opacity = 0.5;
-                tile.CaptureMouse();
-            }
-            if (!ReferenceEquals(_draggedBoardCard, tile)) return;
-
-            var over = grid.Children.OfType<Button>().FirstOrDefault(other => other.Tag is BoardCard && !ReferenceEquals(other, tile) && new Rect(other.TranslatePoint(new Point(0, 0), grid), other.RenderSize).Contains(at));
-            if (over is null) return;
-            var to = grid.Children.IndexOf(over);
-            grid.Children.Remove(tile);
-            grid.Children.Insert(to, tile);
-            _cardOrderChanged = true;
-        };
-        tile.PreviewMouseLeftButtonUp += (_, release) =>
-        {
-            _pressedBoardCard = null;
-            if (!ReferenceEquals(_draggedBoardCard, tile)) return;
-            release.Handled = true; // Or letting go would count as a click, and open it.
-            tile.ReleaseMouseCapture();
-        };
-        tile.LostMouseCapture += (_, _) =>
-        {
-            if (!ReferenceEquals(_draggedBoardCard, tile)) return;
-            _draggedBoardCard = null;
-            _cardDragEnded = DateTimeOffset.UtcNow;
-            tile.Opacity = 1;
-            if (_cardOrderChanged) _database.SaveCardOrder([.. grid.Children.OfType<Button>().Select(other => other.Tag).OfType<BoardCard>()]);
-            RedrawProject(project); // Anything that arrived meanwhile was waiting for this.
+            if (!reorderable || _draggedBoardCard is not null || _pressedBoardCard is not { } pressed || pressed.CardId != card.Id) return;
+            if ((move.GetPosition(view.List) - pressed.At).Length < CardDragStartsAfter) return;
+            _draggedBoardCard = card.Id;
+            _dragView = view;
+            _dragOrder = [.. view.Data?.Shown ?? []];
+            _cardOrderChanged = false;
+            view.List.CaptureMouse();
+            ShowCards(project, view);
         };
 
         // And without a mouse: Ctrl and an arrow moves it, F2 renames it, Delete removes it.
@@ -283,15 +423,16 @@ public partial class MainWindow
             var step = reorderable && KeyState.Modifiers == ModifierKeys.Control ? pressed.Key switch { Key.Left => -1, Key.Right => 1, _ => 0 } : 0;
             if (step != 0)
             {
-                var order = grid.Children.OfType<Button>().Select(other => other.Tag).OfType<BoardCard>().ToList();
-                var from = order.IndexOf(card);
+                var order = (view.Data?.Shown ?? []).ToList();
+                var from = order.FindIndex(each => each.Id == card.Id);
                 var to = Math.Clamp(from + step, 0, order.Count - 1);
-                if (to == from) return;
+                if (from < 0 || to == from) return;
+                var moving = order[from];
                 order.RemoveAt(from);
-                order.Insert(to, card);
+                order.Insert(to, moving);
                 _database.SaveCardOrder(order);
-                RedrawProject(project);
                 FocusCardAfterRedraw(card.Id);
+                RedrawProject(project);
             }
             else if (pressed.Key == Key.F2)
             {
@@ -314,19 +455,47 @@ public partial class MainWindow
         return tile;
     }
 
-    private void FocusCardAfterRedraw(string cardId)
+    // While a card is dragged, the list holds the mouse, as the card's own row is built again each
+    // time it moves past another, and a card under the mouse takes its place.
+    private void WatchCardDrags(CardPageView view)
     {
-        static IEnumerable<Button> Buttons(DependencyObject root)
+        view.List.PreviewMouseMove += (_, move) =>
         {
-            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
-            {
-                var child = VisualTreeHelper.GetChild(root, i);
-                if (child is Button button) yield return button;
-                foreach (var inside in Buttons(child)) yield return inside;
-            }
-        }
-        _ = Dispatcher.InvokeAsync(() => Buttons(ProjectPage).FirstOrDefault(button => button.Tag is BoardCard card && card.Id == cardId)?.Focus(), System.Windows.Threading.DispatcherPriority.Loaded);
+            if (_draggedBoardCard is not { } dragged || !ReferenceEquals(_dragView, view) || _openProject is not { } project) return;
+            var hit = view.List.InputHitTest(move.GetPosition(view.List)) as DependencyObject;
+            while (hit is not null && hit is not Button { Tag: BoardCard }) hit = VisualTreeHelper.GetParent(hit);
+            if (hit is not Button { Tag: BoardCard over } || over.Id == dragged) return;
+            var from = _dragOrder.FindIndex(card => card.Id == dragged);
+            var to = _dragOrder.FindIndex(card => card.Id == over.Id);
+            if (from < 0 || to < 0) return;
+            var moving = _dragOrder[from];
+            _dragOrder.RemoveAt(from);
+            _dragOrder.Insert(to, moving);
+            _cardOrderChanged = true;
+            ShowCards(project, view);
+        };
+        view.List.PreviewMouseLeftButtonUp += (_, release) =>
+        {
+            _pressedBoardCard = null;
+            if (_draggedBoardCard is null || !ReferenceEquals(_dragView, view)) return;
+            release.Handled = true; // Or letting go would count as a click, and open it.
+            view.List.ReleaseMouseCapture();
+        };
+        view.List.LostMouseCapture += (_, _) =>
+        {
+            if (_draggedBoardCard is null || !ReferenceEquals(_dragView, view)) return;
+            _draggedBoardCard = null;
+            _dragView = null;
+            _cardDragEnded = DateTimeOffset.UtcNow;
+            if (_cardOrderChanged) _database.SaveCardOrder(_dragOrder);
+            if (_openProject is { } project) RedrawProject(project); // Anything that arrived meanwhile was waiting for this.
+        };
     }
+
+    // The card keeps the keyboard once the page is read again and drawn with it.
+    private (string Id, DateTime Until)? _cardToFocus;
+
+    private void FocusCardAfterRedraw(string cardId) => _cardToFocus = (cardId, DateTime.UtcNow.AddSeconds(2));
 
     private Button AddCardTile(Project project, string stage, string part, string one, double width, double height)
     {
@@ -366,8 +535,8 @@ public partial class MainWindow
             AskForName(tile, $"New {one}", "", "Add", name =>
             {
                 var added = _database.AddCard(project.Id, stage, part, name);
-                RedrawProject(project);
                 FocusCardAfterRedraw(added.Id);
+                RedrawProject(project);
             });
         };
         return tile;
@@ -403,9 +572,18 @@ public partial class MainWindow
         var items = new StackPanel { MinWidth = 180 };
         var menu = NewMenu(by, atMouse, items);
 
-        void Item(string label, Action act, bool danger = false)
+        void Item(string label, Action act, bool danger = false, string? aside = null)
         {
-            var item = new Button { Style = (Style)FindResource("HeaderButton"), Content = label, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left };
+            var content = new DockPanel();
+            if (aside is not null)
+            {
+                var side = new TextBlock { Text = aside, Foreground = (Brush)FindResource("TextMuted"), Margin = new Thickness(14, 0, 0, 0) };
+                DockPanel.SetDock(side, Dock.Right);
+                content.Children.Add(side);
+            }
+            content.Children.Add(new TextBlock { Text = label });
+            var item = new Button { Style = (Style)FindResource("HeaderButton"), Content = aside is null ? label : content, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = aside is null ? HorizontalAlignment.Left : HorizontalAlignment.Stretch };
+            if (aside is not null) AutomationProperties.SetName(item, aside == "✓" ? $"{label}, chosen" : label);
             if (danger) item.Foreground = (Brush)FindResource("Danger");
             item.Click += (_, _) =>
             {
@@ -428,6 +606,17 @@ public partial class MainWindow
             });
         }
         Item("Delete", () => DeleteCard(project, card, one), danger: true);
+
+        // An asset's status, a click away.
+        if (page == AssetsPage)
+        {
+            var line = Divider();
+            line.Margin = new Thickness(0, 6, 0, 2);
+            items.Children.Add(line);
+            items.Children.Add(ListHeading("Status"));
+            var now = AssetStatus.Of(_database.GetAssetDetails(card.Id), _database.GetAssetDeliverable(card.Id) is not null);
+            foreach (var (id, statusName) in AssetStatus.All) Item(statusName, () => SetAssetStatus(project, card, id), aside: id == now ? "✓" : "");
+        }
 
         menu.PreviewKeyDown += (_, pressed) =>
         {
@@ -494,8 +683,8 @@ public partial class MainWindow
         AskForName(by, $"Rename this {one}", card.Name, "Rename", name =>
         {
             _database.RenameCard(card, name);
-            RedrawProject(project);
             FocusCardAfterRedraw(card.Id);
+            RedrawProject(project);
         });
 
     private void ChangeCardPicture(Project project, BoardCard card)
@@ -515,7 +704,7 @@ public partial class MainWindow
         var name = card.Name.Length > 0 ? card.Name : $"this {one}";
         if (!Dialogs.Confirm($"Delete {name}?\n\nIts picture and everything on its board are deleted too. This can't be undone.")) return;
         _database.DeleteCard(project.Id, card);
-        _cardPictures.Remove(card.Id);
+        ForgetCardPicture(card.Id);
         RedrawProject(project);
     }
 }

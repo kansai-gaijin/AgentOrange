@@ -94,6 +94,8 @@ public partial class MainWindow
         _boards.Clear(); // And boards would keep the code they were made with.
         _documents.Clear(); // The same for documents.
         _cards.Clear(); // Kept cards would keep what they did before the change.
+        _cardPageViews.Clear(); // The same for the long pages' lists.
+        _tasksPageViews.Clear();
         RefreshProjects();
         if (_openProject is { } open) RenderProject(open);
     }
@@ -276,9 +278,14 @@ public partial class MainWindow
         menu.IsOpen = true;
     }
 
-    // In the stage the project is at.
-    private int AssetsDelivered(Project project) =>
-        _database.ListCards(project.Id, _database.ProjectStage(project.Id), AssetsPart).Count(card => _database.GetAssetDeliverable(card.Id) is not null);
+    // In the stage the project is at, by each asset's status.
+    private int AssetsDelivered(Project project)
+    {
+        var details = _database.ListAssetDetails(project.Id);
+        var delivered = _database.DeliveredAssets(project.Id);
+        return _database.ListCards(project.Id, _database.ProjectStage(project.Id), AssetsPart)
+            .Count(card => AssetStatus.Of(details.GetValueOrDefault(card.Id) ?? new AssetDetails(), delivered.Contains(card.Id)) == AssetStatus.Delivered);
+    }
 
     // How many of the project's tasks are done, out of how many, and the way to the Tasks page.
     private Button TasksTile(Project project)

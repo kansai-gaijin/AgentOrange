@@ -22,7 +22,28 @@ public sealed record BoardCard(string Id, string Board, string Name, double Orde
 /// What an asset is, the card it belongs to if any, the ids of the project's tags it has, and the
 /// day it's to be delivered by, as yyyy-MM-dd on the calendar. One with a day is a task.
 /// </summary>
-public sealed record AssetDetails(string? Type = null, string? Owner = null, string[]? Tags = null, string? Due = null);
+public sealed record AssetDetails(string? Type = null, string? Owner = null, string[]? Tags = null, string? Due = null, string? Status = null);
+
+/// <summary>
+/// Where an asset is in being made, kept with its details. One saved before assets had a status has
+/// none, and counts as delivered once it has its deliverable, and to do until then.
+/// </summary>
+public static class AssetStatus
+{
+    public const string ToDo = "to_do";
+    public const string InProgress = "in_progress";
+    public const string NeedsReview = "needs_review";
+    public const string Delivered = "delivered";
+
+    /// <summary>Each status with what it's called, in the order an asset goes through them.</summary>
+    public static readonly (string Id, string Name)[] All = [(ToDo, "To do"), (InProgress, "In progress"), (NeedsReview, "Needs review"), (Delivered, "Delivered")];
+
+    public static string NameOf(string id) => All.FirstOrDefault(each => each.Id == id).Name ?? "To do";
+
+    /// <summary>The status an asset has, from its details and whether it has its deliverable.</summary>
+    public static string Of(AssetDetails details, bool hasDeliverable) =>
+        details.Status is { } status && All.Any(each => each.Id == status) ? status : hasDeliverable ? Delivered : ToDo;
+}
 
 /// <summary>
 /// A task someone made, in a stage of a project: what's to be done, with notes, a day to have it done
@@ -457,6 +478,82 @@ public sealed class LocalDatabase
 
     public void SetAssetDetails(string cardId, AssetDetails details) =>
         SaveRecord(AssetDetailsCollection, cardId, JsonSerializer.Serialize(details, JsonOptions));
+
+    // Read at once for a whole page, rather than a card at a time, which on a page of hundreds of
+    // cards is hundreds of reads.
+
+    /// <summary>Every card in a stage, on every page, by the page it's on (such as assets), each page's in order.</summary>
+    public Dictionary<string, List<BoardCard>> ListStageCards(string projectId, string stageId)
+    {
+        var pages = new Dictionary<string, List<BoardCard>>();
+        foreach (var (id, saved) in ReadAll<CardData>(CardsCollection, projectId))
+        {
+            if (saved.Board is not { } board || !board.StartsWith(stageId + "/", StringComparison.Ordinal)) continue;
+            var part = board[(stageId.Length + 1)..];
+            if (!pages.TryGetValue(part, out var cards)) pages[part] = cards = [];
+            cards.Add(new BoardCard(id, board, saved.Name ?? "", saved.Order));
+        }
+        foreach (var part in pages.Keys.ToList()) pages[part] = [.. pages[part].OrderBy(card => card.Order).ThenBy(card => card.Id, StringComparer.Ordinal)];
+        return pages;
+    }
+
+    /// <summary>Every asset's details in a project, by its card.</summary>
+    public Dictionary<string, AssetDetails> ListAssetDetails(string projectId) =>
+        ReadAll<AssetDetails>(AssetDetailsCollection, projectId).ToDictionary(each => each.Id, each => each.Data);
+
+    /// <summary>The assets in a project that have their deliverable.</summary>
+    public HashSet<string> DeliveredAssets(string projectId) =>
+        [.. ReadAll<AssetDeliverable>(AssetDeliverablesCollection, projectId).Where(each => each.Data.Path is { Length: > 0 }).Select(each => each.Id)];
+
+    /// <summary>When each card's picture last changed, by card, so a picture is only read again once it has.</summary>
+    public Dictionary<string, long> CardImageVersions(string projectId)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id, changed_at FROM records WHERE collection = $collection AND deleted = 0 AND data <> '' AND substr(id, 1, $length) = $prefix";
+        command.Parameters.AddWithValue("$collection", CardImagesCollection);
+        command.Parameters.AddWithValue("$prefix", $"{projectId}:");
+        command.Parameters.AddWithValue("$length", projectId.Length + 1);
+        var found = new Dictionary<string, long>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read()) found[reader.GetString(0)] = reader.GetInt64(1);
+        return found;
+    }
+
+    /// <summary>When one card's picture last changed, or null when it has none.</summary>
+    public long? CardImageVersion(string cardId)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT changed_at FROM records WHERE collection = $collection AND id = $id AND deleted = 0 AND data <> ''";
+        command.Parameters.AddWithValue("$collection", CardImagesCollection);
+        command.Parameters.AddWithValue("$id", cardId);
+        return command.ExecuteScalar() is long version ? version : null;
+    }
+
+    /// <summary>
+    /// Gives every asset that has no status yet the one it has in effect: delivered once it has its
+    /// deliverable, and to do until then. Assets were made before they had a status, and other PCs
+    /// get the status this way too. Returns how many it gave one.
+    /// </summary>
+    public int GiveAssetsAStatus()
+    {
+        var given = 0;
+        foreach (var project in ListProjects())
+        {
+            var details = ListAssetDetails(project.Id);
+            var delivered = DeliveredAssets(project.Id);
+            foreach (var (id, saved) in ReadAll<CardData>(CardsCollection, project.Id))
+            {
+                if (saved.Board?.EndsWith("/assets", StringComparison.Ordinal) != true) continue;
+                var now = details.GetValueOrDefault(id) ?? new AssetDetails();
+                if (now.Status is not null) continue;
+                SetAssetDetails(id, now with { Status = AssetStatus.Of(now, delivered.Contains(id)) });
+                given++;
+            }
+        }
+        return given;
+    }
 
     public GameSettings GetGameSettings(string projectId)
     {
