@@ -19,14 +19,21 @@ public enum McpKind { Http, Port, Relay }
 
 public enum McpState { NotSet, NotRunning, Connected, NeedsLogin, PortOpen, NotMcp, Relay }
 
-/// <summary>Repo is the GitHub repo whose releases it's installed and updated from, and ProgramFile the program in them.</summary>
-public sealed record EditorDefinition(string Id, string Name, bool IsEngine, McpKind DefaultKind, string DefaultAddress, string? Repo = null, string? ProgramFile = null)
+/// <summary>
+/// Repo is the GitHub repo whose releases it's installed and updated from, and ProgramFile the program in them.
+/// ApiReference is where it usually keeps a reference for its scripting API, a file or a folder, with
+/// {project} for the game's folder and {program} for the program's, and ApiReferenceHow how an agent
+/// makes it or brings it up to date.
+/// </summary>
+public sealed record EditorDefinition(string Id, string Name, bool IsEngine, McpKind DefaultKind, string DefaultAddress, string? Repo = null, string? ProgramFile = null,
+    string? ApiReference = null, string? ApiReferenceHow = null)
 {
     /// <summary>Where a copy installed from its releases goes, the way per-user installs usually do.</summary>
     public string InstallFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", Name);
 }
 
-public sealed record EditorSettings(string ProgramPath, McpKind Kind, string Address);
+/// <summary>ApiReference is the person's own choice of the tool's scripting API reference, a file or a folder, over where it usually is.</summary>
+public sealed record EditorSettings(string ProgramPath, McpKind Kind, string Address, string ApiReference = "");
 
 public sealed record EditorInstance(int ProcessId, string WindowTitle, bool HoldsMcp);
 
@@ -47,7 +54,11 @@ public sealed partial class EditorMonitor
 
     public static readonly EditorDefinition[] Definitions =
     [
-        new("unreal", "Unreal Engine", true, McpKind.Http, "http://localhost:8666/mcp"), // Unreal's own MCP server, on the port Agent Orange gives it (UnrealProject.McpPort).
+        // Unreal's own MCP server, on the port Agent Orange gives it (UnrealProject.McpPort). Its Python
+        // plugin writes the stub of its whole Python API into the game's folder when asked.
+        new("unreal", "Unreal Engine", true, McpKind.Http, "http://localhost:8666/mcp",
+            ApiReference: @"{project}\Intermediate\PythonStub\unreal.py",
+            ApiReferenceHow: "If it isn't there yet, or a name you need is missing from it, have the open editor write it again: run unreal.generate_stub_file() in the editor's Python, then wait until unreal.is_stub_file_current() returns True."),
         new("godot", "Godot", true, McpKind.Http, "http://127.0.0.1:8645/mcp"),
         new("unity", "Unity", true, McpKind.Http, "http://127.0.0.1:8080/mcp"), // MCP for Unity's own default.
         new("blender", "Blender", false, McpKind.Port, "127.0.0.1:9876"),

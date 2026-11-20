@@ -70,6 +70,9 @@ public partial class SettingsModal
         program.ToolTip = settings.ProgramPath.Length > 0 ? settings.ProgramPath : null;
         var address = Field(settings.Address);
         address.Width = 290;
+        var reference = Field(settings.ApiReference);
+        reference.Width = 290;
+        System.Windows.Automation.AutomationProperties.SetName(reference, $"{editor.Name}'s API reference");
         var kind = new ComboBox
         {
             Style = (Style)FindResource("Choice"),
@@ -93,10 +96,17 @@ public partial class SettingsModal
             var path = program.Text.Trim();
             program.Text = path;
             program.ToolTip = path.Length > 0 ? path : null;
-            Editors.Save(editor, new EditorSettings(path, chosenKind, cleaned));
+            var referencePath = reference.Text.Trim();
+            if (referencePath.Length > 0 && !System.IO.File.Exists(referencePath) && !System.IO.Directory.Exists(referencePath))
+            {
+                ShowProblem(problem, $"There's no file or folder at {referencePath}.");
+                return;
+            }
+            reference.Text = referencePath;
+            Editors.Save(editor, new EditorSettings(path, chosenKind, cleaned, referencePath));
         }
 
-        foreach (var field in new[] { program, address })
+        foreach (var field in new[] { program, address, reference })
         {
             field.LostKeyboardFocus += (_, _) => Apply();
             field.KeyDown += (_, e) =>
@@ -114,6 +124,24 @@ public partial class SettingsModal
             Apply();
         };
 
+        var referenceFile = ActionButton("File");
+        System.Windows.Automation.AutomationProperties.SetName(referenceFile, $"Choose {editor.Name}'s API reference file");
+        referenceFile.Click += (_, _) =>
+        {
+            if (Dialogs.PickFile($"{editor.Name}'s API reference", "All files (*.*)|*.*") is not { } chosen) return;
+            reference.Text = chosen;
+            Apply();
+        };
+        var referenceFolder = ActionButton("Folder");
+        System.Windows.Automation.AutomationProperties.SetName(referenceFolder, $"Choose {editor.Name}'s API reference folder");
+        referenceFolder.Click += (_, _) =>
+        {
+            if (Dialogs.PickFolder($"{editor.Name}'s API reference") is not { } chosen) return;
+            reference.Text = chosen;
+            Apply();
+        };
+        var usually = editor.ApiReference is { } usual ? $" Left blank, it's {usual.Replace("{project}", "the game's folder").Replace("{program}", $"{editor.Name}'s folder")}." : "";
+
         var statusHost = new ContentControl();
         var copies = new StackPanel { Margin = new Thickness(16, -6, 16, 12) };
         refreshers.Add(() => ShowEditorStatus(editor, statusHost, copies));
@@ -129,6 +157,7 @@ public partial class SettingsModal
             Row("Program", $"The {editor.Name} program file.", program, browse),
             Row("MCP type", "How to reach its MCP. A relay is the program started again by agents, which passes their calls to the open copy.", kind),
             Row("MCP address", "On this PC. For a relay, the arguments that start it.", address),
+            Row("API reference", $"A file or folder listing {editor.Name}'s scripting API, such as a generated stub file or its docs. Agents search it before using a name, rather than guessing.{usually}", reference, referenceFile, referenceFolder),
         };
 
         // Once it's installed from its releases, the program setting follows it there.

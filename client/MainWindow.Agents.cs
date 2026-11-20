@@ -136,27 +136,38 @@ public partial class MainWindow
         var servers = (JsonNode.Parse(File.ReadAllText(mcp))?["mcpServers"] as JsonObject)?.Select(server => server.Key).ToList() ?? [];
         Directory.CreateDirectory(AttachmentsFolder);
 
-        // The skills the creative tools set up here ship with them, and for a game made in Unreal
-        // the skills its engine ships, and its own.
-        List<AgentSkill> others = [.. ToolSkills.For(Settings.Editors)];
-        if (FindProject(conversation.ProjectId)?.Engine == "Unreal Engine")
-        {
-            others.AddRange(UnrealSkills.ForFolder(conversation.Folder ?? ProjectFolder(conversation.ProjectId)).Where(skill => !others.Any(had => had.Name == skill.Name)));
-        }
+        var (others, references) = SessionSkills(conversation.ProjectId, conversation.Folder ?? ProjectFolder(conversation.ProjectId));
         _sessionSkills[conversation.Id] = [.. AgentSkills.List(agentFolder), .. others];
         return new AgentConversation.Setup(provider, mcp, servers, AgentSkills.ClaudePlugin(agentFolder, conversation.ProjectId, others),
-            AgentBriefing.Write(Settings.Editors, agentFolder, conversation.ProjectId, others), AttachmentsFolder,
-            WriteClaudeSettings(mcp, _sessionSkills[conversation.Id]),
-            [.. _sessionSkills[conversation.Id].Select(skill => Path.GetFullPath(skill.Folder))]);
+            AgentBriefing.Write(Settings.Editors, agentFolder, conversation.ProjectId, others, references), AttachmentsFolder,
+            WriteClaudeSettings(mcp, _sessionSkills[conversation.Id], references),
+            [.. _sessionSkills[conversation.Id].Select(skill => Path.GetFullPath(skill.Folder)), .. references.Select(reference => reference.Folder)]);
+    }
+
+    // The skills a project's sessions get besides Agent Orange's own: those the creative tools set up
+    // here ship with them, for a game made in Unreal the skills its engine ships and its own, and one
+    // for each tool's scripting API reference, so names get looked up rather than guessed.
+    private (List<AgentSkill> Others, List<ToolReference> References) SessionSkills(string projectId, string? folder)
+    {
+        var engine = FindProject(projectId)?.Engine;
+        List<AgentSkill> others = [.. ToolSkills.For(Settings.Editors)];
+        if (engine == "Unreal Engine")
+        {
+            others.AddRange(UnrealSkills.ForFolder(folder).Where(skill => !others.Any(had => had.Name == skill.Name)));
+        }
+        var references = ToolSkills.References(Settings.Editors, folder, engine);
+        others.AddRange(ToolSkills.ReferenceSkills(references, Settings.Folders.AgentFolder, projectId).Where(skill => !others.Any(had => had.Name == skill.Name)));
+        return (others, references);
     }
 
     // The briefing points the agent at each skill's SKILL.md, wherever it is (Agent Orange's folder, the
-    // engine's, a tool's), so reading those folders never needs asking. Claude Code matches Windows
-    // paths in their POSIX form, "//c/Program Files/...".
-    private static string WriteClaudeSettings(string mcpConfig, IEnumerable<AgentSkill> skills)
+    // engine's, a tool's), and at each tool's API reference, so reading those folders never needs asking.
+    // Claude Code matches Windows paths in their POSIX form, "//c/Program Files/...".
+    private static string WriteClaudeSettings(string mcpConfig, IEnumerable<AgentSkill> skills, IEnumerable<ToolReference> references)
     {
         var rules = new JsonArray();
-        foreach (var folder in skills.Select(skill => Path.GetDirectoryName(Path.GetFullPath(skill.Folder))).OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase))
+        var folders = skills.Select(skill => Path.GetDirectoryName(Path.GetFullPath(skill.Folder))).OfType<string>().Concat(references.Select(reference => reference.Folder));
+        foreach (var folder in folders.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             var posix = folder.Replace(Path.DirectorySeparatorChar, '/');
             if (posix.Length > 1 && posix[1] == ':') posix = $"//{char.ToLowerInvariant(posix[0])}{posix[2..]}";
