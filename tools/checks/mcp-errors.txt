@@ -1,0 +1,56 @@
+# Every refusal from AO's MCP names the argument, says what was wrong and lists what's allowed
+# (#99, and the bare "Say text." of #121). Wrong argument names are refused with the real ones, and
+# a relayed tool's error gets its real arguments when what was given doesn't match them.
+seed "Errors project" 6 2 40
+# A needed argument left out says what it's for and what the tool takes.
+mcprefused "Errors project" search
+said "search needs text: What to find."
+said "search's arguments: text (needed)."
+notsaid "Say text"
+# A name that isn't the tool's: query for text.
+mcprefused "Errors project" search query "Asset"
+said "search has no argument called query"
+said "text (needed)"
+# A card given without its page: add_task's "Say page.".
+mcprefused "Errors project" add_task title "Model the hero" card "Character 1"
+said "card needs page too: the page the card Character 1 is on, one of"
+mcp "Errors project" add_task title "Model the hero" page "Characters" card "Character 1"
+# Pages, cards, days, statuses and types name what's wrong and what's allowed.
+mcprefused "Errors project" read_card page "Weapons" card "Sword"
+said "page: there's no page called Weapons. The pages: Overview, Story"
+mcprefused "Errors project" read_card page "Characters"
+said "read_card needs card"
+mcprefused "Errors project" read_card page "Characters" card "Nobody"
+said "card: Characters has no card called Nobody. Its cards: Character 1"
+# A page of many cards isn't listed whole.
+mcprefused "Errors project" read_card page "Assets" card "Sword"
+said "It has 40 cards. Find one with search, or list_cards page Assets."
+notsaid "Asset 39"
+mcprefused "Errors project" add_task title "Later" due "next week"
+said "due is a day as yyyy-mm-dd"
+said "it was next week"
+mcprefused "Errors project" update_asset card "Asset 1" status "Finished"
+said "status: there's no status called Finished. The statuses: To do"
+mcprefused "Errors project" update_asset card "Asset 1" type "Hat"
+said "type: there's no asset type called Hat. The types:"
+mcprefused "Errors project" update_asset card "Asset 1" belongs_to "Character 2"
+said "belongs_to needs belongs_to_page too"
+mcprefused "Errors project" add_card page "Characters" name "Character 9" status "To do"
+said "status is for assets only, and page was Characters"
+mcprefused "Errors project" update_task id "nope"
+said "id: there's no task nope. list_tasks gives each task's id"
+mcprefused "Errors project" write_card page "Overview" markdown "x" mode "overwrite"
+said "write_card's mode is one of replace or append; it was overwrite."
+mcprefused "Errors project" update_task id "x" done "maybe"
+said "update_task's done is true or false"
+mcprefused "Errors project" use_tool tool "Paintbox" name "execute_python"
+said "tool: no tool called Paintbox is set up on this PC"
+# Words for yes and numbers are taken as meant.
+mcp "Errors project" list_tasks open_only "true"
+# A relayed tool's real arguments, when the ones given don't match them.
+mismatch "execute_python" "{\qproperties\q:{\qscript\q:{\qtype\q:\qstring\q},\qtimeout\q:{\qtype\q:\qinteger\q}},\qrequired\q:[\qscript\q]}" "{\qcode\q:\qprint(1)\q}"
+said "execute_python has no argument called code. It needs script. execute_python's arguments: script (string, needed), timeout (integer)."
+mismatch "search_symbols" "{\qproperties\q:{\qpattern\q:{\qtype\q:\qstring\q}},\qrequired\q:[\qpattern\q]}" "{\qpatern\q:\qPlayer\q}"
+said "search_symbols has no argument called patern (did you mean pattern?)"
+mismatch "search_symbols" "{\qproperties\q:{\qpattern\q:{\qtype\q:\qstring\q}},\qrequired\q:[\qpattern\q]}" "{\qpattern\q:\qPlayer\q}"
+said "They match."

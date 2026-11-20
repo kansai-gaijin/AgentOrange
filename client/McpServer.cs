@@ -127,9 +127,15 @@ internal sealed class McpServer(Func<string, string, JsonNode?, Task<JsonNode?>>
         new() { ["jsonrpc"] = "2.0", ["id"] = id, ["error"] = new JsonObject { ["code"] = code, ["message"] = message } };
 }
 
-internal sealed class McpException(int code, string message) : Exception(message)
+internal class McpException(int code, string message) : Exception(message)
 {
     public int Code { get; } = code;
+}
+
+/// <summary>An argument a tool needs that wasn't given, said in full by the tool's call, which knows what the argument is for.</summary>
+internal sealed class McpMissingArgument(string name) : McpException(-32602, $"{name} is needed.")
+{
+    public string Name { get; } = name;
 }
 
 /// <summary>

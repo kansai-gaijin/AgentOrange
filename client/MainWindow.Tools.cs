@@ -24,7 +24,9 @@ public partial class MainWindow
     private EditorDefinition ToolNamed(Project project, string asked) =>
         AgentTools(project).FirstOrDefault(editor => editor.Name.Equals(asked, StringComparison.OrdinalIgnoreCase) || editor.Id.Equals(asked, StringComparison.OrdinalIgnoreCase)
             || (editor.Id == "unreal" && asked.Equals("Unreal", StringComparison.OrdinalIgnoreCase)))
-        ?? throw new McpException(-32602, $"No tool called {asked} is set up here. Set up: {string.Join(", ", AgentTools(project).Select(editor => editor.Name))}.");
+        ?? throw new McpException(-32602, AgentTools(project).Any()
+            ? $"tool: no tool called {asked} is set up on this PC. Set up: {string.Join(", ", AgentTools(project).Select(editor => editor.Name))}."
+            : $"tool: no tool called {asked} is set up on this PC, as none are yet. The person sets them up in Settings › Engines and Settings › Tools.");
 
     private bool IsOpen(EditorDefinition editor) => Settings.Editors.StatusOf(editor.Id)?.Instances.Count > 0;
 
@@ -192,16 +194,49 @@ public partial class MainWindow
         var arguments = given["arguments"] as JsonObject ?? [];
         if (!await AnswersAsync(editor)) return ToolResult($"{editor.Name}'s MCP doesn't answer. Open it with open_tool first.", error: true);
 
+        McpClient? client = null;
         try
         {
-            var client = await ToolClientAsync(editor, ProjectFolder(project.Id));
+            client = await ToolClientAsync(editor, ProjectFolder(project.Id));
             var result = await client.RequestAsync("tools/call", new JsonObject { ["name"] = name, ["arguments"] = arguments.DeepClone() });
-            return result is JsonObject passed ? (JsonObject)passed.DeepClone() : ToolResult(result?.ToJsonString() ?? "");
+            if (result is not JsonObject passed) return ToolResult(result?.ToJsonString() ?? "");
+            var answer = (JsonObject)passed.DeepClone();
+            if (answer["isError"] is JsonValue failed && failed.TryGetValue<bool>(out var isError) && isError && await ArgumentsHintAsync(client, editor, name, arguments) is { } hint)
+            {
+                if (answer["content"] is not JsonArray content) answer["content"] = content = [];
+                content.Add(new JsonObject { ["type"] = "text", ["text"] = hint });
+            }
+            return answer;
+        }
+        catch (InvalidOperationException error) when (client is not null)
+        {
+            // The tool answered, with an error of its own, such as an argument it doesn't take.
+            var hint = await ArgumentsHintAsync(client, editor, name, arguments);
+            return ToolResult($"{editor.Name} couldn't do that: {error.Message}{(hint is null ? "" : $"\n{hint}")}", error: true);
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or System.Net.Http.HttpRequestException)
         {
             ForgetToolClient(editor); // A tool closed and opened again needs a new session.
             return ToolResult($"{editor.Name} couldn't do that: {error.Message}", error: true);
+        }
+    }
+
+    // When a relayed call fails: the tool's real name and arguments, from its own list, if what was given doesn't match them.
+    private static async Task<string?> ArgumentsHintAsync(McpClient client, EditorDefinition editor, string name, JsonObject arguments)
+    {
+        try
+        {
+            var tools = ((await client.RequestAsync("tools/list", []))?["tools"] as JsonArray ?? []).OfType<JsonObject>().ToList();
+            if (tools.FirstOrDefault(tool => tool["name"]?.GetValue<string>() == name) is not { } tool)
+            {
+                var names = tools.Select(each => each["name"]?.GetValue<string>()).OfType<string>().ToList();
+                return $"{editor.Name} has no tool called {name}{(Closest(name, names) is { } close ? $" (did you mean {close}?)" : "")}. tool_tools lists its {names.Count} tools.";
+            }
+            return ArgumentsMismatch(name, tool["inputSchema"] as JsonObject, arguments);
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or System.Net.Http.HttpRequestException or System.Text.Json.JsonException)
+        {
+            return null;
         }
     }
 }

@@ -364,6 +364,10 @@ internal static partial class Headless
                 var agentFolder = Path.Combine(DataFolder, "agent");
                 say((await Ripgrep.EnsureAsync(agentFolder)) is { } failed ? $"ripgrep: {failed}" : $"ripgrep: {(Ripgrep.IsIn(Ripgrep.Folder(agentFolder)) ? "in " + Ripgrep.Folder(agentFolder) : "on PATH already")}");
                 break;
+            // What use_tool adds to a relayed tool's error: mismatch "its_tool" "its input schema" "the arguments given", as JSON.
+            case "mismatch":
+                say(MainWindow.ArgumentsMismatch(parts[1], System.Text.Json.Nodes.JsonNode.Parse(Unescape(parts[2])) as System.Text.Json.Nodes.JsonObject, System.Text.Json.Nodes.JsonNode.Parse(Unescape(parts[3])) as System.Text.Json.Nodes.JsonObject ?? []) ?? "They match.");
+                break;
             // Writes a file in the project's folder, such as one an agent waits for.
             case "writefile":
                 Main().WriteFileForChecks(parts[1], parts[2], Unescape(parts[3]));
