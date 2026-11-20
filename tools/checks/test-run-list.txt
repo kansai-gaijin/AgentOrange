@@ -1,0 +1,30 @@
+# Run tests on… doesn't send a commit again to a machine already testing it or with it waiting, and
+# offers that run instead; its list keeps up as runs change state; and each run has one window,
+# brought to the front when it's opened again (#118). Made up as if this PC were linked to Office PC,
+# as checks have no server.
+seed "Run list" 0 0 0
+open "Run list"
+testmenu "Run list" running
+expect "Office PC · already testing this commit, open it"
+wait "Running on Office PC"
+expectnot "Office PC · running tests, so this waits its turn"
+shot already-testing
+# The run ends, and the open list says so within a few seconds, and offers sending again.
+testrunstate passed
+wait "Passed on Office PC"
+expect "Office PC · running tests, so this waits its turn"
+expectnot "Office PC · already testing this commit, open it"
+shot run-ended
+# Waiting counts too, and choosing it opens that run.
+testrunstate queued
+wait "Office PC · has this commit waiting, open it"
+click "Office PC · has this commit waiting, open it"
+runwindows 1
+# The same run again brings its window to the front rather than opening another.
+testmenu "Run list" queued
+click "Office PC · has this commit waiting, open it"
+runwindows 1
+# With no server, its window can't read the run, so its title stays the project's.
+window "Test run · Run list"
+wait "Waiting"
+shot run-window

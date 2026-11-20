@@ -42,6 +42,7 @@ namespace AgentOrange;
 ///   inview "text"       (fails unless it's in sight, not scrolled away)
 ///   migrate             (gives assets without a status the one they have in effect, as starting does)
 ///   testsfile "folder" "text"   (its .agent-orange/tests.json's time limits, or why it isn't valid, say that)
+///   testmenu "Project" running   testrunstate passed   runwindows 1   (Run tests on…, as if linked to Office PC with a run in that state)
 ///   testrun "folder" "Passed" "text"   (a test run's steps here, from the folder committed as a repo; the verdict and log say that)
 ///   mcp "Project" update_asset card "Asset 1" status "Needs review"   (an agent's MCP tool; mcprefused expects a refusal)
 /// </summary>
@@ -377,6 +378,19 @@ internal static partial class Headless
                 say($"Verdict: {TestRunner.VerdictLabel(runVerdict)}{(runNote is null ? "" : $". {runNote}")}");
                 if (TestRunner.VerdictLabel(runVerdict) != parts[2]) throw new InvalidOperationException($"The run was {TestRunner.VerdictLabel(runVerdict)}, not {parts[2]}.");
                 if (parts.Skip(3).FirstOrDefault(text => !runLog.Contains(text, StringComparison.Ordinal)) is { } unsaid) throw new InvalidOperationException($"The run's log doesn't say {unsaid}.");
+                break;
+            // Run tests on… for a project, as if linked to Office PC with a run of the commit in that state: testmenu "Project" running.
+            case "testmenu" when Active:
+                Main().OpenTestMenuForChecks(parts[1], parts[2]);
+                break;
+            // That made-up run changes state, as the server would say: testrunstate passed.
+            case "testrunstate" when Active:
+                Main().SetTestRunForChecks(parts[1]);
+                break;
+            // Fails unless that many test run windows are open.
+            case "runwindows":
+                say($"Run windows open: {Main().TestRunWindowsForChecks}");
+                if (Main().TestRunWindowsForChecks != int.Parse(parts[1])) throw new InvalidOperationException($"{Main().TestRunWindowsForChecks} run windows are open, not {parts[1]}.");
                 break;
             case "scroll":
                 foreach (var area in Visible<ScrollViewer>(window))

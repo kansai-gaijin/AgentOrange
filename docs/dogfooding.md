@@ -662,6 +662,17 @@ says how long each step took, and when a limit stops it, which step, how far int
 limit it was. `tools/checks/test-run-limits.txt` runs real steps from a local repo, one stopped by its
 prepare limit.
 
+## Test runs: duplicate runs, a stale list and piles of windows (2026-11-21)
+
+A day of test-machine runs showed three things (#118). Choosing the machine again while it ran queued a
+second run of the same commit, and two quick clicks started one run and marked the other "Lost". The list
+in "Run tests on…" showed a run as Running for hours after it had ended. Each run opened a new window with
+the same title. Now a machine already testing that commit, or with it waiting, says so in the list and
+opens that run instead; sending checks the server's runs again just before, and a second send over the
+same link while one is on its way is refused. The open list asks for runs every 3 seconds and redraws as
+machines change. Each run has one window, titled with its machine and when it was sent, brought to the
+front when it's opened again.
+
 ## Usage: a login out of its weekly limit read as signed out (2026-11-21)
 
 A Claude login whose weekly limit was used up showed "It didn't say. Signed out, or a login without a

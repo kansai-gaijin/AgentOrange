@@ -20,6 +20,7 @@ public sealed class TestRunWindow : Window
 
     private readonly DeviceSession _devices;
     private readonly string _runId;
+    private readonly string _projectName;
     private readonly TextBlock _status = new() { FontSize = 16, FontWeight = FontWeights.SemiBold };
     private readonly TextBlock _details = new() { FontSize = 12.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
     private readonly TextBox _log = new()
@@ -42,6 +43,7 @@ public sealed class TestRunWindow : Window
     {
         _devices = devices;
         _runId = runId;
+        _projectName = projectName;
         Title = $"Test run · {projectName}";
         Width = 860;
         Height = 620;
@@ -127,6 +129,10 @@ public sealed class TestRunWindow : Window
 
     private void Show(TestRunInfo run)
     {
+        // Each run's window says which run it is, as several can be open.
+        var sentAt = DateTimeOffset.FromUnixTimeSeconds((long)run.CreatedAt).ToLocalTime();
+        Title = $"Test run · {_projectName} · {run.MachineLabel} · {sentAt:d MMM HH:mm}";
+
         var verdict = TestRunner.VerdictLabel(run.Status);
         _status.Text = run.Status == "running" && run.CancelRequested ? "Cancelling…"
             : run.ExitCode is { } code && run.Finished ? $"{verdict} (exit code {code})"

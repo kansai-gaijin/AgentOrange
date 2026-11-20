@@ -460,27 +460,57 @@ public sealed class TestMachines
     }
 
     /// <summary>
+    /// A run this PC sent that's waiting or running on that link, for that project and commit, which
+    /// sending again would only repeat (#118).
+    /// </summary>
+    public TestRunInfo? SameRun(IEnumerable<TestRunInfo> runs, string linkId, string projectId, string? commit) =>
+        commit is null ? null : runs.FirstOrDefault(run => !run.Finished && run.Linker == Latest?.Me && run.LinkId == linkId && run.ProjectId == projectId && string.Equals(run.Commit, commit, StringComparison.OrdinalIgnoreCase));
+
+    // Links a run is being sent over right now, so a second click doesn't send it twice.
+    private readonly HashSet<string> _sending = [];
+
+    /// <summary>
     /// Sends a project's tests to a machine this PC is linked to: which commit of which repo, signed
     /// with the link's key under a run id and time made here. Never the commands, which the target
-    /// reads from the repo at that commit. Returns the run's id, or what went wrong.
+    /// reads from the repo at that commit. Returns the run's id, or what went wrong. When that
+    /// machine is already testing that commit, or has it waiting, nothing is sent and Existing is
+    /// that run.
     /// </summary>
-    public async Task<(string? RunId, string? Problem)> RunTestsAsync(MachineLinkInfo link, Project project, string folder)
+    public async Task<(string? RunId, string? Problem, TestRunInfo? Existing)> RunTestsAsync(MachineLinkInfo link, Project project, string folder)
     {
-        if (MachineLinks.ReadKey(_database, link.Id) is not { ThisPcIsMachine: false } key) return (null, $"This PC has no key for its link to {link.MachineLabel}. Link it again.");
-        if (link.Status == "expired" || key.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return (null, $"The link to {link.MachineLabel} expired. Link it again with a new pairing code from {link.MachineLabel}.");
+        var sending = $"{link.Id}|{project.Id}";
+        if (!_sending.Add(sending)) return (null, $"The tests are already being sent to {link.MachineLabel}.", null);
+        try
+        {
+            return await SendRunAsync(link, project, folder);
+        }
+        finally
+        {
+            _sending.Remove(sending);
+        }
+    }
+
+    private async Task<(string? RunId, string? Problem, TestRunInfo? Existing)> SendRunAsync(MachineLinkInfo link, Project project, string folder)
+    {
+        if (MachineLinks.ReadKey(_database, link.Id) is not { ThisPcIsMachine: false } key) return (null, $"This PC has no key for its link to {link.MachineLabel}. Link it again.", null);
+        if (link.Status == "expired" || key.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return (null, $"The link to {link.MachineLabel} expired. Link it again with a new pairing code from {link.MachineLabel}.", null);
         var (repoUrl, commit, setup, problem) = await WhatToSendAsync(folder);
-        if (problem is not null || repoUrl is null || commit is null || setup is null) return (null, problem);
+        if (problem is not null || repoUrl is null || commit is null || setup is null) return (null, problem, null);
         var missing = setup.Tags.Where(tag => !HasTags(link.MachineTags, [tag])).ToList();
-        if (missing.Count > 0) return (null, $"{link.MachineLabel} doesn't offer {string.Join(", ", missing)}, which {TestsFile.RelativePath} asks for.");
+        if (missing.Count > 0) return (null, $"{link.MachineLabel} doesn't offer {string.Join(", ", missing)}, which {TestsFile.RelativePath} asks for.", null);
+
+        // Asked again now, as the list may be from before another click sent it.
+        var runs = await _devices.RunsAsync(project.Id);
+        if (SameRun(runs.Value ?? [], link.Id, project.Id, commit) is { } same) return (null, null, same);
 
         var runId = MachineLinks.NewId();
         var job = JsonSerializer.Serialize(new TestJob(TestJob.TestsKind, runId, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), project.Id, project.Name, repoUrl, commit.ToLowerInvariant(), "tests", setup.Tags), TestJob.Json);
         var mac = MachineLinks.JobMac(key.Key, runId, link.Id, project.Id, commit, job);
         var sent = await _devices.EnqueueRunAsync(runId, link.Id, project.Id, commit.ToLowerInvariant(), job, mac);
-        if (sent.Value is { } run) return (run.Id, null);
+        if (sent.Value is { } run) return (run.Id, null, null);
         return (null, sent.Status == HttpStatusCode.Conflict
             ? $"{link.MachineLabel} couldn't take it: the link may have ended, or ten runs are already waiting there."
-            : DescribeProblem(sent.Status) ?? "The server couldn't take the run.");
+            : DescribeProblem(sent.Status) ?? "The server couldn't take the run.", null);
     }
 
     // Renewing a link. Only a link that's still good can be renewed; an expired or revoked one needs
@@ -581,6 +611,15 @@ public sealed class TestMachines
         }
         return $"{link.MachineLabel} didn't answer. It renews the link when Agent Orange is running there and it's online.";
     }
+
+#if DEBUG
+    /// <summary>Headless checks only: a made-up list of machines and links, as if the server had sent it.</summary>
+    internal void ShowForChecks(MachinesInfo latest)
+    {
+        Latest = latest;
+        Changed?.Invoke();
+    }
+#endif
 
     /// <summary>Whether a machine offers every tag a project needs. Tags are only words that match, whatever case.</summary>
     public static bool HasTags(IEnumerable<string> offered, IEnumerable<string>? needed) =>
