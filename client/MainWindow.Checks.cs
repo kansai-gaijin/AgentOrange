@@ -116,6 +116,9 @@ public partial class MainWindow
         File.AppendAllText(file, text);
     }
 
+    /// <summary>Agent Orange's MCP tools as a session lists them.</summary>
+    internal async Task<string> McpToolsForChecks() => (await McpAnswerAsync("", "tools/list", null))?.ToJsonString() ?? "";
+
     internal int GiveAssetsAStatusForChecks()
     {
         var given = _database.GiveAssetsAStatus();

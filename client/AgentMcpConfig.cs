@@ -49,6 +49,8 @@ public static class AgentMcpConfig
         var servers = new JsonObject();
 
         // Agent Orange's own, for the project the session is about: the design, the tasks and the settings.
+        // Always loaded in Claude Code, not only once searched for: its few tools are used from the
+        // start, and ones loaded on demand are forgotten when a conversation is summed up.
         if (projectId is not null)
         {
             servers["agent-orange"] = new JsonObject
@@ -56,6 +58,7 @@ public static class AgentMcpConfig
                 ["type"] = "stdio",
                 ["command"] = RelayProgram(agentFolder),
                 ["args"] = new JsonArray("--mcp", projectId),
+                ["alwaysLoad"] = true,
             };
         }
         foreach (var editor in EditorMonitor.Definitions.Where(editors.IsSetUp))

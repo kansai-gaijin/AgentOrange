@@ -47,6 +47,8 @@ public static class AgentBriefing
 
             Agent Orange's MCP server, "agent-orange", reads and changes the project: get_project to start, read_card for a card's document (its design), list_tasks, search, and write_card, add_task and update_task to keep them current as you work. Use them rather than guessing at the design, and write down what gets settled.
 
+            With Claude Code, Agent Orange's tools are always loaded. Some others load only on demand, such as Monitor and TaskStop: load them with ToolSearch, query select:Monitor,TaskStop, before their first use, and again after your context is summarised, which forgets them. Calling one that isn't loaded fails with "This tool's input schema was not in your prompt".
+
             The creative tools set up on this PC (such as Blender, Aseprite, ArmorPaint and Material Maker) are reached through it too: list_tools says which are open, open_tool opens one in the project's folder, tool_tools says what it can do, and use_tool uses it. Use these rather than starting the programs yourself. Blender's is Blender Lab's own Blender MCP: its render tools save in Blender's temporary folder whatever path they're given, and say where, so copy from there, or render with execute_blender_code to save where the work belongs. In Unreal, a level is an asset like any other: the Asset toolset's SaveAsset saves it, as there's no tool named for saving a level.
 
             ## What the person is looking at

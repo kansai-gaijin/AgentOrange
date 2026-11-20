@@ -1,0 +1,14 @@
+# Claude Code sessions start with AO's own tools loaded, not on demand, so they're there from the
+# first call and stay after the conversation is summed up (#121). The first message after a
+# summary says to load the on-demand tools again, and the briefing names them and how.
+seed "Loaded project" 0 0 0
+agentsetup "Loaded project"
+said "\qalwaysLoad\q: true"
+said "ToolSearch, query select:Monitor,TaskStop"
+mcptools
+said "\q_meta\q:{\qanthropic/alwaysLoad\q:true}"
+said "\qname\q:\qwait_for\q"
+summary
+said "Next: <agent-orange-note>Your context was summarised to make room, so tools you had loaded on demand were reset."
+said "Agent Orange's own tools are still loaded.</agent-orange-note>\n\nfirst"
+said "Then: second"

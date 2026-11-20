@@ -368,6 +368,17 @@ internal static partial class Headless
             case "mismatch":
                 say(MainWindow.ArgumentsMismatch(parts[1], System.Text.Json.Nodes.JsonNode.Parse(Unescape(parts[2])) as System.Text.Json.Nodes.JsonObject, System.Text.Json.Nodes.JsonNode.Parse(Unescape(parts[3])) as System.Text.Json.Nodes.JsonObject ?? []) ?? "They match.");
                 break;
+            // Agent Orange's MCP tools, as a session lists them.
+            case "mcptools":
+                say(await Main().McpToolsForChecks());
+                break;
+            // A conversation Claude Code sums up to make room, and the next two messages to it, as they'd be sent.
+            case "summary":
+                var summed = new AgentConversation { Id = "check", ProjectId = "check" };
+                summed.ReadForChecks("""{"type":"system","subtype":"compact_boundary","compact_metadata":{"pre_tokens":180000,"post_tokens":20000}}""");
+                say($"Next: {summed.AfterSummary("first")}");
+                say($"Then: {summed.AfterSummary("second")}");
+                break;
             // Writes a file in the project's folder, such as one an agent waits for.
             case "writefile":
                 Main().WriteFileForChecks(parts[1], parts[2], Unescape(parts[3]));

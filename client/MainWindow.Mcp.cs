@@ -50,6 +50,8 @@ public partial class MainWindow
             ["name"] = Name,
             ["description"] = Description,
             ["inputSchema"] = new JsonObject { ["type"] = "object", ["properties"] = Properties.DeepClone(), ["required"] = new JsonArray([.. Required.Select(each => (JsonNode)each)]) },
+            // Claude Code's own way for a server to have a tool always loaded, as the session's config also asks.
+            ["_meta"] = new JsonObject { ["anthropic/alwaysLoad"] = true },
         };
     }
 
