@@ -1,6 +1,7 @@
 # Sends commands to the running dev build (debug builds only) and prints what came back.
 # Each argument is one command line, as in a headless script:
 #   ./tools/drive.ps1 'window "Agents"' 'click "Model and effort"' 'shot picker'
+#   ./tools/drive.ps1 usage     (each login's limits, without opening the Usage page)
 # Pictures are saved in %TEMP%\AgentOrange-Drive and the reply gives each one's path.
 param([Parameter(ValueFromRemainingArguments = $true)][string[]] $Commands)
 

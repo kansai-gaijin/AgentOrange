@@ -28,6 +28,7 @@ namespace AgentOrange;
 ///   has "text"          say "note"         texts               shot name
 ///   sleep 500           window "Title"     (the window the next lines act on, by its title)
 ///   scroll top          scroll end         (every scrolling area in the window)
+///   usage               (each login's limits as last heard, without opening the Usage page)
 /// </summary>
 internal static partial class Headless
 {
@@ -184,6 +185,17 @@ internal static partial class Headless
                 break;
             case "texts":
                 say(string.Join(" | ", Texts(window)));
+                break;
+            // Each login's limits as the app last heard them, without opening the Usage page.
+            case "usage":
+                if (Application.Current.Windows.OfType<MainWindow>().FirstOrDefault() is not { } main) throw new InvalidOperationException("The main window isn't open.");
+                foreach (var login in main.AllAgentLogins())
+                {
+                    var limits = main.Usage.For(login.Id).Where(limit => limit.Used is not null).ToList();
+                    var known = limits.Select(limit =>
+                        $"{limit.Name} {100 - limit.Used:0}% left" + (limit.ResetsAt is { } at ? $", resets {at.ToLocalTime():M/d HH:mm}" : "") + (limit.Blocked ? ", blocked" : ""));
+                    say($"{login.Label}: " + (limits.Count > 0 ? string.Join("; ", known) : main.Usage.CheckedAt(login.Id) is null ? "not checked yet" : "it didn't say"));
+                }
                 break;
             // The words in each visible document editor, whole, as a person reads by scrolling it.
             case "read":
