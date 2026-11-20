@@ -257,38 +257,69 @@ public partial class MainWindow
         said.AppendLine("## Game settings");
         foreach (var (name, value) in settings) said.AppendLine($"- {name}: {(value.Length > 0 ? value : "not decided yet")}");
 
+        // Counts, and names only for pages short enough to read at a glance: a project of hundreds
+        // of assets once made this answer 37 KB, most of it one line of asset names.
         said.AppendLine();
         said.AppendLine("## Pages");
         var overview = _database.GetDocument(project.Id, LocalDatabase.BoardKey(stage, BoardPart("Overview")));
         said.AppendLine($"- Overview: the game as a whole, {WordsIn(overview)} words. Read it with read_card page Overview.");
         foreach (var page in CardPages.Keys)
         {
-            var cards = _database.ListCards(project.Id, stage, page.ToLowerInvariant());
-            said.AppendLine($"- {page} ({cards.Count}): {(cards.Count == 0 ? "none yet" : string.Join(", ", cards.Select(card => CardName(card, page))))}");
+            var cards = _database.ListCards(project.Id, stage, page == AssetsPage ? AssetsPart : page.ToLowerInvariant());
+            var counted = page == AssetsPage && cards.Count > 0 ? $" ({AssetStatusCounts(project, cards)})" : "";
+            if (cards.Count == 0) said.AppendLine($"- {page}: none yet");
+            else if (cards.Count <= ListedNames) said.AppendLine($"- {page}, {cards.Count}{counted}: {string.Join(", ", cards.Select(card => CardName(card, page)))}");
+            else said.AppendLine($"- {page}, {cards.Count}{counted}. Find them with search, or list_cards page {page}{(page == AssetsPage ? " (with status for one status)" : "")}.");
         }
 
         said.AppendLine();
         said.AppendLine("## Tasks");
         var tasks = _database.ListTasks(project.Id, stage);
         said.AppendLine($"{tasks.Count(each => each.Task.Done)} of {tasks.Count} done.");
-        foreach (var (id, milestone) in _database.ListMilestones(project.Id, stage))
+        var milestones = _database.ListMilestones(project.Id, stage);
+        foreach (var (id, milestone) in milestones.Take(ListedMilestones))
         {
             var inIt = tasks.Where(each => each.Task.Milestone == id).ToList();
             said.AppendLine($"- {milestone.Name}: {inIt.Count(each => each.Task.Done)} of {inIt.Count}");
         }
+        if (milestones.Count > ListedMilestones) said.AppendLine($"- and {milestones.Count - ListedMilestones} more milestones, which list_tasks shows.");
 
+        // The newest first, as those are the ones being worked on.
         if (ProjectFolder(project.Id) is { } inFolder && Directory.Exists(Path.Combine(inFolder, "docs")))
         {
-            var documents = Directory.EnumerateFiles(Path.Combine(inFolder, "docs"), "*.md", SearchOption.AllDirectories).Select(file => Path.GetRelativePath(inFolder, file).Replace('\\', '/')).ToList();
+            var documents = new DirectoryInfo(Path.Combine(inFolder, "docs")).EnumerateFiles("*.md", SearchOption.AllDirectories)
+                .OrderByDescending(file => file.LastWriteTimeUtc).Select(file => Path.GetRelativePath(inFolder, file.FullName).Replace('\\', '/')).ToList();
             if (documents.Count > 0)
             {
                 said.AppendLine();
                 said.AppendLine("## Documents in the folder");
-                said.AppendLine("Read these as files. Documents link to them as doc:path.");
-                foreach (var document in documents) said.AppendLine($"- {document}");
+                said.AppendLine(documents.Count <= ListedDocuments
+                    ? "Read these as files. Documents link to them as doc:path."
+                    : $"{documents.Count} in docs, the {ListedDocuments} changed last first. Read them as files; documents link to them as doc:path.");
+                foreach (var document in documents.Take(ListedDocuments)) said.AppendLine($"- {document}");
+                if (documents.Count > ListedDocuments) said.AppendLine($"- and {documents.Count - ListedDocuments} more in docs.");
             }
         }
-        return said.ToString();
+
+        // Whatever the project's size: names and settings can still run long.
+        var whole = said.ToString();
+        if (Encoding.UTF8.GetByteCount(whole) <= LongestProjectAnswer) return whole;
+        var cut = whole[..Math.Min(whole.Length, LongestProjectAnswer - 200)];
+        return cut[..Math.Max(0, cut.LastIndexOf('\n'))] + "\n\n(Cut short, to stay small. search, list_cards, list_tasks and read_card give the rest.)\n";
+    }
+
+    private const int ListedMilestones = 20;
+    private const int ListedDocuments = 15;
+    private const int LongestProjectAnswer = 8000;
+
+    // How many assets are at each status, such as "12 to do, 40 in progress".
+    private string AssetStatusCounts(Project project, List<BoardCard> cards)
+    {
+        var details = _database.ListAssetDetails(project.Id);
+        var delivered = _database.DeliveredAssets(project.Id);
+        var statuses = cards.Select(card => AssetStatus.Of(details.GetValueOrDefault(card.Id) ?? new AssetDetails(), delivered.Contains(card.Id))).ToList();
+        return string.Join(", ", AssetStatus.All.Select(status => (status.Name, Count: statuses.Count(each => each == status.Id))).Where(each => each.Count > 0)
+            .Select(each => $"{each.Count} {each.Name.ToLowerInvariant()}"));
     }
 
     private string ListCardsFor(Project project, string page, string? status)

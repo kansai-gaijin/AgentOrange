@@ -1,0 +1,43 @@
+# get_project, which every agent starts with, stays small whatever the project's size (#122):
+# counts per page, with names only for short pages, assets counted by status, the newest of the
+# folder's documents, and under 8 KB in all.
+seed "Big project" 300 25 700
+writefile "Big project" "docs/plan.md" "# Plan"
+writefile "Big project" "docs/evidence/run-01.md" "x"
+writefile "Big project" "docs/evidence/run-02.md" "x"
+writefile "Big project" "docs/evidence/run-03.md" "x"
+writefile "Big project" "docs/evidence/run-04.md" "x"
+writefile "Big project" "docs/evidence/run-05.md" "x"
+writefile "Big project" "docs/evidence/run-06.md" "x"
+writefile "Big project" "docs/evidence/run-07.md" "x"
+writefile "Big project" "docs/evidence/run-08.md" "x"
+writefile "Big project" "docs/evidence/run-09.md" "x"
+writefile "Big project" "docs/evidence/run-10.md" "x"
+writefile "Big project" "docs/evidence/run-11.md" "x"
+writefile "Big project" "docs/evidence/run-12.md" "x"
+writefile "Big project" "docs/evidence/run-13.md" "x"
+writefile "Big project" "docs/evidence/run-14.md" "x"
+writefile "Big project" "docs/evidence/run-15.md" "x"
+writefile "Big project" "docs/evidence/run-16.md" "x"
+writefile "Big project" "docs/evidence/run-17.md" "x"
+writefile "Big project" "docs/evidence/run-18.md" "x"
+writefile "Big project" "docs/latest.md" "x"
+mcp "Big project" get_project
+saidunder 8000
+# A page of a few cards still lists them; the 700 assets are counted, not named.
+said "- Characters, 8: Character 1, Character 2"
+said "- Assets, 700 ("
+said "to do"
+said "delivered). Find them with search, or list_cards page Assets"
+notsaid "Asset 1,"
+notsaid "Asset 699"
+# Milestones and documents past their limits say where the rest are.
+said "and 5 more milestones, which list_tasks shows"
+said "20 in docs, the 15 changed last first"
+said "- docs/latest.md"
+said "and 5 more in docs"
+# A small project still gets every name.
+seed "Small project" 3 1 4
+mcp "Small project" get_project
+said "- Assets, 4 ("
+said "Asset 1, Asset 2, Asset 3, Asset 4"
