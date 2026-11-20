@@ -1,0 +1,17 @@
+# Agents bring a tool's window in front for timed work with focus_tool, or open_tool's in_front,
+# and list_tools says whose window is in front (#123). A headless run never moves a window on the
+# person's screen, so bringing one forward is for a person to try; this checks the rest.
+seed "Focus project" 0 0 0
+mcptools
+said "\qname\q:\qfocus_tool\q"
+said "\qin_front\q:{\qtype\q:\qboolean\q"
+mcprefused "Focus project" focus_tool
+said "focus_tool needs tool"
+mcprefused "Focus project" focus_tool tool "Paintbox"
+said "tool: no tool called Paintbox is set up on this PC"
+mcprefused "Focus project" open_tool tool "Paintbox" in_front "true"
+said "tool: no tool called Paintbox"
+mcp "Focus project" list_tools
+said "focus_tool brings one's window in front"
+agentsetup "Focus project"
+said "bring its window in front with focus_tool"

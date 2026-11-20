@@ -178,6 +178,23 @@ public sealed partial class AgentConversation
     private long _lines; // Lines it has said, to tell whether anything came after it finished.
     private string? _startedWith; // The model and effort it was started with.
     private bool _codex; // Talking to Codex's app server rather than Claude Code.
+    private bool _summedUp; // Claude Code summed up what came before since the last message, which forgets the tools it loaded on demand.
+
+    /// <summary>
+    /// Goes before the first message after Claude Code sums up a conversation to make room: tools it
+    /// loads only on demand are forgotten then, and calling one before loading it again fails with
+    /// "This tool's input schema was not in your prompt". Agent Orange's own stay loaded.
+    /// </summary>
+    public const string ToolsResetNote =
+        "<agent-orange-note>Your context was summarised to make room, so tools you had loaded on demand were reset. Load the ones you need again before using them, such as ToolSearch with select:Monitor,TaskStop. Agent Orange's own tools are still loaded.</agent-orange-note>";
+
+    /// <summary>The message as sent, with <see cref="ToolsResetNote"/> first if the conversation was summed up since the last one.</summary>
+    internal string AfterSummary(string prompt)
+    {
+        if (!_summedUp || _codex) return prompt;
+        _summedUp = false;
+        return $"{ToolsResetNote}\n\n{prompt}";
+    }
     private string? _runningMode; // The permission mode it's in, which can change while it runs.
     private readonly Dictionary<string, Action<JsonObject?>> _controls = []; // Replies awaited, by request.
     private readonly Dictionary<string, DateTimeOffset?> _limits = []; // Limits run out during this turn, and when each resets.
@@ -229,7 +246,7 @@ public sealed partial class AgentConversation
     }
 
     /// <summary>Everything a session needs set up first, made fresh each time so it matches what's set up now.</summary>
-    public sealed record Setup(AgentProvider Provider, string McpConfig, IReadOnlyList<string> McpServers, string SkillsPlugin, string Briefing, string AttachmentsFolder, string ClaudeSettings, IReadOnlyList<string> SkillFolders);
+    public sealed record Setup(AgentProvider Provider, string McpConfig, IReadOnlyList<string> McpServers, string SkillsPlugin, string Briefing, string AttachmentsFolder, string ClaudeSettings, IReadOnlyList<string> SkillFolders, string? ToolsFolder = null);
 
     /// <summary>
     /// Sends a message, starting the agent program if it isn't running. What the person is looking at
@@ -272,6 +289,7 @@ public sealed partial class AgentConversation
             SendCodexTurn(prompt, attachments);
             return;
         }
+        prompt = AfterSummary(prompt);
 
         // Pictures and PDFs go with the message, for it to see straight away. Every file is also named
         // where it's kept, for it to open or copy into the game itself, as T3 Code does.
@@ -341,7 +359,7 @@ public sealed partial class AgentConversation
         Process? process;
         try
         {
-            process = Process.Start(AgentProviders.SessionStartInfo(setup.Provider, arguments, Folder!));
+            process = Process.Start(AgentProviders.SessionStartInfo(setup.Provider, arguments, Folder!, setup.ToolsFolder));
         }
         catch (Exception error) when (error is Win32Exception or IOException or UnauthorizedAccessException)
         {
@@ -733,6 +751,11 @@ public sealed partial class AgentConversation
 
     // What comes back
 
+#if DEBUG
+    /// <summary>For headless checks: a line as Claude Code would send it.</summary>
+    internal void ReadForChecks(string line) => Read(line);
+#endif
+
     // One JSON event per line. Anything unknown is skipped, as its events change between versions.
     private void Read(string line)
     {
@@ -850,6 +873,7 @@ public sealed partial class AgentConversation
                 break;
             case "compact_boundary":
                 Retrying = null;
+                _summedUp = true;
                 var before = json["compact_metadata"]?["pre_tokens"]?.GetValue<double>();
                 var after = json["compact_metadata"]?["post_tokens"]?.GetValue<double>();
                 if (after is { } left) ContextUsed = (int)left;

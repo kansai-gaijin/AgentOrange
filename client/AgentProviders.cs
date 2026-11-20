@@ -217,10 +217,15 @@ public sealed partial class AgentProviders(LocalDatabase database, string agentF
         }
     }
 
-    /// <summary>For a conversation in a project's folder, with each message sent on the program's input.</summary>
-    public static ProcessStartInfo SessionStartInfo(AgentProvider provider, string arguments, string folder)
+    /// <summary>
+    /// For a conversation in a project's folder, with each message sent on the program's input. What
+    /// it runs prints UTF-8 and English, with the agent files folder's own programs, such as ripgrep,
+    /// on PATH (<see cref="AgentEnvironment"/>).
+    /// </summary>
+    public static ProcessStartInfo SessionStartInfo(AgentProvider provider, string arguments, string folder, string? toolsFolder = null)
     {
-        var info = StartInfo(provider, arguments, hidden: true);
+        var info = StartInfo(provider, arguments, hidden: true, AgentEnvironment.CodePageFirst);
+        AgentEnvironment.Apply(info, toolsFolder);
         info.WorkingDirectory = folder;
         info.RedirectStandardInput = true;
         info.StandardInputEncoding = new UTF8Encoding(false);
@@ -259,7 +264,7 @@ public sealed partial class AgentProviders(LocalDatabase database, string agentF
         return places.FirstOrDefault(File.Exists) ?? program;
     }
 
-    private static bool OnPath(string program)
+    internal static bool OnPath(string program)
     {
         var extensions = Path.HasExtension(program) ? [""] : (Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.CMD;.BAT").Split(';');
         foreach (var folder in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
@@ -279,8 +284,8 @@ public sealed partial class AgentProviders(LocalDatabase database, string agentF
         return false;
     }
 
-    // Goes through cmd because npm installs these programs as .cmd files.
-    private static ProcessStartInfo StartInfo(AgentProvider provider, string arguments, bool hidden)
+    // Goes through cmd because npm installs these programs as .cmd files. first is a command cmd runs before it, ending in "&".
+    private static ProcessStartInfo StartInfo(AgentProvider provider, string arguments, bool hidden, string first = "")
     {
         Directory.CreateDirectory(provider.LoginFolder);
         provider = provider with { Program = ResolveProgram(provider) };
@@ -289,7 +294,7 @@ public sealed partial class AgentProviders(LocalDatabase database, string agentF
             ? comSpec
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
 
-        var info = new ProcessStartInfo(shell, $"/d /s /c \"\"{provider.Program}\" {arguments}\"")
+        var info = new ProcessStartInfo(shell, $"/d /s /c \"{first}\"{provider.Program}\" {arguments}\"")
         {
             WorkingDirectory = provider.LoginFolder,
             UseShellExecute = false,

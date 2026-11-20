@@ -24,7 +24,9 @@ public partial class MainWindow
     private EditorDefinition ToolNamed(Project project, string asked) =>
         AgentTools(project).FirstOrDefault(editor => editor.Name.Equals(asked, StringComparison.OrdinalIgnoreCase) || editor.Id.Equals(asked, StringComparison.OrdinalIgnoreCase)
             || (editor.Id == "unreal" && asked.Equals("Unreal", StringComparison.OrdinalIgnoreCase)))
-        ?? throw new McpException(-32602, $"No tool called {asked} is set up here. Set up: {string.Join(", ", AgentTools(project).Select(editor => editor.Name))}.");
+        ?? throw new McpException(-32602, AgentTools(project).Any()
+            ? $"tool: no tool called {asked} is set up on this PC. Set up: {string.Join(", ", AgentTools(project).Select(editor => editor.Name))}."
+            : $"tool: no tool called {asked} is set up on this PC, as none are yet. The person sets them up in Settings › Engines and Settings › Tools.");
 
     private bool IsOpen(EditorDefinition editor) => Settings.Editors.StatusOf(editor.Id)?.Instances.Count > 0;
 
@@ -157,18 +159,62 @@ public partial class MainWindow
     private async Task<object> ListToolsForAgentAsync(Project project)
     {
         var said = new StringBuilder();
+        var front = ToolWindows.ForegroundProcess();
         foreach (var editor in AgentTools(project))
         {
             var reachable = await ReachableAsync(editor);
-            said.AppendLine($"- {editor.Name}: {(IsOpen(editor) ? "open" : "not open")}, {(reachable ? "its MCP answers" : "its MCP doesn't answer yet")}.");
+            var processes = ToolProcessIds(editor);
+            var open = IsOpen(editor);
+            var window = !open ? "" : processes.Contains(front) ? ", its window is in front" : ", its window is behind others";
+            said.AppendLine($"- {editor.Name}: {(open ? "open" : "not open")}{window}, {(reachable ? "its MCP answers" : "its MCP doesn't answer yet")}.");
         }
         return said.Length == 0
             ? "No creative tools or engine are set up on this PC. The person sets them up in Settings › Engines and Settings › Tools."
-            : said + "\nopen_tool opens one in the project's folder. tool_tools says what one can do, and use_tool uses it.";
+            : said + "\nopen_tool opens one in the project's folder. tool_tools says what one can do, and use_tool uses it. focus_tool brings one's window in front, for timed work, as some tools slow down behind others.";
     }
 
-    private async Task<object> OpenToolForAgentAsync(Project project, JsonObject given) =>
-        await OpenToolAsync(ToolNamed(project, Required(given, "tool")), ProjectFolder(project.Id));
+    private async Task<object> OpenToolForAgentAsync(Project project, JsonObject given)
+    {
+        var editor = ToolNamed(project, Required(given, "tool"));
+        var opened = await OpenToolAsync(editor, ProjectFolder(project.Id));
+        return given["in_front"] is JsonValue front && front.TryGetValue<bool>(out var inFront) && inFront ? $"{opened} {await FocusToolAsync(editor)}" : opened;
+    }
+
+    // The tool's own running processes: the ones the editor monitor found, and any of its program's name.
+    private List<int> ToolProcessIds(EditorDefinition editor)
+    {
+        var ids = Settings.Editors.StatusOf(editor.Id)?.Instances.Select(instance => instance.ProcessId).ToList() ?? [];
+        var program = editor.Id == "unreal" ? "UnrealEditor" : Path.GetFileNameWithoutExtension(Settings.Editors.SettingsOf(editor).ProgramPath);
+        if (program.Length == 0) return ids;
+        foreach (var process in Process.GetProcessesByName(program))
+        {
+            using (process) ids.Add(process.Id);
+        }
+        return [.. ids.Distinct()];
+    }
+
+    private async Task<string> FocusToolAsync(EditorDefinition editor)
+    {
+        var processes = ToolProcessIds(editor);
+        var window = ToolWindows.WindowOf(processes);
+        if (window == 0)
+        {
+            return IsOpen(editor)
+                ? $"{editor.Name} is running, but has no window to show yet. It may still be loading: wait a little with wait_for, then focus_tool again."
+                : $"{editor.Name} isn't open, so its window can't be brought in front. Open it with open_tool, which can bring it in front with in_front.";
+        }
+        if (ToolWindows.ForegroundProcess() is var front && processes.Contains(front)) return $"{editor.Name}'s window is in front.";
+#if DEBUG
+        // A headless run never changes what's on the person's screen.
+        if (Headless.Active) return $"{editor.Name}'s window is behind others. (A headless run doesn't bring windows in front.)";
+#endif
+        return await ToolWindows.BringToFrontAsync(window)
+            ? $"{editor.Name}'s window is in front now."
+            : $"{editor.Name}'s window couldn't be brought in front: Windows kept {ToolWindows.ForegroundTitle()} there. Ask the person to click on {editor.Name}'s window, or to leave it in front, before the timed work.";
+    }
+
+    private async Task<object> FocusToolForAgentAsync(Project project, JsonObject given) =>
+        await FocusToolAsync(ToolNamed(project, Required(given, "tool")));
 
     private async Task<object> ToolToolsAsync(Project project, JsonObject given)
     {
@@ -192,16 +238,49 @@ public partial class MainWindow
         var arguments = given["arguments"] as JsonObject ?? [];
         if (!await AnswersAsync(editor)) return ToolResult($"{editor.Name}'s MCP doesn't answer. Open it with open_tool first.", error: true);
 
+        McpClient? client = null;
         try
         {
-            var client = await ToolClientAsync(editor, ProjectFolder(project.Id));
+            client = await ToolClientAsync(editor, ProjectFolder(project.Id));
             var result = await client.RequestAsync("tools/call", new JsonObject { ["name"] = name, ["arguments"] = arguments.DeepClone() });
-            return result is JsonObject passed ? (JsonObject)passed.DeepClone() : ToolResult(result?.ToJsonString() ?? "");
+            if (result is not JsonObject passed) return ToolResult(result?.ToJsonString() ?? "");
+            var answer = (JsonObject)passed.DeepClone();
+            if (answer["isError"] is JsonValue failed && failed.TryGetValue<bool>(out var isError) && isError && await ArgumentsHintAsync(client, editor, name, arguments) is { } hint)
+            {
+                if (answer["content"] is not JsonArray content) answer["content"] = content = [];
+                content.Add(new JsonObject { ["type"] = "text", ["text"] = hint });
+            }
+            return answer;
+        }
+        catch (InvalidOperationException error) when (client is not null)
+        {
+            // The tool answered, with an error of its own, such as an argument it doesn't take.
+            var hint = await ArgumentsHintAsync(client, editor, name, arguments);
+            return ToolResult($"{editor.Name} couldn't do that: {error.Message}{(hint is null ? "" : $"\n{hint}")}", error: true);
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or System.Net.Http.HttpRequestException)
         {
             ForgetToolClient(editor); // A tool closed and opened again needs a new session.
             return ToolResult($"{editor.Name} couldn't do that: {error.Message}", error: true);
+        }
+    }
+
+    // When a relayed call fails: the tool's real name and arguments, from its own list, if what was given doesn't match them.
+    private static async Task<string?> ArgumentsHintAsync(McpClient client, EditorDefinition editor, string name, JsonObject arguments)
+    {
+        try
+        {
+            var tools = ((await client.RequestAsync("tools/list", []))?["tools"] as JsonArray ?? []).OfType<JsonObject>().ToList();
+            if (tools.FirstOrDefault(tool => tool["name"]?.GetValue<string>() == name) is not { } tool)
+            {
+                var names = tools.Select(each => each["name"]?.GetValue<string>()).OfType<string>().ToList();
+                return $"{editor.Name} has no tool called {name}{(Closest(name, names) is { } close ? $" (did you mean {close}?)" : "")}. tool_tools lists its {names.Count} tools.";
+            }
+            return ArgumentsMismatch(name, tool["inputSchema"] as JsonObject, arguments);
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or System.Net.Http.HttpRequestException or System.Text.Json.JsonException)
+        {
+            return null;
         }
     }
 }

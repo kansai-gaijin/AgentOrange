@@ -1,0 +1,47 @@
+# Agents' shell commands that patch or write files with a script written into the command are
+# stopped, with what to do instead, and ones that only read go through (#96). Claude Code runs the
+# hook before every Bash and PowerShell call, its helper agents' too; Codex has the briefing's line.
+seed "Patch project" 0 0 0
+# The hook is in the settings every Claude Code session gets, and the rule is in the briefing.
+agentsetup "Patch project"
+said "PreToolUse"
+said "Bash|PowerShell"
+said "--check-command"
+said "never with a script written into a shell command"
+# Heredocs that write a file, or feed a script that does.
+refuses "Bash" "cat > src/game.py <<'EOF'\nprint('it's here')\nEOF"
+said "with the Edit tool"
+refuses "Bash" "cat <<'EOF' >> notes.md\nmore\nEOF"
+refuses "Bash" "cat <<EOF | tee out.txt\nhello\nEOF"
+refuses "Bash" "python - <<'PY'\nfrom pathlib import Path\np = Path('a.cpp')\np.write_text(p.read_text().replace('a', 'b'))\nPY"
+refuses "Bash" "python3 <<'EOF'\nwith open('x.txt', 'w') as f:\n    f.write('y')\nEOF"
+refuses "Bash" "node <<'EOF'\nrequire('fs').writeFileSync('a.js', 'x')\nEOF"
+refuses "Bash" "git apply <<'EOF'\n--- a/x\n+++ b/x\nEOF"
+refuses "Bash" "bash <<'EOF'\nsed -i 's/a/b/' f.txt\nEOF"
+# In-place edits, in any of their spellings.
+refuses "Bash" "sed -i 's/old/new/' Source/Game.cpp"
+refuses "Bash" "sed -Ei.bak 's/x/y/g' a.txt"
+refuses "Bash" "cd Source && sed --in-place -e 's/x/y/' a.h"
+refuses "Bash" "perl -pi -e 's/a/b/' file.txt"
+# Code on the command line that writes files.
+refuses "Bash" "python -c \qimport pathlib; pathlib.Path('a.txt').write_text('x')\q"
+refuses "Bash" "python -c \qopen('config.ini', 'a').write('x=1')\q"
+refuses "PowerShell" "node -e \qrequire('fs').appendFileSync('log.txt', 'x')\q"
+# PowerShell's here-strings written to a file, and replace-and-write-back patches.
+refuses "PowerShell" "@'\nline one\nline two\n'@ | Set-Content -Path Source\Game.cpp"
+refuses "PowerShell" "Set-Content -Path a.txt -Value @'\nx\n'@"
+refuses "PowerShell" "(Get-Content a.cpp) -replace 'old', 'new' | Set-Content a.cpp"
+refuses "PowerShell" "[IO.File]::WriteAllText('a.cpp', [IO.File]::ReadAllText('a.cpp').Replace('a', 'b'))"
+# Reading, running and ordinary output go through.
+allows "Bash" "python - <<'EOF'\nimport json\nprint(json.load(open('data.json'))['name'])\nEOF"
+allows "Bash" "python -c \qimport json; print(json.load(open('a.json', 'r')))\q"
+allows "Bash" "sed -n '1,20p' Source/Game.cpp"
+allows "Bash" "sed 's/a/b/' in.txt"
+allows "Bash" "git commit -F - <<'EOF'\nA message with an apostrophe's in it\nEOF"
+allows "Bash" "dotnet build client > build.log 2>&1"
+allows "Bash" "python -m pytest -p no:cacheprovider tests"
+allows "Bash" "grep -rn 'write_text' src"
+allows "PowerShell" "git commit -m @'\nA message\n'@"
+allows "PowerShell" "dotnet build client | Out-File build.log"
+allows "PowerShell" "Get-Content a.cpp | Select-String 'replace'"
+allows "Bash" "echo 1 << 2"

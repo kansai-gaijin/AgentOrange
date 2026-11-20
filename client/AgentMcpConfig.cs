@@ -16,7 +16,7 @@ public static class AgentMcpConfig
 
     // The program agents start as Agent Orange's MCP relay. A dev build runs it from a copy of
     // itself, as its own files are rebuilt while agents run, and a relay running from them locks them.
-    private static string RelayProgram(string agentFolder)
+    internal static string RelayProgram(string agentFolder)
     {
 #if DEBUG
         var copy = Path.Combine(agentFolder, "mcp-relay");
@@ -49,6 +49,8 @@ public static class AgentMcpConfig
         var servers = new JsonObject();
 
         // Agent Orange's own, for the project the session is about: the design, the tasks and the settings.
+        // Always loaded in Claude Code, not only once searched for: its few tools are used from the
+        // start, and ones loaded on demand are forgotten when a conversation is summed up.
         if (projectId is not null)
         {
             servers["agent-orange"] = new JsonObject
@@ -56,6 +58,7 @@ public static class AgentMcpConfig
                 ["type"] = "stdio",
                 ["command"] = RelayProgram(agentFolder),
                 ["args"] = new JsonArray("--mcp", projectId),
+                ["alwaysLoad"] = true,
             };
         }
         foreach (var editor in EditorMonitor.Definitions.Where(editors.IsSetUp))

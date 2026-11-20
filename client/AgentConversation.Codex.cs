@@ -42,7 +42,7 @@ public sealed partial class AgentConversation
         Process? process;
         try
         {
-            process = Process.Start(AgentProviders.SessionStartInfo(setup.Provider, "app-server -c thread_unload_delay_secs=0", Folder!));
+            process = Process.Start(AgentProviders.SessionStartInfo(setup.Provider, "app-server -c thread_unload_delay_secs=0", Folder!, setup.ToolsFolder));
         }
         catch (Exception error) when (error is Win32Exception or IOException or UnauthorizedAccessException)
         {

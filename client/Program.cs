@@ -21,6 +21,14 @@ public static class Program
             return;
         }
 
+        // Started by Claude Code before an agent's shell command, to refuse patch scripts written into it.
+        if (args.Contains(PatchScripts.HookArgument))
+        {
+            using var input = new System.IO.StreamReader(Console.OpenStandardInput(), new System.Text.UTF8Encoding(false));
+            using var error = new System.IO.StreamWriter(Console.OpenStandardError(), new System.Text.UTF8Encoding(false));
+            Environment.Exit(PatchScripts.RunHook(input, error));
+        }
+
 #if DEBUG
         Headless.Configure(Environment.GetCommandLineArgs());
         if (!Headless.Active)

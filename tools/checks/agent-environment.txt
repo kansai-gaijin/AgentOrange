@@ -1,0 +1,15 @@
+# Agent sessions, of either provider, run their programs in UTF-8 and English, whatever language
+# Windows is set to, and with ripgrep on PATH once Agent Orange has put it in the agent files
+# folder's bin (#97). The download itself is from ripgrep's release, checked by its hash, and isn't
+# made in checks, so a stand-in rg.exe shows where it goes.
+seed "Environment project" 0 0 0
+agentsetup "Environment project"
+said "PYTHONUTF8=1"
+said "PYTHONIOENCODING=utf-8"
+said "VSLANG=1033"
+said "DOTNET_CLI_UI_LANGUAGE=en"
+said "chcp.com\q 65001 >nul & \qclaude\q -p"
+notsaid "\agent\bin;"
+writefile "(agent files)" "bin/rg.exe" "a stand-in"
+agentsetup "Environment project"
+said "\agent\bin;"

@@ -26,7 +26,8 @@ public partial class MainWindow
         "Agent Orange holds the whole design of the game: there is no separate design document. Start with get_project, "
         + "then read the cards that matter to your work with read_card (a card's document is its design, in Markdown), and the tasks with list_tasks. "
         + "Keep it current as you work: tick tasks you finish with update_task, add tasks you find with add_task, add cards the design needs with add_card (such as the assets a slice needs), set an asset's status with update_asset as you work on it (In progress, then Needs review when it's ready for the person to judge), and write what you settle into the card's document with write_card. "
-        + "Settle nothing that's the person's to decide: ask them, then write it down. Never mark an asset as delivered.";
+        + "Settle nothing that's the person's to decide: ask them, then write it down. Never mark an asset as delivered. "
+        + "To wait for a file, a log line, a port or a process, use wait_for rather than sleep.";
 
     private async Task<JsonNode?> McpAnswerAsync(string projectId, string method, JsonNode? parameters) => method switch
     {
@@ -50,6 +51,8 @@ public partial class MainWindow
             ["name"] = Name,
             ["description"] = Description,
             ["inputSchema"] = new JsonObject { ["type"] = "object", ["properties"] = Properties.DeepClone(), ["required"] = new JsonArray([.. Required.Select(each => (JsonNode)each)]) },
+            // Claude Code's own way for a server to have a tool always loaded, as the session's config also asks.
+            ["_meta"] = new JsonObject { ["anthropic/alwaysLoad"] = true },
         };
     }
 
@@ -67,9 +70,9 @@ public partial class MainWindow
     private static string StatusId(string asked, bool forAgent)
     {
         var status = AssetStatus.All.FirstOrDefault(each => each.Id.Equals(asked.Replace(' ', '_'), StringComparison.OrdinalIgnoreCase) || each.Name.Equals(asked, StringComparison.OrdinalIgnoreCase)).Id
-            ?? throw new McpException(-32602, $"There's no status called {asked}. The statuses: {string.Join(", ", AssetStatus.All.Select(each => each.Name))}.");
+            ?? throw new McpException(-32602, $"status: there's no status called {asked}. The statuses: {string.Join(", ", AssetStatus.All.Select(each => each.Name))}.");
         if (forAgent && status == AssetStatus.Delivered)
-            throw new McpException(-32602, "Only the person marks an asset delivered, once they've judged it. Set it to Needs review when it's ready for them.");
+            throw new McpException(-32602, "status: only the person marks an asset delivered, once they've judged it. Set it to Needs review when it's ready for them.");
         return status;
     }
     private const string CardNote = "The card's name, or its id. Leave out for the Overview.";
@@ -130,25 +133,39 @@ public partial class MainWindow
         new("list_tools", "The creative tools set up on this PC, such as Blender, Aseprite, ArmorPaint and Material Maker, and the game's engine, such as Unreal Engine, and whether each is open and its MCP answers.",
             [], [], (_, _) => "", (project, _) => ListToolsForAgentAsync(project)),
         new("open_tool", "Opens a creative tool in the project's folder, or the game's engine with its project, if it isn't open, and waits until its MCP answers. Then tool_tools and use_tool can use it.",
-            new JsonObject { ["tool"] = Text("The tool's name, such as Blender or Aseprite.") }, ["tool"], (_, _) => "", OpenToolForAgentAsync),
+            new JsonObject { ["tool"] = Text("The tool's name, such as Blender or Aseprite."), ["in_front"] = Flag("Bring its window in front once it's open, as focus_tool does.") }, ["tool"], (_, _) => "", OpenToolForAgentAsync),
+        new("focus_tool", "Brings an open creative tool's or engine's window in front, and says whether it now is. For timed work, such as a play test or a frame-rate check: some tools slow right down while their window is behind others.",
+            new JsonObject { ["tool"] = Text("The tool's name, such as Unreal Engine or Blender.") }, ["tool"], (_, _) => "", FocusToolForAgentAsync),
         new("tool_tools", "What an open creative tool or engine can do: its own tools, with their arguments, for use_tool.",
             new JsonObject { ["tool"] = Text("The tool's name.") }, ["tool"], (_, _) => "", ToolToolsAsync),
         new("use_tool", "Uses one of an open creative tool's or engine's own tools, as tool_tools lists them, and gives back what it gave, pictures included.",
             new JsonObject { ["tool"] = Text("The tool's name, such as Blender."), ["name"] = Text("Its tool to use, from tool_tools."), ["arguments"] = new JsonObject { ["type"] = "object", ["description"] = "That tool's arguments." } },
             ["tool", "name"], (_, _) => "", UseToolAsync),
+
+        // Waiting, instead of sleep.
+        WaitForTool(),
     ];
 
     private async Task<JsonObject> McpCallAsync(string projectId, string name, JsonObject given)
     {
-        if (McpTools.FirstOrDefault(tool => tool.Name == name) is not { } tool) throw new McpException(-32602, $"There's no tool called {name}.");
+        var tools = McpTools;
+        if (tools.FirstOrDefault(tool => tool.Name == name) is not { } tool)
+        {
+            throw new McpException(-32602, $"Agent Orange has no tool called {name}{(Closest(name, tools.Select(each => each.Name)) is { } close ? $" (did you mean {close}?)" : "")}. Its tools: {string.Join(", ", tools.Select(each => each.Name))}.");
+        }
         if (_database.ListProjects().FirstOrDefault(project => project.Id == projectId) is not { } project)
         {
             return ToolResult("This session isn't for a project Agent Orange has. Start the conversation from a project.", error: true);
         }
         try
         {
+            given = CheckedArguments(tool, given);
             var result = tool.RunAsync is { } runAsync ? await runAsync(project, given) : tool.Run(project, given);
             return result is JsonObject made ? made : ToolResult(result.ToString() ?? "");
+        }
+        catch (McpMissingArgument missing) when (tool.Properties.ContainsKey(missing.Name))
+        {
+            return ToolResult(Needs(tool, missing.Name), error: true);
         }
         catch (McpException error)
         {
@@ -165,24 +182,37 @@ public partial class MainWindow
 
     private static string? Given(JsonObject given, string name) => given[name] is JsonValue value && value.TryGetValue<string>(out var text) ? text.Trim() : null;
 
+    // Said in full by the call, from the tool's own description of the argument.
     private static string Required(JsonObject given, string name) =>
-        Given(given, name) is { Length: > 0 } text ? text : throw new McpException(-32602, $"Say {name}.");
+        Given(given, name) is { Length: > 0 } text ? text : throw new McpMissingArgument(name);
 
     private static string Page(JsonObject given)
     {
         var asked = Required(given, "page");
         if (asked.Equals("Overview", StringComparison.OrdinalIgnoreCase)) return "Overview";
         return CardPages.Keys.FirstOrDefault(page => page.Equals(asked, StringComparison.OrdinalIgnoreCase)
-            || CardPages[page].One.Equals(asked, StringComparison.OrdinalIgnoreCase)) ?? throw new McpException(-32602, $"There's no page called {asked}. {PageNote}");
+            || CardPages[page].One.Equals(asked, StringComparison.OrdinalIgnoreCase)) ?? throw new McpException(-32602, $"page: there's no page called {asked}. The pages: Overview, {string.Join(", ", CardPages.Keys)}.");
     }
 
-    private BoardCard FindCard(Project project, string page, string asked)
+    // The most names a refusal lists; past that, it says how to find one.
+    private const int ListedNames = 30;
+
+    private BoardCard FindCard(Project project, string page, string asked, string argument = "card")
     {
         var cards = _database.ListCards(project.Id, _database.ProjectStage(project.Id), page.ToLowerInvariant());
         return cards.FirstOrDefault(card => SameId(card.Id, asked))
             ?? cards.FirstOrDefault(card => CardName(card, page).Equals(asked, StringComparison.OrdinalIgnoreCase))
             ?? cards.FirstOrDefault(card => CardName(card, page).StartsWith(asked, StringComparison.OrdinalIgnoreCase))
-            ?? throw new McpException(-32602, $"{page} has no card called {asked}. Its cards: {string.Join(", ", cards.Select(card => CardName(card, page)))}.");
+            ?? throw new McpException(-32602, $"{argument}: {page} has no card called {asked}. " + NamesOrHowToFind(page, [.. cards.Select(card => CardName(card, page))], asked));
+    }
+
+    // A page's card names, when there are few enough to list, or the ones like what was asked and how to find the rest.
+    private static string NamesOrHowToFind(string page, List<string> names, string asked)
+    {
+        if (names.Count == 0) return $"{page} has no cards yet.";
+        if (names.Count <= ListedNames) return $"Its cards: {string.Join(", ", names)}.";
+        var like = names.Where(name => name.Contains(asked, StringComparison.OrdinalIgnoreCase) || asked.Contains(name, StringComparison.OrdinalIgnoreCase)).Take(10).ToList();
+        return $"It has {names.Count} cards{(like.Count > 0 ? $", such as {string.Join(", ", like)}" : "")}. Find one with search, or list_cards page {page}.";
     }
 
     // The card asked for, or the Overview, and where its document is kept.
@@ -230,44 +260,75 @@ public partial class MainWindow
         said.AppendLine("## Game settings");
         foreach (var (name, value) in settings) said.AppendLine($"- {name}: {(value.Length > 0 ? value : "not decided yet")}");
 
+        // Counts, and names only for pages short enough to read at a glance: a project of hundreds
+        // of assets once made this answer 37 KB, most of it one line of asset names.
         said.AppendLine();
         said.AppendLine("## Pages");
         var overview = _database.GetDocument(project.Id, LocalDatabase.BoardKey(stage, BoardPart("Overview")));
         said.AppendLine($"- Overview: the game as a whole, {WordsIn(overview)} words. Read it with read_card page Overview.");
         foreach (var page in CardPages.Keys)
         {
-            var cards = _database.ListCards(project.Id, stage, page.ToLowerInvariant());
-            said.AppendLine($"- {page} ({cards.Count}): {(cards.Count == 0 ? "none yet" : string.Join(", ", cards.Select(card => CardName(card, page))))}");
+            var cards = _database.ListCards(project.Id, stage, page == AssetsPage ? AssetsPart : page.ToLowerInvariant());
+            var counted = page == AssetsPage && cards.Count > 0 ? $" ({AssetStatusCounts(project, cards)})" : "";
+            if (cards.Count == 0) said.AppendLine($"- {page}: none yet");
+            else if (cards.Count <= ListedNames) said.AppendLine($"- {page}, {cards.Count}{counted}: {string.Join(", ", cards.Select(card => CardName(card, page)))}");
+            else said.AppendLine($"- {page}, {cards.Count}{counted}. Find them with search, or list_cards page {page}{(page == AssetsPage ? " (with status for one status)" : "")}.");
         }
 
         said.AppendLine();
         said.AppendLine("## Tasks");
         var tasks = _database.ListTasks(project.Id, stage);
         said.AppendLine($"{tasks.Count(each => each.Task.Done)} of {tasks.Count} done.");
-        foreach (var (id, milestone) in _database.ListMilestones(project.Id, stage))
+        var milestones = _database.ListMilestones(project.Id, stage);
+        foreach (var (id, milestone) in milestones.Take(ListedMilestones))
         {
             var inIt = tasks.Where(each => each.Task.Milestone == id).ToList();
             said.AppendLine($"- {milestone.Name}: {inIt.Count(each => each.Task.Done)} of {inIt.Count}");
         }
+        if (milestones.Count > ListedMilestones) said.AppendLine($"- and {milestones.Count - ListedMilestones} more milestones, which list_tasks shows.");
 
+        // The newest first, as those are the ones being worked on.
         if (ProjectFolder(project.Id) is { } inFolder && Directory.Exists(Path.Combine(inFolder, "docs")))
         {
-            var documents = Directory.EnumerateFiles(Path.Combine(inFolder, "docs"), "*.md", SearchOption.AllDirectories).Select(file => Path.GetRelativePath(inFolder, file).Replace('\\', '/')).ToList();
+            var documents = new DirectoryInfo(Path.Combine(inFolder, "docs")).EnumerateFiles("*.md", SearchOption.AllDirectories)
+                .OrderByDescending(file => file.LastWriteTimeUtc).Select(file => Path.GetRelativePath(inFolder, file.FullName).Replace('\\', '/')).ToList();
             if (documents.Count > 0)
             {
                 said.AppendLine();
                 said.AppendLine("## Documents in the folder");
-                said.AppendLine("Read these as files. Documents link to them as doc:path.");
-                foreach (var document in documents) said.AppendLine($"- {document}");
+                said.AppendLine(documents.Count <= ListedDocuments
+                    ? "Read these as files. Documents link to them as doc:path."
+                    : $"{documents.Count} in docs, the {ListedDocuments} changed last first. Read them as files; documents link to them as doc:path.");
+                foreach (var document in documents.Take(ListedDocuments)) said.AppendLine($"- {document}");
+                if (documents.Count > ListedDocuments) said.AppendLine($"- and {documents.Count - ListedDocuments} more in docs.");
             }
         }
-        return said.ToString();
+
+        // Whatever the project's size: names and settings can still run long.
+        var whole = said.ToString();
+        if (Encoding.UTF8.GetByteCount(whole) <= LongestProjectAnswer) return whole;
+        var cut = whole[..Math.Min(whole.Length, LongestProjectAnswer - 200)];
+        return cut[..Math.Max(0, cut.LastIndexOf('\n'))] + "\n\n(Cut short, to stay small. search, list_cards, list_tasks and read_card give the rest.)\n";
+    }
+
+    private const int ListedMilestones = 20;
+    private const int ListedDocuments = 15;
+    private const int LongestProjectAnswer = 8000;
+
+    // How many assets are at each status, such as "12 to do, 40 in progress".
+    private string AssetStatusCounts(Project project, List<BoardCard> cards)
+    {
+        var details = _database.ListAssetDetails(project.Id);
+        var delivered = _database.DeliveredAssets(project.Id);
+        var statuses = cards.Select(card => AssetStatus.Of(details.GetValueOrDefault(card.Id) ?? new AssetDetails(), delivered.Contains(card.Id))).ToList();
+        return string.Join(", ", AssetStatus.All.Select(status => (status.Name, Count: statuses.Count(each => each == status.Id))).Where(each => each.Count > 0)
+            .Select(each => $"{each.Count} {each.Name.ToLowerInvariant()}"));
     }
 
     private string ListCardsFor(Project project, string page, string? status)
     {
         if (page == "Overview") return "The Overview isn't a page of cards. Read it with read_card page Overview.";
-        if (status is not null && page != AssetsPage) throw new McpException(-32602, "status is for the Assets page only.");
+        if (status is not null && page != AssetsPage) throw new McpException(-32602, $"status is for page Assets only, and page was {page}.");
         var stage = _database.ProjectStage(project.Id);
         var cards = _database.ListCards(project.Id, stage, page.ToLowerInvariant());
         if (cards.Count == 0) return $"{page} has no cards yet.";
@@ -321,42 +382,28 @@ public partial class MainWindow
     private string AddCardFor(Project project, JsonObject given)
     {
         var page = Page(given);
-        if (page == "Overview") throw new McpException(-32602, "The Overview isn't a page of cards.");
+        if (page == "Overview") throw new McpException(-32602, $"page: the Overview isn't a page of cards, so it can't be added to. The pages of cards: {string.Join(", ", CardPages.Keys)}.");
         var name = Required(given, "name");
         var stage = _database.ProjectStage(project.Id);
         var part = page == AssetsPage ? AssetsPart : page.ToLowerInvariant();
         if (_database.ListCards(project.Id, stage, part).FirstOrDefault(card => CardName(card, page).Equals(name, StringComparison.OrdinalIgnoreCase)) is { } there)
         {
-            throw new McpException(-32602, $"{page} already has a card called {CardName(there, page)} (id {Short(there.Id)}). Write to it with write_card.");
+            throw new McpException(-32602, $"name: {page} already has a card called {CardName(there, page)} (id {Short(there.Id)}). Write to it with write_card, or give another name.");
         }
 
         // An asset's details are checked before anything is added, so a mistake adds nothing.
         AssetDetails? details = null;
         if (page == AssetsPage)
         {
-            string? type = null;
-            if (Given(given, "type") is { Length: > 0 } asked)
-            {
-                type = AssetTypes.SelectMany(group => group.Types).FirstOrDefault(each => each.Id.Equals(asked, StringComparison.OrdinalIgnoreCase) || each.Name.Equals(asked, StringComparison.OrdinalIgnoreCase)).Id
-                    ?? throw new McpException(-32602, $"There's no asset type called {asked}. The types: {string.Join(", ", AssetTypes.SelectMany(group => group.Types).Select(each => each.Name))}.");
-            }
-            string? owner = null;
-            if (Given(given, "belongs_to") is { Length: > 0 } ownerName)
-            {
-                var ownerPage = Given(given, "belongs_to_page") is { Length: > 0 } askedPage
-                    ? AssetOwnerPages.FirstOrDefault(each => each.Equals(askedPage, StringComparison.OrdinalIgnoreCase) || CardPages[each].One.Equals(askedPage, StringComparison.OrdinalIgnoreCase)) ?? throw new McpException(-32602, $"An asset can belong to a card on {string.Join(", ", AssetOwnerPages)}.")
-                    : throw new McpException(-32602, "Say belongs_to_page too: Story, Characters, Levels or Mechanics.");
-                owner = FindCard(project, ownerPage, ownerName).Id;
-            }
-            var due = Given(given, "due") is { Length: > 0 } day
-                ? (DateOnly.TryParseExact(day, "yyyy-MM-dd", out _) ? day : throw new McpException(-32602, "Give due as yyyy-mm-dd."))
-                : null;
+            var type = Given(given, "type") is { Length: > 0 } asked ? AssetTypeId(asked) : null;
+            var owner = Given(given, "belongs_to") is { Length: > 0 } ownerName ? OwnerId(project, given, ownerName) : null;
+            var due = Day(Given(given, "due"), "due") is { Length: > 0 } day ? day : null;
             var status = Given(given, "status") is { Length: > 0 } askedStatus ? StatusId(askedStatus, forAgent: true) : AssetStatus.ToDo;
             details = new AssetDetails(Type: type, Owner: owner, Tags: TagIds(project, Given(given, "tags")), Due: due, Status: status);
         }
-        else if (Given(given, "type") is { Length: > 0 } || Given(given, "belongs_to") is { Length: > 0 } || Given(given, "due") is { Length: > 0 } || Given(given, "tags") is { Length: > 0 } || Given(given, "status") is { Length: > 0 })
+        else if (new[] { "type", "belongs_to", "belongs_to_page", "due", "tags", "status" }.Where(each => Given(given, each) is { Length: > 0 }).ToList() is { Count: > 0 } onlyAssets)
         {
-            throw new McpException(-32602, "type, belongs_to, tags, due and status are for assets only.");
+            throw new McpException(-32602, $"{string.Join(" and ", onlyAssets)} {(onlyAssets.Count == 1 ? "is" : "are")} for assets only, and page was {page}. Leave {(onlyAssets.Count == 1 ? "it" : "them")} out, or add the card to Assets.");
         }
 
         var added = _database.AddCard(project.Id, stage, part, name);
@@ -369,7 +416,7 @@ public partial class MainWindow
     private string RemoveCardFor(Project project, JsonObject given)
     {
         var page = Page(given);
-        if (page == "Overview") throw new McpException(-32602, "The Overview isn't a card.");
+        if (page == "Overview") throw new McpException(-32602, $"page: the Overview isn't a card, so it can't be removed. The pages of cards: {string.Join(", ", CardPages.Keys)}.");
         var asked = Required(given, "card");
 
         // Its whole name or id only: a deletion never guesses from the start of a name, as finding one to read does.
@@ -377,16 +424,16 @@ public partial class MainWindow
         var card = cards.FirstOrDefault(each => SameId(each.Id, asked))
             ?? cards.SingleOrDefault(each => CardName(each, page).Equals(asked, StringComparison.OrdinalIgnoreCase))
             ?? throw new McpException(-32602, cards.Count(each => CardName(each, page).Equals(asked, StringComparison.OrdinalIgnoreCase)) > 1
-                ? $"{page} has more than one card called {asked}. Give its id: list_cards shows them."
-                : $"{page} has no card called {asked}. Give its whole name or id.");
+                ? $"card: {page} has more than one card called {asked}. Give its id: list_cards shows them."
+                : $"card: {page} has no card called {asked}. Give its whole name or id; a removal never guesses from the start of a name. " + NamesOrHowToFind(page, [.. cards.Select(each => CardName(each, page))], asked));
         var name = CardName(card, page);
         if (page == AssetsPage && _database.GetAssetDeliverable(card.Id) is { } delivered)
-            throw new McpException(-32602, $"{name} is delivered as {delivered.Path}, so it isn't deleted. The person can delete it on the Assets page.");
+            throw new McpException(-32602, $"card: {name} is delivered as {delivered.Path}, so it isn't deleted. The person can delete it on the Assets page.");
         if (page != AssetsPage)
         {
             var owned = _database.ListCards(project.Id, _database.ProjectStage(project.Id), AssetsPage.ToLowerInvariant())
                 .Where(asset => _database.GetAssetDetails(asset.Id).Owner == card.Id).Select(asset => CardName(asset, AssetsPage)).ToList();
-            if (owned.Count > 0) throw new McpException(-32602, $"These assets belong to {name}: {string.Join(", ", owned)}. Change what they belong to, or remove them, first.");
+            if (owned.Count > 0) throw new McpException(-32602, $"card: {(owned.Count == 1 ? "this asset belongs" : $"these {owned.Count} assets belong")} to {name}: {string.Join(", ", owned.Take(ListedNames))}{(owned.Count > ListedNames ? ", and more" : "")}. Change what they belong to with update_asset, or remove them, first.");
         }
         _database.DeleteCard(project.Id, card);
         ForgetCardPicture(card.Id);
@@ -404,36 +451,32 @@ public partial class MainWindow
         {
             var status = StatusId(askedStatus, forAgent: true);
             if (AssetStatus.Of(details, _database.GetAssetDeliverable(card.Id) is not null) == AssetStatus.Delivered && status != AssetStatus.Delivered)
-                throw new McpException(-32602, $"{CardName(card, AssetsPage)} is delivered, which the person decided. Ask them before it's worked on again; they can change its status on the Assets page.");
+                throw new McpException(-32602, $"status: {CardName(card, AssetsPage)} is delivered, which the person decided. Ask them before it's worked on again; they can change its status on the Assets page.");
             details = details with { Status = status };
         }
-        if (Given(given, "type") is { Length: > 0 } asked)
-        {
-            details = details with
-            {
-                Type = AssetTypes.SelectMany(group => group.Types).FirstOrDefault(each => each.Id.Equals(asked, StringComparison.OrdinalIgnoreCase) || each.Name.Equals(asked, StringComparison.OrdinalIgnoreCase)).Id
-                    ?? throw new McpException(-32602, $"There's no asset type called {asked}. The types: {string.Join(", ", AssetTypes.SelectMany(group => group.Types).Select(each => each.Name))}."),
-            };
-        }
-        if (Given(given, "belongs_to") is { } ownerName)
-        {
-            if (ownerName.Length == 0) details = details with { Owner = null };
-            else
-            {
-                var ownerPage = Given(given, "belongs_to_page") is { Length: > 0 } askedPage
-                    ? AssetOwnerPages.FirstOrDefault(each => each.Equals(askedPage, StringComparison.OrdinalIgnoreCase) || CardPages[each].One.Equals(askedPage, StringComparison.OrdinalIgnoreCase)) ?? throw new McpException(-32602, $"An asset can belong to a card on {string.Join(", ", AssetOwnerPages)}.")
-                    : throw new McpException(-32602, "Say belongs_to_page too: Story, Characters, Levels or Mechanics.");
-                details = details with { Owner = FindCard(project, ownerPage, ownerName).Id };
-            }
-        }
-        if (Given(given, "due") is { } day)
-        {
-            details = details with { Due = day.Length == 0 ? null : DateOnly.TryParseExact(day, "yyyy-MM-dd", out _) ? day : throw new McpException(-32602, "Give due as yyyy-mm-dd.") };
-        }
+        if (Given(given, "type") is { Length: > 0 } asked) details = details with { Type = AssetTypeId(asked) };
+        if (Given(given, "belongs_to") is { } ownerName) details = details with { Owner = ownerName.Length == 0 ? null : OwnerId(project, given, ownerName) };
+        if (Day(Given(given, "due"), "due") is { } day) details = details with { Due = day.Length == 0 ? null : day };
         if (Given(given, "tags") is { } tags) details = details with { Tags = TagIds(project, tags) };
         _database.SetAssetDetails(card.Id, details);
         McpChanged(project);
         return $"Changed {CardName(card, AssetsPage)}. {DescribeAsset(project, card)}";
+    }
+
+    private static string AssetTypeId(string asked) =>
+        AssetTypes.SelectMany(group => group.Types).FirstOrDefault(each => each.Id.Equals(asked, StringComparison.OrdinalIgnoreCase) || each.Name.Equals(asked, StringComparison.OrdinalIgnoreCase)).Id
+            ?? throw new McpException(-32602, $"type: there's no asset type called {asked}. The types: {string.Join(", ", AssetTypes.SelectMany(group => group.Types).Select(each => each.Name))}.");
+
+    // The card an asset belongs to, on the page belongs_to_page names.
+    private string OwnerId(Project project, JsonObject given, string ownerName)
+    {
+        var pages = string.Join(", ", AssetOwnerPages);
+        var askedPage = Given(given, "belongs_to_page") is { Length: > 0 } page
+            ? page
+            : throw new McpException(-32602, $"belongs_to needs belongs_to_page too: the page the card {ownerName} is on, one of {pages}.");
+        var ownerPage = AssetOwnerPages.FirstOrDefault(each => each.Equals(askedPage, StringComparison.OrdinalIgnoreCase) || CardPages[each].One.Equals(askedPage, StringComparison.OrdinalIgnoreCase))
+            ?? throw new McpException(-32602, $"belongs_to_page: an asset can belong to a card on {pages}, not {askedPage}.");
+        return FindCard(project, ownerPage, ownerName, "belongs_to").Id;
     }
 
     // Tags named, as the project's own, made when there's none of that name yet. All are checked
@@ -446,7 +489,7 @@ public partial class MainWindow
         foreach (var name in names)
         {
             if (have.Any(tag => tag.Name.Equals(name, StringComparison.CurrentCultureIgnoreCase))) continue;
-            if (_database.AssetTagProblem(project.Id, name) is { } problem) throw new McpException(-32602, $"The tag {name}: {problem}");
+            if (_database.AssetTagProblem(project.Id, name) is { } problem) throw new McpException(-32602, $"tags: the tag {name} can't be made: {problem}");
         }
         return [.. names.Select(name => (have.FirstOrDefault(tag => tag.Name.Equals(name, StringComparison.CurrentCultureIgnoreCase)) ?? _database.AddAssetTag(project.Id, name)).Id)];
     }
@@ -524,21 +567,27 @@ public partial class MainWindow
         return (milestones.FirstOrDefault(each => each.Id == asked || each.Milestone.Name.Equals(asked, StringComparison.OrdinalIgnoreCase)).Id
             ?? milestones.FirstOrDefault(each => Regex.IsMatch(each.Milestone.Name, $@"^{Regex.Escape(asked)}\b", RegexOptions.IgnoreCase)).Id
             ?? milestones.FirstOrDefault(each => each.Milestone.Name.StartsWith(asked, StringComparison.OrdinalIgnoreCase)).Id)
-            ?? throw new McpException(-32602, $"There's no milestone called {asked}. They are: {string.Join("; ", milestones.Select(each => each.Milestone.Name))}.");
+            ?? throw new McpException(-32602, milestones.Count == 0
+                ? $"milestone: there's no milestone called {asked}, as the stage has none yet. Leave it out, or ask the person to add one."
+                : $"milestone: there's no milestone called {asked}. They are: {string.Join("; ", milestones.Take(ListedNames).Select(each => each.Milestone.Name))}{(milestones.Count > ListedNames ? "; and more, which list_tasks shows" : "")}.");
     }
 
     private string? CardId(Project project, JsonObject given)
     {
         if (Given(given, "card") is not { } asked) return null;
         if (asked.Length == 0) return "";
+        if (Given(given, "page") is not { Length: > 0 })
+            throw new McpException(-32602, $"card needs page too: the page the card {asked} is on, one of {string.Join(", ", CardPages.Keys)}.");
         return FindCard(project, Page(given), asked).Id;
     }
 
-    private static string? Day(string? asked)
+    private static string? Day(string? asked, string argument)
     {
         if (asked is null) return null;
         if (asked.Length == 0) return "";
-        return DateOnly.TryParseExact(asked, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _) ? asked : throw new McpException(-32602, "Give the day as yyyy-mm-dd.");
+        return DateOnly.TryParseExact(asked, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _)
+            ? asked
+            : throw new McpException(-32602, $"{argument} is a day as yyyy-mm-dd, such as {DateTime.Today.AddDays(7):yyyy-MM-dd}; it was {asked}.");
     }
 
     private string AddTaskFor(Project project, JsonObject given)
@@ -547,7 +596,7 @@ public partial class MainWindow
         var milestone = MilestoneId(project, Given(given, "milestone")) is { Length: > 0 } chosen ? chosen : null;
         var order = _database.ListTasks(project.Id, stage).Where(each => each.Task.Milestone == milestone).Select(each => each.Task.Order).DefaultIfEmpty(0).Max() + 1;
         var card = CardId(project, given) is { Length: > 0 } cardId ? cardId : null;
-        var due = Day(Given(given, "due")) is { Length: > 0 } day ? day : null;
+        var due = Day(Given(given, "due"), "due") is { Length: > 0 } day ? day : null;
         var id = _database.SaveTask(project.Id, null, new ProjectTask(stage, Required(given, "title"), Given(given, "notes") is { Length: > 0 } notes ? notes : null, due, false, milestone, order, card));
         McpChanged(project);
         return $"Added: {TaskSummary(project, id, _database.ListTasks(project.Id, stage).First(each => each.Id == id).Task)}";
@@ -557,12 +606,12 @@ public partial class MainWindow
     {
         var id = Required(given, "id");
         var tasks = _database.ListTasks(project.Id, _database.ProjectStage(project.Id));
-        if (tasks.FirstOrDefault(each => SameId(each.Id, id)) is not { Task: not null } found) throw new McpException(-32602, $"There's no task {id}. list_tasks gives their ids.");
+        if (tasks.FirstOrDefault(each => SameId(each.Id, id)) is not { Task: not null } found) throw new McpException(-32602, $"id: there's no task {id}. list_tasks gives each task's id, after the word task, such as (task 3f2a9c).");
         var task = found.Task;
         if (given["done"] is JsonValue done && done.TryGetValue<bool>(out var isDone)) task = task with { Done = isDone };
         if (Given(given, "title") is { Length: > 0 } title) task = task with { Title = title };
         if (Given(given, "notes") is { } notes) task = task with { Notes = notes.Length > 0 ? notes : null };
-        if (Day(Given(given, "due")) is { } due) task = task with { Due = due.Length > 0 ? due : null };
+        if (Day(Given(given, "due"), "due") is { } due) task = task with { Due = due.Length > 0 ? due : null };
         if (MilestoneId(project, Given(given, "milestone")) is { } milestone) task = task with { Milestone = milestone.Length > 0 ? milestone : null };
         if (CardId(project, given) is { } card) task = task with { Card = card.Length > 0 ? card : null };
         if (given["position"] is JsonValue position && position.TryGetValue<int>(out var place))
@@ -631,7 +680,7 @@ public partial class MainWindow
             stored = card is null ? null : _database.GetCardImage(card.Id);
         }
         else stored = _database.GetDocumentPicture(id);
-        if (stored is null) throw new McpException(-32602, $"There's no picture {id}.");
+        if (stored is null) throw new McpException(-32602, $"id: there's no picture {id}. Give what follows picture: in a document's ![](picture:...), or card- and a card's id, as read_card gives it.");
         var bytes = Convert.FromBase64String(stored);
         var type = bytes.Length > 3 && bytes[0] == 0x89 && bytes[1] == 0x50 ? "image/png" : "image/jpeg";
         return new JsonObject { ["content"] = new JsonArray(new JsonObject { ["type"] = "image", ["data"] = stored, ["mimeType"] = type }) };
