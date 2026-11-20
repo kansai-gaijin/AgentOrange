@@ -1,0 +1,35 @@
+# What an agent is doing and waiting on (#111). A turn that ends with work it started still running
+# (a command in the background, a helper agent) is waiting on it, not done: the line above the box
+# says so with Details and Stop, the list says Waiting, and the finished notice waits until none is
+# left. Claude Code's and Codex's own events are fed in from background-work.jsonl beside this.
+seed "Background project" 0 0 0
+click "Agents"
+window "Agents"
+agent "Background project" "Run the tests and get the level layout reviewed"
+feed "background-work.jsonl" "started"
+agentstate
+said "Working: no, background work running: 2, waiting on it: yes, unseen: no"
+said "Command running: Run the test suite until it finishes | npm test -- --reporter=dot"
+said "Agent running: Review the level layout"
+# Each once, however many ways Claude Code tells of it.
+notsaid "Command completed"
+# The helper agent ends, and Claude Code takes that up in a turn of its own: still waiting on the tests.
+feed "background-work.jsonl" "agent-done"
+agentstate
+said "Working: no, background work running: 1, waiting on it: yes, unseen: no"
+said "Agent completed: Review the level layout"
+# The tests end too, and that turn ends with nothing left: now it's done, and the person is told.
+feed "background-work.jsonl" "tests-done"
+agentstate
+said "Working: no, background work running: 0, waiting on it: no, unseen: yes"
+# Codex: a helper agent is a thread of its own, and what it does stays out of this timeline.
+agent "Background project" "Get the forest level's notes written" codex
+feed "background-work.jsonl" "codex-started"
+agentstate
+said "Working: no, background work running: 1, waiting on it: yes, unseen: no"
+said "Agent running: Write the design notes for the forest level"
+expectnot "rg forest docs"
+feed "background-work.jsonl" "codex-done"
+sleep 6000
+agentstate
+said "Working: no, background work running: 0, waiting on it: no, unseen: yes"

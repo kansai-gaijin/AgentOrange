@@ -50,6 +50,8 @@ namespace AgentOrange;
 ///   refuses "Bash" "sed -i s/a/b/ f"       allows "Bash" "ls"   (a shell command past the agents' patch-script hook)
 ///   agentsetup "Project"                   (the settings, MCP servers and briefing an agent session gets)
 ///   writefile "Project" "path" "text"      after 1500 command...   (a file in its folder; a command run later, not waited for)
+///   agent "Project" "message" [codex]      feed "recorded.jsonl" "part"      agentstate
+///                       (a conversation sent a message with no program behind it, what its program says fed in from a recording beside the script, and how it stands)
 ///   (In said, refuses, allows and writefile, \n is a line break, \t a tab and \q a double quote.)
 /// </summary>
 internal static partial class Headless
@@ -191,6 +193,24 @@ internal static partial class Headless
                 if (size >= int.Parse(parts[1])) throw new InvalidOperationException($"It said {size} bytes, not under {parts[1]}.");
                 break;
         }
+    }
+
+    // The lines of one part of a recording, the part after "# name" up to the next "# ".
+    private static List<string> FeedLines(string file, string part)
+    {
+        var lines = new List<string>();
+        var inPart = false;
+        foreach (var line in File.ReadAllLines(file))
+        {
+            if (line.StartsWith("# ", StringComparison.Ordinal))
+            {
+                inPart = line[2..].Trim() == part;
+                continue;
+            }
+            if (inPart && line.Trim().Length > 0) lines.Add(line);
+        }
+        if (lines.Count == 0) throw new InvalidOperationException($"{Path.GetFileName(file)} has no part called {part}.");
+        return lines;
     }
 
     // A command is one line with no double quotes in its words, so \n stands for a line break, \t for a tab and \q for a double quote.
@@ -432,6 +452,24 @@ internal static partial class Headless
                 summed.ReadForChecks("""{"type":"system","subtype":"compact_boundary","compact_metadata":{"pre_tokens":180000,"post_tokens":20000}}""");
                 say($"Next: {summed.AfterSummary("first")}");
                 say($"Then: {summed.AfterSummary("second")}");
+                break;
+            // A conversation about a project with a message sent but no program behind it, opened in the
+            // agents window if it's open: agent "Project" "Build the game", or with codex after it, as Codex.
+            case "agent":
+                Main().AgentForChecks(parts[1], parts[2], parts.Length > 3 && parts[3] == "codex");
+                break;
+            // What its program says, from a part of a file of recorded lines beside the script, one event
+            // a line, each part after a line "# name": feed "background-work.jsonl" "started".
+            case "feed":
+                foreach (var recorded in FeedLines(Path.Combine(Path.GetDirectoryName(_script)!, parts[1]), parts[2])) Main().CheckConversation.ReadForChecks(recorded);
+                break;
+            // What the conversation would have sent its program, and how it stands.
+            case "agentstate":
+                var checking = Main().CheckConversation;
+                foreach (var wrote in checking.WrittenForChecks) say($"Sent: {wrote}");
+                checking.WrittenForChecks.Clear();
+                say($"Working: {(checking.IsWorking ? "yes" : "no")}, background work running: {checking.BackgroundJobs}, waiting on it: {(checking.IsWaitingOnWork ? "yes" : "no")}, unseen: {(checking.Unseen ? "yes" : "no")}");
+                foreach (var work in checking.Work) say($"{work.Kind} {work.State}{(work.InBackground ? "" : " (the turn waits on it)")}: {AgentConversation.Describe(work)}{(work.Command is { } line ? $" | {line}" : "")}");
                 break;
             // Writes a file in the project's folder, such as one an agent waits for.
             case "writefile":

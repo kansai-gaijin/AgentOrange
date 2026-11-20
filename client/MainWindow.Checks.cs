@@ -166,6 +166,23 @@ public partial class MainWindow
         return given;
     }
 
+    private AgentConversation? _checkConversation;
+
+    /// <summary>
+    /// A conversation about a project with a message sent, as Claude Code or Codex would have it, but
+    /// with no program behind it: what it says back is fed in from recorded lines. Shown in the agents
+    /// window when it's open.
+    /// </summary>
+    internal void AgentForChecks(string projectName, string text, bool codex)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        _checkConversation = NewConversation(project);
+        _checkConversation.SentForChecks(text, codex);
+        _agentsWindow?.ShowForChecks(_checkConversation);
+    }
+
+    internal AgentConversation CheckConversation => _checkConversation ?? throw new InvalidOperationException("Start a conversation with agent first.");
+
     /// <summary>Opens a project's page as if its check had found everything in order, without running one.</summary>
     internal void OpenForChecks(string name)
     {

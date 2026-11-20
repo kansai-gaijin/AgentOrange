@@ -136,20 +136,6 @@ public sealed partial class AgentConversation
 
     [JsonIgnore] public string? Folder { get; set; }
     [JsonIgnore] public bool IsWorking { get; private set; }
-
-    /// <summary>
-    /// Commands it started in the background that haven't ended. Claude Code says when each starts and
-    /// ends (task_started, task_notification), including one that ends while it's still working. Without
-    /// that, it's told by Claude Code starting a turn by itself when one ends, so each turn it starts on its
-    /// own counts one as ended. While there are some and it isn't working, it's waiting on them, not done.
-    /// </summary>
-    [JsonIgnore] public int BackgroundJobs { get; private set; }
-    private readonly HashSet<string> _backgroundIds = [];
-    private readonly HashSet<string> _endedIds = [];
-    private bool _tasksTold; // Claude Code says when its background commands start and end, so nothing is guessed.
-
-    /// <summary>The last command it started in the background, to say what may still be running.</summary>
-    [JsonIgnore] public string? LastBackgroundCommand { get; private set; }
     [JsonIgnore] public DateTimeOffset WorkingSince { get; private set; }
     [JsonIgnore] public bool IsWaiting => Items.Any(item => item.RequestState == AgentRequestState.Waiting && item.Kind is AgentItemKind.Approval or AgentItemKind.Question or AgentItemKind.Plan);
 
@@ -403,7 +389,7 @@ public sealed partial class AgentConversation
             return;
         }
         _process = null;
-        BackgroundJobs = 0; // They end with it.
+        EndAllWork(quietly: false); // It ends with it.
         process.Dispose();
         foreach (var item in Items.Where(item => item.RequestState == AgentRequestState.Waiting && item.Kind is AgentItemKind.Approval or AgentItemKind.Question).ToList())
         {
@@ -464,6 +450,7 @@ public sealed partial class AgentConversation
         if (_process is not { } process) return;
         _restarting = true;
         _process = null;
+        EndAllWork(quietly: true);
         try
         {
             process.Kill(entireProcessTree: true);
@@ -587,7 +574,7 @@ public sealed partial class AgentConversation
     public bool Settle(bool settled)
     {
         if (settled == Settled) return true;
-        if (settled && (IsWorking || IsWaiting)) return false;
+        if (settled && (IsWorking || IsWaiting || IsWaitingOnWork)) return false;
         Settled = settled;
         SettledAt = settled ? DateTimeOffset.UtcNow : null;
         if (settled) Restart(); // Quietly: it was finished anyway.
@@ -737,6 +724,9 @@ public sealed partial class AgentConversation
 
     private void Write(JsonObject message)
     {
+#if DEBUG
+        if (_process is null && Headless.Active) WrittenForChecks.Add(message.ToJsonString());
+#endif
         if (_process is not { } process) return;
         try
         {
@@ -752,8 +742,22 @@ public sealed partial class AgentConversation
     // What comes back
 
 #if DEBUG
-    /// <summary>For headless checks: a line as Claude Code would send it.</summary>
+    /// <summary>For headless checks: a line as Claude Code (or Codex, once sent to as Codex) would send it.</summary>
     internal void ReadForChecks(string line) => Read(line);
+
+    /// <summary>For headless checks: a message sent, with no program behind it, whose replies are then fed in with <see cref="ReadForChecks"/>.</summary>
+    internal void SentForChecks(string text, bool codex)
+    {
+        _codex = codex;
+        if (codex) _codexThread = "check-thread";
+        Add(new AgentItem { Id = NewId(), Kind = AgentItemKind.User, Text = text });
+        if (Title.Length == 0) Title = text;
+        _turns++;
+        SetWorking(true);
+    }
+
+    /// <summary>For headless checks: what it would have sent its program, with none running.</summary>
+    internal List<string> WrittenForChecks { get; } = [];
 #endif
 
     // One JSON event per line. Anything unknown is skipped, as its events change between versions.
@@ -776,6 +780,13 @@ public sealed partial class AgentConversation
             return;
         }
         if (Str(json, "session_id") is { Length: > 0 } session && session != SessionId) SessionId = session;
+
+        // Its background work, its helper agents' included.
+        if (Str(json, "type") == "system" && Str(json, "subtype") is "task_started" or "task_updated" or "task_progress" or "task_notification" or "background_tasks_changed")
+        {
+            ReadTask(json);
+            return;
+        }
 
         // What its own subagents do stays inside them.
         if (json["parent_tool_use_id"] is JsonValue) return;
@@ -830,6 +841,7 @@ public sealed partial class AgentConversation
                 _limits.Clear();
                 _stopping = false;
                 _turns = Math.Max(0, _turns - 1);
+                EndForegroundWork();
                 AskForUsage();
                 SetWorking(_turns > 0);
                 if (_turns > 0) _ = SettleQueuedAsync(_lines);
@@ -855,17 +867,6 @@ public sealed partial class AgentConversation
         {
             case "init":
                 AskForUsage();
-                break;
-            case "task_started" when Str(json, "tool_use_id") is { } begun && _backgroundIds.Contains(begun):
-                _tasksTold = true;
-                break;
-            case "task_notification" when Str(json, "tool_use_id") is { } ended && _backgroundIds.Contains(ended):
-                _tasksTold = true;
-                if (_endedIds.Add(ended))
-                {
-                    BackgroundJobs = Math.Max(0, BackgroundJobs - 1);
-                    StateChanged?.Invoke();
-                }
                 break;
             case "status" when Str(json, "status") == "compacting":
                 Retrying = "Making room in its memory";
@@ -905,7 +906,7 @@ public sealed partial class AgentConversation
                 // Nothing was sent, so it started this turn itself: one of its background commands ended.
                 if (!IsWorking && !_codex)
                 {
-                    if (!_tasksTold) BackgroundJobs = Math.Max(0, BackgroundJobs - 1);
+                    GuessOneEnded();
                     _turns = 1;
                     SetWorking(true);
                 }
@@ -1029,15 +1030,11 @@ public sealed partial class AgentConversation
                 default:
                     if (Str(part, "type") != "tool_use" || Str(part, "name") is not { } name || name == "AskUserQuestion" || name == "ExitPlanMode" || Str(part, "id") is not { } toolId) break;
                     NoteSkills(toolId, name, part["input"] as JsonObject);
-                    if (name is "Bash" or "PowerShell" or "Monitor" && part["input"]?["run_in_background"]?.GetValueKind() == JsonValueKind.True && _backgroundIds.Add(toolId))
+                    NoteToolInput(toolId, name, part["input"] as JsonObject);
+                    if (WaitTitle(name, part["input"] as JsonObject) is { } waitsFor) StartWait(toolId, waitsFor);
+                    if (name is "KillShell" or "TaskStop")
                     {
-                        BackgroundJobs++;
-                        LastBackgroundCommand = Str(part["input"] as JsonObject, "command") ?? Str(part["input"] as JsonObject, "description");
-                        StateChanged?.Invoke();
-                    }
-                    else if (name is "KillShell" or "TaskStop" && BackgroundJobs > 0 && !_tasksTold)
-                    {
-                        BackgroundJobs--;
+                        GuessOneEnded();
                         StateChanged?.Invoke();
                     }
                     if (_byId.TryGetValue(toolId, out var started))
@@ -1108,6 +1105,7 @@ public sealed partial class AgentConversation
             tool.ToolState = part["is_error"]?.GetValueKind() == JsonValueKind.True ? AgentToolState.Failed : AgentToolState.Done;
             tool.Detail = Shortened(ResultText(part["content"]), LongestDetail);
             ItemChanged?.Invoke(tool);
+            EndWait(toolId, tool.ToolState == AgentToolState.Failed);
         }
     }
 
@@ -1200,6 +1198,7 @@ public sealed partial class AgentConversation
         if (IsWorking == working) return;
         IsWorking = working;
         if (working) WorkingSince = DateTimeOffset.UtcNow;
+        else TurnEnded();
         StateChanged?.Invoke();
 
         // T3's checkpoints: the folder as it was when the work began, and as it is when it ends.

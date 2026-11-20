@@ -349,6 +349,9 @@ public sealed partial class AgentConversation
             ReadCodexRequest(json["id"]!, method, parameters);
             return;
         }
+
+        // Its helper agents' threads say what they do too, which is theirs, not this one's timeline.
+        if (ReadCodexAgent(method, parameters)) return;
         switch (method)
         {
             case "item/agentMessage/delta" when Str(parameters, "itemId") is { } itemId:
@@ -524,6 +527,18 @@ public sealed partial class AgentConversation
                 var server = Str(item, "server") ?? "mcp";
                 var tool = Str(item, "tool") ?? "tool";
                 CodexTool(id, $"mcp__{server}__{tool}", $"{server}: {tool}", item, done, item["error"] is JsonObject failed ? Str(failed, "message") : item["result"]?.ToJsonString());
+                if (WaitTitle($"mcp__{server}__{tool}", item["arguments"] as JsonObject) is { } waitsFor)
+                {
+                    if (done) EndWait(id, item["error"] is JsonObject);
+                    else StartWait(id, waitsFor);
+                }
+                break;
+            case "collabAgentToolCall":
+                ReadCodexCollab(id, item, done);
+                break;
+            case "sleep" when item["durationMs"] is JsonValue sleeps && sleeps.TryGetValue<long>(out var ms):
+                if (done) EndWait(id, failed: false);
+                else StartWait(id, $"Wait {AgentsWindow.Took(TimeSpan.FromMilliseconds(ms))}");
                 break;
             case "webSearch":
                 CodexTool(id, "WebSearch", $"WebSearch  {Str(item, "query")}", item, done, null);
