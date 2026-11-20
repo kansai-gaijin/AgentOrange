@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -13,13 +14,16 @@ namespace AgentOrange;
 /// A project's tasks, in the stage it's at. Two kinds: ones people make, with notes, a day to have
 /// them done by and a milestone, ticked off by hand; and assets with a date to deliver them by, done
 /// once delivered, which only a person does. Milestones hold tasks, with what they're for and what
-/// has to be true for them to be done. The page shows them by milestone, or by when they're due.
+/// has to be true for them to be done. The page shows them by milestone, each folding away under
+/// its header, or by when they're due. Finished tasks are left out unless asked for. The page is
+/// read away from the window, and only the lines in view are built.
 /// </summary>
 public partial class MainWindow
 {
     private const string TasksPage = "Tasks";
+    private const double TasksWidth = 900;
 
-    private sealed record AssetTask(BoardCard Asset, AssetDetails Details, DateOnly Due, bool Done);
+    private sealed record AssetTask(BoardCard Asset, AssetDetails Details, DateOnly Due, bool Done, string What);
 
     private bool _tasksByDate; // Or by milestone, the way the page first shows them.
 
@@ -35,24 +39,53 @@ public partial class MainWindow
 
     private static DateOnly Today => DateOnly.FromDateTime(DateTime.Today);
 
-    private List<AssetTask> AssetTasks(Project project) =>
-    [
-        .. _database.ListCards(project.Id, _database.ProjectStage(project.Id), AssetsPart)
-            .Select(card => (Card: card, Details: _database.GetAssetDetails(card.Id)))
-            .Where(each => DueOf(each.Details) is not null)
-            .Select(each => new AssetTask(each.Card, each.Details, DueOf(each.Details)!.Value, _database.GetAssetDeliverable(each.Card.Id) is not null))
-            .OrderBy(task => task.Due)
-            .ThenBy(task => task.Asset.Name, StringComparer.CurrentCultureIgnoreCase),
-    ];
+    /// <summary>
+    /// What the Tasks page shows, read at once: both kinds of task, the milestones, the cards tasks
+    /// can be about, and on this PC which milestones are open and whether finished tasks show.
+    /// </summary>
+    private sealed record TasksData(
+        string Stage,
+        List<AssetTask> Assets,
+        List<(string Id, ProjectTask Task)> Made,
+        List<(string Id, Milestone Milestone)> Milestones,
+        Dictionary<string, (BoardCard Card, string Page)> Cards,
+        Dictionary<string, bool> Open,
+        bool ShowFinished)
+    {
+        public int DoneCount => Assets.Count(task => task.Done) + Made.Count(each => each.Task.Done);
 
-    private List<(string Id, ProjectTask Task)> MadeTasks(Project project) => _database.ListTasks(project.Id, _database.ProjectStage(project.Id));
+        public int AllCount => Assets.Count + Made.Count;
+    }
+
+    private TasksData ReadTasks(string projectId, string stage)
+    {
+        var stageCards = _database.ListStageCards(projectId, stage);
+        var owners = OwnerIndex(stageCards);
+        var details = _database.ListAssetDetails(projectId);
+        var delivered = _database.DeliveredAssets(projectId);
+        var assets = (stageCards.GetValueOrDefault(AssetsPart) ?? [])
+            .Select(card => (Card: card, Details: details.GetValueOrDefault(card.Id) ?? new AssetDetails()))
+            .Where(each => DueOf(each.Details) is not null)
+            .Select(each => new AssetTask(each.Card, each.Details, DueOf(each.Details)!.Value, AssetStatus.Of(each.Details, delivered.Contains(each.Card.Id)) == AssetStatus.Delivered, AssetWhat(each.Details, owners)))
+            .OrderBy(task => task.Due)
+            .ThenBy(task => task.Asset.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        return new TasksData(stage, assets, _database.ListTasks(projectId, stage), _database.ListMilestones(projectId, stage), owners, MilestonesOpen(projectId), ShowsFinished(projectId));
+    }
+
+    // What an asset is, and what it belongs to.
+    private static string AssetWhat(AssetDetails details, Dictionary<string, (BoardCard Card, string Page)> owners)
+    {
+        var what = AssetTypeName(details.Type) ?? "No type";
+        if (details.Owner is { } ownerId && owners.TryGetValue(ownerId, out var owner)) what += $" · {CardName(owner.Card, owner.Page)}";
+        return what;
+    }
 
     /// <summary>How many tasks are done, of how many, of both kinds, in the stage the project is at.</summary>
     internal (int Done, int All) TaskCounts(Project project)
     {
-        var assets = AssetTasks(project);
-        var made = MadeTasks(project);
-        return (assets.Count(task => task.Done) + made.Count(each => each.Task.Done), assets.Count + made.Count);
+        var data = ReadTasks(project.Id, _database.ProjectStage(project.Id));
+        return (data.DoneCount, data.AllCount);
     }
 
     private void OpenTasks(Project project)
@@ -62,31 +95,123 @@ public partial class MainWindow
         if (_openProject?.Id == project.Id) RenderProject(_openProject);
     }
 
+    // Kept on this PC, for each project: which milestones were opened or closed, and whether finished tasks show.
+
+    private static string OpenMilestonesSetting(string projectId) => $"tasks_milestones_open:{projectId}";
+
+    private static string ShowFinishedSetting(string projectId) => $"tasks_show_finished:{projectId}";
+
+    private Dictionary<string, bool> MilestonesOpen(string projectId)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, bool>>(_database.GetSetting(OpenMilestonesSetting(projectId)) is { Length: > 0 } kept ? kept : "{}") ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private void SetMilestoneOpen(string projectId, string milestoneId, bool open) =>
+        _database.ChangeSetting(OpenMilestonesSetting(projectId), kept =>
+        {
+            Dictionary<string, bool> choices;
+            try
+            {
+                choices = JsonSerializer.Deserialize<Dictionary<string, bool>>(kept is { Length: > 0 } ? kept : "{}") ?? [];
+            }
+            catch (JsonException)
+            {
+                choices = [];
+            }
+            choices[milestoneId] = open;
+            return JsonSerializer.Serialize(choices);
+        });
+
+    private bool ShowsFinished(string projectId) => _database.GetSetting(ShowFinishedSetting(projectId)) == "1";
+
+    // Open until it's closed. One whose tasks are all done starts closed, as there's nothing left in it to do.
+    private static bool IsOpen(TasksData data, string milestoneId, int done, int count) =>
+        data.Open.TryGetValue(milestoneId, out var open) ? open : !(count > 0 && done == count);
+
     // The page
+
+    /// <summary>The Tasks page of a stage as last read, and the list showing it, kept so it keeps its place.</summary>
+    private sealed class TasksPageView(string projectId, LazyList list)
+    {
+        public string ProjectId { get; } = projectId;
+
+        public LazyList List { get; } = list;
+
+        public StackPanel Heading { get; } = new() { MaxWidth = TasksWidth, Margin = new Thickness(40, 22, 40, 0) };
+
+        public TasksData? Data { get; set; }
+    }
+
+    private readonly Dictionary<string, TasksPageView> _tasksPageViews = [];
 
     private void AddTasksPage(StackPanel body, Project project)
     {
         var stage = _database.ProjectStage(project.Id);
-        var assets = AssetTasks(project);
-        var made = MadeTasks(project);
-        var milestones = _database.ListMilestones(project.Id, stage);
-        var (doneCount, allCount) = TaskCounts(project);
-        body.MaxWidth = 900;
-        body.Margin = new Thickness(40, 22, 40, 30);
+        var key = $"{project.Id}|{stage}";
+        if (!_tasksPageViews.TryGetValue(key, out var view)) view = _tasksPageViews[key] = new TasksPageView(project.Id, new LazyList());
 
+        // Edge to edge, so the list scrolls at the window's edge, with the tasks in the middle.
+        body.MaxWidth = double.PositiveInfinity;
+        body.Margin = new Thickness(0);
+        (view.Heading.Parent as Panel)?.Children.Remove(view.Heading);
+        body.Children.Add(view.Heading);
+        AddFittedList(body, view.List);
+
+        // What was read last time shows straight away, and what's read now replaces it.
+        FillTasksHeading(project, view);
+        ShowTasks(project, view);
+        LoadPage($"tasks|{key}", () => ReadTasks(project.Id, stage), data =>
+        {
+            view.Data = data;
+            if (_openProject?.Id != project.Id) return;
+            FillTasksHeading(project, view);
+            ShowTasks(project, view);
+        });
+    }
+
+    private void FillTasksHeading(Project project, TasksPageView view)
+    {
+        var data = view.Data;
+        var stage = data?.Stage ?? _database.ProjectStage(project.Id);
         var addTask = ControlButton("Add task", () => { });
         addTask.Click += (_, _) => OpenTaskForm(addTask, project, stage, null, null);
         var addMilestone = TextButton("Add milestone", () => { });
         addMilestone.Click += (_, _) => OpenMilestoneForm(addMilestone, project, stage, null);
-        var view = TextButton(_tasksByDate ? "By milestone" : "By date", () =>
+        var byDate = TextButton(_tasksByDate ? "By milestone" : "By date", () =>
         {
             _tasksByDate = !_tasksByDate;
-            RedrawProject(project);
+            FillTasksHeading(project, view);
+            ShowTasks(project, view);
         });
-        AutomationProperties.SetName(view, _tasksByDate ? "Show by milestone" : "Show by date");
+        AutomationProperties.SetName(byDate, _tasksByDate ? "Show by milestone" : "Show by date");
 
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Children = { view, addMilestone, addTask } };
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+
+        // Finished tasks are left out until asked for, and that's kept for the project.
+        if (data is { DoneCount: > 0 })
+        {
+            var finished = TextButton(data.ShowFinished ? "Hide finished" : $"Show {data.DoneCount} finished", () =>
+            {
+                _database.SetSetting(ShowFinishedSetting(project.Id), data.ShowFinished ? "" : "1");
+                if (view.Data is { } shown) view.Data = shown with { ShowFinished = !shown.ShowFinished };
+                FillTasksHeading(project, view);
+                ShowTasks(project, view);
+            });
+            AutomationProperties.SetName(finished, data.ShowFinished ? "Hide finished tasks" : "Show finished tasks");
+            actions.Children.Add(finished);
+        }
+        actions.Children.Add(byDate);
+        actions.Children.Add(addMilestone);
+        actions.Children.Add(addTask);
         foreach (var each in actions.Children.OfType<FrameworkElement>()) each.Margin = new Thickness(8, 0, 0, 0);
+
         var header = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
         DockPanel.SetDock(actions, Dock.Right);
         header.Children.Add(actions);
@@ -96,13 +221,14 @@ public partial class MainWindow
             Children =
             {
                 new TextBlock { Text = TasksPage, Foreground = (Brush)FindResource("TextStrong"), FontSize = 24, FontWeight = FontWeights.SemiBold },
-                new TextBlock { Text = allCount == 0 ? "" : $"{doneCount} of {allCount} done", Foreground = (Brush)FindResource("TextMuted"), FontSize = 15, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(10, 0, 0, 4) },
+                new TextBlock { Text = data is not { AllCount: > 0 } ? "" : $"{data.DoneCount} of {data.AllCount} done", Foreground = (Brush)FindResource("TextMuted"), FontSize = 15, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(10, 0, 0, 4) },
             },
         });
-        body.Children.Add(header);
-        if (allCount == 0 && milestones.Count == 0)
+        view.Heading.Children.Clear();
+        view.Heading.Children.Add(header);
+        if (data is { AllCount: 0, Milestones.Count: 0 })
         {
-            body.Children.Add(new TextBlock
+            view.Heading.Children.Add(new TextBlock
             {
                 Text = "No tasks yet. Add one, or a milestone to gather them under. An asset with a date to deliver it by is a task here too.",
                 Foreground = (Brush)FindResource("TextMuted"),
@@ -110,92 +236,67 @@ public partial class MainWindow
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(0, 0, 0, 8),
             });
-            return;
         }
-
-        if (_tasksByDate) AddTasksByDate(body, project, assets, made, milestones);
-        else AddTasksByMilestone(body, project, stage, assets, made, milestones);
-        if (_taskToFocus is { } focus && focus.Until > DateTime.UtcNow) FocusTask(focus.Id);
     }
 
-    private void AddTasksByMilestone(StackPanel body, Project project, string stage, List<AssetTask> assets, List<(string Id, ProjectTask Task)> made, List<(string Id, Milestone Milestone)> milestones)
+    private void ShowTasks(Project project, TasksPageView view)
     {
-        foreach (var (id, milestone) in milestones)
+        if (view.Data is not { } data) return;
+        var lines = _tasksByDate ? TasksByDate(project, view, data) : TasksByMilestone(project, view, data);
+        if (!data.ShowFinished && data.AllCount > 0 && data.DoneCount == data.AllCount) lines.Add(NoteLine("all-done", "Every task is done. Show finished to see them.", TasksWidth));
+        lines.Add(EndLine());
+        view.List.Show(lines);
+        if (_taskToFocus is { } focus && focus.Until > DateTime.UtcNow) FocusTask(view, focus.Id);
+    }
+
+    private List<ListLine> TasksByMilestone(Project project, TasksPageView view, TasksData data)
+    {
+        var lines = new List<ListLine>();
+        var milestoneIds = data.Milestones.Select(each => each.Id).ToHashSet();
+        foreach (var (id, milestone) in data.Milestones)
         {
-            var inIt = made.Where(each => each.Task.Milestone == id).ToList();
+            var inIt = data.Made.Where(each => each.Task.Milestone == id).ToList();
             var done = inIt.Count(each => each.Task.Done);
+            var open = IsOpen(data, id, done, inIt.Count);
+            lines.Add(new ListLine($"m:{id}", $"{milestone}|{done}|{inIt.Count}|{open}|{data.Milestones.Count}", () => InPage(MilestoneHeader(project, view, data, id, milestone, done, inIt.Count, open), TasksWidth)));
+            if (!open) continue;
 
-            var edit = TextButton("Edit", () => { });
-            edit.Click += (_, _) => OpenMilestoneForm(edit, project, stage, (id, milestone));
-            AutomationProperties.SetName(edit, $"Edit {milestone.Name}");
-            var add = TextButton("Add task", () => { });
-            add.Click += (_, _) => OpenTaskForm(add, project, stage, null, id);
-            AutomationProperties.SetName(add, $"Add a task to {milestone.Name}");
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Children = { add, edit } };
-
-            var title = new DockPanel { Margin = new Thickness(0, 26, 0, 2), Background = Brushes.Transparent };
-            DockPanel.SetDock(buttons, Dock.Right);
-            title.Children.Add(buttons);
-
-            // Dragged by its title, or moved with Alt+Up and Alt+Down from its buttons. A task dropped on it goes to its end.
-            var milestoneId = id;
-            title.ToolTip = "Drag to move this milestone, or a task onto it to move the task here.";
-            title.PreviewKeyDown += (_, pressed) =>
+            if (milestone.Goal is { Length: > 0 } goal) lines.Add(new ListLine($"goal:{id}", goal, () => InPage(Note(goal, 0), TasksWidth)));
+            var shown = data.ShowFinished ? inIt : inIt.Where(each => !each.Task.Done).ToList();
+            foreach (var (taskId, task) in shown) lines.Add(TaskLine(project, view, data, taskId, task, overdue: false));
+            if (shown.Count == 0 && inIt.Count > 0)
             {
-                if (MoveKey(pressed) is not { } by) return;
-                pressed.Handled = true;
-                PlaceMilestone(project, stage, milestoneId, milestones.FindIndex(each => each.Id == milestoneId) + by);
-            };
-            DragFrom(title, MilestoneDrag, milestoneId);
-            title.Children.Add(new WrapPanel
-            {
-                Children =
-                {
-                    new TextBlock { Text = milestone.Name, FontSize = 17, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource(inIt.Count > 0 && done == inIt.Count ? "TextMuted" : "TextStrong") },
-                    new TextBlock { Text = inIt.Count == 0 ? "" : done == inIt.Count ? "Done" : $"{done} of {inIt.Count}", FontSize = 13, Foreground = (Brush)FindResource(inIt.Count > 0 && done == inIt.Count ? "Accent" : "TextMuted"), VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(10, 0, 0, 2) },
-                },
-            });
-            var titleFrame = new Border { Child = title, BorderBrush = (Brush)FindResource("Accent") };
-            DropOn(titleFrame, TaskDrag, (moved, _) => PlaceTask(project, stage, moved, milestoneId, int.MaxValue));
-            titleFrame.Drop += (_, drop) =>
-            {
-                if (drop.Data.GetData(MilestoneDrag) is not string moved || moved == milestoneId) return;
-                drop.Handled = true;
-                var others = milestones.Where(each => each.Id != moved).ToList();
-                PlaceMilestone(project, stage, moved, others.FindIndex(each => each.Id == milestoneId) + (drop.GetPosition(titleFrame).Y > titleFrame.ActualHeight / 2 ? 1 : 0));
-            };
-            titleFrame.DragOver += (_, drag) =>
-            {
-                if (!drag.Data.GetDataPresent(MilestoneDrag)) return;
-                drag.Effects = DragDropEffects.Move;
-                titleFrame.BorderThickness = drag.GetPosition(titleFrame).Y > titleFrame.ActualHeight / 2 ? new Thickness(0, 0, 0, 2) : new Thickness(0, 2, 0, 0);
-                drag.Handled = true;
-            };
-            body.Children.Add(titleFrame);
-            if (milestone.Goal is { Length: > 0 } goal) body.Children.Add(Note(goal, 0));
-            foreach (var (taskId, task) in inIt) body.Children.Add(MadeTaskRow(project, stage, taskId, task, overdue: false));
-            if (milestone.DoneWhen is { Length: > 0 } doneWhen) body.Children.Add(Note($"Done when: {doneWhen}", 6));
+                var all = inIt.Count == 1 ? "Its task is done." : $"All {inIt.Count} of its tasks are done.";
+                lines.Add(new ListLine($"finished:{id}", all, () => InPage(Note(all, 0), TasksWidth)));
+            }
+            if (milestone.DoneWhen is { Length: > 0 } doneWhen) lines.Add(new ListLine($"when:{id}", doneWhen, () => InPage(Note($"Done when: {doneWhen}", 6), TasksWidth)));
         }
 
-        var loose = made.Where(each => each.Task.Milestone is null || milestones.All(milestone => milestone.Id != each.Task.Milestone)).ToList();
+        var loose = data.Made.Where(each => each.Task.Milestone is not { } milestoneId || !milestoneIds.Contains(milestoneId)).Where(each => data.ShowFinished || !each.Task.Done).ToList();
         if (loose.Count > 0)
         {
-            // A task dropped on it leaves its milestone.
-            var looseHeading = new Border { Child = Heading(milestones.Count > 0 ? "Other tasks" : "Tasks"), BorderBrush = (Brush)FindResource("Accent"), Background = Brushes.Transparent };
-            DropOn(looseHeading, TaskDrag, (moved, _) => PlaceTask(project, stage, moved, null, int.MaxValue));
-            body.Children.Add(looseHeading);
-            foreach (var (taskId, task) in loose) body.Children.Add(MadeTaskRow(project, stage, taskId, task, overdue: false));
+            var title = milestoneIds.Count > 0 ? "Other tasks" : "Tasks";
+            lines.Add(new ListLine("loose", title, () =>
+            {
+                // A task dropped on it leaves its milestone.
+                var looseHeading = new Border { Child = Heading(title), BorderBrush = (Brush)FindResource("Accent"), Background = Brushes.Transparent };
+                DropOn(looseHeading, TaskDrag, (moved, _) => PlaceTask(project, data.Stage, moved, null, int.MaxValue));
+                return InPage(looseHeading, TasksWidth);
+            }));
+            foreach (var (taskId, task) in loose) lines.Add(TaskLine(project, view, data, taskId, task, overdue: false));
         }
+
+        var assets = data.Assets.Where(task => data.ShowFinished || !task.Done).ToList();
         if (assets.Count > 0)
         {
-            body.Children.Add(Heading("Assets to deliver"));
-            foreach (var task in assets) body.Children.Add(AssetTaskRow(project, task, overdue: !task.Done && task.Due < Today));
+            lines.Add(new ListLine("assets", "", () => InPage(Heading("Assets to deliver"), TasksWidth)));
+            foreach (var task in assets) lines.Add(AssetTaskLine(project, task, overdue: !task.Done && task.Due < Today));
         }
+        return lines;
     }
 
-    private void AddTasksByDate(StackPanel body, Project project, List<AssetTask> assets, List<(string Id, ProjectTask Task)> made, List<(string Id, Milestone Milestone)> milestones)
+    private List<ListLine> TasksByDate(Project project, TasksPageView view, TasksData data)
     {
-        var stage = _database.ProjectStage(project.Id);
         var today = Today;
         (string Name, Func<DateOnly?, bool, bool> Holds)[] groups =
         [
@@ -207,28 +308,34 @@ public partial class MainWindow
             ("Done", (_, done) => done),
         ];
         // On the same day, or with none, tasks keep the order of their milestones and their places in them.
-        var milestoneAt = milestones.Select((each, at) => (each.Id, at)).ToDictionary(each => each.Id, each => each.at);
-        var milestoneName = milestones.ToDictionary(each => each.Id, each => each.Milestone.Name);
+        var milestoneAt = data.Milestones.Select((each, at) => (each.Id, at)).ToDictionary(each => each.Id, each => each.at);
+        var milestoneName = data.Milestones.ToDictionary(each => each.Id, each => each.Milestone.Name);
+        var lines = new List<ListLine>();
         foreach (var (name, holds) in groups)
         {
-            var rows = new List<(DateOnly? Due, int Milestone, double Order, FrameworkElement Row)>();
-            foreach (var (id, task) in made.Where(each => holds(DayOf(each.Task.Due), each.Task.Done)))
+            if (name == "Done" && !data.ShowFinished) continue;
+            var rows = new List<(DateOnly? Due, int Milestone, double Order, ListLine Line)>();
+            foreach (var (id, task) in data.Made.Where(each => holds(DayOf(each.Task.Due), each.Task.Done)))
             {
                 var inMilestone = task.Milestone is { } milestoneId && milestoneAt.TryGetValue(milestoneId, out var at) ? at : int.MaxValue;
                 var shownIn = task.Milestone is { } shown && milestoneName.TryGetValue(shown, out var called) ? called : null;
-                rows.Add((DayOf(task.Due), inMilestone, task.Order, MadeTaskRow(project, stage, id, task, overdue: name == "Overdue", shownIn)));
+                rows.Add((DayOf(task.Due), inMilestone, task.Order, TaskLine(project, view, data, id, task, overdue: name == "Overdue", shownIn)));
             }
-            foreach (var task in assets.Where(each => holds(each.Due, each.Done)))
+            foreach (var task in data.Assets.Where(each => holds(each.Due, each.Done)))
             {
-                rows.Add((task.Due, int.MaxValue, double.MaxValue, AssetTaskRow(project, task, overdue: name == "Overdue")));
+                rows.Add((task.Due, int.MaxValue, double.MaxValue, AssetTaskLine(project, task, overdue: name == "Overdue")));
             }
             if (rows.Count == 0) continue;
 
-            var heading = Heading(name);
-            if (name == "Overdue") heading.Foreground = (Brush)FindResource("Danger");
-            body.Children.Add(heading);
-            foreach (var row in rows.OrderBy(each => each.Due ?? DateOnly.MaxValue).ThenBy(each => each.Milestone).ThenBy(each => each.Order)) body.Children.Add(row.Row);
+            lines.Add(new ListLine($"group:{name}", name, () =>
+            {
+                var heading = Heading(name);
+                if (name == "Overdue") heading.Foreground = (Brush)FindResource("Danger");
+                return InPage(heading, TasksWidth);
+            }));
+            lines.AddRange(rows.OrderBy(each => each.Due ?? DateOnly.MaxValue).ThenBy(each => each.Milestone).ThenBy(each => each.Order).Select(each => each.Line));
         }
+        return lines;
     }
 
     private TextBlock Heading(string text)
@@ -247,9 +354,97 @@ public partial class MainWindow
         Margin = new Thickness(0, above, 0, 6),
     };
 
-    // A task someone made: a tick to do it, and a click on the rest to change it.
-    private FrameworkElement MadeTaskRow(Project project, string stage, string id, ProjectTask task, bool overdue, string? milestoneName = null)
+    // A milestone's header: a click on its name opens or closes it, and closed it still says how far
+    // along it is. Dragged by it, or moved with Alt+Up and Alt+Down from its buttons. A task dropped
+    // on it goes to its end.
+    private Border MilestoneHeader(Project project, TasksPageView view, TasksData data, string id, Milestone milestone, int done, int count, bool open)
     {
+        var stage = data.Stage;
+        var edit = TextButton("Edit", () => { });
+        edit.Click += (_, _) => OpenMilestoneForm(edit, project, stage, (id, milestone));
+        AutomationProperties.SetName(edit, $"Edit {milestone.Name}");
+        var add = TextButton("Add task", () => { });
+        add.Click += (_, _) => OpenTaskForm(add, project, stage, null, id);
+        AutomationProperties.SetName(add, $"Add a task to {milestone.Name}");
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Children = { add, edit } };
+
+        var finished = count > 0 && done == count;
+        var chevron = AgentIcons.Line(open ? "chevron-down" : "chevron-right", 16, (Brush)FindResource("TextMuted"), 2);
+        chevron.VerticalAlignment = VerticalAlignment.Center;
+        chevron.Margin = new Thickness(0, 2, 6, 0);
+        var toggle = new Button
+        {
+            Style = (Style)FindResource("HeaderButton"),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Padding = new Thickness(6, 2, 8, 2),
+            Margin = new Thickness(-6, 0, 0, 0),
+            Content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Children =
+                {
+                    chevron,
+                    new TextBlock { Text = milestone.Name, FontSize = 17, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource(finished ? "TextMuted" : "TextStrong") },
+                    new TextBlock { Text = count == 0 ? "No tasks" : $"{done} of {count} done", FontSize = 13, Foreground = (Brush)FindResource(finished ? "Accent" : "TextMuted"), VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(10, 0, 0, 2) },
+                },
+            },
+        };
+        AutomationProperties.SetName(toggle, $"{milestone.Name}, {(count == 0 ? "no tasks" : $"{done} of {count} done")}, {(open ? "open" : "closed")}");
+        toggle.ToolTip = open ? "Click to close it. Drag to move it, or drop a task on it to move the task here." : "Click to open it. Drag to move it, or drop a task on it to move the task here.";
+        toggle.Click += (_, _) =>
+        {
+            SetMilestoneOpen(project.Id, id, !open);
+            if (view.Data is { } shown) view.Data = shown with { Open = new Dictionary<string, bool>(shown.Open) { [id] = !open } };
+            ShowTasks(project, view);
+            _ = Dispatcher.InvokeAsync(() => Buttons(view.List).FirstOrDefault(button => button.Tag as string == $"milestone:{id}")?.Focus(), System.Windows.Threading.DispatcherPriority.Loaded);
+        };
+        toggle.Tag = $"milestone:{id}";
+
+        var title = new DockPanel { Margin = new Thickness(0, 26, 0, 2), Background = Brushes.Transparent };
+        DockPanel.SetDock(buttons, Dock.Right);
+        title.Children.Add(buttons);
+        title.Children.Add(toggle);
+        title.PreviewKeyDown += (_, pressed) =>
+        {
+            if (MoveKey(pressed) is not { } by) return;
+            pressed.Handled = true;
+            PlaceMilestone(project, stage, id, data.Milestones.FindIndex(each => each.Id == id) + by);
+        };
+        DragFrom(title, MilestoneDrag, id);
+
+        var titleFrame = new Border { Child = title, BorderBrush = (Brush)FindResource("Accent") };
+        DropOn(titleFrame, TaskDrag, (moved, _) => PlaceTask(project, stage, moved, id, int.MaxValue));
+        titleFrame.Drop += (_, drop) =>
+        {
+            if (drop.Data.GetData(MilestoneDrag) is not string moved || moved == id) return;
+            drop.Handled = true;
+            var others = data.Milestones.Where(each => each.Id != moved).ToList();
+            PlaceMilestone(project, stage, moved, others.FindIndex(each => each.Id == id) + (drop.GetPosition(titleFrame).Y > titleFrame.ActualHeight / 2 ? 1 : 0));
+        };
+        titleFrame.DragOver += (_, drag) =>
+        {
+            if (!drag.Data.GetDataPresent(MilestoneDrag)) return;
+            drag.Effects = DragDropEffects.Move;
+            titleFrame.BorderThickness = drag.GetPosition(titleFrame).Y > titleFrame.ActualHeight / 2 ? new Thickness(0, 0, 0, 2) : new Thickness(0, 2, 0, 0);
+            drag.Handled = true;
+        };
+        return titleFrame;
+    }
+
+    // A line for a task someone made, which says everything it shows, so it's built again only when that changes.
+    private ListLine TaskLine(Project project, TasksPageView view, TasksData data, string id, ProjectTask task, bool overdue, string? milestoneName = null)
+    {
+        var card = task.Card is { } cardId && data.Cards.TryGetValue(cardId, out var belongs) ? CardName(belongs.Card, belongs.Page) : null;
+        return new ListLine($"task:{id}", $"{task}|{overdue}|{milestoneName}|{card}", () => InPage(MadeTaskRow(project, view, data, id, task, overdue, milestoneName), TasksWidth));
+    }
+
+    private ListLine AssetTaskLine(Project project, AssetTask task, bool overdue) =>
+        new($"asset:{task.Asset.Id}", $"{task.Asset.Name}|{task.Due}|{task.Done}|{task.What}|{overdue}", () => InPage(AssetTaskRow(project, task, overdue), TasksWidth));
+
+    // A task someone made: a tick to do it, and a click on the rest to change it.
+    private FrameworkElement MadeTaskRow(Project project, TasksPageView view, TasksData data, string id, ProjectTask task, bool overdue, string? milestoneName = null)
+    {
+        var stage = data.Stage;
         var tick = new Border
         {
             Width = 16,
@@ -264,7 +459,16 @@ public partial class MainWindow
         AutomationProperties.SetName(tickButton, $"{(task.Done ? "Not done" : "Done")}: {task.Title}");
         tickButton.Click += (_, _) =>
         {
-            _database.SaveTask(project.Id, id, task with { Done = !task.Done });
+            var ticked = task with { Done = !task.Done };
+            _database.SaveTask(project.Id, id, ticked);
+
+            // Shown at once, before the page is read again.
+            if (view.Data is { } shown)
+            {
+                view.Data = shown with { Made = [.. shown.Made.Select(each => each.Id == id ? (id, ticked) : each)] };
+                FillTasksHeading(project, view);
+                ShowTasks(project, view);
+            }
             RedrawProject(project);
         };
 
@@ -299,7 +503,7 @@ public partial class MainWindow
         row.Children.Add(tickButton);
 
         // The card it's about, which a click opens.
-        if (task.Card is { } cardId && AssetOwnerChoices(_database, project.Id, stage).FirstOrDefault(choice => choice.Card.Id == cardId) is { Card: not null } belongs)
+        if (task.Card is { } cardId && data.Cards.TryGetValue(cardId, out var belongs))
         {
             var cardName = CardName(belongs.Card, belongs.Page);
             var link = TextButton(cardName, () => OpenCardBoard(project, belongs.Page.ToLowerInvariant(), cardId));
@@ -319,9 +523,10 @@ public partial class MainWindow
         DropOn(frame, TaskDrag, (moved, below) =>
         {
             if (moved == id) return;
-            var group = _database.ListTasks(project.Id, stage).Where(each => each.Id != moved && GroupOf(project, stage, each.Task) == GroupOf(project, stage, task)).ToList();
+            var milestoneIds = MilestoneIds(project.Id, stage);
+            var group = _database.ListTasks(project.Id, stage).Where(each => each.Id != moved && GroupOf(milestoneIds, each.Task) == GroupOf(milestoneIds, task)).ToList();
             var at = group.FindIndex(each => each.Id == id);
-            PlaceTask(project, stage, moved, GroupOf(project, stage, task), at + (below ? 1 : 0));
+            PlaceTask(project, stage, moved, GroupOf(milestoneIds, task), at + (below ? 1 : 0));
         });
         return frame;
     }
@@ -338,34 +543,41 @@ public partial class MainWindow
         return key == Key.Up ? -1 : 1;
     }
 
+    private HashSet<string> MilestoneIds(string projectId, string stage) => [.. _database.ListMilestones(projectId, stage).Select(each => each.Id)];
+
     // The milestone a task is shown under: its own, or none when that's gone.
-    private string? GroupOf(Project project, string stage, ProjectTask task) =>
-        task.Milestone is { } id && _database.ListMilestones(project.Id, stage).Any(each => each.Id == id) ? id : null;
+    private static string? GroupOf(HashSet<string> milestoneIds, ProjectTask task) =>
+        task.Milestone is { } id && milestoneIds.Contains(id) ? id : null;
 
     // Into a milestone (or none) at a place, the others there numbered again around it.
     private void PlaceTask(Project project, string stage, string id, string? milestone, int at)
     {
         var tasks = _database.ListTasks(project.Id, stage);
         if (tasks.FirstOrDefault(each => each.Id == id) is not { Task: not null } moved) return;
-        var group = tasks.Where(each => each.Id != id && GroupOf(project, stage, each.Task) == milestone).ToList();
+        var milestoneIds = MilestoneIds(project.Id, stage);
+        var group = tasks.Where(each => each.Id != id && GroupOf(milestoneIds, each.Task) == milestone).ToList();
         group.Insert(Math.Clamp(at, 0, group.Count), (id, moved.Task with { Milestone = milestone }));
         for (var i = 0; i < group.Count; i++)
         {
             var (each, task) = group[i];
             if (task.Order != i + 1 || each == id) _database.SaveTask(project.Id, each, task with { Order = i + 1 });
         }
-        RedrawProject(project);
+
+        // The milestone it went to opens, so it can still be seen.
+        if (milestone is not null && GroupOf(milestoneIds, moved.Task) != milestone) SetMilestoneOpen(project.Id, milestone, true);
         FocusTaskAfterRedraw(id);
+        RedrawProject(project);
     }
 
     // A place up or down, and past the end of a milestone into the next, as it's shown.
     private void MoveTask(Project project, string stage, string id, int by)
     {
+        var milestoneIds = MilestoneIds(project.Id, stage);
         var groups = _database.ListMilestones(project.Id, stage).Select(each => (string?)each.Id).Append(null).ToList();
         var tasks = _database.ListTasks(project.Id, stage);
         if (tasks.FirstOrDefault(each => each.Id == id) is not { Task: not null } moving) return;
-        var group = GroupOf(project, stage, moving.Task);
-        var inGroup = tasks.Where(each => GroupOf(project, stage, each.Task) == group).ToList();
+        var group = GroupOf(milestoneIds, moving.Task);
+        var inGroup = tasks.Where(each => GroupOf(milestoneIds, each.Task) == group).ToList();
         var to = inGroup.FindIndex(each => each.Id == id) + by;
         if (to >= 0 && to < inGroup.Count)
         {
@@ -391,28 +603,16 @@ public partial class MainWindow
         RedrawProject(project);
     }
 
-    // A moved task keeps the keyboard, so Alt+Up can go on moving it. The page can be drawn again
-    // straight after, when the change syncs, so the next couple of seconds' drawing gives it back too.
+    // A moved task keeps the keyboard, so Alt+Up can go on moving it. The page is read again
+    // straight after, and when the change syncs, so the next couple of seconds' drawing gives it back too.
     private (string Id, DateTime Until)? _taskToFocus;
 
-    private void FocusTaskAfterRedraw(string id)
-    {
-        _taskToFocus = (id, DateTime.UtcNow.AddSeconds(2));
-        FocusTask(id);
-    }
+    private void FocusTaskAfterRedraw(string id) => _taskToFocus = (id, DateTime.UtcNow.AddSeconds(2));
 
-    private void FocusTask(string id)
+    private void FocusTask(TasksPageView view, string id)
     {
-        static IEnumerable<Button> Buttons(DependencyObject root)
-        {
-            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
-            {
-                var child = VisualTreeHelper.GetChild(root, i);
-                if (child is Button button) yield return button;
-                foreach (var inside in Buttons(child)) yield return inside;
-            }
-        }
-        _ = Dispatcher.InvokeAsync(() => Buttons(ProjectPage).FirstOrDefault(button => button.Tag as string == id)?.Focus(), System.Windows.Threading.DispatcherPriority.Loaded);
+        view.List.BringLineIntoView($"task:{id}");
+        _ = Dispatcher.InvokeAsync(() => Buttons(view.List).FirstOrDefault(button => button.Tag as string == id)?.Focus(), System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
     // Pressed and moved a little, it's picked up to be dropped somewhere else.
@@ -459,10 +659,6 @@ public partial class MainWindow
     private Button AssetTaskRow(Project project, AssetTask task, bool overdue)
     {
         var name = CardName(task.Asset, AssetsPage);
-        var what = AssetTypeName(task.Details.Type) ?? "No type";
-        var owner = AssetOwnerChoices(_database, project.Id, task.Asset.Board.Split('/')[0]).FirstOrDefault(choice => choice.Card.Id == task.Details.Owner);
-        if (owner.Card is not null) what += $" · {CardName(owner.Card, owner.Page)}";
-
         var dot = new System.Windows.Shapes.Ellipse
         {
             Width = 10,
@@ -484,7 +680,7 @@ public partial class MainWindow
             Children =
             {
                 new TextBlock { Text = name, FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource(task.Done ? "TextMuted" : "TextStrong"), TextTrimming = TextTrimming.CharacterEllipsis },
-                new TextBlock { Text = $"Asset to deliver · {what}", FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 1, 0, 0) },
+                new TextBlock { Text = $"Asset to deliver · {task.What}", FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 1, 0, 0) },
             },
         });
 
@@ -560,6 +756,9 @@ public partial class MainWindow
                 : _database.ListTasks(project.Id, stage).Where(each => each.Task.Milestone == chosen).Select(each => each.Task.Order).DefaultIfEmpty(0).Max() + 1;
             var notesText = notes.Text.Trim();
             _database.SaveTask(project.Id, existing?.Id, new ProjectTask(stage, typed, notesText.Length > 0 ? notesText : null, DayText(due), task?.Done ?? false, chosen, order, card));
+
+            // A task added to a closed milestone opens it, so the task can be seen.
+            if (chosen is not null && chosen != task?.Milestone) SetMilestoneOpen(project.Id, chosen, true);
             asked.IsOpen = false;
             RedrawProject(project);
         }
