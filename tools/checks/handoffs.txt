@@ -1,0 +1,60 @@
+# Handoff notes when a conversation stops (#104): an agent leaves one on its milestone or task with
+# write_handoff, Agent Orange writes one itself when a usage limit stops a conversation mid-task,
+# settling asks the agent for one when it has work to hand over, and the next conversation's
+# briefing starts from the newest ones on work still open.
+seed "Handoff project" 6 2 0
+mcp "Handoff project" add_task title "Light the cave" milestone "Milestone 2"
+keep LIGHT "Light the cave \(task (\w+)\)"
+# An agent leaves a note on the milestone it was on.
+mcp "Handoff project" write_handoff milestone "Milestone 2" note "Cave blocked out and lit. Open: sound. Decided: one light at the entrance. Next: add the cave's sound."
+said "Left the handoff note on the milestone Milestone 2, replacing any it had."
+mcprefused "Handoff project" write_handoff note "Done for now."
+said "write_handoff needs milestone or task: where the note goes. The milestones: Milestone 1; Milestone 2."
+mcprefused "Handoff project" write_handoff task "nope" note "Done for now."
+said "task: there's no task nope."
+mcprefused "Handoff project" write_handoff milestone "Milestone 2"
+said "write_handoff needs note"
+mcp "Handoff project" list_tasks milestone "Milestone 2" fields "handoff"
+said "): Cave blocked out and lit. Open: sound. Decided: one light at the entrance."
+# The next conversation's briefing starts from it.
+agentsetup "Handoff project"
+said "## Where the last conversations left off"
+said "### On the milestone Milestone 2, "
+said "Cave blocked out and lit. Open: sound."
+# A usage limit stops a conversation mid-task: Agent Orange writes the note, on the task it was on.
+limitstop "Handoff project" "$LIGHT"
+said "Stopped by a limit: True. Its note written: True."
+mcp "Handoff project" list_tasks milestone "Milestone 2" fields "title, handoff"
+said "Light the cave (task $LIGHT)\n  Handoff ("
+said "from Agent Orange, as a usage limit stopped the conversation): A usage limit stopped the conversation \qLight the cave\q mid-task"
+said "Its plan when it stopped: done: Place the lights. in progress: Bake the lighting. still to do: Add the sound."
+said "The last it said: \qThe lights are placed, and baking them is next.\q"
+said "What it was last asked: \qLight the cave, then add its sound.\q"
+agentsetup "Handoff project"
+said "### On the task Light the cave (task $LIGHT), "
+said "### On the milestone Milestone 2, "
+# Settling asks the agent for its note only when it was given work and hasn't written one since,
+# and without a login to ask with, it's settled straight away.
+settleasks "Handoff project"
+said "Given work: True. After its note: False. Only Agent Orange's messages: False. Without a login, settled straight away: True."
+# Shown on the Tasks page and in the task's form, where the person can clear it.
+open "Handoff project"
+click "Tasks"
+expect "Handoff note"
+shot handoffs
+click "Light the cave"
+expect "Handoff note"
+shot handoff-form
+click "Clear the handoff note"
+expect "Cleared once saved."
+click "Save"
+mcp "Handoff project" list_tasks milestone "Milestone 2" fields "title, handoff"
+notsaid "from Agent Orange"
+# A note on a task that's since been done is left out of the briefing.
+mcp "Handoff project" write_handoff task "$LIGHT" note "Lighting baked; only the sound is left."
+agentsetup "Handoff project"
+said "Lighting baked; only the sound is left."
+mcp "Handoff project" update_task id "$LIGHT" done "true"
+agentsetup "Handoff project"
+notsaid "Lighting baked"
+said "Cave blocked out and lit."

@@ -45,13 +45,29 @@ public partial class MainWindow
         _conversations!.Add(conversation);
         conversation.LimitsReported += (provider, limits, complete) => Usage.Update(provider, limits, complete);
         conversation.SkillUsed += (skill, how) => RecordSkillUse(conversation, skill, how);
-        conversation.StateChanged += () =>
+        conversation.StateChanged += () => ConversationChanged(conversation);
+    }
+
+    // It started or stopped working, or wants the person.
+    private void ConversationChanged(AgentConversation conversation)
+    {
+        // A usage limit stopped it before it could say where it left off, so Agent Orange does, from what it has.
+        if (conversation.IsLimited && !conversation.LimitHandoffWritten)
         {
-            // Done, or wanting something, with no one looking at it.
-            if ((!conversation.IsWorking || conversation.IsWaiting) && _agentsWindow?.IsLookingAt(conversation) != true) conversation.Unseen = true;
-            conversation.Save(ConversationsFolder);
-            _agentsWindow?.ShowConversations();
-        };
+            conversation.LimitHandoffWritten = true;
+            WriteLimitHandoff(conversation);
+        }
+        // Asked for its handoff note as it was settled, and done answering.
+        if (conversation.SettlesAfterHandoff && !conversation.IsWorking && !conversation.IsWaiting)
+        {
+            conversation.SettlesAfterHandoff = false;
+            conversation.Settle(true);
+            return; // Settling says so again.
+        }
+        // Done, or wanting something, with no one looking at it.
+        if ((!conversation.IsWorking || conversation.IsWaiting) && _agentsWindow?.IsLookingAt(conversation) != true) conversation.Unseen = true;
+        conversation.Save(ConversationsFolder);
+        _agentsWindow?.ShowConversations();
     }
 
     internal AgentConversation NewConversation(Project project)
@@ -139,8 +155,8 @@ public partial class MainWindow
         var (others, references) = SessionSkills(conversation.ProjectId, conversation.Folder ?? ProjectFolder(conversation.ProjectId));
         _sessionSkills[conversation.Id] = [.. AgentSkills.List(agentFolder), .. others];
         return new AgentConversation.Setup(provider, mcp, servers, AgentSkills.ClaudePlugin(agentFolder, conversation.ProjectId, others),
-            AgentBriefing.Write(Settings.Editors, agentFolder, conversation.ProjectId, others, references), AttachmentsFolder,
-            WriteClaudeSettings(mcp, _sessionSkills[conversation.Id], references, agentFolder),
+            AgentBriefing.Write(Settings.Editors, agentFolder, conversation.ProjectId, others, references, ProjectBriefingNotes(conversation.ProjectId)), AttachmentsFolder,
+            WriteClaudeSettings(mcp, _sessionSkills[conversation.Id], references, agentFolder, WriteHelperBriefing(agentFolder, conversation.ProjectId)),
             [.. _sessionSkills[conversation.Id].Select(skill => Path.GetFullPath(skill.Folder)), .. references.Select(reference => reference.Folder)], Ripgrep.Folder(agentFolder));
     }
 
@@ -164,8 +180,9 @@ public partial class MainWindow
     // engine's, a tool's), and at each tool's API reference, so reading those folders never needs asking.
     // Claude Code matches Windows paths in their POSIX form, "//c/Program Files/...". Every shell
     // command, the agent's and its helpers', goes past Agent Orange's check for patch scripts first
-    // (PatchScripts).
-    private static string WriteClaudeSettings(string mcpConfig, IEnumerable<AgentSkill> skills, IEnumerable<ToolReference> references, string agentFolder)
+    // (PatchScripts), and each helper agent is given the project's rules and lessons as it starts
+    // (ProjectLessons).
+    private static string WriteClaudeSettings(string mcpConfig, IEnumerable<AgentSkill> skills, IEnumerable<ToolReference> references, string agentFolder, string helperBriefing)
     {
         var rules = new JsonArray();
         var folders = skills.Select(skill => Path.GetDirectoryName(Path.GetFullPath(skill.Folder))).OfType<string>().Concat(references.Select(reference => reference.Folder));
@@ -176,10 +193,13 @@ public partial class MainWindow
             rules.Add($"Read({posix.TrimEnd('/')}/**)");
         }
         var path = Path.ChangeExtension(mcpConfig, null) + "-settings.json";
+        var program = AgentMcpConfig.RelayProgram(agentFolder);
+        var hooks = PatchScripts.Hooks(program);
+        hooks["SubagentStart"] = ProjectLessons.HelperHooks(program, helperBriefing);
         var settings = new JsonObject
         {
             ["permissions"] = new JsonObject { ["allow"] = rules },
-            ["hooks"] = PatchScripts.Hooks(AgentMcpConfig.RelayProgram(agentFolder)),
+            ["hooks"] = hooks,
         };
         File.WriteAllText(path, settings.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         return path;

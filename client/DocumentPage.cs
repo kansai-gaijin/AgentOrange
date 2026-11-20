@@ -30,7 +30,7 @@ internal sealed class DocumentPage : Grid
     private string _saved;
     private bool _formatting;
 
-    public DocumentPage(LocalDatabase database, string projectId, string boardKey, string markdown, ImageSource? banner, int onBoard, Action changed, Action<Uri> openLink, Action showBoard)
+    public DocumentPage(LocalDatabase database, string projectId, string boardKey, string markdown, ImageSource? banner, int onBoard, Action changed, Action<Uri> openLink, Action showBoard, bool hasBoard = true)
     {
         _database = database;
         _projectId = projectId;
@@ -49,6 +49,7 @@ internal sealed class DocumentPage : Grid
         _boardButton = Ui.TextButton(BoardLabel(onBoard), showBoard);
         _boardButton.HorizontalAlignment = HorizontalAlignment.Left;
         _boardButton.ToolTip = "Its node board, for what's better laid out than written, such as workflows.";
+        if (!hasBoard) _boardButton.Visibility = Visibility.Collapsed; // A document of its own, such as the project's lessons.
         var side = new DockPanel { Margin = new Thickness(28, 24, 12, 24) };
         DockPanel.SetDock(addPicture, Dock.Top);
         side.Children.Add(addPicture);
@@ -150,7 +151,7 @@ internal sealed class DocumentPage : Grid
 
     // Pictures
 
-    private static readonly string[] PictureEndings = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"];
+    internal static readonly string[] PictureEndings =[".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"];
 
     private static List<string> PictureFiles(IDataObject data) =>
         data.GetData(DataFormats.FileDrop) is string[] files ? [.. files.Where(file => PictureEndings.Contains(Path.GetExtension(file).ToLowerInvariant()))] : [];

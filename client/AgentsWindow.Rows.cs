@@ -88,10 +88,11 @@ public sealed partial class AgentsWindow
     }
 
     // Settles it from the list. The open one gives way to the next in the list, or a new one for its project.
-    private void SettleFromList(AgentConversation conversation)
+    // One with work to hand over writes its handoff note first, and is settled once it has.
+    private async void SettleFromList(AgentConversation conversation)
     {
         var next = _rowOrder.Count > 1 ? _rowOrder[(_rowOrder.IndexOf(conversation) + 1) % _rowOrder.Count] : null;
-        if (!conversation.Settle(true))
+        if (!await _main.SettleConversationAsync(conversation))
         {
             ShowNote("Stop it, or answer what it's asking, before settling it.");
             return;
@@ -101,7 +102,7 @@ public sealed partial class AgentsWindow
         // "Settled, ⟲ Ctrl+Z to undo", for five seconds.
         _justSettled = _undoTimer?.IsEnabled == true ? [.. _justSettled.Where(each => each != conversation), conversation] : [conversation];
         _undoNote.Children.Clear();
-        _undoNote.Children.Add(Ocean.Text(_justSettled.Count > 1 ? $"Settled {_justSettled.Count}, " : "Settled, ", Ocean.MutedText, 11));
+        _undoNote.Children.Add(Ocean.Text(_justSettled.Count > 1 ? $"Settled {_justSettled.Count}, " : conversation.SettlesAfterHandoff ? "Settling once it writes its handoff note, " : "Settled, ", Ocean.MutedText, 11));
         var undo = AgentIcons.Line("undo-2", 12, Ocean.MutedText);
         undo.Margin = new Thickness(0, 0, 4, 0);
         _undoNote.Children.Add(undo);

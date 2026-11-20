@@ -696,3 +696,28 @@ lived only in memory, and once a login runs out its program can stop saying them
 was nothing to show and the page guessed. Each login's last known limits are now kept on this PC with when
 they were heard, and shown "As last heard, <time>" when the latest check didn't say them. Only the
 program's own login status says a login is signed out; it's asked only when a check says nothing.
+
+## Agents' calls: bulk tools, lessons and handoff notes (2026-11-21)
+
+A review of all 47 saved agent conversations (about 7,950 tool calls) found three patterns that cost the
+most calls and tries:
+
+- **One call per card or task** (#108). One asset pass made 637 `add_card` calls, about 8 seconds each, and
+  a plan took 40 `add_task` and 63 `update_task` calls. `list_tasks` answers were too big to read, so agents
+  saved them to a file and parsed it with a script, and task notes carried file paths for want of evidence.
+  Now `add_cards`, `add_tasks`, `update_tasks` (order included) and `remove_cards` take a list of what the
+  tool for one takes, checked the same way: a wrong argument in any changes nothing, and one refused later
+  is said while the rest are done. The page is drawn and synced once per call. `list_tasks` takes `status`
+  and `fields`; tasks take `evidence` (pictures kept with the project, other files by path, shown on the
+  Tasks page); milestones have notes, which `update_milestone` writes.
+- **Lessons dying with the conversation** (#102). The same wrong scripting names (27 failures) and tool
+  arguments (16) came back milestone after milestone, and 11 of 12 opening prompts repeated the person's
+  rules by hand. Each project now has a Lessons page: the person's rules, and lessons agents add with
+  `add_lesson`, one line under the tool's name. Every briefing includes it, and Claude Code's
+  `SubagentStart` hook gives it to each helper agent as it starts, so passing the rules on isn't left to
+  the agent. Codex's helpers still rely on the briefing saying to pass them on.
+- **Re-reading everything at the start of each conversation** (#104). Each one spent 10 to 20 calls
+  reading notes, tasks and reviews first, and usage limits stopped about six mid-task. Agents now leave a
+  handoff note on the milestone or task with `write_handoff` before stopping with work left over; settling a
+  conversation asks for one first and settles once it's written; a usage limit has Agent Orange write the
+  note itself from the agent's plan and last words. The newest notes on open work go in the next briefing.

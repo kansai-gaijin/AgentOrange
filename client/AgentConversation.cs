@@ -116,6 +116,19 @@ public sealed partial class AgentConversation
     public bool Settled { get; set; }
     public DateTimeOffset? SettledAt { get; set; }
 
+    /// <summary>Asked for its handoff note as it was being settled: it's settled once it has answered.</summary>
+    [JsonIgnore] public bool SettlesAfterHandoff { get; set; }
+
+    /// <summary>
+    /// What Agent Orange asks as a conversation is settled, so the next one starts from where it left
+    /// off rather than reading everything again.
+    /// </summary>
+    public const string HandoffRequest =
+        "This conversation is being settled. If work is left over for a later conversation, write a handoff note now with write_handoff, on the milestone or task you were on: where things stand, what's still open, the decisions made and the next step, in a few lines. Then stop, without starting anything new. If nothing is left over, say so in a line.";
+
+    /// <summary>Agent Orange wrote a handoff note for it, as a usage limit stopped it before it could. Cleared when it goes on.</summary>
+    public bool LimitHandoffWritten { get; set; }
+
     /// <summary>How full its context window is, in tokens, as it last said.</summary>
     public int ContextUsed { get; set; }
     public int ContextWindow { get; set; }
@@ -258,6 +271,8 @@ public sealed partial class AgentConversation
         Settled = false;
         SettledAt = null;
         IsLimited = false;
+        LimitHandoffWritten = false;
+        if (!automatic) SettlesAfterHandoff = false; // The person wrote to it, so it isn't being put away.
         if (PendingFrom is { } from && PendingTo is { } to)
         {
             Add(new AgentItem { Id = NewId(), Kind = AgentItemKind.Handoff, From = from, To = to with { Model = Model } });
@@ -586,6 +601,7 @@ public sealed partial class AgentConversation
     /// <summary>Puts it away, ending its agent program, or takes it back out.</summary>
     public bool Settle(bool settled)
     {
+        if (!settled) SettlesAfterHandoff = false; // Taken back out, or never put away, before it answered.
         if (settled == Settled) return true;
         if (settled && (IsWorking || IsWaiting)) return false;
         Settled = settled;

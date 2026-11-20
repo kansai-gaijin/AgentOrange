@@ -78,11 +78,17 @@ public partial class MainWindow
     /// Calls one of the MCP tools agents get, in this app, as an agent's session would through the
     /// relay, which a check can't use as it would reach whichever copy of the app is running.
     /// </summary>
-    internal async Task<(string Text, bool Refused)> CallMcpForChecks(string projectName, string tool, IReadOnlyList<string> pairs)
+    internal Task<(string Text, bool Refused)> CallMcpForChecks(string projectName, string tool, IReadOnlyList<string> pairs)
     {
-        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
         var given = new System.Text.Json.Nodes.JsonObject();
         for (var i = 0; i + 1 < pairs.Count; i += 2) given[pairs[i]] = pairs[i + 1];
+        return CallMcpForChecks(projectName, tool, given);
+    }
+
+    /// <summary>The same, with the arguments as JSON, for lists such as add_cards' cards.</summary>
+    internal async Task<(string Text, bool Refused)> CallMcpForChecks(string projectName, string tool, System.Text.Json.Nodes.JsonObject given)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
         var result = await McpCallAsync(project.Id, tool, given);
         var text = string.Join("\n", (result["content"] as System.Text.Json.Nodes.JsonArray ?? []).Select(part => part?["text"]?.GetValue<string>()).OfType<string>());
         return (text, result["isError"]?.GetValue<bool>() == true);
@@ -134,15 +140,20 @@ public partial class MainWindow
         var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
         var agentFolder = Settings.Folders.AgentFolder;
         var mcp = AgentMcpConfig.Write(Settings.Editors, agentFolder, project.Id);
-        var settings = WriteClaudeSettings(mcp, AgentSkills.List(agentFolder), [], agentFolder);
-        var briefing = AgentBriefing.Write(Settings.Editors, agentFolder, project.Id, []);
+        var helpers = WriteHelperBriefing(agentFolder, project.Id);
+        var settings = WriteClaudeSettings(mcp, AgentSkills.List(agentFolder), [], agentFolder, helpers);
+        var briefing = AgentBriefing.Write(Settings.Editors, agentFolder, project.Id, [], projectNotes: ProjectBriefingNotes(project.Id));
 
         // How its program would be started, by a made-up login that's never run.
         var login = new AgentProvider("check", ProviderKind.Claude, "Check", "claude", Path.Combine(agentFolder, "check-login"), true);
         var start = AgentProviders.SessionStartInfo(login, "-p", ProjectFolder(project.Id) ?? agentFolder, Ripgrep.Folder(agentFolder));
         var started = $"Started as: {start.FileName} {start.Arguments}\n" + string.Join("\n", new[] { "PYTHONUTF8", "PYTHONIOENCODING", "VSLANG", "DOTNET_CLI_UI_LANGUAGE", "LANG", "PATH" }
             .Select(name => $"{name}={(start.Environment.TryGetValue(name, out var value) ? value : "")}"));
-        return string.Join("\n", new[] { settings, mcp, briefing }.Select(file => $"{Path.GetFileName(file)}:\n{File.ReadAllText(file)}")) + "\n" + started;
+        // What a helper agent is told as it starts, through the hook, as Claude Code would run it.
+        using var helperSaid = new StringWriter();
+        ProjectLessons.RunHelperHook(helpers, helperSaid);
+        return string.Join("\n", new[] { settings, mcp, briefing }.Select(file => $"{Path.GetFileName(file)}:\n{File.ReadAllText(file)}")) + "\n" + started
+            + $"\nA helper agent is given: {(helperSaid.ToString() is { Length: > 0 } given ? given : "nothing")}";
     }
 
     /// <summary>Writes a file in the project's folder, by a path inside it, or in the agent files folder, for a project called "(agent files)".</summary>
@@ -154,6 +165,73 @@ public partial class MainWindow
         var file = Path.Combine(folder ?? throw new InvalidOperationException($"{projectName} has no folder."), path);
         Directory.CreateDirectory(Path.GetDirectoryName(file)!);
         File.AppendAllText(file, text);
+    }
+
+    /// <summary>One of the project's documents, by its key, as a person's edit on its page saves it.</summary>
+    internal void WriteDocumentForChecks(string projectName, string key, string markdown)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        _database.SetDocument(project.Id, key, markdown);
+        if (_openProject?.Id == project.Id) RenderProject(_openProject);
+    }
+
+    /// <summary>
+    /// A conversation about the project, working on a task through AO's tools, that a usage limit
+    /// stops mid-task, read as Claude Code says it, for Agent Orange to write its handoff note.
+    /// </summary>
+    internal string LimitStopForChecks(string projectName, string taskId)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        _ = Conversations; // Read from the agent files folder first, as opening the agents window does.
+        var conversation = NewConversation(project);
+        conversation.Title = "Light the cave";
+        conversation.Items.Add(new AgentItem { Id = "asked", Kind = AgentItemKind.User, Text = "Light the cave, then add its sound." });
+        conversation.ReadForChecks($$$"""{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"TodoWrite","input":{"todos":[{"content":"Place the lights","status":"completed"},{"content":"Bake the lighting","status":"in_progress"},{"content":"Add the sound","status":"pending"}]}},{"type":"tool_use","id":"t2","name":"mcp__agent-orange__update_task","input":{"id":"{{{taskId}}}","notes":"Lights placed."}}]}}""");
+        conversation.ReadForChecks($$$"""{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"Changed. Now: [ ] Light the cave (task {{{taskId}}})"}]}}""");
+        conversation.ReadForChecks("""{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"The lights are placed, and baking them is next."}]}}""");
+        conversation.ReadForChecks("""{"type":"result","is_error":true,"result":"Claude AI usage limit reached|1900000000"}""");
+        ConversationChanged(conversation);
+        return $"Stopped by a limit: {conversation.IsLimited}. Its note written: {conversation.LimitHandoffWritten}.";
+    }
+
+    /// <summary>Whether settling a conversation asks its agent for a handoff note first, in the cases that decide it.</summary>
+    internal async Task<string> SettleAsksForChecks(string projectName)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        _ = Conversations;
+        AgentConversation Made(params AgentItem[] items)
+        {
+            var made = NewConversation(project);
+            made.Items.AddRange(items);
+            return made;
+        }
+        var asked = Made(new AgentItem { Id = "a", Kind = AgentItemKind.User, Text = "Light the cave." });
+        var wrote = Made(new AgentItem { Id = "a", Kind = AgentItemKind.User, Text = "Light the cave." }, new AgentItem { Id = "b", Kind = AgentItemKind.Tool, Tool = "mcp__agent-orange__write_handoff" });
+        var onlyAgentOrange = Made(new AgentItem { Id = "a", Kind = AgentItemKind.User, Text = "Continue where you left off.", Automatic = true });
+        var said = $"Given work: {WantsHandoff(asked)}. After its note: {WantsHandoff(wrote)}. Only Agent Orange's messages: {WantsHandoff(onlyAgentOrange)}.";
+        // Without a login to ask with, it's settled straight away.
+        var settled = await SettleConversationAsync(asked);
+        return $"{said} Without a login, settled straight away: {settled && asked.Settled && !asked.SettlesAfterHandoff}.";
+    }
+
+    /// <summary>A small picture in the project's folder, such as a screenshot an agent took.</summary>
+    internal void WritePictureForChecks(string projectName, string path)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        var file = Path.Combine(ProjectFolder(project.Id) ?? throw new InvalidOperationException($"{projectName} has no folder."), path);
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        File.WriteAllBytes(file, SeedPicture() ?? throw new InvalidOperationException("The picture couldn't be made."));
+    }
+
+    /// <summary>A project's task, milestone and lessons records as stored, for a check to see what was kept.</summary>
+    internal string StoredForChecks(string projectName)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        var stage = _database.ProjectStage(project.Id);
+        var said = new System.Text.StringBuilder();
+        foreach (var (id, milestone) in _database.ListMilestones(project.Id, stage)) said.AppendLine($"milestone {Short(id)}: {System.Text.Json.JsonSerializer.Serialize(milestone)}");
+        foreach (var (id, task) in _database.ListTasks(project.Id, stage)) said.AppendLine($"task {Short(id)}: {System.Text.Json.JsonSerializer.Serialize(task)}");
+        return said.ToString();
     }
 
     /// <summary>Agent Orange's MCP tools as a session lists them.</summary>

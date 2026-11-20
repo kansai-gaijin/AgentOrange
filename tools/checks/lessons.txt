@@ -1,0 +1,56 @@
+# A project's rules and lessons, which every briefing includes (#102): the person's standing rules
+# and what agents learned about the tools, one line each under the tool's name, on the project's
+# Lessons page. Agents add lessons with add_lesson; helper agents are given them too as they start.
+seed "Lessons project" 0 0 0
+# Nothing written yet: no section in the briefing, and nothing for helpers, but the hook is there.
+agentsetup "Lessons project"
+notsaid "## This project's rules and lessons"
+said "A helper agent is given: nothing"
+said "\qSubagentStart\q"
+said "--brief-helper"
+said "add_lesson"
+# The page says where each kind goes.
+open "Lessons project"
+click "Lessons"
+read
+said "Your standing rules for every agent on this project"
+shot lessons-empty
+# The person's rules, written on the page.
+writedoc "Lessons project" "lessons" "## Rules\n\n- Test only in the editor, never a packaged build.\n- Never run the game's build script.\n\n## Lessons\n"
+# Agents add lessons under their tool's name, as Agent Orange calls the tool, and never twice.
+mcp "Lessons project" add_lesson tool "unreal" lesson "execute_python takes script, not code." evidence "use_tool refused code"
+said "Added to the project's lessons, under Unreal Engine."
+mcp "Lessons project" add_lesson tool "Git" lesson "Fetch before checking out a branch made on another PC."
+mcp "Lessons project" add_lesson tool "Unreal Engine" lesson "SaveAsset saves a level too."
+mcp "Lessons project" add_lesson lesson "Write scripts to a file before running them."
+said "under General."
+mcp "Lessons project" add_lesson tool "unreal engine" lesson "execute_python takes script, not code."
+said "The lessons already have that, under Unreal Engine."
+mcprefused "Lessons project" add_lesson tool "Git"
+said "add_lesson needs lesson"
+# Shown on the page as they're added.
+read
+said "Test only in the editor, never a packaged build."
+said "execute_python takes script, not code. Evidence: use_tool refused code ("
+said "SaveAsset saves a level too."
+shot lessons
+# Every briefing has them, rules first, and so does each helper agent as it starts.
+agentsetup "Lessons project"
+said "## This project's rules and lessons"
+said "### Rules\n\n- Test only in the editor, never a packaged build.\n- Never run the game's build script.\n\n### Lessons"
+said "#### Unreal Engine"
+said "- execute_python takes script, not code. Evidence: use_tool refused code ("
+said "- SaveAsset saves a level too. ("
+said "#### Git"
+said "- Fetch before checking out a branch made on another PC. ("
+said "#### General"
+said "- Write scripts to a file before running them. ("
+said "A helper agent is given: {\qhookSpecificOutput\q:{\qhookEventName\q:\qSubagentStart\q,\qadditionalContext\q:\q<agent-orange-rules>"
+said "Never run the game's build script."
+notsaid "Your standing rules for every agent"
+# The person prunes one on the page; the next briefing goes by what's there.
+writedoc "Lessons project" "lessons" "## Rules\n\n- Test only in the editor, never a packaged build.\n\n## Lessons\n\n### Git\n\n- Fetch before checking out a branch made on another PC.\n"
+agentsetup "Lessons project"
+notsaid "Never run the game's build script."
+notsaid "SaveAsset saves a level too"
+said "Fetch before checking out"

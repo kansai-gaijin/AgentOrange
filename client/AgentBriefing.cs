@@ -13,7 +13,8 @@ namespace AgentOrange;
 /// </summary>
 public static class AgentBriefing
 {
-    public static string Write(EditorMonitor editors, string agentFolder, string projectId, IReadOnlyList<AgentSkill> others, IReadOnlyList<ToolReference>? references = null)
+    /// <param name="projectNotes">What's this project's own: its rules and lessons, and where the last conversations left off.</param>
+    public static string Write(EditorMonitor editors, string agentFolder, string projectId, IReadOnlyList<AgentSkill> others, IReadOnlyList<ToolReference>? references = null, string? projectNotes = null)
     {
         var said = new StringBuilder();
         said.AppendLine("""
@@ -48,6 +49,11 @@ public static class AgentBriefing
 
             Agent Orange's MCP server, "agent-orange", reads and changes the project: get_project to start, read_card for a card's document (its design), list_tasks, search, and write_card, add_task and update_task to keep them current as you work. Use them rather than guessing at the design, and write down what gets settled.
 
+            - For many at once, use add_cards, add_tasks, update_tasks (which also puts tasks in order) and remove_cards, one call for the lot, rather than a call each. list_tasks takes milestone, status and fields, so ask for only what you need rather than reading the whole list.
+            - Give a task evidence of its work with update_task's evidence, such as the screenshot or log that shows it done, rather than writing file paths into its notes. Write what's worth knowing about a milestone as a whole in its notes, with update_milestone.
+            - When a tool isn't as you expected and it cost a try, such as an argument with another name or a step it needs first, add a lesson with add_lesson, saying the tool and what showed it, so later conversations don't hit it again.
+            - Before you stop with work left over, such as at the end of a turn mid-milestone, write a handoff note with write_handoff on the milestone or task you were on: where things stand, what's still open, the decisions made and the next step, in a few lines. The next conversation starts from it. Agent Orange also asks for one when the conversation is settled.
+
             With Claude Code, Agent Orange's tools are always loaded. Some others load only on demand, such as Monitor and TaskStop: load them with ToolSearch, query select:Monitor,TaskStop, before their first use, and again after your context is summarised, which forgets them. Calling one that isn't loaded fails with "This tool's input schema was not in your prompt".
 
             The creative tools set up on this PC (such as Blender, Aseprite, ArmorPaint and Material Maker) are reached through it too: list_tools says which are open and whose window is in front, open_tool opens one in the project's folder, tool_tools says what it can do, and use_tool uses it. Use these rather than starting the programs yourself. Before timed work in a tool, such as a play test or a frame-rate check, bring its window in front with focus_tool (or open_tool with in_front), as some tools slow right down behind other windows; don't write your own script for it. Blender's is Blender Lab's own Blender MCP: its render tools save in Blender's temporary folder whatever path they're given, and say where, so copy from there, or render with execute_blender_code to save where the work belongs. In Unreal, a level is an asset like any other: the Asset toolset's SaveAsset saves it, as there's no tool named for saving a level.
@@ -56,6 +62,12 @@ public static class AgentBriefing
 
             Each message from the person starts with an <agent-orange-view> block describing what Agent Orange's main window is showing them right then: the project, its stage and folder, the page, the card, and the nodes on the board, with what's selected. When they say "this", "here" or "the selected one", it means what that block describes. The block is written by Agent Orange, not typed by the person.
             """);
+
+        if (projectNotes is { Length: > 0 })
+        {
+            said.AppendLine();
+            said.AppendLine(projectNotes.TrimEnd());
+        }
 
         said.AppendLine();
         said.AppendLine("## Tools set up on this PC");

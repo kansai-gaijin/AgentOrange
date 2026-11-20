@@ -46,10 +46,15 @@ namespace AgentOrange;
 ///   gitrepo "folder" "origin"   gitclone "from" "to"   borrow "folder"   fileis "path" "text"   (repos in the data folder, the clone testruns borrow from, a file's text)
 ///   testrun "folder" "Passed" "text"   (a test run's steps here, from the folder committed as a repo; the verdict and log say that)
 ///   mcp "Project" update_asset card "Asset 1" status "Needs review"   (an agent's MCP tool; mcprefused expects a refusal)
+///   mcpjson "Project" add_cards "{\qcards\q:[...]}"   (the same with its arguments as JSON, for lists; mcpjsonrefused too)
 ///   said "text"         notsaid "text"     saidunder 8000   (what the last command said has it, hasn't, or is under so many bytes)
+///   keep T1 "\(task (\w+)\)"               (the pattern's first group in what was last said, put in later lines for $T1)
 ///   refuses "Bash" "sed -i s/a/b/ f"       allows "Bash" "ls"   (a shell command past the agents' patch-script hook)
 ///   agentsetup "Project"                   (the settings, MCP servers and briefing an agent session gets)
 ///   writefile "Project" "path" "text"      after 1500 command...   (a file in its folder; a command run later, not waited for)
+///   writepicture "Project" "path"          stored "Project"   (a small picture in its folder; its milestones and tasks as stored)
+///   writedoc "Project" "lessons" "markdown"   (one of its documents, by its key, as a person's edit saves it)
+///   limitstop "Project" "task id"          settleasks "Project"   (a conversation on the task a usage limit stops; when settling asks for a handoff note)
 ///   (In said, refuses, allows and writefile, \n is a line break, \t a tab and \q a double quote.)
 /// </summary>
 internal static partial class Headless
@@ -159,11 +164,24 @@ internal static partial class Headless
     // What the last command said, for said, notsaid and saidunder to look at.
     private static string _lastSaid = "";
 
+    // What keep took from what was said, by name, put in later lines for $name.
+    private static readonly Dictionary<string, string> Kept = [];
+
     private static async Task RunCommandAsync(Window window, string[] parts, Action<string> say, string output)
     {
+        foreach (var (name, value) in Kept.OrderByDescending(each => each.Key.Length)) parts = [.. parts.Select(part => part.Replace($"${name}", value, StringComparison.Ordinal))];
         if (parts[0] is "said" or "notsaid" or "saidunder")
         {
             CheckSaid(parts, say);
+            return;
+        }
+        // keep T1 "Block out \(task (\w+)\)": the first group of the pattern in what the last command said.
+        if (parts[0] == "keep")
+        {
+            var found = Regex.Match(_lastSaid, Unescape(parts[2]));
+            if (!found.Success) throw new InvalidOperationException($"It didn't say anything like {parts[2]}.");
+            Kept[parts[1]] = found.Groups.Count > 1 ? found.Groups[1].Value : found.Value;
+            say($"{parts[1]} = {Kept[parts[1]]}");
             return;
         }
         var heard = new System.Text.StringBuilder();
@@ -181,9 +199,10 @@ internal static partial class Headless
     {
         switch (parts[0])
         {
-            case "said" when !_lastSaid.Contains(Unescape(parts[1]), StringComparison.Ordinal):
+            // Lines end in \n here, whatever they end in as said.
+            case "said" when !_lastSaid.Replace("\r\n", "\n").Contains(Unescape(parts[1]), StringComparison.Ordinal):
                 throw new InvalidOperationException($"It didn't say {parts[1]}.");
-            case "notsaid" when _lastSaid.Contains(Unescape(parts[1]), StringComparison.Ordinal):
+            case "notsaid" when _lastSaid.Replace("\r\n", "\n").Contains(Unescape(parts[1]), StringComparison.Ordinal):
                 throw new InvalidOperationException($"It said {parts[1]}.");
             case "saidunder":
                 var size = System.Text.Encoding.UTF8.GetByteCount(_lastSaid);
@@ -397,6 +416,13 @@ internal static partial class Headless
                 say($"{parts[2]}{(refused ? " refused" : "")}: {answer}");
                 if (refused != (parts[0] == "mcprefused")) throw new InvalidOperationException(refused ? $"{parts[2]} refused: {answer}" : $"{parts[2]} wasn't refused.");
                 break;
+            // The same, with the arguments as one JSON object, for lists: mcpjson "Project" add_cards "{\qcards\q:[...]}".
+            case "mcpjson" or "mcpjsonrefused":
+                var arguments = System.Text.Json.Nodes.JsonNode.Parse(Unescape(parts[3])) as System.Text.Json.Nodes.JsonObject ?? throw new InvalidOperationException("The arguments aren't a JSON object.");
+                var (answered, turnedDown) = await Main().CallMcpForChecks(parts[1], parts[2], arguments);
+                say($"{parts[2]}{(turnedDown ? " refused" : "")}: {answered}");
+                if (turnedDown != (parts[0] == "mcpjsonrefused")) throw new InvalidOperationException(turnedDown ? $"{parts[2]} refused: {answered}" : $"{parts[2]} wasn't refused.");
+                break;
             // A shell command as an agent's Claude Code would run it, past the hook Agent Orange gives it:
             // refuses "Bash" "sed -i s/a/b/ f.txt" fails unless it's stopped, and allows unless it isn't.
             case "refuses" or "allows":
@@ -436,6 +462,26 @@ internal static partial class Headless
             // Writes a file in the project's folder, such as one an agent waits for.
             case "writefile":
                 Main().WriteFileForChecks(parts[1], parts[2], Unescape(parts[3]));
+                break;
+            // A project's document as a person's edit saves it: writedoc "Project" "lessons" "## Rules\n- ..."
+            case "writedoc":
+                Main().WriteDocumentForChecks(parts[1], parts[2], Unescape(parts[3]));
+                break;
+            // A conversation working on a task that a usage limit stops: limitstop "Project" "task id".
+            case "limitstop":
+                say(Main().LimitStopForChecks(parts[1], parts[2]));
+                break;
+            // Whether settling asks a conversation for its handoff note, in the cases that decide it.
+            case "settleasks":
+                say(await Main().SettleAsksForChecks(parts[1]));
+                break;
+            // A small picture in the project's folder, such as a screenshot an agent took.
+            case "writepicture":
+                Main().WritePictureForChecks(parts[1], parts[2]);
+                break;
+            // The project's milestones and tasks as stored, for said to look at.
+            case "stored":
+                say(Main().StoredForChecks(parts[1]));
                 break;
             // Runs a command later, without waiting for it: after 1500 writefile "Project" "out.log" "done"
             case "after":

@@ -517,14 +517,16 @@ public sealed partial class AgentsWindow : Window
     private void OfferActions(UIElement by, AgentConversation conversation)
     {
         Popup? menu = null;
-        var settle = Ocean.MenuRow(Ocean.IconText(conversation.Settled ? "refresh-cw" : "check", conversation.Settled ? "Unsettle" : "Settle", Ocean.Foreground), () =>
+        var settle = Ocean.MenuRow(Ocean.IconText(conversation.Settled ? "refresh-cw" : "check", conversation.Settled ? "Unsettle" : "Settle", Ocean.Foreground), async () =>
         {
             menu!.IsOpen = false;
-            if (!conversation.Settle(!conversation.Settled)) ShowNote("Stop it, or answer what it's asking, before settling it.");
+            var done = conversation.Settled ? conversation.Settle(false) : await _main.SettleConversationAsync(conversation);
+            if (!done) ShowNote("Stop it, or answer what it's asking, before settling it.");
+            else if (conversation.SettlesAfterHandoff) ShowNote("It's writing its handoff note for the next conversation, and is settled once it has.");
             ShowHeader();
             ShowConversations();
         });
-        settle.ToolTip = "Settled conversations are done with: put away at the bottom of the list, with their agent ended. Writing to one takes it back out.";
+        settle.ToolTip = "Settled conversations are done with: put away at the bottom of the list, with their agent ended. Writing to one takes it back out. One with work to hand over writes a handoff note first, for the next conversation.";
         var delete = Ocean.MenuRow(Ocean.IconText("x", "Delete", Ocean.Error), () =>
         {
             menu!.IsOpen = false;
