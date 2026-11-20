@@ -99,6 +99,18 @@ public static partial class GitTools
             return new GitResult(false, $"Origin doesn't have the commit {commit}. Push it, then run the tests again.");
         }
 
+        // The folder is the runner's own, and it runs one test at a time, so a lock left in it is
+        // from a Git that was stopped part way (a cancelled run, a crash, a restart). Without this,
+        // every later run would fail on it until someone removed it by hand.
+        await Task.Run(() =>
+        {
+            foreach (var name in new[] { "index.lock", "HEAD.lock", "shallow.lock" })
+            {
+                try { File.Delete(Path.Combine(folder, ".git", name)); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+            }
+        });
+
         var checkedOut = await RunStepAsync($"Couldn't check out {commit}", "-c", "advice.detachedHead=false", "checkout", "--quiet", "--force", "--detach", commit);
         if (!checkedOut.Worked) return checkedOut;
         var cleaned = await RunStepAsync("Couldn't remove what an earlier run left", "clean", "-d", "--force", "--quiet");

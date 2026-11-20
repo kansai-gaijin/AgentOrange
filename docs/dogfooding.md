@@ -644,3 +644,7 @@ The first run on the office PC after new commits ended "Couldn't run": `Couldn't
 Every Git command AO runs has a 30-second limit unless it's a clone, and the run's fetch, checkout and clean
 went through that path. Checking out a new commit of a 5 GB game repo on a cold disk takes longer. Those
 steps now have no limit of their own; the run's own limit (and Cancel) still stops them.
+
+The next run then failed on `index.lock`: the checkout the old limit had stopped left Git's lock behind, and
+every run after would fail on it until someone removed it by hand on the test PC. The runner owns its work
+folder and runs one test at a time, so it now removes Git's stale lock files there before checking out.
