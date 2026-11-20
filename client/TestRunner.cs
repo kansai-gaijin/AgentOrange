@@ -176,6 +176,14 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         for (var tries = 0; tries < 10; tries++)
         {
             var ended = await devices.EndRunAsync(run.Id, verdict, exitCode, _checks);
+
+            // Checks the server won't take never keep the run from ending: it ends without them.
+            if (ended.Status is { } refused && (int)refused is >= 400 and < 500 && refused != HttpStatusCode.Gone && _checks.Count > 0)
+            {
+                AppLog.Write($"Test run {run.Id}'s checks were refused by the server ({(int)refused}), so it ends without them.");
+                _checks = [];
+                continue;
+            }
             if (ended.Status is not null) return;
             await Task.Delay(wait);
             wait = TimeSpan.FromSeconds(Math.Min(30, wait.TotalSeconds * 2));

@@ -48,7 +48,7 @@ const MAX_UNANSWERED_PER_LINKER: i64 = 3;
 const ACCESS_LEVELS: [&str; 3] = ["tests", "agents", "full"];
 /// Checks a run can say how each went, from the results file its repo names.
 const MAX_CHECKS: usize = 5000;
-const MAX_CHECK_NAME_BYTES: usize = 500;
+const MAX_CHECK_NAME_BYTES: usize = 1024;
 const CHECK_OUTCOMES: [&str; 3] = ["passed", "failed", "skipped"];
 const MAX_CHECK_HISTORY_ROWS: i64 = 5000;
 const MAX_ONE_CHECK_HISTORY_ROWS: i64 = 300;

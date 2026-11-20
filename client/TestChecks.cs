@@ -28,8 +28,11 @@ public static class TestChecks
     public const string Failed = "failed";
     public const string Skipped = "skipped";
 
+    // What the server takes with a run's end: 5000 checks, each name under 1 KB in UTF-8, all of
+    // it well under its 2 MB for a request.
     public const int MaxChecks = 5000;
-    private const int MaxNameLength = 300;
+    private const int MaxNameLength = 200;
+    private const int MaxNamesBytes = 1024 * 1024;
     private const int MaxFiles = 500;
     private const long MaxBytes = 32L * 1024 * 1024;
 
@@ -97,6 +100,13 @@ public static class TestChecks
         }
 
         var list = checks.Select(each => new CheckResult(each.Key, each.Value)).OrderBy(each => each.Name, StringComparer.Ordinal).ToList();
+        var namesBytes = 0;
+        var fits = list.TakeWhile(each => (namesBytes += Encoding.UTF8.GetByteCount(each.Name) + 16) <= MaxNamesBytes).Count();
+        if (fits < list.Count)
+        {
+            problems.Add($"the checks' names come to over 1 MB, so only the first {fits} are kept");
+            list = list[..fits];
+        }
         var said = new StringBuilder();
         if (list.Count == 0)
         {
