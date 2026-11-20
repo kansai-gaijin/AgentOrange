@@ -45,13 +45,29 @@ public partial class MainWindow
         _conversations!.Add(conversation);
         conversation.LimitsReported += (provider, limits, complete) => Usage.Update(provider, limits, complete);
         conversation.SkillUsed += (skill, how) => RecordSkillUse(conversation, skill, how);
-        conversation.StateChanged += () =>
+        conversation.StateChanged += () => ConversationChanged(conversation);
+    }
+
+    // It started or stopped working, or wants the person.
+    private void ConversationChanged(AgentConversation conversation)
+    {
+        // A usage limit stopped it before it could say where it left off, so Agent Orange does, from what it has.
+        if (conversation.IsLimited && !conversation.LimitHandoffWritten)
         {
-            // Done, or wanting something, with no one looking at it.
-            if ((!conversation.IsWorking || conversation.IsWaiting) && _agentsWindow?.IsLookingAt(conversation) != true) conversation.Unseen = true;
-            conversation.Save(ConversationsFolder);
-            _agentsWindow?.ShowConversations();
-        };
+            conversation.LimitHandoffWritten = true;
+            WriteLimitHandoff(conversation);
+        }
+        // Asked for its handoff note as it was settled, and done answering.
+        if (conversation.SettlesAfterHandoff && !conversation.IsWorking && !conversation.IsWaiting)
+        {
+            conversation.SettlesAfterHandoff = false;
+            conversation.Settle(true);
+            return; // Settling says so again.
+        }
+        // Done, or wanting something, with no one looking at it.
+        if ((!conversation.IsWorking || conversation.IsWaiting) && _agentsWindow?.IsLookingAt(conversation) != true) conversation.Unseen = true;
+        conversation.Save(ConversationsFolder);
+        _agentsWindow?.ShowConversations();
     }
 
     internal AgentConversation NewConversation(Project project)

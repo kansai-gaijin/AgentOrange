@@ -27,6 +27,8 @@ public partial class MainWindow
         + "then read the cards that matter to your work with read_card (a card's document is its design, in Markdown), and the tasks with list_tasks. "
         + "Keep it current as you work: tick tasks you finish with update_task, add tasks you find with add_task, add cards the design needs with add_card (such as the assets a slice needs), set an asset's status with update_asset as you work on it (In progress, then Needs review when it's ready for the person to judge), and write what you settle into the card's document with write_card. "
         + "Settle nothing that's the person's to decide: ask them, then write it down. Never mark an asset as delivered. "
+        + "For many at once, use add_cards, add_tasks, update_tasks and remove_cards rather than a call each. "
+        + "When a tool isn't as you expected, add a lesson with add_lesson; before you stop with work left over, write a handoff note with write_handoff. "
         + "To wait for a file, a log line, a port or a process, use wait_for rather than sleep.";
 
     private async Task<JsonNode?> McpAnswerAsync(string projectId, string method, JsonNode? parameters) => method switch
@@ -133,7 +135,10 @@ public partial class MainWindow
         new("update_milestone", "Changes a milestone's notes: what's worth knowing about it as a whole, such as how its parts fit, what was tried, or what it waits on. Its name, what it's for and when it's done are the person's to change.",
             new JsonObject { ["milestone"] = Text("The milestone, by its name or the start of it."), ["notes"] = Text("Its notes, in Markdown, replacing the old ones; empty for none."), ["mode"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("replace", "append"), ["description"] = "replace or append: swap the notes for these, or add these at their end. replace when not given." } },
             ["milestone"], (project, given) => UpdateMilestoneFor(project, given)),
-        new("add_lesson", "Adds a lesson to the project's Lessons page, which every later conversation's briefing has: something about a tool that wasn't as expected and cost a try, such as an argument with another name or a step it needs first, so the next agent doesn't hit it again. One line, under the tool it's about. The person's rules on that page are theirs, and this never changes them.",
+        new("write_handoff", "Leaves a handoff note on the milestone or task you were on, for the next conversation, whose briefing starts from it: where things stand, what's still open, the decisions made and the next step, in a few lines. It replaces the note there. Write one before you stop with work left over.",
+            new JsonObject { ["note"] = Text("Where things stand, what's still open, the decisions made and the next step, in a few lines."), ["milestone"] = Text("The milestone it's about, by its name or the start of it."), ["task"] = Text("Or the task it's about, by its id from list_tasks.") },
+            ["note"], (project, given) => WriteHandoffFor(project, given)),
+        new("add_lesson","Adds a lesson to the project's Lessons page, which every later conversation's briefing has: something about a tool that wasn't as expected and cost a try, such as an argument with another name or a step it needs first, so the next agent doesn't hit it again. One line, under the tool it's about. The person's rules on that page are theirs, and this never changes them.",
             new JsonObject { ["lesson"] = Text("What to do, in a line, such as: execute_python takes script, not code."), ["tool"] = Text("The tool it's about, such as Unreal Engine, Blender, Git or PowerShell. General when not given."), ["evidence"] = Text("What showed it, in a line, such as the error it gave.") },
             ["lesson"], (project, given) => AddLessonFor(project, given)),
         new("search", "Finds words anywhere in the design: every document, card name and task, with where each is.",

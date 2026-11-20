@@ -44,6 +44,7 @@ namespace AgentOrange;
 ///   writefile "Project" "path" "text"      after 1500 command...   (a file in its folder; a command run later, not waited for)
 ///   writepicture "Project" "path"          stored "Project"   (a small picture in its folder; its milestones and tasks as stored)
 ///   writedoc "Project" "lessons" "markdown"   (one of its documents, by its key, as a person's edit saves it)
+///   limitstop "Project" "task id"          settleasks "Project"   (a conversation on the task a usage limit stops; when settling asks for a handoff note)
 ///   (In said, refuses, allows and writefile, \n is a line break, \t a tab and \q a double quote.)
 /// </summary>
 internal static partial class Headless
@@ -411,6 +412,14 @@ internal static partial class Headless
             // A project's document as a person's edit saves it: writedoc "Project" "lessons" "## Rules\n- ..."
             case "writedoc":
                 Main().WriteDocumentForChecks(parts[1], parts[2], Unescape(parts[3]));
+                break;
+            // A conversation working on a task that a usage limit stops: limitstop "Project" "task id".
+            case "limitstop":
+                say(Main().LimitStopForChecks(parts[1], parts[2]));
+                break;
+            // Whether settling asks a conversation for its handoff note, in the cases that decide it.
+            case "settleasks":
+                say(await Main().SettleAsksForChecks(parts[1]));
                 break;
             // A small picture in the project's folder, such as a screenshot an agent took.
             case "writepicture":

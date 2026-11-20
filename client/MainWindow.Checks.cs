@@ -135,6 +135,45 @@ public partial class MainWindow
         if (_openProject?.Id == project.Id) RenderProject(_openProject);
     }
 
+    /// <summary>
+    /// A conversation about the project, working on a task through AO's tools, that a usage limit
+    /// stops mid-task, read as Claude Code says it, for Agent Orange to write its handoff note.
+    /// </summary>
+    internal string LimitStopForChecks(string projectName, string taskId)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        _ = Conversations; // Read from the agent files folder first, as opening the agents window does.
+        var conversation = NewConversation(project);
+        conversation.Title = "Light the cave";
+        conversation.Items.Add(new AgentItem { Id = "asked", Kind = AgentItemKind.User, Text = "Light the cave, then add its sound." });
+        conversation.ReadForChecks($$$"""{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"TodoWrite","input":{"todos":[{"content":"Place the lights","status":"completed"},{"content":"Bake the lighting","status":"in_progress"},{"content":"Add the sound","status":"pending"}]}},{"type":"tool_use","id":"t2","name":"mcp__agent-orange__update_task","input":{"id":"{{{taskId}}}","notes":"Lights placed."}}]}}""");
+        conversation.ReadForChecks($$$"""{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"Changed. Now: [ ] Light the cave (task {{{taskId}}})"}]}}""");
+        conversation.ReadForChecks("""{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"The lights are placed, and baking them is next."}]}}""");
+        conversation.ReadForChecks("""{"type":"result","is_error":true,"result":"Claude AI usage limit reached|1900000000"}""");
+        ConversationChanged(conversation);
+        return $"Stopped by a limit: {conversation.IsLimited}. Its note written: {conversation.LimitHandoffWritten}.";
+    }
+
+    /// <summary>Whether settling a conversation asks its agent for a handoff note first, in the cases that decide it.</summary>
+    internal async Task<string> SettleAsksForChecks(string projectName)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        _ = Conversations;
+        AgentConversation Made(params AgentItem[] items)
+        {
+            var made = NewConversation(project);
+            made.Items.AddRange(items);
+            return made;
+        }
+        var asked = Made(new AgentItem { Id = "a", Kind = AgentItemKind.User, Text = "Light the cave." });
+        var wrote = Made(new AgentItem { Id = "a", Kind = AgentItemKind.User, Text = "Light the cave." }, new AgentItem { Id = "b", Kind = AgentItemKind.Tool, Tool = "mcp__agent-orange__write_handoff" });
+        var onlyAgentOrange = Made(new AgentItem { Id = "a", Kind = AgentItemKind.User, Text = "Continue where you left off.", Automatic = true });
+        var said = $"Given work: {WantsHandoff(asked)}. After its note: {WantsHandoff(wrote)}. Only Agent Orange's messages: {WantsHandoff(onlyAgentOrange)}.";
+        // Without a login to ask with, it's settled straight away.
+        var settled = await SettleConversationAsync(asked);
+        return $"{said} Without a login, settled straight away: {settled && asked.Settled && !asked.SettlesAfterHandoff}.";
+    }
+
     /// <summary>A small picture in the project's folder, such as a screenshot an agent took.</summary>
     internal void WritePictureForChecks(string projectName, string path)
     {
