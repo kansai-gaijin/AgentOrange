@@ -1,0 +1,108 @@
+# Agents start a test run on a linked test machine for a pushed commit, list runs with their
+# state, and read a run's verdict, checks and log through AO's tools, rather than the person
+# starting each run and typing its result back (#117). A machine already testing that commit isn't
+# sent it again, runs started by agents say so in the run list, and the same rules as a person's
+# runs apply. Made up as if this PC were linked to Office PC and Laptop, as checks have no server,
+# with the project's folder a clone of a repo in the data folder, standing in for GitHub.
+seed "Agent runs" 0 0 0
+file "upstream/.agent-orange/tests.json" {"test":"Write-Output('tested')","tags":["windows"]}
+gitrepo "upstream"
+gitclone "upstream" "projects/agent-runs"
+testchecks "Agent runs" running
+# The machines, each run with who started it, and the checks that flip.
+mcp "Agent runs" list_test_runs
+said "Office PC: running tests, so a run waits its turn. Tags: windows."
+said "Laptop: not answering right now"
+said "run check-run: Running on Office PC at"
+said "started by an agent. Checks: 1 passed, 3 failed."
+said "started by a person"
+said "Clock.DayNight flips between pass and fail at the same commit, on Office PC at"
+said "Input.Jump differs between machines: passes on Laptop and fails on Office PC at"
+notsaid "Physics.Fall"
+# The commit the machine is already testing gives that run back, and nothing more is sent.
+mcp "Agent runs" run_tests machine "Office PC"
+said "Office PC is already testing"
+said "so no other run was sent: run check-run"
+mcp "Agent runs" run_tests machine "office" commit "HEAD"
+said "so no other run was sent"
+# The same rules as a person's runs: a machine not answering, one not linked, a commit not a commit.
+mcprefused "Agent runs" run_tests
+said "run_tests needs machine: this PC is linked to more than one test machine. Its test machines: Laptop, Office PC."
+mcprefused "Agent runs" run_tests machine "Laptop"
+said "machine: Laptop is not answering right now"
+mcprefused "Agent runs" run_tests machine "Basement PC"
+said "machine: this PC isn't linked to a test machine called Basement PC. Its test machines: Laptop, Office PC."
+mcprefused "Agent runs" run_tests machine "Office PC" commit "--upload-pack=calc"
+said "commit: --upload-pack=calc isn't a commit"
+mcprefused "Agent runs" run_tests machine "Office PC" commit "nosuchbranch"
+said "has no commit nosuchbranch"
+# Once that run has ended, a run is sent as a person's is, which needs this PC's key for the link.
+testrunstate failed
+mcprefused "Agent runs" run_tests machine "Office PC"
+said "This PC has no key for its link to Office PC. Link it again."
+# A commit made here and not pushed can't be sent, as the machine fetches it from origin.
+gitrepo "projects/agent-runs"
+mcprefused "Agent runs" run_tests machine "Office PC"
+said "Push the commit checked out here first."
+mcprefused "Agent runs" run_tests machine "Office PC" commit "HEAD~1"
+said "This PC has no key"
+# Its verdict, checks with the ones that flip, and the end of its log.
+mcp "Agent runs" read_test_run run "check-run" lines "2"
+said "Run check-run: Failed on Office PC"
+said "Checks: 1 passed, 3 failed."
+said "- Failed: Clock.DayNight. Flagged: it flips between pass and fail at the same commit, on Office PC at"
+said "- Failed: Input.Jump. Flagged: it differs between machines"
+said "- Failed: Physics.Fall"
+notsaid "Physics.Fall. Flagged"
+said "The last 2 of its log's 5 lines:"
+said "Verdict: Failed (exit code 1)"
+notsaid "> run the tests"
+# Waiting for one still running answers within the seconds given, saying so, and once it ends.
+testrunstate running
+mcp "Agent runs" read_test_run run "check-run" seconds "1" lines "0"
+said "Still running after 1 s. Call read_test_run with seconds again to keep waiting."
+after 1500 testrunstate passed
+mcp "Agent runs" read_test_run run "check-run" seconds "20" lines "0"
+said "Run check-run: Passed on Office PC"
+notsaid "Still running"
+mcprefused "Agent runs" read_test_run run "nope"
+said "run: there's no run nope. list_test_runs gives each run's id."
+mcprefused "Agent runs" read_test_run run "check-run" seconds "900"
+said "seconds must be from 0 to 300"
+# A check's history, and one that's only ever failed isn't flagged.
+mcp "Agent runs" check_history check "Clock.DayNight"
+said "Clock.DayNight flips between pass and fail at the same commit, on Office PC at"
+said "(2 passed, 1 failed)"
+said "Failed on Office PC at"
+said "Passed on Laptop at"
+mcp "Agent runs" check_history check "Physics.Fall"
+said "hasn't passed and failed at the same commit"
+mcprefused "Agent runs" check_history check "Nothing.Here"
+said "check: no run of Agent runs has a check called Nothing.Here."
+# The agents are told to use these, not the person.
+briefing "Agent runs" "use Agent Orange's run_tests"
+mcptools
+said "run_tests"
+said "check_history"
+# The run list says which runs an agent started, and offers the checks that flip.
+open "Agent runs"
+testmenu "Agent runs" failed
+wait "started by an agent"
+expect "2 checks flip between pass and fail, see the history"
+shot agent-run-list
+click "2 checks flip between pass and fail, see the history"
+window "Check history · Agent runs"
+expect "2 checks passed and failed at the same commit."
+wait "It flips between pass and fail at the same commit, on Office PC at"
+wait "It differs between machines: passes on Laptop and fails on Office PC at"
+wait "It failed, but never at a commit where it also passed."
+shot check-history
+# The run's own window says an agent started it, how its checks went and which flip.
+testrunwindow "Agent runs" check-run
+windowlike "Test run · Agent runs · Office PC · "
+wait "Started by an agent."
+wait "Checks: 1 passed, 3 failed."
+wait "Failed: Clock.DayNight. It flips between pass and fail at the same commit"
+wait "Failed: Physics.Fall"
+shot agent-run-window
+click "Check history"

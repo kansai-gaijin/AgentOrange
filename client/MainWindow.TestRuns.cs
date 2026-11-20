@@ -34,16 +34,19 @@ public partial class MainWindow
             run.IsEnabled = false;
             var sending = await TestMachines.WhatToSendAsync(folder);
             var recent = await TestRunsAsync(project.Id);
+            var history = await CheckHistoryAsync(project.Id);
             run.IsEnabled = true;
-            OpenTestMachineMenu(run, project, folder, sending.Setup, sending.Commit, sending.Problem, recent ?? []);
+            OpenTestMachineMenu(run, project, folder, sending.Setup, sending.Commit, sending.Problem, recent ?? [], history ?? []);
         };
         row.Children.Add(run);
     }
 
     // A list under the button, as the git actions' menu is: one line a linked machine, then earlier
-    // runs. Asked again every few seconds while it's open, so what it says stays current.
-    private void OpenTestMachineMenu(Button button, Project project, string folder, TestSetup? setup, string? commit, string? problem, List<TestRunInfo> recent)
+    // runs, then the checks that flip, if any do. Asked again every few seconds while it's open, so
+    // what it says stays current.
+    private void OpenTestMachineMenu(Button button, Project project, string folder, TestSetup? setup, string? commit, string? problem, List<TestRunInfo> recent, List<CheckHistoryRow> history)
     {
+        var flipping = TestChecks.Flags(history).Count;
         var items = new StackPanel { MinWidth = 260 };
         var menu = new Popup
         {
@@ -115,8 +118,15 @@ public partial class MainWindow
                 foreach (var each in sent)
                 {
                     var when = DateTimeOffset.FromUnixTimeSeconds((long)each.CreatedAt).ToLocalTime();
-                    Add($"{TestRunner.VerdictLabel(each.Status)} on {each.MachineLabel}, {when:d MMM HH:mm}", () => OpenTestRun(each.Id, project.Name));
+                    Add($"{TestRunner.VerdictLabel(each.Status)} on {each.MachineLabel}, {when:d MMM HH:mm}{(each.ByAgent ? ", started by an agent" : "")}", () => OpenTestRun(each.Id, project.Name));
                 }
+            }
+
+            // Checks that passed and failed at the same commit (#105), whose history says why.
+            if (flipping > 0)
+            {
+                items.Children.Add(new Border { Height = 1, Background = (Brush)FindResource("Line"), Margin = new Thickness(4) });
+                Add($"{(flipping == 1 ? "1 check flips" : $"{flipping} checks flip")} between pass and fail, see the history", async () => await OpenCheckHistoryAsync(project.Id, project.Name));
             }
         }
         Fill();
@@ -171,11 +181,47 @@ public partial class MainWindow
             open.Activate();
             return open;
         }
-        var window = new TestRunWindow(_devices, runId, projectName) { Owner = null };
+        var window = new TestRunWindow(this, _devices, runId, projectName) { Owner = null };
         _testRunWindows[runId] = window;
         window.Closed += (_, _) => _testRunWindows.Remove(runId);
         window.Show();
         return window;
+    }
+
+    // A window per project's check history, brought to the front and read again when opened again.
+    private readonly Dictionary<string, CheckHistoryWindow> _checkHistoryWindows = [];
+
+    /// <summary>A project's checks that failed, with their history and the ones that flip (#105).</summary>
+    internal async Task OpenCheckHistoryAsync(string projectId, string projectName)
+    {
+        if (!_checkHistoryWindows.TryGetValue(projectId, out var window))
+        {
+            window = new CheckHistoryWindow(projectName) { Owner = null };
+            _checkHistoryWindows[projectId] = window;
+            window.Closed += (_, _) => _checkHistoryWindows.Remove(projectId);
+            window.Show();
+        }
+        else
+        {
+            if (window.WindowState == WindowState.Minimized) window.WindowState = WindowState.Normal;
+            window.Show();
+            window.Activate();
+        }
+        window.Fill(await CheckHistoryAsync(projectId));
+    }
+
+    /// <summary>A run and its log after the part read, for its window: from the server, or made up for headless checks.</summary>
+    internal async Task<ServerAnswer<TestRunWithLog>> ReadRunForWindowAsync(string runId, int after)
+    {
+#if DEBUG
+        if (_checksForChecks is not null && _testRunsForChecks?.FirstOrDefault(run => run.Id == runId) is { } madeUp)
+        {
+            var log = after == -1 ? new List<RunLogLine> { new(0, _testLogForChecks) } : [];
+            return new(new TestRunWithLog(madeUp.Id, madeUp.LinkId, madeUp.Machine, madeUp.MachineLabel, madeUp.Linker, madeUp.LinkerLabel, madeUp.ProjectId, madeUp.Commit, madeUp.Job, madeUp.Mac,
+                madeUp.Status, madeUp.ExitCode, madeUp.CancelRequested, madeUp.CreatedAt, madeUp.StartedAt, madeUp.EndedAt, madeUp.LinkAccess, madeUp.LinkExpiresAt, log, madeUp.ChecksPassed, madeUp.ChecksFailed, madeUp.ChecksSkipped), System.Net.HttpStatusCode.OK);
+        }
+#endif
+        return await _devices.ReadRunAsync(runId, after);
     }
 
     // A project's recent runs as the server has them, or null when it couldn't say.
@@ -201,8 +247,11 @@ public partial class MainWindow
         const string commit = "0123456789abcdef0123456789abcdef01234567";
         var link = new MachineLinkInfo("check-link", "office", "Office PC", [], "me", "This PC", "tests", 0, DateTimeOffset.UtcNow.AddDays(20).ToUnixTimeSeconds(), "busy", 0);
         _testMachines.ShowForChecks(new MachinesInfo("me", null, [], [link]));
-        _testRunsForChecks = [new TestRunInfo("check-run", link.Id, link.Machine, link.MachineLabel, "me", "This PC", project.Id, commit, "{}", "", status, null, false, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), null, null, null, null)];
-        OpenTestMachineMenu(RunTestsButton(this) ?? throw new InvalidOperationException("The project's page has no Run tests on… button."), project, "", new TestSetup("", "check", null, [], 30), commit, null, [.. _testRunsForChecks]);
+        // After testchecks, its runs, the latest by an agent, in that state.
+        _testRunsForChecks = _checksForChecks is not null && _testRunsForChecks is [var latest, .. var rest]
+            ? [latest with { Status = status }, .. rest]
+            : [new TestRunInfo("check-run", link.Id, link.Machine, link.MachineLabel, "me", "This PC", project.Id, commit, "{}", "", status, null, false, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), null, null, null, null)];
+        OpenTestMachineMenu(RunTestsButton(this) ?? throw new InvalidOperationException("The project's page has no Run tests on… button."), project, "", new TestSetup("", "check", null, [], 30), commit, null, [.. _testRunsForChecks], [.. _checkHistoryForChecks ?? []]);
 
         static Button? RunTestsButton(DependencyObject parent)
         {

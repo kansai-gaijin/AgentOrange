@@ -6,14 +6,16 @@ namespace AgentOrange;
 public static partial class GitTools
 {
     /// <summary>
-    /// The commit checked out in the folder, and whether origin has it, which a test machine needs
-    /// to fetch it. Origin's branches as last fetched or pushed from here count.
+    /// The commit checked out in the folder, or the one named (a commit id, its start, or a branch
+    /// or tag), and whether origin has it, which a test machine needs to fetch it. Origin's
+    /// branches as last fetched or pushed from here count.
     /// </summary>
-    public static async Task<(string Sha, string Subject, bool Pushed, string? Problem)> PushedHeadAsync(string folder)
+    public static async Task<(string Sha, string Subject, bool Pushed, string? Problem)> PushedHeadAsync(string folder, string? commit = null)
     {
-        if (await RunAsync("git", folder, "log", "-1", "--format=%H%n%s") is not { ExitCode: 0 } head || head.Output.Split('\n') is not [var sha, var subject, ..])
+        if (commit is not null && !CommitName().IsMatch(commit)) return ("", "", false, $"{commit} isn't a commit: give a commit id, the start of one, or a branch or tag name.");
+        if (await RunAsync("git", folder, "log", "-1", "--format=%H%n%s", commit is null ? "HEAD" : $"{commit}^{{commit}}", "--") is not { ExitCode: 0 } head || head.Output.Split('\n') is not [var sha, var subject, ..])
         {
-            return ("", "", false, "This folder has no commits yet.");
+            return ("", "", false, commit is null ? "This folder has no commits yet." : $"The project's repo on this PC has no commit {commit}. Fetch or pull first if it was made elsewhere.");
         }
         sha = sha.Trim();
         var pushed = await RunAsync("git", folder, "branch", "--remotes", "--list", "origin/*", "--contains", sha) is { ExitCode: 0 } branches && branches.Output.Trim().Length > 0;
@@ -228,4 +230,8 @@ public static partial class GitTools
     private static readonly AsyncLocal<bool> NoStepLimit = new();
 
     private static bool IsCommitId(string text) => text.Length is >= 7 and <= 64 && text.All(Uri.IsHexDigit);
+
+    // A commit as an agent names one: an id or its start, or a branch or tag. Never an option or a range.
+    [System.Text.RegularExpressions.GeneratedRegex(@"\A(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._/~^-]{0,199}\z")]
+    private static partial System.Text.RegularExpressions.Regex CommitName();
 }
