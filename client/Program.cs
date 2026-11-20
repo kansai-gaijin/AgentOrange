@@ -29,6 +29,13 @@ public static class Program
             Environment.Exit(PatchScripts.RunHook(input, error));
         }
 
+        // Started by Claude Code as a helper agent starts, to give it the project's rules and lessons.
+        if (Array.IndexOf(args, ProjectLessons.HelperHookArgument) is var helper and >= 0)
+        {
+            using var output = new System.IO.StreamWriter(Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false));
+            Environment.Exit(ProjectLessons.RunHelperHook(helper + 1 < args.Length ? args[helper + 1] : "", output));
+        }
+
 #if DEBUG
         Headless.Configure(Environment.GetCommandLineArgs());
         if (!Headless.Active)

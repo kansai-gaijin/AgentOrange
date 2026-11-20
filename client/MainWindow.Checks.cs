@@ -100,15 +100,20 @@ public partial class MainWindow
         var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
         var agentFolder = Settings.Folders.AgentFolder;
         var mcp = AgentMcpConfig.Write(Settings.Editors, agentFolder, project.Id);
-        var settings = WriteClaudeSettings(mcp, AgentSkills.List(agentFolder), agentFolder);
-        var briefing = AgentBriefing.Write(Settings.Editors, agentFolder, project.Id, []);
+        var helpers = WriteHelperBriefing(agentFolder, project.Id);
+        var settings = WriteClaudeSettings(mcp, AgentSkills.List(agentFolder), agentFolder, helpers);
+        var briefing = AgentBriefing.Write(Settings.Editors, agentFolder, project.Id, [], ProjectBriefingNotes(project.Id));
 
         // How its program would be started, by a made-up login that's never run.
         var login = new AgentProvider("check", ProviderKind.Claude, "Check", "claude", Path.Combine(agentFolder, "check-login"), true);
         var start = AgentProviders.SessionStartInfo(login, "-p", ProjectFolder(project.Id) ?? agentFolder, Ripgrep.Folder(agentFolder));
         var started = $"Started as: {start.FileName} {start.Arguments}\n" + string.Join("\n", new[] { "PYTHONUTF8", "PYTHONIOENCODING", "VSLANG", "DOTNET_CLI_UI_LANGUAGE", "LANG", "PATH" }
             .Select(name => $"{name}={(start.Environment.TryGetValue(name, out var value) ? value : "")}"));
-        return string.Join("\n", new[] { settings, mcp, briefing }.Select(file => $"{Path.GetFileName(file)}:\n{File.ReadAllText(file)}")) + "\n" + started;
+        // What a helper agent is told as it starts, through the hook, as Claude Code would run it.
+        using var helperSaid = new StringWriter();
+        ProjectLessons.RunHelperHook(helpers, helperSaid);
+        return string.Join("\n", new[] { settings, mcp, briefing }.Select(file => $"{Path.GetFileName(file)}:\n{File.ReadAllText(file)}")) + "\n" + started
+            + $"\nA helper agent is given: {(helperSaid.ToString() is { Length: > 0 } given ? given : "nothing")}";
     }
 
     /// <summary>Writes a file in the project's folder, by a path inside it, or in the agent files folder, for a project called "(agent files)".</summary>
@@ -120,6 +125,14 @@ public partial class MainWindow
         var file = Path.Combine(folder ?? throw new InvalidOperationException($"{projectName} has no folder."), path);
         Directory.CreateDirectory(Path.GetDirectoryName(file)!);
         File.AppendAllText(file, text);
+    }
+
+    /// <summary>One of the project's documents, by its key, as a person's edit on its page saves it.</summary>
+    internal void WriteDocumentForChecks(string projectName, string key, string markdown)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        _database.SetDocument(project.Id, key, markdown);
+        if (_openProject?.Id == project.Id) RenderProject(_openProject);
     }
 
     /// <summary>A small picture in the project's folder, such as a screenshot an agent took.</summary>

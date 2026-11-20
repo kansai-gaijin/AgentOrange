@@ -43,6 +43,7 @@ namespace AgentOrange;
 ///   agentsetup "Project"                   (the settings, MCP servers and briefing an agent session gets)
 ///   writefile "Project" "path" "text"      after 1500 command...   (a file in its folder; a command run later, not waited for)
 ///   writepicture "Project" "path"          stored "Project"   (a small picture in its folder; its milestones and tasks as stored)
+///   writedoc "Project" "lessons" "markdown"   (one of its documents, by its key, as a person's edit saves it)
 ///   (In said, refuses, allows and writefile, \n is a line break, \t a tab and \q a double quote.)
 /// </summary>
 internal static partial class Headless
@@ -406,6 +407,10 @@ internal static partial class Headless
             // Writes a file in the project's folder, such as one an agent waits for.
             case "writefile":
                 Main().WriteFileForChecks(parts[1], parts[2], Unescape(parts[3]));
+                break;
+            // A project's document as a person's edit saves it: writedoc "Project" "lessons" "## Rules\n- ..."
+            case "writedoc":
+                Main().WriteDocumentForChecks(parts[1], parts[2], Unescape(parts[3]));
                 break;
             // A small picture in the project's folder, such as a screenshot an agent took.
             case "writepicture":

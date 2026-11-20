@@ -145,16 +145,17 @@ public partial class MainWindow
         }
         _sessionSkills[conversation.Id] = [.. AgentSkills.List(agentFolder), .. others];
         return new AgentConversation.Setup(provider, mcp, servers, AgentSkills.ClaudePlugin(agentFolder, conversation.ProjectId, others),
-            AgentBriefing.Write(Settings.Editors, agentFolder, conversation.ProjectId, others), AttachmentsFolder,
-            WriteClaudeSettings(mcp, _sessionSkills[conversation.Id], agentFolder),
+            AgentBriefing.Write(Settings.Editors, agentFolder, conversation.ProjectId, others, ProjectBriefingNotes(conversation.ProjectId)), AttachmentsFolder,
+            WriteClaudeSettings(mcp, _sessionSkills[conversation.Id], agentFolder, WriteHelperBriefing(agentFolder, conversation.ProjectId)),
             [.. _sessionSkills[conversation.Id].Select(skill => Path.GetFullPath(skill.Folder))], Ripgrep.Folder(agentFolder));
     }
 
     // The briefing points the agent at each skill's SKILL.md, wherever it is (Agent Orange's folder, the
     // engine's, a tool's), so reading those folders never needs asking. Claude Code matches Windows
     // paths in their POSIX form, "//c/Program Files/...". Every shell command, the agent's and its
-    // helpers', goes past Agent Orange's check for patch scripts first (PatchScripts).
-    private static string WriteClaudeSettings(string mcpConfig, IEnumerable<AgentSkill> skills, string agentFolder)
+    // helpers', goes past Agent Orange's check for patch scripts first (PatchScripts), and each helper
+    // agent is given the project's rules and lessons as it starts (ProjectLessons).
+    private static string WriteClaudeSettings(string mcpConfig, IEnumerable<AgentSkill> skills, string agentFolder, string helperBriefing)
     {
         var rules = new JsonArray();
         foreach (var folder in skills.Select(skill => Path.GetDirectoryName(Path.GetFullPath(skill.Folder))).OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase))
@@ -164,10 +165,13 @@ public partial class MainWindow
             rules.Add($"Read({posix.TrimEnd('/')}/**)");
         }
         var path = Path.ChangeExtension(mcpConfig, null) + "-settings.json";
+        var program = AgentMcpConfig.RelayProgram(agentFolder);
+        var hooks = PatchScripts.Hooks(program);
+        hooks["SubagentStart"] = ProjectLessons.HelperHooks(program, helperBriefing);
         var settings = new JsonObject
         {
             ["permissions"] = new JsonObject { ["allow"] = rules },
-            ["hooks"] = PatchScripts.Hooks(AgentMcpConfig.RelayProgram(agentFolder)),
+            ["hooks"] = hooks,
         };
         File.WriteAllText(path, settings.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         return path;

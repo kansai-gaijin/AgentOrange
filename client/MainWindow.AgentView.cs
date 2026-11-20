@@ -58,6 +58,10 @@ public partial class MainWindow
                 }
                 foreach (var (_, task) in tasks.Where(each => each.Task.Milestone is null)) said.AppendLine($"  [{(task.Done ? "x" : " ")}] {TaskLine(project, task)}");
             }
+            else if (section.Name == ProjectLessons.Page)
+            {
+                said.AppendLine("Page: Lessons, the person's standing rules for this project and what agents learned about its tools, which your briefing has. Add a lesson with add_lesson.");
+            }
             else
             {
                 said.AppendLine($"Page: {section.Name}, a board.");
