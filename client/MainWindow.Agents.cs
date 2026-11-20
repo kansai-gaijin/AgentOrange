@@ -44,6 +44,7 @@ public partial class MainWindow
     {
         _conversations!.Add(conversation);
         conversation.LimitsReported += (provider, limits, complete) => Usage.Update(provider, limits, complete);
+        conversation.ExtraUsageStarted += limit => ExtraUsageStarted(conversation, limit);
         conversation.SkillUsed += (skill, how) => RecordSkillUse(conversation, skill, how);
         // Done, with nothing it started still running, or wanting something, with no one looking at it.
         // A turn that ends while its background work goes on isn't done, so that says nothing yet.
@@ -62,6 +63,9 @@ public partial class MainWindow
         {
             conversation.LimitHandoffWritten = true;
             WriteLimitHandoff(conversation);
+
+            // Turned on in Settings › Providers: another login with room takes it on now.
+            if (SwitchesLoginAtLimit && conversation.ResumeAtReset && !conversation.Settled) _ = GoOnWithAnotherLoginAsync(conversation);
         }
         // Asked for its handoff note as it was settled, and done answering.
         if (conversation.SettlesAfterHandoff && !conversation.IsWorking && !conversation.IsWaiting)
@@ -270,6 +274,13 @@ public partial class MainWindow
             var conversations = _conversations ?? [];
             foreach (var conversation in conversations.Where(each => each.IsLimited && each.ResumeAtReset && !each.IsWorking && !each.Settled).ToList())
             {
+                // Another login has come to have room, such as one whose limit has reset since.
+                if (SwitchesLoginAtLimit && LoginToGoOnWith(conversation) is not null)
+                {
+                    await GoOnWithAnotherLoginAsync(conversation);
+                    continue;
+                }
+
                 // Long overdue, it's been left on purpose, so it isn't woken.
                 if (ResumesAt(conversation) is not { } resets || resets > DateTimeOffset.UtcNow || DateTimeOffset.UtcNow - resets > TimeSpan.FromHours(24)) continue;
                 await ResumeAsync(conversation);

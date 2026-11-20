@@ -55,7 +55,8 @@ namespace AgentOrange;
 ///   writefile "Project" "path" "text"      after 1500 command...   (a file in its folder; a command run later, not waited for)
 ///   writepicture "Project" "path"          stored "Project"   (a small picture in its folder; its milestones and tasks as stored)
 ///   writedoc "Project" "lessons" "markdown"   (one of its documents, by its key, as a person's edit saves it)
-///   limitstop "Project" "task id"          settleasks "Project"   (a conversation on the task a usage limit stops; when settling asks for a handoff note)
+///   limitstop "Project" "task id" ["Login"]   settleasks "Project"   (a conversation on the task a usage limit stops, on that login; when settling asks for a handoff note)
+///   agentitems          setting "key" "value"   (the check's conversation, a line for each thing in it; a setting kept on this PC)
 ///   agent "Project" "message" [codex]      feed "recorded.jsonl" "part"      agentstate
 ///                       (a conversation sent a message with no program behind it, what its program says fed in from a recording beside the script, and how it stands)
 ///   (In said, refuses, allows and writefile, \n is a line break, \t a tab and \q a double quote.)
@@ -514,7 +515,15 @@ internal static partial class Headless
                 break;
             // A conversation working on a task that a usage limit stops: limitstop "Project" "task id".
             case "limitstop":
-                say(Main().LimitStopForChecks(parts[1], parts[2]));
+                say(Main().LimitStopForChecks(parts[1], parts[2], parts.Length > 3 ? parts[3] : null));
+                break;
+            // The check's conversation, a line for each thing in it, with its login.
+            case "agentitems":
+                say(Main().ConversationItemsForChecks());
+                break;
+            // A setting kept on this PC: setting "agents_switch_login_at_limit" "1".
+            case "setting":
+                Main().SetSettingForChecks(parts[1], parts[2]);
                 break;
             // Whether settling asks a conversation for its handoff note, in the cases that decide it.
             case "settleasks":

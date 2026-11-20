@@ -179,11 +179,13 @@ public partial class MainWindow
     /// A conversation about the project, working on a task through AO's tools, that a usage limit
     /// stops mid-task, read as Claude Code says it, for Agent Orange to write its handoff note.
     /// </summary>
-    internal string LimitStopForChecks(string projectName, string taskId)
+    internal string LimitStopForChecks(string projectName, string taskId, string? loginLabel = null)
     {
         var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
         _ = Conversations; // Read from the agent files folder first, as opening the agents window does.
         var conversation = NewConversation(project);
+        _checkConversation = conversation;
+        if (loginLabel is not null) conversation.ProviderId = AllAgentLogins().FirstOrDefault(each => each.Label == loginLabel)?.Id ?? throw new InvalidOperationException($"There's no login called {loginLabel}.");
         conversation.Title = "Light the cave";
         conversation.Items.Add(new AgentItem { Id = "asked", Kind = AgentItemKind.User, Text = "Light the cave, then add its sound." });
         conversation.ReadForChecks($$$"""{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"TodoWrite","input":{"todos":[{"content":"Place the lights","status":"completed"},{"content":"Bake the lighting","status":"in_progress"},{"content":"Add the sound","status":"pending"}]}},{"type":"tool_use","id":"t2","name":"mcp__agent-orange__update_task","input":{"id":"{{{taskId}}}","notes":"Lights placed."}}]}}""");
@@ -260,6 +262,24 @@ public partial class MainWindow
     }
 
     internal AgentConversation CheckConversation => _checkConversation ?? throw new InvalidOperationException("Start a conversation with agent first.");
+
+    /// <summary>The check's conversation as it stands: its login, and each thing in it, a line each.</summary>
+    internal string ConversationItemsForChecks()
+    {
+        var conversation = CheckConversation;
+        string Login(string? id) => AllAgentLogins().FirstOrDefault(each => each.Id == id)?.Label ?? id ?? "none";
+        var said = new System.Text.StringBuilder($"Login: {Login(conversation.ProviderId)}. Limited: {conversation.IsLimited}. Working: {conversation.IsWorking}.\n");
+        foreach (var item in conversation.Items)
+        {
+            said.AppendLine(item.Kind == AgentItemKind.Handoff
+                ? $"Handoff: {Login(item.From?.ProviderId)} → {Login(item.To?.ProviderId)}"
+                : $"{item.Kind}{(item.Automatic ? " (Agent Orange)" : "")}: {item.Text}");
+        }
+        return said.ToString();
+    }
+
+    /// <summary>A setting kept on this PC, as its page would save it.</summary>
+    internal void SetSettingForChecks(string key, string value) => _database.SetSetting(key, value);
 
     /// <summary>Opens a project's page as if its check had found everything in order, without running one.</summary>
     internal void OpenForChecks(string name)

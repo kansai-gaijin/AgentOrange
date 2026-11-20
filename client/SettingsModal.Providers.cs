@@ -69,10 +69,16 @@ public partial class SettingsModal
 
         foreach (var provider in providers) _ = CheckProviderAsync(provider, itemRefreshers);
 
+        var switchLogin = SettingToggle(MainWindow.SwitchLoginSetting, false);
+        AutomationProperties.SetName(switchLogin, "Go on with another login");
         return
         [
             Section("Providers"),
             new Border { BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), ClipToBounds = true, Child = layout },
+            Section("Usage limits"),
+            Card(Row("Go on with another login",
+                "When a conversation's login reaches its usage limit, another login of the same kind with room left in its limits takes it on straight away, with its handoff note. Paid extra usage never counts as room, and a login that goes on to it is moved instead.",
+                switchLogin)),
         ];
     }
 

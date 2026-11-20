@@ -377,6 +377,7 @@ public sealed partial class AgentConversation
         _process = process;
         _stopping = false;
         _restarting = false;
+        _extraUsageTold = false;
         _startedWith = $"{Model}|{Effort}";
         _runningMode = PermissionMode;
         _controls.Clear();
@@ -415,6 +416,10 @@ public sealed partial class AgentConversation
         if (_restarting)
         {
             _restarting = false;
+        }
+        else if (TakeLimitStop())
+        {
+            // Ended at its limit, as it didn't stop when asked.
         }
         else if (IsWorking && !_stopping)
         {
@@ -715,6 +720,56 @@ public sealed partial class AgentConversation
         if (limit.Blocked) _limits[limit.Kind] = limit.ResetsAt;
         else _limits.Remove(limit.Kind);
         if (ProviderId is { } provider) LimitsReported?.Invoke(provider, [limit], false);
+        if (limit.OnExtraUsage && IsWorking && !_extraUsageTold)
+        {
+            _extraUsageTold = true;
+            ExtraUsageStarted?.Invoke(limit);
+        }
+    }
+
+    /// <summary>On the window's thread: its login's limit ran out mid-turn, and it went on with paid extra usage rather than stopping.</summary>
+    public event Action<AgentLimit>? ExtraUsageStarted;
+
+    private bool _extraUsageTold; // Said once for each program it runs, as each goes on with extra usage only once.
+    private bool _stoppedAtLimit; // Stopped by Agent Orange as its limit ran out, so it counts as stopped by the limit.
+    private DateTimeOffset? _limitStopResets;
+
+    /// <summary>
+    /// Stops the turn as its login's limit would have, so it goes on with another login instead of on
+    /// paid extra usage: once it has stopped, it's limited until that limit resets.
+    /// </summary>
+    public void StopAtLimit(DateTimeOffset? resets)
+    {
+        if (!IsWorking) return;
+        _stoppedAtLimit = true;
+        _limitStopResets = resets;
+        Notice("Its login's limit ran out and it went on with paid extra usage, so Agent Orange stopped it, to go on with another login instead.");
+#if DEBUG
+        if (_process is null && Headless.Active)
+        {
+            WrittenForChecks.Add("(stopped at its limit)");
+            return;
+        }
+#endif
+        Stop();
+    }
+
+    // Stopped by Agent Orange at its limit: limited, as if the limit had stopped it.
+    private bool TakeLimitStop()
+    {
+        if (!_stoppedAtLimit) return false;
+        _stoppedAtLimit = false;
+        IsLimited = true;
+        LimitResetsAt = _limitStopResets;
+        _turns = 0;
+        return true;
+    }
+
+    /// <summary>A line of Agent Orange's own in the conversation, such as why it went on with another login.</summary>
+    internal void Note(string text)
+    {
+        Notice(text);
+        StateChanged?.Invoke();
     }
 
     // Its words when a limit stops it without saying so otherwise, as an API key's does: "(reset after 2h5m)".
@@ -843,7 +898,11 @@ public sealed partial class AgentConversation
                 var failed = json["is_error"]?.GetValueKind() == JsonValueKind.True;
                 var reason = Str(json, "result") ?? "";
                 DateTimeOffset? resets = null;
-                if (failed && !_stopping && (_limits.Count > 0 || SaysLimited(reason, out resets)))
+                if (TakeLimitStop())
+                {
+                    // Agent Orange stopped it at its limit, rather than let it go on with extra usage.
+                }
+                else if (failed && !_stopping && (_limits.Count > 0 || SaysLimited(reason, out resets)))
                 {
                     // Its login ran out. It goes on once that resets, from the latest of the limits it hit.
                     IsLimited = true;
