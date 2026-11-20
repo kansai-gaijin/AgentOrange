@@ -136,6 +136,9 @@ public partial class MainWindow
         new("use_tool", "Uses one of an open creative tool's or engine's own tools, as tool_tools lists them, and gives back what it gave, pictures included.",
             new JsonObject { ["tool"] = Text("The tool's name, such as Blender."), ["name"] = Text("Its tool to use, from tool_tools."), ["arguments"] = new JsonObject { ["type"] = "object", ["description"] = "That tool's arguments." } },
             ["tool", "name"], (_, _) => "", UseToolAsync),
+
+        // Waiting, instead of sleep.
+        WaitForTool(),
     ];
 
     private async Task<JsonObject> McpCallAsync(string projectId, string name, JsonObject given)

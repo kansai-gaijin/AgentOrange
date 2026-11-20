@@ -1,0 +1,39 @@
+# Agents wait with AO's wait_for instead of sleep (#98): for a file to appear or change, a log
+# line, a port, or a process to end. It answers once that happens, or after the seconds it's
+# given with how things stood, never as a refusal.
+seed "Wait project" 0 0 0
+# A file that isn't there yet, then one written while it waits.
+mcp "Wait project" wait_for file "logs/run.log" seconds 1
+said "Still waiting after 1 s: logs/run.log isn't there yet"
+after 800 writefile "Wait project" "logs/run.log" "Starting the server\n"
+mcp "Wait project" wait_for file "logs/run.log" seconds 10
+said "logs/run.log appeared"
+# A log line, from what's written once the wait starts, unless existing says to count what's there.
+after 800 writefile "Wait project" "logs/run.log" "Build finished: 0 errors\n"
+mcp "Wait project" wait_for file "logs/run.log" text "build finished" seconds 10
+said "has it: \qBuild finished: 0 errors\q"
+mcp "Wait project" wait_for file "logs/run.log" text "Starting" seconds 1
+said "Still waiting after 1 s"
+said "Its last line: \qBuild finished: 0 errors\q"
+mcp "Wait project" wait_for file "logs/run.log" text "Starting" existing "true" seconds 2
+said "Done after"
+# A file that changes.
+after 800 writefile "Wait project" "logs/run.log" "more\n"
+mcp "Wait project" wait_for file "logs/run.log" seconds 10
+said "changed"
+# A port nothing listens on, and processes.
+mcp "Wait project" wait_for port "127.0.0.1:1" seconds 1
+said "doesn't take connections yet"
+mcp "Wait project" wait_for process "NoSuchProgramAnywhere.exe"
+said "no process called NoSuchProgramAnywhere is running"
+mcp "Wait project" wait_for process "AgentOrange" seconds 1
+said "AgentOrange is still running"
+# Asked wrongly, it says what to give.
+mcprefused "Wait project" wait_for
+said "give one of file, port or process"
+mcprefused "Wait project" wait_for file "a.txt" port "80"
+said "not more than one"
+mcprefused "Wait project" wait_for file "a.txt" seconds "900"
+said "seconds must be from 1 to 300"
+mcprefused "Wait project" wait_for port "80" text "x"
+said "text is only for waiting on a file"

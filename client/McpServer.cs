@@ -43,39 +43,44 @@ internal sealed class McpServer(Func<string, string, JsonNode?, Task<JsonNode?>>
         }
     }
 
-    // One agent session: its project first, then a request a line, each answered in turn.
+    // One agent session: its project first, then a request a line. Each is answered when it's done,
+    // not in turn, so a long one, such as wait_for or open_tool, doesn't hold up the session's others.
     private async Task ServeOneAsync(NamedPipeServerStream pipe)
     {
+        var answering = new List<Task>();
         try
         {
             await using (pipe)
             {
                 using var reader = new StreamReader(pipe, new UTF8Encoding(false), leaveOpen: true);
                 await using var writer = new StreamWriter(pipe, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
+                using var writing = new SemaphoreSlim(1, 1);
                 var first = await reader.ReadLineAsync();
                 var projectId = first is not null && first.StartsWith("project:", StringComparison.Ordinal) ? first["project:".Length..] : "";
 
-                while (await reader.ReadLineAsync() is { } line)
+                async Task SendAsync(JsonObject answer)
                 {
-                    if (line.Trim().Length == 0) continue;
-                    JsonNode? message;
+                    await writing.WaitAsync();
                     try
                     {
-                        message = JsonNode.Parse(line);
+                        await writer.WriteLineAsync(answer.ToJsonString());
                     }
-                    catch (JsonException)
+                    catch (Exception error) when (error is IOException or ObjectDisposedException)
                     {
-                        await writer.WriteLineAsync(Error(null, -32700, "That wasn't JSON.").ToJsonString());
-                        continue;
+                        // The session ended before its answer was ready.
                     }
-                    if (message is not JsonObject request || request["method"]?.GetValue<string>() is not { } method) continue;
-                    var id = request["id"]?.DeepClone();
-                    if (id is null) continue; // A notification, which has no answer.
+                    finally
+                    {
+                        writing.Release();
+                    }
+                }
 
+                async Task AnswerAsync(JsonNode id, string method, JsonNode? parameters)
+                {
                     JsonObject answer;
                     try
                     {
-                        var result = await handle(projectId, method, request["params"]);
+                        var result = await handle(projectId, method, parameters);
                         answer = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = result ?? new JsonObject() };
                     }
                     catch (McpException error)
@@ -87,8 +92,29 @@ internal sealed class McpServer(Func<string, string, JsonNode?, Task<JsonNode?>>
                         AppLog.Write($"An MCP request failed: {method}: {error}");
                         answer = Error(id, -32603, $"Agent Orange couldn't do that: {error.Message}");
                     }
-                    await writer.WriteLineAsync(answer.ToJsonString());
+                    await SendAsync(answer);
                 }
+
+                while (await reader.ReadLineAsync() is { } line)
+                {
+                    if (line.Trim().Length == 0) continue;
+                    JsonNode? message;
+                    try
+                    {
+                        message = JsonNode.Parse(line);
+                    }
+                    catch (JsonException)
+                    {
+                        await SendAsync(Error(null, -32700, "That wasn't JSON."));
+                        continue;
+                    }
+                    if (message is not JsonObject request || request["method"]?.GetValue<string>() is not { } method) continue;
+                    var id = request["id"]?.DeepClone();
+                    if (id is null) continue; // A notification, which has no answer.
+                    answering.RemoveAll(task => task.IsCompleted);
+                    answering.Add(AnswerAsync(id, method, request["params"]?.DeepClone()));
+                }
+                await Task.WhenAll(answering);
             }
         }
         catch (IOException)
