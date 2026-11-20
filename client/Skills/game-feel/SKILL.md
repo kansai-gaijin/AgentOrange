@@ -1,6 +1,6 @@
 ---
 name: game-feel
-description: Make a game's actions feel good and its playable camera work - the feedback each action gives (animation, sound, effects, HUD, camera motion, vibration), a single camera owner with smooth follow and clean cuts, reduced-motion settings, and how to test and tune them. Use when adding or tuning hits, jumps, shots, pickups or any player action's feedback, when building or fixing a player camera, or when the game "feels flat", "floaty", "jittery" or makes people queasy.
+description: Make a game's actions feel good and its playable camera work - the feedback each action gives (animation, sound, effects, HUD, camera motion, vibration), a single camera owner with smooth follow and clean cuts, reduced-motion settings, and how to test and tune them. Use when adding or tuning hits, jumps, shots, pickups or any player action's feedback, when building or fixing a player camera, when look-and-feel numbers keep changing between builds, or when the game "feels flat", "floaty", "jittery" or makes people queasy.
 ---
 
 # Game feel and playable cameras
@@ -48,6 +48,14 @@ drama.
 - **Fights:** frame both fighters, weapons and jumps included, not just a walk on flat ground. Return to
   a steady playable shot after each beat, and never take movement or aim away from the player.
 - Don't show the player what they shouldn't see yet.
+
+## Make look-and-feel numbers tunable while it runs
+
+Expose the numbers people will want to try, such as camera distance and angle, fade amounts,
+colours, speeds and feedback strength, as values that can be changed while the game runs: the
+engine's console variables, a debug panel, or a settings file read again on change. Then the
+person can tune them live in one sitting and decide once, instead of a rebuild and a fresh check
+for every idea. Write the chosen values down in the mechanic's card, and make them the defaults.
 
 ## Tune by comparing
 
