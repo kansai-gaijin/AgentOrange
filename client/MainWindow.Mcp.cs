@@ -26,7 +26,8 @@ public partial class MainWindow
         "Agent Orange holds the whole design of the game: there is no separate design document. Start with get_project, "
         + "then read the cards that matter to your work with read_card (a card's document is its design, in Markdown), and the tasks with list_tasks. "
         + "Keep it current as you work: tick tasks you finish with update_task, add tasks you find with add_task, add cards the design needs with add_card (such as the assets a slice needs), set an asset's status with update_asset as you work on it (In progress, then Needs review when it's ready for the person to judge), and write what you settle into the card's document with write_card. "
-        + "Settle nothing that's the person's to decide: ask them, then write it down. Never mark an asset as delivered.";
+        + "Settle nothing that's the person's to decide: ask them, then write it down. Never mark an asset as delivered. "
+        + "To wait for a file, a log line, a port or a process, use wait_for rather than sleep.";
 
     private async Task<JsonNode?> McpAnswerAsync(string projectId, string method, JsonNode? parameters) => method switch
     {
