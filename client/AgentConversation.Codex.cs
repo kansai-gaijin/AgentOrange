@@ -439,6 +439,7 @@ public sealed partial class AgentConversation
 
     private void EndCodexTurn(JsonObject turn)
     {
+        if (_turns <= 1) KeepCodexCommandsGoing();
         EndStreaming();
         if (_codexImages.Count > 0)
         {
@@ -489,6 +490,7 @@ public sealed partial class AgentConversation
         }
         _stopping = false;
         _turns = Math.Max(0, _turns - 1);
+        EndForegroundWork();
         AskCodexUsage();
         SetWorking(_turns > 0);
     }
@@ -514,8 +516,10 @@ public sealed partial class AgentConversation
                 break;
             case "commandExecution":
                 // The command as T3 shows it: on its own, with the backslashes Codex escapes in it as they are.
+                if (!done && Str(item, "processId") is { Length: > 0 } process) _codexProcesses[id] = process;
                 CodexTool(id, "Bash", (Str(item, "command") ?? "").Replace(@"\\", @"\"), item, done, Str(item, "aggregatedOutput"));
                 NoteSkills(id, "Bash", new JsonObject { ["command"] = (Str(item, "command") ?? "").Replace(@"\\", @"\") });
+                if (done) CodexCommandEnded(id);
                 break;
             case "fileChange":
                 var paths = (item["changes"] as JsonArray ?? []).OfType<JsonObject>().Select(change => Str(change, "path")).OfType<string>().ToList();
@@ -529,15 +533,16 @@ public sealed partial class AgentConversation
                 CodexTool(id, $"mcp__{server}__{tool}", $"{server}: {tool}", item, done, item["error"] is JsonObject failed ? Str(failed, "message") : item["result"]?.ToJsonString());
                 if (WaitTitle($"mcp__{server}__{tool}", item["arguments"] as JsonObject) is { } waitsFor)
                 {
-                    if (done) EndWait(id, item["error"] is JsonObject);
+                    if (done) EndWait(id);
                     else StartWait(id, waitsFor);
                 }
+                if (done) CodexCommandEnded(id);
                 break;
             case "collabAgentToolCall":
                 ReadCodexCollab(id, item, done);
                 break;
             case "sleep" when item["durationMs"] is JsonValue sleeps && sleeps.TryGetValue<long>(out var ms):
-                if (done) EndWait(id, failed: false);
+                if (done) EndWait(id);
                 else StartWait(id, $"Wait {AgentsWindow.Took(TimeSpan.FromMilliseconds(ms))}");
                 break;
             case "webSearch":

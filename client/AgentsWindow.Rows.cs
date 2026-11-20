@@ -132,8 +132,7 @@ public sealed partial class AgentsWindow
         if (folder is not null && repo is null && RepoAsked.Add(folder)) _ = RefreshRepoAsync(conversation.ProjectId, fetch: false);
 
         // Quiet when it isn't the open one and has nothing new to say.
-        var muted = !selected && (conversation.IsWorking || conversation.IsWaitingOnWork || !conversation.Unseen && !conversation.IsWaiting);
-        var failed = conversation.Unseen && conversation.Items.LastOrDefault()?.Kind == AgentItemKind.Problem;
+        var muted = !selected && (conversation.IsWorking || conversation.IsWaitingOnWork || !conversation.Unseen && !conversation.IsWaiting);        var failed = conversation.Unseen && conversation.Items.LastOrDefault()?.Kind == AgentItemKind.Problem;
 
         // Line 1: the project, and the status or time, which the mouse swaps for the actions.
         var first = new DockPanel { Height = 20 };
@@ -260,16 +259,27 @@ public sealed partial class AgentsWindow
             var asking = conversation.Items.Any(item => item.Kind == AgentItemKind.Question && item.RequestState == AgentRequestState.Waiting);
             return asking ? Status("message-circle-question", "Input", Indigo) : Status("shield-question", "Approval", Ocean.Warning);
         }
+        // T3's Waiting: its turn is held up by a wait, or its turn ended and it goes on once work it
+        // waits on ends (a subagent, or a command it said it waits for), with how long it has waited.
+        if (conversation.IsBlockedOnWait)
+        {
+            var since = conversation.Work.Where(work => work.IsRunning && work.Kind == BackgroundKind.Wait).Min(work => work.Started);
+            return Waiting(Status("circle-dot-dashed", "Waiting", Ocean.MutedText, Took(DateTimeOffset.UtcNow - since)), conversation.Work.Last(work => work.IsRunning && work.Kind == BackgroundKind.Wait).Title);
+        }
         if (conversation.IsWorking) return Status("circle-dashed", "Working", Ocean.Info, Took(DateTimeOffset.UtcNow - conversation.WorkingSince));
-
-        // Its turn ended, but it isn't done: work it started is still going.
-        if (conversation.IsWaitingOnWork) return Status("terminal", WaitingOn(conversation.BackgroundJobs), Ocean.Info);
+        if (conversation.IsWaitingOnWork) return Waiting(Status("circle-dot-dashed", "Waiting", Ocean.MutedText, Took(DateTimeOffset.UtcNow - conversation.TurnEndedAt)), WorkTitle(conversation.PendingWork).Title);
         if (conversation.Unseen && conversation.Items.LastOrDefault()?.Kind == AgentItemKind.Problem) return Status("circle-alert", "Failed", Ocean.Error);
         if (conversation.Unseen) return Status("circle-check", "Done", Ocean.Success);
         return Ocean.Text(Ago(conversation.Updated), Ocean.Secondary, 12);
     }
 
-    internal static string WaitingOn(int jobs) => jobs == 1 ? "Waiting on 1 job" : $"Waiting on {jobs} jobs";
+    // What it waits on, for the mouse, and for screen readers and the drive tool.
+    private static FrameworkElement Waiting(FrameworkElement status, string onWhat)
+    {
+        status.ToolTip = onWhat;
+        AutomationProperties.SetName(status, $"Waiting: {onWhat}");
+        return status;
+    }
 
     // Each second, and when Ctrl comes and goes: the rows' states, so "Working 12s" counts.
     private void ShowConversationStates()

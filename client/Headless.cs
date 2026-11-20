@@ -468,8 +468,8 @@ internal static partial class Headless
                 var checking = Main().CheckConversation;
                 foreach (var wrote in checking.WrittenForChecks) say($"Sent: {wrote}");
                 checking.WrittenForChecks.Clear();
-                say($"Working: {(checking.IsWorking ? "yes" : "no")}, background work running: {checking.BackgroundJobs}, waiting on it: {(checking.IsWaitingOnWork ? "yes" : "no")}, unseen: {(checking.Unseen ? "yes" : "no")}");
-                foreach (var work in checking.Work) say($"{work.Kind} {work.State}{(work.InBackground ? "" : " (the turn waits on it)")}: {AgentConversation.Describe(work)}{(work.Command is { } line ? $" | {line}" : "")}");
+                say($"Working: {(checking.IsWorking ? "yes" : "no")}, in the background: {checking.PendingWork.Count}, waited on: {checking.BackgroundJobs}, waiting on it: {(checking.IsWaitingOnWork ? "yes" : "no")}, unseen: {(checking.Unseen ? "yes" : "no")}");
+                foreach (var work in checking.Work) say($"{work.Kind} {(work.IsRunning ? "running" : "ended")}{(work.Awaited ? ", awaited" : "")}{(work.InBackground ? "" : ", holds the turn")}: {work.Title}{(work.Command is { } line ? $" | {line}" : "")}");
                 break;
             // Writes a file in the project's folder, such as one an agent waits for.
             case "writefile":

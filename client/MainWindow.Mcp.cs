@@ -142,8 +142,9 @@ public partial class MainWindow
             new JsonObject { ["tool"] = Text("The tool's name, such as Blender."), ["name"] = Text("Its tool to use, from tool_tools."), ["arguments"] = new JsonObject { ["type"] = "object", ["description"] = "That tool's arguments." } },
             ["tool", "name"], (_, _) => "", UseToolAsync),
 
-        // Waiting, instead of sleep.
+        // Waiting, instead of sleep, and saying what it waits on in the background.
         WaitForTool(),
+        BackgroundWaitTool(),
     ];
 
     private async Task<JsonObject> McpCallAsync(string projectId, string name, JsonObject given)

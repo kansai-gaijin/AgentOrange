@@ -344,10 +344,15 @@ public sealed partial class AgentsWindow : Window
         };
         PreviewKeyDown += (_, pressed) =>
         {
+            if (pressed.Key == Key.Escape && _workSections is not null)
+            {
+                CloseWorkDialog();
+                pressed.Handled = true;
+                return;
+            }
             if (pressed.Key == Key.Escape && _overlay.Visibility == Visibility.Visible)
             {
                 _overlay.Visibility = Visibility.Collapsed;
-                _workPanelOpen = false;
                 pressed.Handled = true;
             }
         };
@@ -618,7 +623,7 @@ public sealed partial class AgentsWindow : Window
         ShowNote(null);
         _stepsOpen = conversation?.Steps?.Any(step => step.Status != "completed") == true;
         ShowUsage();
-        if (_workPanelOpen) CloseWorkPanel();
+        CloseWorkDialog();
         ShowWorkLine();
         _follow = true;
         ScrollToEnd();

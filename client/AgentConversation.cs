@@ -1105,7 +1105,7 @@ public sealed partial class AgentConversation
             tool.ToolState = part["is_error"]?.GetValueKind() == JsonValueKind.True ? AgentToolState.Failed : AgentToolState.Done;
             tool.Detail = Shortened(ResultText(part["content"]), LongestDetail);
             ItemChanged?.Invoke(tool);
-            EndWait(toolId, tool.ToolState == AgentToolState.Failed);
+            EndWait(toolId);
         }
     }
 
