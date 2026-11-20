@@ -29,7 +29,11 @@ namespace AgentOrange;
 ///   sleep 500           window "Title"     (the window the next lines act on, by its title)
 ///   scroll top          scroll end         (every scrolling area in the window)
 ///   usage               (each login's limits as last heard, without opening the Usage page)
-///   seed "Name" 300 12 300   (a made-up project with that many tasks, milestones and assets)
+///   seed "Name" 300 12 300   (a made-up project with that many tasks, milestones and assets; a fifth word names its engine)
+///   file "path" "text"  (a file in the data folder)
+///   tool blender "program" "reference"   (sets a tool up, its paths in the data folder; a blank reference is where it usually keeps one)
+///   briefing "Project" "text"   briefingnot "Project" "text"   (what the project's agents are told says that, or doesn't)
+///   skillsays "Project" skill-name "text"   (the project's agents get that skill, and it says that)
 ///   open "Name"         (its page, as if its repo's check had found everything in order)
 ///   timed 500 click "X" (any command, then how long until the page settles, failing past 500 ms)
 ///   expect "text"       expectnot "text"   (fails unless something shown says exactly that, or nothing does)
@@ -274,8 +278,35 @@ internal static partial class Headless
                 break;
             // A made-up project of this many tasks, milestones and assets, to try big pages on.
             case "seed":
-                Main().SeedForChecks(parts[1], int.Parse(parts[2]), int.Parse(parts[3]), int.Parse(parts[4]));
+                if (parts.Length > 5) Main().SeedForChecks(parts[1], int.Parse(parts[2]), int.Parse(parts[3]), int.Parse(parts[4]), parts[5]);
+                else Main().SeedForChecks(parts[1], int.Parse(parts[2]), int.Parse(parts[3]), int.Parse(parts[4]));
                 say($"Made {parts[1]}");
+                break;
+            // A file in the check's data folder, with this text in it.
+            case "file":
+                var made = Path.Combine(DataFolder, parts[1]);
+                Directory.CreateDirectory(Path.GetDirectoryName(made)!);
+                await File.WriteAllTextAsync(made, parts[2]);
+                break;
+            // An engine or tool set up with its program and the API reference the person chose, both in the data folder.
+            case "tool":
+                Main().SetUpToolForChecks(parts[1], parts[2], parts[3]);
+                break;
+            // Fails unless the briefing a project's agents get says this, or, with briefingnot, unless it doesn't.
+            case "briefing" or "briefingnot":
+                var briefing = Main().BriefForChecks(parts[1]).Briefing;
+                if (briefing.Contains(parts[2], StringComparison.Ordinal) != (parts[0] == "briefing"))
+                {
+                    throw new InvalidOperationException($"The briefing for {parts[1]} {(parts[0] == "briefing" ? "doesn't say" : "says")} {parts[2]}.");
+                }
+                say($"{parts[0]} {parts[2]}: yes");
+                break;
+            // Fails unless a project's agents get the skill, and its SKILL.md says this.
+            case "skillsays":
+                var skills = Main().BriefForChecks(parts[1]).Skills;
+                if (!skills.TryGetValue(parts[2], out var skillText)) throw new InvalidOperationException($"{parts[1]}'s agents don't get {parts[2]}.");
+                if (!skillText.Contains(parts[3], StringComparison.Ordinal)) throw new InvalidOperationException($"{parts[2]} doesn't say {parts[3]}.");
+                say($"{parts[2]} says {parts[3]}: yes");
                 break;
             // Its page, without a check of its repo, which would ask GitHub.
             case "open":

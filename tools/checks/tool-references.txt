@@ -1,0 +1,28 @@
+# Agents are pointed at each tool's scripting API reference through a skill of its own, and the
+# briefing says to search it before guessing a name (#103). A reference is the one the person chose
+# in Settings › Editors, or where the tool usually keeps one, as Unreal does its Python stub.
+seed "Reference game" 0 0 0 "Unreal Engine"
+seed "Other game" 0 0 0
+file "references/blender-api/bpy.types.txt" "Object.location"
+tool blender "programs/blender/blender.exe" "references/blender-api"
+tool unreal "programs/unreal/UnrealEditor.exe" ""
+briefing "Reference game" "Don't guess names in a tool's scripting API."
+briefing "Reference game" "agent-orange:blender-api-reference"
+briefing "Reference game" "agent-orange:unreal-api-reference"
+briefing "Reference game" "PythonStub\unreal.py"
+skillsays "Reference game" blender-api-reference "references\blender-api`"
+skillsays "Reference game" blender-api-reference "Don't guess a name."
+skillsays "Reference game" unreal-api-reference "unreal.generate_stub_file()"
+# The engine's is only for a game made in it; a tool's is for every game.
+briefingnot "Other game" "agent-orange:unreal-api-reference"
+briefing "Other game" "agent-orange:blender-api-reference"
+# A reference that isn't there any more is left out.
+tool blender "programs/blender/blender.exe" "references/gone"
+briefingnot "Other game" "agent-orange:blender-api-reference"
+briefing "Other game" "Don't guess names in a tool's scripting API."
+# The person sets it in Settings, on the tool's own page.
+tool blender "programs/blender/blender.exe" "references/blender-api"
+click "Settings"
+click "Tools"
+expect "API reference"
+shot tools-settings

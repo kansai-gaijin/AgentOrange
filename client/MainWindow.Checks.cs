@@ -19,9 +19,9 @@ public partial class MainWindow
     /// deliver some by, and every eighth and the one before it with no status, as older assets have),
     /// and a few characters and levels for them to belong to.
     /// </summary>
-    internal string SeedForChecks(string name, int tasks, int milestones, int assets)
+    internal string SeedForChecks(string name, int tasks, int milestones, int assets, string engine = "Godot")
     {
-        var projectId = _database.CreateProject(name, "Godot", "2D", $"https://github.com/example/{GitTools.RepoName(name)}");
+        var projectId = _database.CreateProject(name, engine, "2D", $"https://github.com/example/{GitTools.RepoName(name)}");
         var folder = Path.Combine(Headless.DataFolder, "projects", GitTools.RepoName(name));
         Directory.CreateDirectory(folder);
         _database.SetProjectFolder(projectId, folder);
@@ -86,6 +86,33 @@ public partial class MainWindow
         var result = await McpCallAsync(project.Id, tool, given);
         var text = string.Join("\n", (result["content"] as System.Text.Json.Nodes.JsonArray ?? []).Select(part => part?["text"]?.GetValue<string>()).OfType<string>());
         return (text, result["isError"]?.GetValue<bool>() == true);
+    }
+
+    /// <summary>
+    /// Sets an engine or tool up as Settings › Editors would, with its program and the API reference
+    /// the person chose (blank for where it usually keeps one), each in the check's data folder.
+    /// </summary>
+    internal void SetUpToolForChecks(string id, string program, string reference)
+    {
+        var editor = EditorMonitor.Definitions.FirstOrDefault(each => each.Id == id) ?? throw new InvalidOperationException($"There's no tool called {id}.");
+        string InData(string path) => path.Length > 0 ? Path.Combine(Headless.DataFolder, path) : "";
+        Settings.Editors.Save(editor, new EditorSettings(InData(program), editor.DefaultKind, editor.DefaultAddress, InData(reference)));
+    }
+
+    /// <summary>
+    /// What a project's agent sessions would be given, without starting one: the briefing's text, and
+    /// each skill's SKILL.md in the session's Claude Code plugin, by name.
+    /// </summary>
+    internal (string Briefing, Dictionary<string, string> Skills) BriefForChecks(string projectName)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        var agentFolder = Settings.Folders.AgentFolder;
+        var (others, references) = SessionSkills(project.Id, ProjectFolder(project.Id));
+        var briefing = File.ReadAllText(AgentBriefing.Write(Settings.Editors, agentFolder, project.Id, others, references));
+        var plugin = Path.Combine(AgentSkills.ClaudePlugin(agentFolder, project.Id, others), "skills");
+        var skills = Directory.EnumerateDirectories(plugin).Where(folder => File.Exists(Path.Combine(folder, "SKILL.md")))
+            .ToDictionary(folder => Path.GetFileName(folder), folder => File.ReadAllText(Path.Combine(folder, "SKILL.md")));
+        return (briefing, skills);
     }
 
     internal int GiveAssetsAStatusForChecks()
