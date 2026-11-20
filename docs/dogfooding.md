@@ -768,3 +768,43 @@ a dev server read as a job: subagents hold the conversation, and a command does 
 waits on it (the new `background_wait` tool, which the briefing asks for before ending a turn on tests or a
 build), so a server it leaves running shows Running but the conversation is Done. While held, the list row
 says Waiting, settling is refused, and the finished notice waits until nothing held is left.
+
+## Tools: ready too soon, long calls cut off, busy with no hint, a close read as Canceled (2026-11-21)
+
+Driving an editor through `open_tool` and `use_tool` gave the same few failures in conversation after
+conversation (#100). `open_tool` said ready once the tool's port took connections, before its MCP answered
+calls, so the first call often did nothing or got 404 (once an agent gave up and wrote its own HTTP
+client). Long calls were cut off at 10 minutes, and agents built their own background jobs inside the
+editor to get round it. "Editor is busy (slow task)" came back with no hint when to try again. A script that
+quit the editor before a rebuild came back as "Canceled", 17 times in 6 conversations, then dozens of polls
+of the process list to learn whether it had closed.
+
+Now `open_tool` says ready only once the tool lists its tools through its MCP. While a tool is starting
+(its program started in the last 5 minutes, or `open_tool` found it not ready), a call it turns away (404,
+no connection) or drops is sent again by itself for up to 90 seconds; at other times only a call it turned
+away before doing anything is, for 20 seconds, as one it dropped may have been done. A tool that says busy,
+by HTTP 429 or 503 or by the word busy in its error, is sent the call again after the retry-after it gives
+(or a growing wait), for up to 2 minutes, and if it's still busy the answer says when to try again.
+`start_tool_call` runs a call with no time limit and gives back an id at once, `poll_tool_call` (with
+seconds, instead of sleep) gives its answer, and `cancel_tool_call` stops it and sends the tool MCP's own
+`notifications/cancelled`. `close_tool` closes a tool as closing its window does and waits until its
+program has ended (with `force`, one still open is ended), and a call that ends with the tool's program
+gone says the tool closed, not that it failed. Calls to a tool over stdio no longer wait in a queue behind
+a long one. `tools/checks/tool-relay.txt` checks all of it against a made-up tool served in the app.
+
+## Reviews: visual bugs passed, and the lists spread across replies (2026-11-21)
+
+The person found real visual bugs that agents' reviews had passed (#106): a lighting bug lived for five
+milestones because the screenshots were taken at settings that draw no shadows, and label overlaps kept
+coming back. Reviews ended in long "decisions I made" and "not checked" lists spread across replies and
+files.
+
+Now each milestone and task can have a review page. An agent fills it with `write_review`: what the slice
+did, the pictures, short clips and before-and-after compares to look at, the decisions it made and what it
+didn't check. Every picture must say the render settings it was taken at, and the refusal says why. The
+person opens it from the slice on the Tasks page (Review · to look at), sees what wasn't checked first,
+then the pictures large, and accepts it or asks for changes with a comment. `read_review` and the next
+briefing give the agent what they said, and writing the page again sets it waiting again, keeping the
+comments. The page is a record in a `reviews` collection named as its milestone or task, synced as they
+are, its pictures kept with the document pictures so every PC sees them and its clips by path.
+`tools/checks/review-page.txt` and its `-again` check go through it.
