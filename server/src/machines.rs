@@ -18,6 +18,13 @@
 //! unauthenticated. Links are renewed with a request and an answer each MACed with the link's key.
 //! Nothing here knows what a project, a tag or a command means.
 //!
+//! A link has an access level, which the target grants: what the PC linking asked for or less, as
+//! the person at the target chose, covered by its confirmation. Tests by default; agents lets the
+//! PC linking start an agent conversation on the target for a project both have. Either PC can
+//! lower it here, never raise it: more takes linking again. Every run says the access its job
+//! needs (its signed job says so too), and is refused, or stopped, above its link's. The target
+//! enforces all of this from its own copy; what's here only turns the rest away early.
+//!
 //! Everything is keyed by the PC (its install), not its login, as a PC has a login at each of
 //! this server's addresses.
 
@@ -49,20 +56,40 @@ const MAX_LOG_BYTES: i64 = 5 * 1024 * 1024;
 const MAX_LOG_ROWS_PER_READ: i64 = 400;
 const MAX_QUEUED_PER_LINK: i64 = 10;
 const MAX_UNANSWERED_PER_LINKER: i64 = 3;
+/// Lowest first. A link has one, the target choosing the highest it grants; a run needs one, never
+/// more than its link's. Nothing here knows what each allows: the target enforces that.
 const ACCESS_LEVELS: [&str; 3] = ["tests", "agents", "full"];
+
+/// Where an access level is among them, in SQL, as `array_position` counts: 1 for tests.
+const ACCESS_RANK: &str = "array_position(ARRAY['tests','agents','full']::text[], {})";
+
+fn access_rank(access: &str) -> Option<usize> {
+    ACCESS_LEVELS.iter().position(|level| *level == access)
+}
+
+/// Whether access `given` is within `most`: the same level or a lower one.
+fn access_within(given: &str, most: &str) -> bool {
+    matches!((access_rank(given), access_rank(most)), (Some(given), Some(most)) if given <= most)
+}
+
+fn rank_of(column: &str) -> String {
+    ACCESS_RANK.replace("{}", column)
+}
 /// Checks a run can say how each went, from the results file its repo names.
 const MAX_CHECKS: usize = 5000;
 const MAX_CHECK_NAME_BYTES: usize = 1024;
 const CHECK_OUTCOMES: [&str; 3] = ["passed", "failed", "skipped"];
 const MAX_CHECK_HISTORY_ROWS: i64 = 5000;
 const MAX_ONE_CHECK_HISTORY_ROWS: i64 = 300;
-const RUN_ENDINGS: [&str; 6] = [
+/// Finished is an agent conversation's end, as it has no exit code to pass or fail by.
+const RUN_ENDINGS: [&str; 7] = [
     "passed",
     "failed",
     "couldnt_run",
     "timed_out",
     "cancelled",
     "refused",
+    "finished",
 ];
 
 // Link requests a target turned down, counted per PC linking, so one PC can't keep asking. There's
@@ -182,6 +209,13 @@ pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
          -- When this server last turned away a run's report for coming from another release, so
          -- its window can say why it went quiet, and the report sent after updating is still taken.
          ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS held_back_at TIMESTAMPTZ;
+         -- The access the target granted, at most what was asked, which the link is made with.
+         ALTER TABLE machine_link_requests ADD COLUMN IF NOT EXISTS granted TEXT;
+         -- The highest access the target now grants the PC linking, which it gets by linking again.
+         ALTER TABLE machine_links ADD COLUMN IF NOT EXISTS offered TEXT;
+         -- The access each run's job needs, never more than its link's: tests, or agents for an
+         -- agent conversation on the target.
+         ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS access TEXT NOT NULL DEFAULT 'tests';
          -- This server's release and the one it ran before.
          CREATE TABLE IF NOT EXISTS server_release (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -367,6 +401,9 @@ pub struct LinkView {
     renewal: Option<Renewal>,
     /// The target's answer to the last renewal, which the PC linking checks.
     renewed: Option<Renewed>,
+    /// The highest access the target grants the PC linking now, when it said, which linking again
+    /// gets. Only a word for the PC linking to show: the target decides when it's asked.
+    offered: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -476,7 +513,7 @@ pub async fn list(
                     COALESCE(m.accepting, false), COALESCE(m.tags, '{{}}'),
                     {}, {}, EXTRACT(EPOCH FROM now())::float8,
                     l.renew_nonce, l.renew_sent_at, l.renew_expires_at, l.renew_mac,
-                    l.renewed_nonce, l.renewed_expires_at, l.renewed_mac, {}
+                    l.renewed_nonce, l.renewed_expires_at, l.renewed_mac, {}, l.offered
                  FROM machine_links l LEFT JOIN test_machines m ON m.install_hash = l.machine_install
                  WHERE l.machine_install = $1 OR l.linker_install = $1
                  ORDER BY l.linked_at",
@@ -519,6 +556,7 @@ pub async fn list(
                 }),
                 _ => None,
             },
+            offered: row.get(22),
             status: status(
                 row.get(6),
                 row.get(9),
@@ -781,6 +819,8 @@ pub struct LinkAnswer {
     confirm: Option<String>,
     /// Why the target turned it down, when it did.
     reason: Option<String>,
+    /// The access the target granted, at most what was asked, which its confirmation covers.
+    access: Option<String>,
 }
 
 /// The PC linking waits on this for the target's answer.
@@ -793,7 +833,7 @@ pub async fn link_request(
     let row = state
         .db
         .query_opt(
-            "SELECT r.answer, r.link_id, r.machine_expires_at, r.machine_key, r.confirm, r.reason
+            "SELECT r.answer, r.link_id, r.machine_expires_at, r.machine_key, r.confirm, r.reason, r.granted
              FROM machine_link_requests r
              WHERE r.id = $1 AND r.linker_install = $2 AND r.created_at > now() - interval '10 minutes'",
             &[&id, &me],
@@ -808,6 +848,7 @@ pub async fn link_request(
         key: row.get(3),
         confirm: row.get(4),
         reason: row.get(5),
+        access: row.get(6),
     }))
 }
 
@@ -845,6 +886,9 @@ pub struct AcceptBody {
     /// The target's MAC over the whole exchange, keyed with the link's key, which the PC linking
     /// checks before it keeps the link, so both are sure they have the same key.
     confirm: String,
+    /// The access the target grants: what was asked, or less, as the person there chose. Covered
+    /// by the confirmation, and never more than was asked.
+    access: String,
 }
 
 #[derive(Serialize)]
@@ -853,8 +897,8 @@ pub struct Accepted {
     expires_at: f64,
 }
 
-/// The target took the request. A link between the same two PCs is replaced, which is how one
-/// that expired is made again.
+/// The target took the request, granting what was asked or less. A link between the same two PCs
+/// is replaced, which is how one that expired is made again, and how one gets more access.
 pub async fn accept_link_request(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -866,23 +910,29 @@ pub async fn accept_link_request(
         || !is_public_key(&body.key)
         || !is_hex(&body.confirm, 64)
         || !body.expires_at.is_finite()
+        || access_rank(&body.access).is_none()
     {
         return Err(StatusCode::BAD_REQUEST);
     }
     let row = state
         .db
         .query_opt(
-            "WITH answered AS (
-                UPDATE machine_link_requests SET answer = 'accepted', link_id = $3,
-                    machine_key = $4, confirm = $5, machine_expires_at = $6
-                WHERE id = $1 AND machine_install = $2 AND answer IS NULL AND created_at > now() - interval '10 minutes'
-                RETURNING machine_install, linker_install, access
-             )
-             INSERT INTO machine_links (id, machine_install, linker_install, access, expires_at)
-             SELECT $3, machine_install, linker_install, access, now() + interval '30 days' FROM answered
-             ON CONFLICT (machine_install, linker_install) DO UPDATE SET
-                id = excluded.id, access = excluded.access, linked_at = now(), expires_at = excluded.expires_at
-             RETURNING EXTRACT(EPOCH FROM expires_at)::float8",
+            &format!(
+                "WITH answered AS (
+                    UPDATE machine_link_requests SET answer = 'accepted', link_id = $3,
+                        machine_key = $4, confirm = $5, machine_expires_at = $6, granted = $7
+                    WHERE id = $1 AND machine_install = $2 AND answer IS NULL AND created_at > now() - interval '10 minutes'
+                        AND {} <= {}
+                    RETURNING machine_install, linker_install, granted
+                 )
+                 INSERT INTO machine_links (id, machine_install, linker_install, access, expires_at)
+                 SELECT $3, machine_install, linker_install, granted, now() + interval '30 days' FROM answered
+                 ON CONFLICT (machine_install, linker_install) DO UPDATE SET
+                    id = excluded.id, access = excluded.access, offered = NULL, linked_at = now(), expires_at = excluded.expires_at
+                 RETURNING EXTRACT(EPOCH FROM expires_at)::float8",
+                rank_of("$7::text"),
+                rank_of("access"),
+            ),
             &[
                 &request,
                 &me,
@@ -890,6 +940,7 @@ pub async fn accept_link_request(
                 &body.key,
                 &body.confirm,
                 &body.expires_at,
+                &body.access,
             ],
         )
         .await
@@ -1018,6 +1069,67 @@ pub async fn answer_renewal(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+pub struct AccessBody {
+    access: String,
+}
+
+#[derive(Serialize)]
+pub struct AccessNow {
+    access: String,
+}
+
+/// Lowers a link's access, from either PC, and never raises it: more access takes linking again,
+/// which the target answers with what it grants. From the target, it's also what it now grants
+/// the PC linking, which that PC shows. Runs waiting that need more than the link has now are
+/// cancelled, and one running is told to stop.
+pub async fn set_link_access(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<AccessBody>,
+) -> Result<Json<AccessNow>, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    if access_rank(&body.access).is_none() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let row = state
+        .db
+        .query_opt(
+            &format!(
+                "UPDATE machine_links SET
+                    access = CASE WHEN {} < {} THEN $3 ELSE access END,
+                    offered = CASE WHEN machine_install = $2 THEN $3 ELSE offered END
+                 WHERE id = $1 AND (machine_install = $2 OR linker_install = $2)
+                 RETURNING access",
+                rank_of("$3::text"),
+                rank_of("access"),
+            ),
+            &[&id, &me, &body.access],
+        )
+        .await
+        .map_err(internal_error)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let access: String = row.get(0);
+    state
+        .db
+        .execute(
+            &format!(
+                "UPDATE test_runs SET
+                    status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
+                    ended_at = CASE WHEN status = 'queued' THEN now() ELSE ended_at END,
+                    cancel_requested = true
+                 WHERE link_id = $1 AND status IN ('queued', 'running') AND {} > {}",
+                rank_of("access"),
+                rank_of("$2::text"),
+            ),
+            &[&id, &access],
+        )
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(AccessNow { access }))
+}
+
 /// Either PC can end a link, and that's final. Its queued runs are cancelled, and a running one
 /// is told to stop.
 pub async fn remove_link(
@@ -1142,6 +1254,13 @@ pub struct EnqueueBody {
     /// Opaque here: the PC linking writes it, and the target checks its MAC before running it.
     job: String,
     mac: String,
+    /// What the job needs, as its signed job says too: tests, or agents. Refused above the link's.
+    #[serde(default = "tests_access")]
+    access: String,
+}
+
+fn tests_access() -> String {
+    "tests".to_string()
 }
 
 /// Sends a project's tests to a PC this one is linked to.
@@ -1162,8 +1281,23 @@ pub async fn enqueue(
         || [&body.job, &body.project_id]
             .iter()
             .any(|text| text.contains('\0'))
+        || access_rank(&body.access).is_none()
     {
         return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // More than the link gives is refused, saying so, before anything is kept.
+    let link_access = state
+        .db
+        .query_opt(
+            "SELECT access FROM machine_links WHERE id = $1 AND linker_install = $2 AND expires_at > now()",
+            &[&body.link_id, &me],
+        )
+        .await
+        .map_err(internal_error)?
+        .map(|row| row.get::<_, String>(0));
+    if link_access.is_some_and(|access| !access_within(&body.access, &access)) {
+        return Err(StatusCode::FORBIDDEN);
     }
 
     // Kept a month, which is plenty to look back on.
@@ -1180,12 +1314,16 @@ pub async fn enqueue(
     let inserted = state
         .db
         .execute(
-            "INSERT INTO test_runs (id, link_id, machine_install, linker_install, project_id, commit_sha, job, mac, status)
-             SELECT $1, l.id, l.machine_install, l.linker_install, $3, $4, $5, $6, 'queued'
-             FROM machine_links l
-             WHERE l.id = $2 AND l.linker_install = $7 AND l.expires_at > now()
-                AND (SELECT count(*) FROM test_runs q WHERE q.link_id = l.id AND q.status = 'queued') < $8
-             ON CONFLICT (id) DO NOTHING",
+            &format!(
+                "INSERT INTO test_runs (id, link_id, machine_install, linker_install, project_id, commit_sha, job, mac, status, access)
+                 SELECT $1, l.id, l.machine_install, l.linker_install, $3, $4, $5, $6, 'queued', $9
+                 FROM machine_links l
+                 WHERE l.id = $2 AND l.linker_install = $7 AND l.expires_at > now() AND {} <= {}
+                    AND (SELECT count(*) FROM test_runs q WHERE q.link_id = l.id AND q.status = 'queued') < $8
+                 ON CONFLICT (id) DO NOTHING",
+                rank_of("$9::text"),
+                rank_of("l.access"),
+            ),
             &[
                 &id,
                 &body.link_id,
@@ -1195,6 +1333,7 @@ pub async fn enqueue(
                 &body.mac,
                 &me,
                 &MAX_QUEUED_PER_LINK,
+                &body.access,
             ],
         )
         .await
@@ -1343,16 +1482,20 @@ pub async fn claim_next(
     let claimed = state
         .db
         .query_opt(
-            "UPDATE test_runs SET status = 'running', started_at = now(), lease_until = now() + interval '2 minutes',
-                started_release = $2
-             WHERE id = (
-                SELECT q.id FROM test_runs q JOIN machine_links l ON l.id = q.link_id
-                WHERE q.machine_install = $1 AND q.status = 'queued' AND l.expires_at > now()
-                    AND NOT EXISTS (SELECT 1 FROM test_runs b WHERE b.machine_install = $1 AND b.status = 'running')
-                ORDER BY q.created_at LIMIT 1
-                FOR UPDATE OF q SKIP LOCKED
-             )
-             RETURNING id",
+            &format!(
+                "UPDATE test_runs SET status = 'running', started_at = now(), lease_until = now() + interval '2 minutes',
+                    started_release = $2
+                 WHERE id = (
+                    SELECT q.id FROM test_runs q JOIN machine_links l ON l.id = q.link_id
+                    WHERE q.machine_install = $1 AND q.status = 'queued' AND l.expires_at > now() AND {} <= {}
+                        AND NOT EXISTS (SELECT 1 FROM test_runs b WHERE b.machine_install = $1 AND b.status = 'running')
+                    ORDER BY q.created_at LIMIT 1
+                    FOR UPDATE OF q SKIP LOCKED
+                 )
+                 RETURNING id",
+                rank_of("q.access"),
+                rank_of("l.access"),
+            ),
             &[&me, &crate::VERSION],
         )
         .await
@@ -1394,10 +1537,13 @@ async fn running_run(
     let row = db
         .query_opt(
             &format!(
-                "SELECT r.status = 'running' AND (r.cancel_requested OR NOT EXISTS (SELECT 1 FROM machine_links l WHERE l.id = r.link_id AND l.expires_at > now())),
+                "SELECT r.status = 'running' AND (r.cancel_requested OR NOT EXISTS (
+                        SELECT 1 FROM machine_links l WHERE l.id = r.link_id AND l.expires_at > now() AND {} <= {})),
                     r.log_bytes
                  FROM test_runs r WHERE r.id = $1 AND r.machine_install = $2
-                    AND (r.status = 'running' OR ($3 AND r.status = 'lost' AND r.ended_at > now() - {HELD_BACK_KEPT}))"
+                    AND (r.status = 'running' OR ($3 AND r.status = 'lost' AND r.ended_at > now() - {HELD_BACK_KEPT}))",
+                rank_of("r.access"),
+                rank_of("l.access"),
             ),
             &[&id, &me, &held_back],
         )
@@ -1669,6 +1815,23 @@ pub async fn check_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn access_is_only_ever_within_the_link() {
+        assert!(access_within("tests", "tests"));
+        assert!(access_within("tests", "agents"));
+        assert!(access_within("agents", "agents"));
+        assert!(!access_within("agents", "tests"));
+        assert!(!access_within("full", "agents"));
+        assert!(!access_within("anything", "full"));
+        assert!(!access_within("tests", "anything"));
+        assert_eq!(access_rank("tests"), Some(0));
+        assert_eq!(access_rank("Tests"), None);
+        assert_eq!(
+            rank_of("l.access"),
+            "array_position(ARRAY['tests','agents','full']::text[], l.access)"
+        );
+    }
 
     #[test]
     fn runs_listed_keeps_within_bounds() {
