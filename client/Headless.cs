@@ -72,6 +72,8 @@ namespace AgentOrange;
 ///   slowlogin "Label" folder 12   agentsend "Project" "message"   agentpick "Title"   crash
 ///                       (a login whose program takes a turn slowly; a conversation sent a message for real, in a session of its own;
 ///                        the conversation to go on with after the app started again; the session and the app ended at once, as a restart of the PC would)
+///   slowlogin "Label" folder hold   worklogin "Label" folder hold   release folder
+///                       (its program takes its turns until the check releases it, so a check can't miss it working)
 ///   detach [wmi]        quote "arg" ...   (a program started on its own, outside the app's tree and jobs; arguments as a command line, read back)
 ///   worklogin "Label" folder 4 [clash]   mcpas "Title" "Project" tool args...   parallel "Project"
 ///                       (a login whose program commits a part's work of a split milestone, clash for a file every part writes;
@@ -262,6 +264,9 @@ internal static partial class Headless
         if (lines.Count == 0) throw new InvalidOperationException($"{Path.GetFileName(file)} has no part called {part}.");
         return lines;
     }
+
+    // How long a check login's program takes over a turn: so many seconds, or null with hold, until released.
+    private static int? TurnSeconds(string word) => word == "hold" ? null : int.Parse(word);
 
     // A command is one line with no double quotes in its words, so \n stands for a line break, \t for a tab and \q for a double quote.
     // \e last, so "\en" is a backslash and an n, as a shell script can need.
@@ -557,13 +562,19 @@ internal static partial class Headless
             case "setting":
                 Main().SetSettingForChecks(parts[1], parts[2]);
                 break;
-            // A login whose program takes a turn slowly, as Claude Code would: slowlogin "Claude (slow)" slow 12.
+            // A login whose program takes a turn slowly, as Claude Code would: slowlogin "Claude (slow)" slow 12,
+            // or slowlogin "Claude (slow)" slow hold, to take it until release.
             case "slowlogin" when Active:
-                Main().AddSlowLoginForChecks(parts[1], parts[2], int.Parse(parts[3]));
+                Main().AddSlowLoginForChecks(parts[1], parts[2], TurnSeconds(parts[3]));
                 break;
-            // A login whose program does a part's work of a split milestone: worklogin "Label" folder 4 [clash].
+            // A login whose program does a part's work of a split milestone: worklogin "Label" folder 4 [clash], or hold for until release.
             case "worklogin" when Active:
-                Main().AddWorkLoginForChecks(parts[1], parts[2], int.Parse(parts[3]), parts.Length > 4 && parts[4] == "clash");
+                Main().AddWorkLoginForChecks(parts[1], parts[2], TurnSeconds(parts[3]), parts.Length > 4 && parts[4] == "clash");
+                break;
+            // The programs of a login made with hold finish their turns: release parts. A check waits for a
+            // conversation to be working while it's held, so it can't miss it (#126).
+            case "release" when Active:
+                MainWindow.ReleaseLoginForChecks(parts[1]);
                 break;
             // One of the MCP tools as the conversation with that title calls it, whether or not it's refused:
             // mcpas "Title" "Project" open_tool tool "Unreal Engine".

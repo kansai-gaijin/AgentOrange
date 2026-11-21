@@ -314,40 +314,70 @@ public partial class MainWindow
     internal void SetSettingForChecks(string key, string value) => _database.SetSetting(key, value);
 
     /// <summary>
-    /// A Claude login whose program is a script that takes a turn as Claude Code would, slowly: it reads
-    /// the message, says it started, waits so many seconds, then says it finished, and ends.
+    /// How long a check login's program takes over its turn, as script lines: so many seconds, or with
+    /// null, until the check releases it (<see cref="ReleaseLoginForChecks"/>), so a check that looks
+    /// for it working can't find it already stopped. A held one gives up after 4 minutes, so a check
+    /// that fails first leaves nothing running for long.
     /// </summary>
-    internal void AddSlowLoginForChecks(string label, string folder, int seconds)
+    private static string[] TakesForChecks(string place, int? seconds) => seconds is { } wait
+        ? [$"ping -n {wait + 1} 127.0.0.1 >nul"]
+        : [
+            "set /a held=0",
+            ":hold",
+            $"if exist \"{Path.Combine(place, "release")}\" goto released",
+            "set /a held+=1",
+            "if %held% geq 240 goto released",
+            "ping -n 2 127.0.0.1 >nul",
+            "goto hold",
+            ":released",
+        ];
+
+    /// <summary>The programs of a login made with hold finish their turns, as they would have once their work was done.</summary>
+    internal static void ReleaseLoginForChecks(string folder)
+    {
+        var place = Path.Combine(Headless.DataFolder, "programs", folder);
+        if (!File.Exists(Path.Combine(place, "claude.cmd"))) throw new InvalidOperationException($"No check login's program is in programs/{folder}.");
+        File.WriteAllText(Path.Combine(place, "release"), "");
+    }
+
+    /// <summary>
+    /// A Claude login whose program is a script that takes a turn as Claude Code would, slowly: it reads
+    /// the message, says it started, waits so many seconds (or with null, until released), then says it
+    /// finished, and ends.
+    /// </summary>
+    internal void AddSlowLoginForChecks(string label, string folder, int? seconds)
     {
         var place = Path.Combine(Headless.DataFolder, "programs", folder);
         Directory.CreateDirectory(place);
+        File.Delete(Path.Combine(place, "release"));
         var program = Path.Combine(place, "claude.cmd");
-        File.WriteAllText(program, string.Join("\r\n",
+        File.WriteAllText(program, string.Join("\r\n", [
             "@echo off",
             "if \"%~1\"==\"--version\" (echo 9.9.9 ^(Claude Code^)& exit /b 0)",
             "if \"%~1\"==\"auth\" (echo {\"loggedIn\":true}& exit /b 0)",
             "set /p asked=",
             "echo {\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"slow-check\"}",
             "echo {\"type\":\"assistant\",\"message\":{\"id\":\"m1\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Started the long job.\"}]}}",
-            $"ping -n {seconds + 1} 127.0.0.1 >nul",
+            .. TakesForChecks(place, seconds),
             "echo {\"type\":\"assistant\",\"message\":{\"id\":\"m2\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Finished the long job.\"}]}}",
             "echo {\"type\":\"result\",\"is_error\":false,\"result\":\"Finished the long job.\"}",
-            ""));
+            ""]));
         Settings.Providers.Save(new AgentProvider(Guid.NewGuid().ToString("N"), ProviderKind.Claude, label, program, Settings.Providers.NewLoginFolder(ProviderKind.Claude), true));
     }
 
     /// <summary>
     /// A Claude login whose program does a part's work of a split milestone, as Claude Code would take a
     /// turn: it writes a file named after the folder it works in (and with clash, the same shared.txt
-    /// every part writes, which conflicts), commits it there, waits so many seconds, and finishes.
-    /// Called again with the same label, its program is written again.
+    /// every part writes, which conflicts), commits it there, waits so many seconds (or with null, until
+    /// released), and finishes. Called again with the same label, its program is written again.
     /// </summary>
-    internal void AddWorkLoginForChecks(string label, string folder, int seconds, bool clash)
+    internal void AddWorkLoginForChecks(string label, string folder, int? seconds, bool clash)
     {
         var place = Path.Combine(Headless.DataFolder, "programs", folder);
         Directory.CreateDirectory(place);
+        File.Delete(Path.Combine(place, "release"));
         var program = Path.Combine(place, "claude.cmd");
-        File.WriteAllText(program, string.Join("\r\n",
+        File.WriteAllText(program, string.Join("\r\n", [
             "@echo off",
             "if \"%~1\"==\"--version\" (echo 9.9.9 ^(Claude Code^)& exit /b 0)",
             "if \"%~1\"==\"auth\" (echo {\"loggedIn\":true}& exit /b 0)",
@@ -359,10 +389,10 @@ public partial class MainWindow
             clash ? "echo %here%> shared.txt" : "rem",
             "git add -A >nul 2>&1",
             "git -c user.name=\"Agent Orange check\" -c user.email=agent-orange-check commit -q -m \"Work of %here%\" >nul 2>&1",
-            $"ping -n {seconds + 1} 127.0.0.1 >nul",
+            .. TakesForChecks(place, seconds),
             "echo {\"type\":\"assistant\",\"message\":{\"id\":\"m2\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Committed my part.\"}]}}",
             "echo {\"type\":\"result\",\"is_error\":false,\"result\":\"Committed my part.\"}",
-            ""));
+            ""]));
         if (Settings.Providers.List().Any(each => each.Label == label)) return;
         Settings.Providers.Save(new AgentProvider(Guid.NewGuid().ToString("N"), ProviderKind.Claude, label, program, Settings.Providers.NewLoginFolder(ProviderKind.Claude), true));
     }

@@ -4,13 +4,14 @@
 # own, on a branch of its own. Each part commits there, and once all have stopped, they're merged
 # in order into the branch they came from, stopping on a conflict with the folder as it was.
 # The logins' programs are scripts: Claude (lead) takes a turn slowly and does nothing, and
-# Claude (parts) commits a file named after the folder it works in.
+# Claude (parts) commits a file named after the folder it works in. Both hold their turns until the
+# check releases them, so the lines that look for parts working can't find them already stopped (#126).
 seed "Split project" 0 3 0 "Unreal Engine"
 writefile "Split project" "README.md" "Split check\n"
 gitrepo "projects/split-project"
 writefile "Split project" ".git/config" "[user]\n\tname = Agent Orange check\n\temail = agent-orange-check\n"
-slowlogin "Claude (lead)" lead 3
-worklogin "Claude (parts)" parts 4
+slowlogin "Claude (lead)" lead hold
+worklogin "Claude (parts)" parts hold
 mcpjson "Split project" add_tasks "{\qtasks\q:[{\qtitle\q:\qWrite the save format\q,\qmilestone\q:\qMilestone 1\q,\quses\q:\qsave files\q},{\qtitle\q:\qLoad old saves\q,\qmilestone\q:\qMilestone 1\q,\quses\q:\qsave files\q},{\qtitle\q:\qWrite the design note\q,\qmilestone\q:\qMilestone 1\q},{\qtitle\q:\qBuild the test level\q,\qmilestone\q:\qMilestone 1\q,\quses\q:\qUnreal Engine, level art\q},{\qtitle\q:\qPlay-test the level\q,\qmilestone\q:\qMilestone 1\q,\quses\q:\qeditor\q}]}"
 said "5. Added: [ ] Play-test the level"
 said "Uses: editor"
@@ -56,6 +57,7 @@ wait "Part 1 of 3 · Working"
 shot split-sidebar
 window "Agent Orange"
 # Once all have stopped, they're merged in order.
+release parts
 wait "Merge parts"
 wait "Part 2 · Stopped working, 0 of 1 task done · ao/milestone-1-"
 shot split-finished
@@ -89,6 +91,7 @@ window "Agents"
 wait "Waiting on 2 parts"
 shot split-parent-waiting
 window "Agent Orange"
+release lead
 wait "Merge parts"
 sleep 1500
 agentitems
