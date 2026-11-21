@@ -175,8 +175,6 @@ public partial class SettingsModal : UserControl
         _refreshEditorsPage = null;
         _refreshProviderDetails = null;
         _refreshTestMachines = null;
-        StartCodeClock(false);
-        _linkedNote = null;
         _startupNote = null;
         _confirmingRestore = false;
         RestoreLabel.Text = "Restore defaults";

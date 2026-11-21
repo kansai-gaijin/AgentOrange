@@ -1,14 +1,39 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows.Threading;
 
 namespace AgentOrange;
 
 /// <summary>
-/// Test machines on this PC (#93): what it offers other PCs, the link code it's showing, the links
-/// to and from it, and the background loop that answers link requests and runs what it's sent. The
-/// loop only runs in the window that syncs, so two windows never take the same work, and only
-/// takes runs while this PC accepts them.
+/// A link this PC is making to another, shown with what's happening until it's made, or with why
+/// it wasn't until it's dismissed or tried again (#95).
+/// </summary>
+public sealed class Linking(TestMachineInfo machine, string access)
+{
+    public TestMachineInfo Machine { get; } = machine;
+
+    public string Access { get; } = access;
+
+    public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
+
+    /// <summary>What's happening now, in words.</summary>
+    public string Step { get; internal set; } = "Sending the request…";
+
+    /// <summary>Why it didn't link, once it didn't.</summary>
+    public string? Problem { get; internal set; }
+
+    public bool Failed => Problem is not null;
+
+    internal CancellationTokenSource Cancel { get; } = new();
+}
+
+/// <summary>
+/// Test machines on this PC (#93): what it offers other PCs, the links to and from it and those
+/// being made, and the background loop that answers link requests and runs what it's sent. The
+/// loop only answers and runs in the window that syncs, so two windows never take the same work,
+/// and only while this PC accepts runs, which is its consent to being linked: it answers by
+/// itself, with nobody needing to be here (#95).
 /// </summary>
 public sealed class TestMachines
 {
@@ -49,11 +74,13 @@ public sealed class TestMachines
     /// <summary>Why the list can't be had, when it can't.</summary>
     public string? Problem { get; private set; }
 
-    /// <summary>The link code this PC is showing, which lives only in memory.</summary>
-    public LinkCode? Code { get; private set; }
+    private readonly List<Linking> _linkings = [];
 
-    /// <summary>Said once a code was thrown away for taking too many wrong tries.</summary>
-    public string? CodeProblem { get; private set; }
+    /// <summary>Links this PC is making, or failed to make and hasn't been told to forget.</summary>
+    public IReadOnlyList<Linking> Linkings => _linkings;
+
+    /// <summary>The last link made from here, said once in Linked machines.</summary>
+    public string? JustLinked { get; set; }
 
     public TestRunner? Running { get; private set; }
 
@@ -94,7 +121,6 @@ public sealed class TestMachines
     public void Save(TestMachineSettings settings)
     {
         _database.SetSetting(SettingsKey, JsonSerializer.Serialize(settings, TestJob.Json));
-        if (!settings.Accepting) Code = null; // A code only means anything while this PC takes runs.
         _refreshedAt = default; // Published on the next tick.
         Changed?.Invoke();
     }
@@ -121,24 +147,6 @@ public sealed class TestMachines
         _database.SetSetting(RunsHereKey, JsonSerializer.Serialize(runs.Take(RunsHereKept), TestJob.Json));
     }
 
-    // Link codes
-
-    /// <summary>A code for the one access level there is so far, which the person here chooses by making it.</summary>
-    public LinkCode MakeCode()
-    {
-        Code = new LinkCode("tests");
-        CodeProblem = null;
-        _askedForRequestsAt = default;
-        Changed?.Invoke();
-        return Code;
-    }
-
-    public void RevokeCode()
-    {
-        Code = null;
-        Changed?.Invoke();
-    }
-
     public async Task RefreshAsync()
     {
         _refreshedAt = default;
@@ -149,15 +157,13 @@ public sealed class TestMachines
 
     private async Task TickAsync()
     {
+#if DEBUG
+        if (_madeUp) return;
+#endif
         if (_ticking) return;
         _ticking = true;
         try
         {
-            if (Code is { Expired: true })
-            {
-                Code = null;
-                Changed?.Invoke();
-            }
             if (!CanTalkToServer)
             {
                 var problem = _devices.IsPaired ? "Can't reach the server." : "Connect this PC to your server first, on the Server page. Test machines go through it.";
@@ -169,12 +175,14 @@ public sealed class TestMachines
                 return;
             }
 
-            if (DateTimeOffset.UtcNow - _refreshedAt >= RefreshEvery) await RefreshListAsync();
-
-            // The window showing a code answers for it, syncing or not, as only it has the code.
-            if (Code is not null) await AnswerLinkRequestsAsync();
+            // Quicker while this PC is making a link, so it shows as soon as it's made.
+            if (DateTimeOffset.UtcNow - _refreshedAt >= (_linkings.Any(each => !each.Failed) ? ClaimEvery : RefreshEvery)) await RefreshListAsync();
 
             var settings = Settings;
+
+            // Answered by itself while this PC takes runs, in the window that does background work.
+            if (settings.Accepting && _hasSyncTurn()) await AnswerLinkRequestsAsync();
+
             if (settings.Accepting && Running is null && _hasSyncTurn() && DateTimeOffset.UtcNow - _claimedAt >= ClaimEvery)
             {
                 _claimedAt = DateTimeOffset.UtcNow;
@@ -248,63 +256,41 @@ public sealed class TestMachines
         _ => "The server couldn't answer. The log on the server has details.",
     };
 
-    // As the target: each request is checked against the code this PC is showing, which is used
-    // once, and never gives more access than the code was made for.
+    // As the target, while it takes runs: each of the owner's PCs that asks is linked, for the one
+    // access level offered so far, with a key pair made for this one link and an expiry of this
+    // PC's own. Nobody needs to be here.
     private async Task AnswerLinkRequestsAsync()
     {
         if (DateTimeOffset.UtcNow - _askedForRequestsAt < TimeSpan.FromSeconds(2)) return;
         _askedForRequestsAt = DateTimeOffset.UtcNow;
         var pending = await _devices.PendingLinkRequestsAsync();
-        if (pending.Value is not { } requests || Latest?.Me is not { } me) return;
+        if (pending.Value is not { Count: > 0 } requests || Latest?.Me is not { } me) return;
 
         foreach (var request in requests)
         {
-            if (Code is not { Expired: false } code)
+            if (request.Access != "tests")
             {
-                await _devices.RejectLinkAsync(request.Id);
+                await _devices.RejectLinkAsync(request.Id, "access");
                 continue;
             }
-            if (request.Access != code.Access || !MachineLinks.ProofMatches(code.Code, code.Access, request, me))
+            if (MachineLinks.Accept(request, me) is not { } accepting)
             {
-                await _devices.RejectLinkAsync(request.Id);
-                code.WrongProofs++;
-                if (code.WrongProofs >= MachineLinks.MaxWrongProofs)
-                {
-                    Code = null;
-                    CodeProblem = "That code was tried too many times with the wrong value, so it no longer works. Create a new link.";
-                    AppLog.Write("A link code was thrown away after too many wrong tries.");
-                }
-                Changed?.Invoke();
+                await _devices.RejectLinkAsync(request.Id, "unreadable");
                 continue;
             }
-
-            // Used now, whatever the server says, as it's been tried. The link's key comes from a
-            // key pair made for this one link, and its expiry is this PC's own.
-            Code = null;
-            var linkId = MachineLinks.NewId();
-            using var ephemeral = MachineLinks.NewEphemeral();
-            var machineKey = MachineLinks.PublicKey(ephemeral);
-            var expiresAt = (DateTimeOffset.UtcNow + MachineLinks.LinkLifetime).ToUnixTimeSeconds();
-            var transcript = MachineLinks.Transcript(request.Linker, me, code.Access, request.Nonce, request.Key, machineKey, linkId, expiresAt);
-            if (MachineLinks.LinkKey(ephemeral, request.Key, transcript) is not { } linkKey)
-            {
-                await _devices.RejectLinkAsync(request.Id);
-                CodeProblem = "The other PC's answer couldn't be read. Create a new link and try again.";
-                Changed?.Invoke();
-                continue;
-            }
-            var accepted = await _devices.AcceptLinkAsync(request.Id, linkId, machineKey, expiresAt, MachineLinks.Confirm(code.Code, linkKey, transcript));
+            var accepted = await _devices.AcceptLinkAsync(request.Id, accepting.LinkId, accepting.MachineKey, accepting.ExpiresAt, accepting.Confirm);
             if (accepted.Worked)
             {
-                MachineLinks.SaveKey(_database, new MachineLinkKey(linkId, linkKey, code.Access, expiresAt, ThisPcIsMachine: true));
+                MachineLinks.SaveKey(_database, new MachineLinkKey(accepting.LinkId, accepting.LinkKey, request.Access, accepting.ExpiresAt, ThisPcIsMachine: true));
                 AppLog.Write($"Linked {request.LinkerLabel} to run tests on this PC.");
             }
             else
             {
-                CodeProblem = "The link couldn't be saved on the server. Create a new link and try again.";
+                AppLog.Write($"A link from {request.LinkerLabel} couldn't be saved on the server, so it wasn't made.");
             }
-            await RefreshListAsync();
+            CryptographicOperations.ZeroMemory(accepting.LinkKey);
         }
+        await RefreshListAsync();
     }
 
     // As the target: one run at a time, in the background.
@@ -362,27 +348,102 @@ public sealed class TestMachines
     // As the PC linking
 
     /// <summary>
-    /// Links this PC to another with the code shown there, which never goes to the server: only
-    /// proof of it does, with a key pair made for this one link. The target's answer is kept only
-    /// once its confirmation checks out. Returns null once linked, or what went wrong, in T3's
-    /// words where it has them.
+    /// Starts linking this PC to another of the owner's PCs, in the background, so it carries on
+    /// with the dialog closed and shows in Linked machines meanwhile. Linking to one already being
+    /// linked gives that one; one that failed starts again.
     /// </summary>
-    public async Task<string?> LinkAsync(TestMachineInfo machine, string typedCode, string access, CancellationToken cancel)
+    public Linking StartLink(TestMachineInfo machine, string access = "tests")
     {
-        if (MachineLinks.CleanCode(typedCode) is not { } code) return "That isn't a pairing code. It's 12 letters and numbers, from that machine's Test machines settings.";
-        if (Latest?.Me is not { } me) return "This PC could not reach the server.";
+        if (_linkings.FirstOrDefault(each => each.Machine.Install == machine.Install) is { } already)
+        {
+            if (!already.Failed) return already;
+            _linkings.Remove(already);
+        }
+        var linking = new Linking(machine, access);
+        _linkings.Add(linking);
+        JustLinked = null;
+        Changed?.Invoke();
+        _ = RunLinkingAsync(linking);
+        return linking;
+    }
+
+    /// <summary>Stops a link being made, or forgets one that failed.</summary>
+    public void StopLinking(Linking linking)
+    {
+        linking.Cancel.Cancel();
+        _linkings.Remove(linking);
+        Changed?.Invoke();
+    }
+
+    private async Task RunLinkingAsync(Linking linking)
+    {
+        string? problem;
+        try
+        {
+            problem = await LinkAsync(linking);
+        }
+        catch (Exception error)
+        {
+            AppLog.Write($"Linking to {linking.Machine.Label} stopped: {error.GetType().Name}: {error.Message}");
+            problem = $"Something went wrong on this PC: {error.Message}";
+        }
+        OnWindow(() =>
+        {
+            if (!_linkings.Contains(linking)) return; // Stopped meanwhile.
+            if (problem is null)
+            {
+                _linkings.Remove(linking);
+                JustLinked = $"Linked {linking.Machine.Label}";
+            }
+            else
+            {
+                linking.Problem = problem;
+            }
+            Changed?.Invoke();
+        });
+    }
+
+    private void Say(Linking linking, string step)
+    {
+        if (linking.Step == step) return;
+        linking.Step = step;
+        Changed?.Invoke();
+    }
+
+    // What the PC linking waits on, said as the target's state changes.
+    private string Waiting(TestMachineInfo machine)
+    {
+        var now = Latest?.Machines.FirstOrDefault(each => each.Install == machine.Install) ?? machine;
+        return now.Status switch
+        {
+            "other_release" => $"Waiting for {now.Label}. It's on another release of Agent Orange, so it can't answer until it updates.",
+            "unreachable" => $"Waiting for {now.Label}. It isn't connected right now, and answers by itself once Agent Orange runs there and it's online.",
+            _ => $"Waiting for {now.Label} to answer. It answers by itself in a few seconds.",
+        };
+    }
+
+    /// <summary>
+    /// Links this PC to another through the server, with a key pair made for this one link, and
+    /// keeps the target's answer only once its confirmation checks out. Null once linked, or what
+    /// went wrong, in words a person can act on.
+    /// </summary>
+    private async Task<string?> LinkAsync(Linking linking)
+    {
+        var machine = linking.Machine;
+        var access = linking.Access;
+        var cancel = linking.Cancel.Token;
+        if (Latest?.Me is not { } me) return Problem ?? "This PC could not reach the server.";
         if (machine.Install == me) return "That machine is this PC.";
 
         var nonce = MachineLinks.NewId();
         using var ephemeral = MachineLinks.NewEphemeral();
-        var linkerKey = MachineLinks.PublicKey(ephemeral);
-        var asked = await _devices.RequestLinkAsync(machine.Install, access, nonce, MachineLinks.Proof(code, me, machine.Install, access, nonce, linkerKey), linkerKey);
+        var asked = await _devices.RequestLinkAsync(machine.Install, access, nonce, MachineLinks.PublicKey(ephemeral));
         if (asked.Value is not { } request)
         {
             return asked.Status switch
             {
-                HttpStatusCode.TooManyRequests => "Too many tries that weren't approved. Wait a minute and try again.",
-                HttpStatusCode.Conflict => $"{machine.Label} doesn't let other PCs run tests on it. Turn it on in its Settings › Test machines.",
+                HttpStatusCode.TooManyRequests => "Too many link requests at once, or turned down in the last minute. Wait a minute and try again.",
+                HttpStatusCode.Conflict => MachineLinks.RefusedText("not_accepting", machine.Label),
                 HttpStatusCode.NotFound => $"{machine.Label} isn't a test machine any more.",
                 HttpStatusCode.UnprocessableEntity => "That machine is this PC.",
                 HttpStatusCode.UpgradeRequired => "This PC and the server are on different versions. Update both, then link again.",
@@ -390,43 +451,49 @@ public sealed class TestMachines
             };
         }
 
-        // The target answers within a few seconds while it's showing a code. Two minutes is plenty.
-        var until = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);
+        // The target answers within a few seconds while Agent Orange runs there. One that's away
+        // gets as long as the server keeps the request.
+        var until = DateTimeOffset.UtcNow + MachineLinks.AnswerWait;
         while (DateTimeOffset.UtcNow < until)
         {
+            Say(linking, Waiting(machine));
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(2), cancel);
             }
             catch (OperationCanceledException)
             {
+                await WithdrawAsync(request.Id);
                 return "Cancelled.";
             }
             var answer = await _devices.LinkAnswerAsync(request.Id);
             if (answer.Status == HttpStatusCode.NotFound) break;
             if (answer.Value is not { Answer: { } said } got) continue;
-            if (said != "accepted" || !MachineLinks.IsId(got.LinkId) || got.ExpiresAt is not { } expires || got.Key is not { } machineKey || got.Confirm is not { } confirm)
-            {
-                return "The peer did not approve the link. Check the pairing code and try again.";
-            }
+            if (said != "accepted") return MachineLinks.RefusedText(got.Reason, machine.Label);
 
-            // Only the target, with the code, could have made this, with the same key as here.
-            var linkId = got.LinkId!;
-            var expiresAt = (long)expires;
-            var transcript = MachineLinks.Transcript(me, machine.Install, access, nonce, linkerKey, machineKey, linkId, expiresAt);
-            var linkKey = MachineLinks.LinkKey(ephemeral, machineKey, transcript);
-            var sensible = expiresAt > DateTimeOffset.UtcNow.ToUnixTimeSeconds() && expiresAt <= (DateTimeOffset.UtcNow + MachineLinks.LinkLifetime + TimeSpan.FromDays(1)).ToUnixTimeSeconds();
-            if (linkKey is null || !sensible || !MachineLinks.ConfirmMatches(code, linkKey, transcript, confirm))
+            Say(linking, $"Checking {machine.Label}'s answer…");
+            if (MachineLinks.TakeAnswer(ephemeral, me, machine.Install, access, nonce, got) is not { } linkKey)
             {
                 AppLog.Write($"A link to {machine.Label} was refused: its answer's confirmation didn't check out.");
-                await _devices.RemoveLinkAsync(linkId);
-                return $"The answer didn't come from {machine.Label} with that code, so the link wasn't kept. Create a new link there and try again.";
+                if (MachineLinks.IsId(got.LinkId)) await _devices.RemoveLinkAsync(got.LinkId!);
+                return $"The answer from {machine.Label} didn't check out, so the link wasn't kept. Link again.";
             }
-            MachineLinks.SaveKey(_database, new MachineLinkKey(linkId, linkKey, access, expiresAt, ThisPcIsMachine: false));
+            MachineLinks.SaveKey(_database, new MachineLinkKey(got.LinkId!, linkKey, access, (long)got.ExpiresAt!, ThisPcIsMachine: false));
+            CryptographicOperations.ZeroMemory(linkKey);
             await RefreshAsync();
             return null;
         }
-        return $"{machine.Label} did not answer. Check that its pairing code is still showing, and try again.";
+        await WithdrawAsync(request.Id);
+        return $"{machine.Label} didn't answer in {MachineLinks.AnswerWait.TotalMinutes:0} minutes. It answers by itself while Agent Orange runs there and it's online, with Let other PCs run tests here on. Link again once it is.";
+    }
+
+    // Given up on: the target mustn't link later to a key this PC no longer has. When it already
+    // has, that link is ended, as this PC won't keep it.
+    private async Task WithdrawAsync(string request)
+    {
+        var withdrawn = await _devices.WithdrawLinkAsync(request);
+        if (withdrawn.Status != HttpStatusCode.NotFound) return;
+        if ((await _devices.LinkAnswerAsync(request)).Value is { Answer: "accepted", LinkId: { } linkId } && MachineLinks.IsId(linkId)) await _devices.RemoveLinkAsync(linkId);
     }
 
     /// <summary>Ends a link from either end. The server's copy is the only one, so it's final.</summary>
@@ -496,7 +563,7 @@ public sealed class TestMachines
     private async Task<(string? RunId, string? Problem, TestRunInfo? Existing)> SendRunAsync(MachineLinkInfo link, Project project, string folder, string? named, string? startedBy)
     {
         if (MachineLinks.ReadKey(_database, link.Id) is not { ThisPcIsMachine: false } key) return (null, $"This PC has no key for its link to {link.MachineLabel}. Link it again.", null);
-        if (link.Status == "expired" || key.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return (null, $"The link to {link.MachineLabel} expired. Link it again with a new pairing code from {link.MachineLabel}.", null);
+        if (link.Status == "expired" || key.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return (null, $"The link to {link.MachineLabel} expired. Link it again in Settings › Test machines.", null);
         var (repoUrl, commit, setup, problem) = await WhatToSendAsync(folder, named);
         if (problem is not null || repoUrl is null || commit is null || setup is null) return (null, problem, null);
         var missing = setup.Tags.Where(tag => !HasTags(link.MachineTags, [tag])).ToList();
@@ -516,8 +583,8 @@ public sealed class TestMachines
             : DescribeProblem(sent.Status) ?? "The server couldn't take the run.", null);
     }
 
-    // Renewing a link. Only a link that's still good can be renewed; an expired or revoked one needs
-    // a new code made on the target.
+    // Renewing a link, by itself. Only a link that's still good can be renewed; an expired or
+    // revoked one is linked again, which makes a new key.
 
     // The renewals this PC asked for and hasn't had an answer to, by link: the nonce and when.
     private readonly Dictionary<string, (string Nonce, DateTimeOffset At)> _renewing = [];
@@ -539,7 +606,7 @@ public sealed class TestMachines
         if (!asked.Worked)
         {
             return asked.Status == HttpStatusCode.NotFound
-                ? $"The link to {link.MachineLabel} has expired or was revoked. Link it again with a new pairing code from {link.MachineLabel}."
+                ? $"The link to {link.MachineLabel} has expired or was revoked. Link it again in Settings › Test machines."
                 : DescribeProblem(asked.Status) ?? "The server couldn't take the renewal.";
         }
         _renewing[link.Id] = (nonce, DateTimeOffset.UtcNow);
@@ -570,7 +637,7 @@ public sealed class TestMachines
         if (link.Renewal is not { } asked || link.Renewed?.Nonce == asked.Nonce || _turnedDown.Contains(asked.Nonce)) return;
         if (MachineLinks.ReadKey(_database, link.Id) is not { ThisPcIsMachine: true } key) return;
         var now = DateTimeOffset.UtcNow;
-        if (key.ExpiresAt <= now.ToUnixTimeSeconds()) return; // Expired here: only a new code links them again.
+        if (key.ExpiresAt <= now.ToUnixTimeSeconds()) return; // Expired here: only linking again links them.
         var age = now - DateTimeOffset.FromUnixTimeSeconds(asked.SentAt);
         if (age > MachineLinks.RenewMaxAge || age < -MachineLinks.RenewMaxAge || !MachineLinks.IsId(asked.Nonce)) return;
         if (!MachineLinks.MacMatches(MachineLinks.RenewMac(key.Key, link.Id, asked.Nonce, asked.SentAt, asked.ExpiresAt), asked.Mac))
@@ -588,38 +655,26 @@ public sealed class TestMachines
         AppLog.Write($"Renewed the link from {link.LinkerLabel}.");
     }
 
-    /// <summary>The Renew button: asks, then waits up to two minutes for the target's answer. Null once renewed.</summary>
-    public async Task<string?> RenewAsync(MachineLinkInfo link, CancellationToken cancel)
-    {
-        if (await AskRenewalAsync(link) is { } problem) return problem;
-        var until = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);
-        while (DateTimeOffset.UtcNow < until)
-        {
-            try
-            {
-                await Task.Delay(TimeSpan.FromSeconds(3), cancel);
-            }
-            catch (OperationCanceledException)
-            {
-                return "Cancelled.";
-            }
-            if (!_renewing.ContainsKey(link.Id)) return null; // The list's refresh took the answer.
-            var answer = await _devices.MachinesAsync();
-            if (answer.Value?.Links.FirstOrDefault(each => each.Id == link.Id) is not { } now) continue;
-            if (TakeRenewal(now))
-            {
-                await RefreshAsync();
-                return null;
-            }
-        }
-        return $"{link.MachineLabel} didn't answer. It renews the link when Agent Orange is running there and it's online.";
-    }
-
 #if DEBUG
+    // Made up for a check, which the server (there being none) mustn't then say otherwise about.
+    private bool _madeUp;
+
     /// <summary>Headless checks only: a made-up list of machines and links, as if the server had sent it.</summary>
     internal void ShowForChecks(MachinesInfo latest)
     {
+        _madeUp = true;
         Latest = latest;
+        Problem = null;
+        Changed?.Invoke();
+    }
+
+    /// <summary>Headless checks only: a link being made, at that step or failed, as if the server were slow to answer.</summary>
+    internal void LinkingForChecks(TestMachineInfo machine, string? step, string? problem)
+    {
+        _linkings.RemoveAll(each => each.Machine.Install == machine.Install);
+        var linking = new Linking(machine, "tests") { Problem = problem };
+        if (step is not null) linking.Step = step;
+        _linkings.Add(linking);
         Changed?.Invoke();
     }
 #endif

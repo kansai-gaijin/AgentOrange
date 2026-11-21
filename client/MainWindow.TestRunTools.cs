@@ -53,6 +53,7 @@ public partial class MainWindow
         "busy" => "running tests, so a run waits its turn",
         "expired" => "its link expired, so it needs linking again in Settings › Test machines",
         "unreachable" => "not answering right now, so it can't take a run until Agent Orange runs there",
+        "other_release" => "on another release of Agent Orange, so it can't take a run until it updates",
         var other => other,
     };
 

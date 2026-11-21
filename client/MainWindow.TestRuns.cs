@@ -103,6 +103,7 @@ public partial class MainWindow
                 {
                     "expired" => "expired",
                     "unreachable" => "not answering right now",
+                    "other_release" => "on another release, update it",
                     "busy" => "running tests, so this waits its turn",
                     _ => null,
                 };

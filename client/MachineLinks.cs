@@ -12,35 +12,41 @@ namespace AgentOrange;
 /// </summary>
 public sealed record MachineLinkKey(string LinkId, byte[] Key, string Access, double ExpiresAt, bool ThisPcIsMachine, double SavedAt = 0);
 
+/// <summary>What the target answers a link request with, and the key it keeps.</summary>
+public sealed record LinkAcceptance(string LinkId, string MachineKey, long ExpiresAt, string Confirm, byte[] LinkKey);
+
 /// <summary>
-/// How test machines are linked, as T3 Code links environments: a one-time code made on the
-/// target PC, which never leaves it except as typed by a person on the other PC.
+/// How test machines are linked, as T3 Code links environments when it already has a session on
+/// the other machine (#95): every PC paired with the server is the owner's, so the server is that
+/// session, and there's no code to type. The target's "Let other PCs run tests here" is its
+/// consent, and it answers by itself, unattended.
 ///
-/// The two PCs swap ephemeral P-256 public keys through the server. The PC linking sends its key
-/// with an HMAC proof, keyed with the code, over both PCs, the access, a nonce and its key. The
-/// target checks it, makes its own key, and answers with an expiry it chose and a confirmation
-/// MAC keyed with both the code and the link's key over the whole exchange. The link's key comes
-/// from the ECDH secret, so cracking the code later from a stored proof gives nothing, and the
-/// confirmation means the server can't put its own key in the middle without knowing the code
-/// while it's live. Every job is then signed with the link's key, over a run id and time, and a
+/// The two PCs swap ephemeral P-256 public keys through the server, each sent by a paired login
+/// the server checked. The PC linking sends its key and a nonce. The target makes its own key,
+/// and answers with an expiry it chose and a confirmation MAC, keyed with the link's key, over
+/// the whole exchange, which the PC linking checks before keeping the link, so both are sure they
+/// hold the same key. The link's key comes from the ECDH secret, which never reaches the server.
+/// So the server is trusted while a link is made, to pass the keys on as sent, as T3 trusts its
+/// own session there; once made, nothing the server keeps can sign a job, and a server taken over
+/// later can't make one. Every job is signed with the link's key, over a run id and time, and a
 /// link still good is renewed with a request and an answer each MACed with it.
+///
+/// Before #95 a one-time code made on the target, typed on the other PC, keyed the request and
+/// the confirmation, so the server couldn't put its own keys in the middle without it. That
+/// asked for a person at both PCs, which the unattended case can't have.
 /// </summary>
 public static class MachineLinks
 {
-    // T3's alphabet: no 0, 1, I or O, which are easy to mistake for each other. 12 of them is about 60 bits.
-    public const string CodeAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-    public const int CodeLength = 12;
-    public static readonly TimeSpan CodeLifetime = TimeSpan.FromMinutes(5);
     public static readonly TimeSpan LinkLifetime = TimeSpan.FromDays(30);
+
+    /// <summary>How long the PC linking waits for an answer, as long as the server keeps a request.</summary>
+    public static readonly TimeSpan AnswerWait = TimeSpan.FromMinutes(10);
 
     /// <summary>A link with less than this left is renewed by itself, while both PCs are online.</summary>
     public static readonly TimeSpan RenewWithin = TimeSpan.FromDays(7);
 
     /// <summary>A renewal request older than this is ignored, so one can't be sent again later.</summary>
     public static readonly TimeSpan RenewMaxAge = TimeSpan.FromMinutes(10);
-
-    /// <summary>Wrong proofs a code takes before it's thrown away, as T3's guess limit and the server's are.</summary>
-    public const int MaxWrongProofs = 5;
 
     /// <summary>A job sent longer ago than this is refused, so an old one can't be sent again later.</summary>
     public static readonly TimeSpan JobMaxAge = TimeSpan.FromHours(6);
@@ -66,19 +72,6 @@ public static class MachineLinks
     public static bool Allows(string access, string needed) =>
         Array.IndexOf(AccessLevels, access) is var has and >= 0 && has >= Array.IndexOf(AccessLevels, needed) && Array.IndexOf(AccessLevels, needed) >= 0;
 
-    public static string NewCode() =>
-        string.Create(CodeLength, 0, (letters, _) =>
-        {
-            for (var i = 0; i < letters.Length; i++) letters[i] = CodeAlphabet[RandomNumberGenerator.GetInt32(CodeAlphabet.Length)];
-        });
-
-    /// <summary>Case, spaces and dashes don't count, so XXXX-XXXX-XXXX works too. Null if it can't be a code.</summary>
-    public static string? CleanCode(string typed)
-    {
-        var code = new string([.. typed.ToUpperInvariant().Where(letter => letter is not ('-' or ' ' or '\t'))]);
-        return code.Length == CodeLength && code.All(letter => CodeAlphabet.Contains(letter)) ? code : null;
-    }
-
     public static string NewId() => Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
 
     public static bool IsId(string? text) => text is { Length: 32 } && text.All(Uri.IsHexDigit);
@@ -89,14 +82,6 @@ public static class MachineLinks
     public static ECDiffieHellman NewEphemeral() => ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
 
     public static string PublicKey(ECDiffieHellman ephemeral) => Convert.ToBase64String(ephemeral.ExportSubjectPublicKeyInfo());
-
-    /// <summary>What the PC linking sends: proof it knows the code, bound to both PCs, the access, this request and its key.</summary>
-    public static string Proof(string code, string linker, string machine, string access, string nonce, string linkerKey) =>
-        Hex(HMACSHA256.HashData(Encoding.UTF8.GetBytes(code), Encoding.UTF8.GetBytes($"ao-link|{linker}|{machine}|{access}|{nonce}|{linkerKey}")));
-
-    /// <summary>Checked in constant time, as the code is the secret here.</summary>
-    public static bool ProofMatches(string code, string access, PendingLinkRequest request, string machine) =>
-        FixedTimeEquals(Proof(code, request.Linker, machine, access, request.Nonce, request.Key), request.Proof);
 
     /// <summary>Everything both PCs agreed on, which the link's key and the target's confirmation cover.</summary>
     public static string Transcript(string linker, string machine, string access, string nonce, string linkerKey, string machineKey, string linkId, long expiresAt) =>
@@ -126,22 +111,51 @@ public static class MachineLinks
         }
     }
 
-    /// <summary>The target's answer: keyed with the code, so only it could make it while the code was live, and with the link's key, so it shows it has the same one.</summary>
-    public static string Confirm(string code, byte[] linkKey, string transcript)
+    /// <summary>The target's answer, keyed with the link's key, so it shows it has the same one, over everything agreed.</summary>
+    public static string Confirm(byte[] linkKey, string transcript) =>
+        Hex(HMACSHA256.HashData(linkKey, Encoding.UTF8.GetBytes($"ao-link-confirm|{transcript}")));
+
+    public static bool ConfirmMatches(byte[] linkKey, string transcript, string given) =>
+        FixedTimeEquals(Confirm(linkKey, transcript), given);
+
+    /// <summary>
+    /// As the target: the answer to a request, with a key pair made for this one link and an expiry
+    /// of this PC's own. Null when the other PC's key isn't a P-256 key.
+    /// </summary>
+    public static LinkAcceptance? Accept(PendingLinkRequest request, string me)
     {
-        var key = Encoding.UTF8.GetBytes(code).Concat(linkKey).ToArray();
-        try
-        {
-            return Hex(HMACSHA256.HashData(key, Encoding.UTF8.GetBytes($"ao-link-accept|{transcript}")));
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(key);
-        }
+        var linkId = NewId();
+        using var ephemeral = NewEphemeral();
+        var machineKey = PublicKey(ephemeral);
+        var expiresAt = (DateTimeOffset.UtcNow + LinkLifetime).ToUnixTimeSeconds();
+        var transcript = Transcript(request.Linker, me, request.Access, request.Nonce, request.Key, machineKey, linkId, expiresAt);
+        return LinkKey(ephemeral, request.Key, transcript) is { } linkKey
+            ? new LinkAcceptance(linkId, machineKey, expiresAt, Confirm(linkKey, transcript), linkKey)
+            : null;
     }
 
-    public static bool ConfirmMatches(string code, byte[] linkKey, string transcript, string given) =>
-        FixedTimeEquals(Confirm(code, linkKey, transcript), given);
+    /// <summary>
+    /// As the PC linking: the link's key from the target's answer to its request, once its
+    /// confirmation checks out and its expiry is one this PC could have been given. Null if not.
+    /// </summary>
+    public static byte[]? TakeAnswer(ECDiffieHellman mine, string me, string machine, string access, string nonce, LinkAnswer answer)
+    {
+        if (answer is not { Answer: "accepted", LinkId: { } linkId, ExpiresAt: { } expires, Key: { } machineKey, Confirm: { } confirm } || !IsId(linkId)) return null;
+        var expiresAt = (long)expires;
+        var now = DateTimeOffset.UtcNow;
+        if (expiresAt <= now.ToUnixTimeSeconds() || expiresAt > (now + LinkLifetime + TimeSpan.FromDays(1)).ToUnixTimeSeconds()) return null;
+        var transcript = Transcript(me, machine, access, nonce, PublicKey(mine), machineKey, linkId, expiresAt);
+        return LinkKey(mine, machineKey, transcript) is { } linkKey && ConfirmMatches(linkKey, transcript, confirm) ? linkKey : null;
+    }
+
+    /// <summary>What the PC linking says when the target turned its request down.</summary>
+    public static string RefusedText(string? reason, string machine) => reason switch
+    {
+        "not_accepting" => $"{machine} doesn't let other PCs run tests on it now. Turn on Settings › Test machines › Let other PCs run tests here on {machine}, then link again.",
+        "access" => $"{machine} doesn't offer that access.",
+        "unreadable" => $"{machine} couldn't read this PC's key. Link again.",
+        _ => $"{machine} didn't take the link.",
+    };
 
     // Jobs
 
@@ -230,42 +244,5 @@ public static class MachineLinks
             return JsonSerializer.Serialize(seen);
         });
         return taken;
-    }
-}
-
-/// <summary>A link code made on this PC, for one access level, which lives only in memory, for five minutes and one use.</summary>
-public sealed class LinkCode
-{
-    public LinkCode(string access = "tests")
-    {
-        Code = MachineLinks.NewCode();
-        Access = access;
-        MadeAt = DateTimeOffset.UtcNow;
-    }
-
-    public string Code { get; }
-
-    /// <summary>The most a link made with this code gets, chosen here, and covered by the proof.</summary>
-    public string Access { get; }
-
-    public DateTimeOffset MadeAt { get; }
-
-    public DateTimeOffset ExpiresAt => MadeAt + MachineLinks.CodeLifetime;
-
-    public bool Expired => DateTimeOffset.UtcNow >= ExpiresAt;
-
-    public int WrongProofs { get; set; }
-
-    /// <summary>T3's countdown: "Expires in 4m 59s", "Expires in 30s", "Expires in a moment", "Expired".</summary>
-    public string ExpiresText
-    {
-        get
-        {
-            var left = ExpiresAt - DateTimeOffset.UtcNow;
-            if (left <= TimeSpan.Zero) return "Expired";
-            if (left.TotalSeconds < 5) return "Expires in a moment";
-            var seconds = (int)Math.Ceiling(left.TotalSeconds);
-            return seconds >= 60 ? $"Expires in {seconds / 60}m {seconds % 60}s" : $"Expires in {seconds}s";
-        }
     }
 }

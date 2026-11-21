@@ -18,14 +18,23 @@ public sealed record LinkRenewal(string Nonce, long SentAt, long ExpiresAt, stri
 
 public sealed record LinkRenewed(string Nonce, long ExpiresAt, string Mac);
 
-/// <summary>Me is this PC's install hash, as other PCs know it.</summary>
-public sealed record MachinesInfo(string Me, TestMachineInfo? ThisMachine, List<TestMachineInfo> Machines, List<MachineLinkInfo> Links);
+/// <summary>
+/// Me is this PC's install hash, as other PCs know it. Others are the owner's other PCs paired
+/// with the server that never said whether they take runs, so can't be linked yet.
+/// </summary>
+public sealed record MachinesInfo(string Me, TestMachineInfo? ThisMachine, List<TestMachineInfo> Machines, List<MachineLinkInfo> Links, List<OtherPc>? Others = null);
 
-/// <summary>Key is the PC linking's ephemeral public key, which the proof covers.</summary>
-public sealed record PendingLinkRequest(string Id, string Linker, string LinkerLabel, string Access, string Nonce, string Proof, string Key);
+/// <summary>Reason is other_release (on a release from before test machines, or another one) or pair_again.</summary>
+public sealed record OtherPc(string Label, string Reason, double LastSeenAt);
 
-/// <summary>Key, ExpiresAt and Confirm are the target's, which the PC linking checks before keeping the link.</summary>
-public sealed record LinkAnswer(string? Answer, string? LinkId, double? ExpiresAt, string? Key, string? Confirm);
+/// <summary>Key is the PC linking's ephemeral public key, which the link's key is derived from.</summary>
+public sealed record PendingLinkRequest(string Id, string Linker, string LinkerLabel, string Access, string Nonce, string Key);
+
+/// <summary>
+/// Key, ExpiresAt and Confirm are the target's, which the PC linking checks before keeping the
+/// link. Reason is why the target turned it down, when it did.
+/// </summary>
+public sealed record LinkAnswer(string? Answer, string? LinkId, double? ExpiresAt, string? Key, string? Confirm, string? Reason = null);
 
 /// <summary>
 /// A test run as the server keeps it. Job is the text the linker signed, which only the PCs read.
@@ -82,8 +91,12 @@ public sealed partial class DeviceSession
     public Task<ServerAnswer<bool>> PublishMachineAsync(string label, IReadOnlyList<string> tags, bool accepting) =>
         AskAsync<bool>(HttpMethod.Put, "/v1/machines/me", new { label, tags, accepting });
 
-    public Task<ServerAnswer<IdAnswer>> RequestLinkAsync(string machine, string access, string nonce, string proof, string key) =>
-        AskAsync<IdAnswer>(HttpMethod.Post, $"/v1/machines/{Uri.EscapeDataString(machine)}/link-requests", new { access, nonce, proof, key });
+    public Task<ServerAnswer<IdAnswer>> RequestLinkAsync(string machine, string access, string nonce, string key) =>
+        AskAsync<IdAnswer>(HttpMethod.Post, $"/v1/machines/{Uri.EscapeDataString(machine)}/link-requests", new { access, nonce, key });
+
+    /// <summary>Not found once the target has answered it, which LinkAnswerAsync then reads.</summary>
+    public Task<ServerAnswer<bool>> WithdrawLinkAsync(string request) =>
+        AskAsync<bool>(HttpMethod.Delete, $"/v1/link-requests/{Uri.EscapeDataString(request)}");
 
     public Task<ServerAnswer<List<PendingLinkRequest>>> PendingLinkRequestsAsync() =>
         AskAsync<List<PendingLinkRequest>>(HttpMethod.Get, "/v1/machines/me/link-requests");
@@ -94,8 +107,9 @@ public sealed partial class DeviceSession
     public Task<ServerAnswer<ExpiresAnswer>> AcceptLinkAsync(string request, string linkId, string key, long expiresAt, string confirm) =>
         AskAsync<ExpiresAnswer>(HttpMethod.Post, $"/v1/link-requests/{Uri.EscapeDataString(request)}/accept", new { id = linkId, key, expiresAt, confirm });
 
-    public Task<ServerAnswer<bool>> RejectLinkAsync(string request) =>
-        AskAsync<bool>(HttpMethod.Post, $"/v1/link-requests/{Uri.EscapeDataString(request)}/reject");
+    /// <summary>Reason is not_accepting, access or unreadable.</summary>
+    public Task<ServerAnswer<bool>> RejectLinkAsync(string request, string reason) =>
+        AskAsync<bool>(HttpMethod.Post, $"/v1/link-requests/{Uri.EscapeDataString(request)}/reject", new { reason });
 
     public Task<ServerAnswer<bool>> RemoveLinkAsync(string link) =>
         AskAsync<bool>(HttpMethod.Delete, $"/v1/links/{Uri.EscapeDataString(link)}");

@@ -10,16 +10,18 @@ using static AgentOrange.Ui;
 namespace AgentOrange;
 
 /// <summary>
-/// Settings › Test machines (#93). On a PC that runs tests: whether it takes them, what it offers,
-/// and T3 Code's "Authorized clients" with its pairing links. On a PC that sends them: T3's
-/// "Linked environments" list and its Link dialog. Texts are T3's where T3 has the same thing.
+/// Settings › Test machines (#93). On a PC that sends tests: T3 Code's "Linked environments" list
+/// and its Link dialog, as T3 shows them when it already has a session on the other machine and
+/// so mints the code itself (#95): every PC signed in to the same server is the owner's, so there's
+/// never a code to type. On a PC that runs them: whether it takes them, which is its consent to
+/// being linked, what it offers, and T3's "Authorized clients" with Revoke. Texts are T3's where
+/// T3 has the same thing.
 /// </summary>
 public partial class SettingsModal
 {
     private TestMachines _testMachines = null!;
     private Action? _refreshTestMachines;
-    private DispatcherTimer? _codeClock;
-    private string? _linkedNote;
+    private Action? _refreshLinkDialog;
     private string? _startupNote;
 
     private static readonly Brush SuccessDot = new SolidColorBrush(Color.FromRgb(0x5F, 0xD0, 0x8A));
@@ -32,7 +34,11 @@ public partial class SettingsModal
         set
         {
             _testMachines = value;
-            _testMachines.Changed += () => _refreshTestMachines?.Invoke();
+            _testMachines.Changed += () =>
+            {
+                _refreshTestMachines?.Invoke();
+                _refreshLinkDialog?.Invoke();
+            };
         }
     }
 
@@ -121,7 +127,7 @@ public partial class SettingsModal
             Row("Environment variables", "Set for every run here, one KEY=VALUE a line.", environment),
             Row("Time limit", "Minutes a whole run may take here, from checking out to the last test, in place of the project's limits. Empty uses the project's.", timeout),
         ];
-        var thisPc = Card([Row("Let other PCs run tests here", "Your other PCs linked to this one can send a commit of a project's repo to test here, in the background, as you, with nobody needing to be here. What runs is what the repo's .agent-orange/tests.json says at that commit, so anyone who can push to the repo decides it. Each run is listed below with exactly what it ran.", accepting), .. targetRows]);
+        var thisPc = Card([Row("Let other PCs run tests here", "Your other PCs signed in to this server can link to this one, with no code to type, as this PC answers by itself. Then they can send a commit of a project's repo to test here, in the background, as you, with nobody needing to be here. What runs is what the repo's .agent-orange/tests.json says at that commit, so anyone who can push to the repo decides it. Each run is listed below with exactly what it ran.", accepting), .. targetRows]);
         void ShowTargetRows()
         {
             var rows = (StackPanel)thisPc.Child;
@@ -147,8 +153,13 @@ public partial class SettingsModal
         Redraw();
         _ = TestMachines.RefreshAsync();
 
+        // T3's section header, drawn once: the list under it is drawn again as the server answers,
+        // which mustn't take the button away between a press and its release.
+        var link = PrimaryButton("Link", () => OpenLinkDialog(null));
+        AutomationProperties.SetName(link, "Link");
         return
         [
+            SectionWithActions("Linked machines", null, link),
             linker,
             Section("This PC"),
             thisPc,
@@ -165,39 +176,52 @@ public partial class SettingsModal
             .Take(32)];
 
     // The parts that change as the server answers, drawn again each time. As the PC linking: T3's
-    // Linked environments.
+    // Linked environments, with the links being made in place of the machine's row.
     private List<UIElement> LinkerParts()
     {
         var parts = new List<UIElement>();
         var latest = TestMachines.Latest;
         var me = latest?.Me;
-        var link = ActionButton("Link");
-        link.Click += (_, _) => OpenLinkDialog(null);
-        parts.Add(SectionWithActions("Linked machines", null, link));
         if (TestMachines.Problem is { } trouble && latest is not null)
         {
             var shown = ProblemText();
             ShowProblem(shown, trouble);
             parts.Add(shown);
         }
-        var linked = latest?.Links.Where(each => each.Linker == me).OrderBy(each => each.MachineLabel, StringComparer.CurrentCultureIgnoreCase).ToList();
-        if (latest is null)
+        var linked = latest?.Links.Where(each => each.Linker == me).OrderBy(each => each.MachineLabel, StringComparer.CurrentCultureIgnoreCase).ToList() ?? [];
+        var linkings = TestMachines.Linkings;
+        var rows = new List<FrameworkElement>();
+        foreach (var each in linked)
         {
-            parts.Add(Card(Row(TestMachines.Problem is null ? "Loading linked machines…" : "Could not load linked machines", TestMachines.Problem)));
+            rows.Add(linkings.FirstOrDefault(making => making.Machine.Install == each.Machine) is { } making ? LinkingRow(making) : LinkedMachineRow(each));
         }
-        else if (linked!.Count == 0)
-        {
-            parts.Add(Card(Row("No linked machines", "Link another of your PCs running Agent Orange, so this PC can run a project's tests there.")));
-        }
-        else
-        {
-            parts.Add(Card([.. linked.Select(LinkedMachineRow)]));
-        }
-        if (_linkedNote is { } note)
+        foreach (var making in linkings.Where(making => linked.All(each => each.Machine != making.Machine.Install))) rows.Add(LinkingRow(making));
+
+        if (rows.Count > 0) parts.Add(Card([.. rows]));
+        else if (latest is null) parts.Add(Card(Row(TestMachines.Problem is null ? "Loading linked machines…" : "Could not load linked machines", TestMachines.Problem)));
+        else parts.Add(Card(Row("No linked machines", "Link another of your PCs running Agent Orange, so this PC can run a project's tests there. It needs no code: your PCs signed in to this server link to each other by themselves.")));
+        if (TestMachines.JustLinked is { } note)
         {
             parts.Add(new TextBlock { Text = note, FontSize = 12.5, Foreground = (Brush)FindResource("TextNormal"), Margin = new Thickness(16, 8, 16, 0) });
         }
         return parts;
+    }
+
+    // A link being made: what's happening, with Cancel; or why it wasn't, with Try again.
+    private Grid LinkingRow(Linking linking)
+    {
+        var label = linking.Machine.Label;
+        if (linking.Problem is { } problem)
+        {
+            var again = ActionButton("Try again");
+            again.Click += (_, _) => TestMachines.StartLink(linking.Machine, linking.Access);
+            var dismiss = ActionButton("Dismiss");
+            dismiss.Click += (_, _) => TestMachines.StopLinking(linking);
+            return DotRow(DestructiveDot, problem, label, $"{MachineLinks.AccessLabel(linking.Access)} · Could not link. {problem}", again, dismiss);
+        }
+        var cancel = ActionButton("Cancel");
+        cancel.Click += (_, _) => TestMachines.StopLinking(linking);
+        return DotRow(WarningDot, linking.Step, label, $"{MachineLinks.AccessLabel(linking.Access)} · Linking… {linking.Step}", cancel);
     }
 
     // As the target: T3's Authorized clients, with its pairing links first, then what ran here.
@@ -221,33 +245,25 @@ public partial class SettingsModal
             foreach (var note in notes) parts.Add(new TextBlock { Text = note, FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(16, 10, 16, 0) });
         }
 
-        if (settings.Accepting)
+        // T3's Authorized clients, as it lists a link it minted the code for: a client session per
+        // PC, with Revoke, and no pairing links, as there's no code to make.
+        var clients = latest?.Links.Where(link => link.Machine == me).ToList() ?? [];
+        if (settings.Accepting || clients.Count > 0)
         {
-            var clients = latest?.Links.Where(link => link.Machine == me).ToList() ?? [];
-            var code = TestMachines.Code;
-            var summary = $"{clients.Count} client{(clients.Count == 1 ? "" : "s")}{(code is null ? "" : " · 1 pairing link")}";
-            var create = ActionButton("Create link");
-            create.Click += (_, _) => TestMachines.MakeCode();
-            parts.Add(SectionWithActions("Authorized clients", summary, create));
-
+            parts.Add(SectionWithActions("Authorized clients", $"{clients.Count} client{(clients.Count == 1 ? "" : "s")}"));
             var rows = new List<FrameworkElement>();
-            if (code is not null) rows.Add(PairingLinkRow(code));
             foreach (var client in clients) rows.Add(ClientRow(client));
-            if (rows.Count == 0) rows.Add(Row("No pairing links or client sessions.", "Create link makes a one-time pairing code. Enter it on another of your PCs, in its Settings › Test machines › Link, so it can run tests here."));
+            if (rows.Count == 0) rows.Add(Row("No client sessions.", "Your other PCs signed in to this server link to this one from their Settings › Test machines › Link. This PC answers by itself while it lets other PCs run tests here."));
             parts.Add(Card([.. rows]));
-            if (TestMachines.CodeProblem is { } codeProblem)
+            parts.Add(new TextBlock
             {
-                var shown = ProblemText();
-                ShowProblem(shown, codeProblem);
-                parts.Add(shown);
-            }
-            StartCodeClock(code is not null);
+                Text = "A PC you revoke can link again while this PC lets others run tests here, as every PC signed in to your server is yours. To keep one out, remove it under Other devices on the Server page.",
+                FontSize = 12.5,
+                Foreground = (Brush)FindResource("TextMuted"),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(16, 8, 16, 0),
+            });
         }
-        else
-        {
-            StartCodeClock(false);
-        }
-
 
         if (settings.Accepting) parts.AddRange(BorrowParts(settings));
 
@@ -396,81 +412,6 @@ public partial class SettingsModal
         return row;
     }
 
-    // T3's pairing link row: a warning dot, a countdown, and the code to enter on the other PC.
-    private Grid PairingLinkRow(LinkCode code)
-    {
-        var show = ActionButton("Show code");
-        show.Click += (_, _) => ShowCodeDialog(code);
-        var copy = ActionButton("Copy code");
-        copy.Click += (_, _) => CopyCode(code);
-        var revoke = new Button { Style = (Style)FindResource("DangerButton"), Content = "Revoke" };
-        revoke.Click += (_, _) => TestMachines.RevokeCode();
-        var row = DotRow(WarningDot, $"Link created at {code.MadeAt.ToLocalTime():g}", "Pairing link", code.ExpiresText, show, copy, revoke);
-        var countdown = (TextBlock)((StackPanel)row.Children[0]).Children[1];
-        countdown.ToolTip = $"{code.ExpiresAt.ToLocalTime():g}";
-        _codeCountdown = (countdown, code);
-        return row;
-    }
-
-    private (TextBlock Text, LinkCode Code)? _codeCountdown;
-
-    // T3 updates the countdown every second.
-    private void StartCodeClock(bool on)
-    {
-        if (!on)
-        {
-            _codeClock?.Stop();
-            _codeCountdown = null;
-            return;
-        }
-        if (_codeClock is null)
-        {
-            _codeClock = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-            _codeClock.Tick += (_, _) =>
-            {
-                if (_codeCountdown is not { } shown || _currentPage.Name != "Test machines") return;
-                shown.Text.Text = shown.Code.ExpiresText;
-            };
-        }
-        _codeClock.Start();
-    }
-
-    private void CopyCode(LinkCode code)
-    {
-        try
-        {
-            Clipboard.SetText(code.Code);
-        }
-        catch (System.Runtime.InteropServices.ExternalException)
-        {
-            ShowCodeDialog(code); // T3 shows the value instead when it can't copy.
-        }
-    }
-
-    // T3's "Pairing code" dialog: the value, Done and Copy code.
-    private void ShowCodeDialog(LinkCode code)
-    {
-        var value = new TextBlock
-        {
-            Text = code.Code,
-            FontFamily = new FontFamily("Consolas"),
-            FontSize = 26,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Foreground = (Brush)FindResource("TextStrong"),
-        };
-        AutomationProperties.SetName(value, "Pairing code");
-        var body = new StackPanel { Margin = new Thickness(24, 16, 24, 20), Children = { value } };
-        ShowWizard();
-        WizardCard.Child = WizardShell(
-            CloseWizard,
-            "Pairing code",
-            $"Enter it on the other PC, in its Settings › Test machines › Link. It works once. {code.ExpiresText}.",
-            null,
-            body,
-            TextButton("Done", CloseWizard),
-            PrimaryButton("Copy code", () => CopyCode(code)));
-    }
-
     // A PC linked to this one, as T3 shows an authorized client. Revoke ends it, with no asking, as in T3.
     private Grid ClientRow(MachineLinkInfo client)
     {
@@ -500,17 +441,20 @@ public partial class SettingsModal
         return $"Expires in {days} day{(days == 1 ? "" : "s")}";
     }
 
-    // T3's status for a linked environment, with busy added, as a test machine can be.
+    // T3's status for a linked environment, with busy and another release added, as a test machine
+    // can be. Renewing is by itself here, and linking again renews too, as in T3.
     private static (Brush Dot, string Text) LinkStatus(MachineLinkInfo link)
     {
         var left = DateTimeOffset.FromUnixTimeSeconds((long)link.ExpiresAt) - DateTimeOffset.UtcNow;
-        if (link.Status == "expired" || left <= TimeSpan.Zero) return (DestructiveDot, "Expired. Link it again with a new pairing code.");
+        if (link.Status == "expired" || left <= TimeSpan.Zero) return (DestructiveDot, "Expired. Link it again.");
+        if (link.Status == "other_release") return (DestructiveDot, $"{link.MachineLabel} is on another release of Agent Orange. Update it, and it answers again.");
         if (link.Status == "unreachable") return ((Brush)Application.Current.FindResource("TextMuted"), "Not answering right now.");
         var days = (int)Math.Ceiling(left.TotalDays);
-        if (days <= 5) return (WarningDot, $"Expires in {days} {(days == 1 ? "day" : "days")}. It renews by itself while both PCs are online, or choose Renew.");
+        if (days <= 5) return (WarningDot, $"Expires in {days} {(days == 1 ? "day" : "days")}. It renews by itself while both PCs are online, or link it again to renew.");
         return (SuccessDot, link.Status == "busy" ? "Running tests" : "Reachable");
     }
 
+    // T3's row: the dot and name, the access and status, then (ours) its expiry and tags, and Forget.
     private Grid LinkedMachineRow(MachineLinkInfo link)
     {
         var (dot, status) = LinkStatus(link);
@@ -518,21 +462,7 @@ public partial class SettingsModal
         forget.Click += (_, _) => ConfirmForget(link);
         var tags = link.MachineTags.Count > 0 ? $"\n{string.Join(", ", link.MachineTags)}" : "";
         var expiry = DateTimeOffset.FromUnixTimeSeconds((long)link.ExpiresAt) > DateTimeOffset.UtcNow ? $"\n{LinkExpiry(link)}" : "";
-
-        // A link still good is extended from here; an expired one needs a new code from the target.
-        var renew = ActionButton("Renew");
-        renew.IsEnabled = expiry.Length > 0;
-        renew.Click += async (_, _) =>
-        {
-            renew.IsEnabled = false;
-            renew.Content = "Renewing…";
-            var failed = await TestMachines.RenewAsync(link, CancellationToken.None);
-            renew.Content = "Renew";
-            renew.IsEnabled = true;
-            _linkedNote = failed is null ? $"Renewed {link.MachineLabel} for 30 days" : $"Could not renew the link. {failed}";
-            _refreshTestMachines?.Invoke();
-        };
-        return DotRow(dot, status, link.MachineLabel, $"{MachineLinks.AccessLabel(link.Access)} · {status}{expiry}{tags}", renew, forget);
+        return DotRow(dot, status, link.MachineLabel, $"{MachineLinks.AccessLabel(link.Access)} · {status}{expiry}{tags}", forget);
     }
 
     // T3's confirm: "Forget <label>?", Cancel and Confirm. Here it ends the link on both PCs, as the server keeps the only copy.
@@ -544,123 +474,210 @@ public partial class SettingsModal
         WizardCard.Child = WizardShell(
             CloseWizard,
             $"Forget {link.MachineLabel}?",
-            $"This PC stops running tests there. The link ends on {link.MachineLabel} too, and it'll need a new pairing code to link again.",
+            $"This PC stops running tests there. The link ends on {link.MachineLabel} too. Link it again to run tests there later.",
             null,
             body,
             TextButton("Cancel", CloseWizard),
-            Clickable("DangerButton", "Confirm", async () =>
-            {
-                if (await TestMachines.ForgetAsync(link) is { } failed)
-                {
-                    ShowProblem(problem, $"Could not forget the link. {failed}");
-                    return;
-                }
-                CloseWizard();
-                _refreshTestMachines?.Invoke();
-            }));
+            ForgetButton(link, problem));
     }
 
-    // T3's Link dialog: pick a machine, enter its code, pick the access. Machines are those of your
-    // PCs that let others run tests on them, as the server knows them. There are no addresses to
-    // type, as everything goes through the server.
+    private Button ForgetButton(MachineLinkInfo link, TextBlock problem)
+    {
+        Button confirm = null!;
+        confirm = Clickable("DangerButton", "Confirm", async () =>
+        {
+            if (!confirm.IsEnabled) return;
+            confirm.IsEnabled = false;
+            confirm.Content = "Forgetting…";
+            if (await TestMachines.ForgetAsync(link) is { } failed)
+            {
+                confirm.IsEnabled = true;
+                confirm.Content = "Confirm";
+                ShowProblem(problem, $"Could not forget the link. {failed}");
+                return;
+            }
+            CloseWizard();
+            _refreshTestMachines?.Invoke();
+        });
+        return confirm;
+    }
+
+    // A choice in the Link dialog: one of the owner's other PCs, which may not be linkable yet.
+    private sealed record LinkChoice(string Label, TestMachineInfo? Machine, OtherPc? Other);
+
+    // Why a PC can't be linked now, or null when it can. Said under the picker, so Link never seems
+    // to do nothing (#95).
+    private static string? CantLink(LinkChoice choice) => choice switch
+    {
+        { Other.Reason: "pair_again" } => $"{choice.Label} paired with your server before test machines, so the server can't tell it apart. Sign out on its Server page and pair it again, then link.",
+        { Other: not null } => $"{choice.Label} is signed in to your server but hasn't said whether it takes runs, so it's on another release of Agent Orange. Update it, turn on Settings › Test machines › Let other PCs run tests here there, then link.",
+        { Machine.Status: "other_release" } => $"{choice.Label} is on another release of Agent Orange. Update it, then link.",
+        { Machine.Accepting: false } => MachineLinks.RefusedText("not_accepting", choice.Label),
+        _ => null,
+    };
+
+    // T3's Link dialog as it is when T3 mints the code itself: the machine and the access, with no
+    // code and no address, as everything goes through the server. Machines are the owner's other
+    // PCs, as the server knows them. Linking carries on with the dialog closed, in Linked machines.
     private void OpenLinkDialog(string? machine)
     {
-        var latest = TestMachines.Latest;
-        var machines = latest?.Machines ?? [];
-        var linkedTo = latest?.Links.Where(each => each.Linker == latest.Me).Select(each => each.Machine).ToHashSet() ?? [];
+        try
+        {
+            ShowLinkDialog(machine);
+        }
+        catch (Exception error)
+        {
+            // Never nothing: whatever went wrong is said where the dialog would be.
+            AppLog.Write($"The Link dialog couldn't open: {error}");
+            var problem = ProblemText();
+            ShowProblem(problem, $"Something went wrong on this PC: {error.Message}");
+            ShowWizard();
+            WizardCard.Child = WizardShell(CloseWizard, "Link a machine", "The dialog couldn't be shown.", null, new StackPanel { Margin = new Thickness(8, 0, 8, 12), Children = { problem } }, TextButton("Close", CloseWizard));
+        }
+    }
 
+    private void ShowLinkDialog(string? machine)
+    {
+        var latest = TestMachines.Latest;
+        var linkedTo = latest?.Links.Where(each => each.Linker == latest.Me).Select(each => each.Machine).ToHashSet() ?? [];
+        List<LinkChoice> choices =
+        [
+            .. (latest?.Machines ?? []).Select(each => new LinkChoice(each.Label, each, null)),
+            .. (latest?.Others ?? []).Select(each => new LinkChoice(each.Label, null, each)),
+        ];
+        choices.Sort((one, other) => StringComparer.CurrentCultureIgnoreCase.Compare(one.Label, other.Label));
+
+        // T3's machine select: no choice made for you, and Linked or Not connected after the name.
         var picker = new ComboBox { Style = (Style)FindResource("Choice"), MinWidth = 260 };
         AutomationProperties.SetName(picker, "Machine");
-        foreach (var each in machines)
+        foreach (var each in choices)
         {
-            var badge = linkedTo.Contains(each.Install) ? "Linked" : each.Status is "reachable" or "busy" ? null : "Not connected";
+            var badge = each.Machine is { } known && linkedTo.Contains(known.Install) ? "Linked"
+                : each.Machine is { Status: "reachable" or "busy" } && CantLink(each) is null ? null
+                : "Not connected";
             picker.Items.Add(new ComboBoxItem { Content = badge is null ? each.Label : $"{each.Label}   {badge}", Tag = each });
         }
-        var chosen = machines.FindIndex(each => each.Install == machine);
-        picker.SelectedIndex = chosen >= 0 ? chosen : machines.Count == 1 ? 0 : -1;
-
-        var code = Field("");
-        code.Width = 260;
-        code.FontFamily = new FontFamily("Consolas");
-        AutomationProperties.SetName(code, "Pairing code");
+        var chosen = machine is null ? -1 : choices.FindIndex(each => each.Machine?.Install == machine);
+        if (chosen >= 0) picker.SelectedIndex = chosen;
 
         var access = Choice([.. MachineLinks.AccessLevels.Take(1).Select(MachineLinks.AccessLabel)], MachineLinks.AccessLabel("tests"), _ => { });
         AutomationProperties.SetName(access, "What this PC may do there");
 
-        var note = new TextBlock { FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(16, 0, 16, 0) };
+        var note = new TextBlock { FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(16, 0, 16, 8) };
+        AutomationProperties.SetName(note, "About this machine");
+        var step = new TextBlock { FontSize = 12.5, Foreground = (Brush)FindResource("TextNormal"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(16, 8, 16, 0), Visibility = Visibility.Collapsed };
+        AutomationProperties.SetName(step, "What's happening");
         var problem = ProblemText();
+        problem.TextWrapping = TextWrapping.Wrap;
+        Button submit = null!;
+        Linking? linking = null;
+
+        LinkChoice? Picked() => (picker.SelectedItem as ComboBoxItem)?.Tag as LinkChoice;
+
+        // The words under the picker and whether Link can go, as the chosen machine stands now.
         void ShowNote()
         {
-            var picked = (picker.SelectedItem as ComboBoxItem)?.Tag as TestMachineInfo;
-            note.Text = picked is null
-                ? "Choose a machine"
-                : (linkedTo.Contains(picked.Install) ? "Already linked. Linking again renews it with the access you pick. " : "")
-                    + $"Create a link on {picked.Label}: Settings → Test machines → Create link, then enter its code here.";
+            if (Picked() is not { } picked)
+            {
+                note.Text = "Choose a machine";
+                if (linking is null) submit.IsEnabled = false;
+                return;
+            }
+            var now = picked.Machine is { } known ? TestMachines.Latest?.Machines.FirstOrDefault(each => each.Install == known.Install) ?? known : null;
+            var current = picked with { Machine = now };
+            var cantLink = CantLink(current);
+            note.Text = cantLink
+                ?? (linkedTo.Contains(now!.Install) ? "Already linked. Linking again renews it with the access you pick. " : "")
+                    + (now!.Status is "reachable" or "busy"
+                        ? $"{now.Label} answers by itself, in a few seconds, with nobody needing to be there. There's no code to type, as it's signed in to the same server as this PC."
+                        : $"{now.Label} isn't connected right now. It answers by itself once Agent Orange runs there and it's online, and this PC waits for it up to {MachineLinks.AnswerWait.TotalMinutes:0} minutes.");
+            if (linking is null) submit.IsEnabled = cantLink is null;
         }
-        picker.SelectionChanged += (_, _) => ShowNote();
+
+        // What the link being made is doing, as it changes, and how it ended.
+        void ShowLinking()
+        {
+            if (linking is null) return;
+            if (!TestMachines.Linkings.Contains(linking))
+            {
+                // Made, or stopped from its row: either way, this dialog is done.
+                var made = TestMachines.JustLinked;
+                linking = null;
+                _refreshLinkDialog = null;
+                if (WizardLayer.Visibility == Visibility.Visible && made is not null) CloseWizard();
+                return;
+            }
+            if (linking.Problem is { } failed)
+            {
+                // Said here, so not in Linked machines as well.
+                var ended = linking;
+                linking = null;
+                _refreshLinkDialog = null;
+                TestMachines.StopLinking(ended);
+                submit.Content = "Link";
+                picker.IsEnabled = access.IsEnabled = true;
+                step.Visibility = Visibility.Collapsed;
+                ShowProblem(problem, $"Could not link the machine. {failed}");
+                ShowNote();
+                return;
+            }
+            step.Text = $"{linking.Step} You can close this: it carries on in Linked machines.";
+            step.Visibility = Visibility.Visible;
+        }
+
+        submit = PrimaryButton("Link", () =>
+        {
+            if (linking is not null || Picked() is not { Machine: { } picked } choice || CantLink(choice) is not null) return;
+            problem.Visibility = Visibility.Collapsed;
+            submit.Content = "Linking…";
+            submit.IsEnabled = picker.IsEnabled = access.IsEnabled = false;
+            linking = TestMachines.StartLink(picked, "tests");
+            _refreshLinkDialog = ShowLinking;
+            ShowLinking();
+        });
+        picker.SelectionChanged += (_, _) =>
+        {
+            problem.Visibility = Visibility.Collapsed;
+            ShowNote();
+        };
         ShowNote();
 
         var rows = new StackPanel { Margin = new Thickness(8, 8, 8, 12) };
-        if (machines.Count == 0)
+        if (latest is null)
         {
-            rows.Children.Add(Row("No machines to link yet", "On the PC that should run the tests, turn on Settings › Test machines › Let other PCs run tests here."));
+            rows.Children.Add(Row(TestMachines.Problem is null ? "Loading machines…" : "Could not load machines", TestMachines.Problem ?? "Asking the server for your PCs. Try again in a moment."));
+        }
+        else if (choices.Count == 0)
+        {
+            rows.Children.Add(Row("No machines to link yet", "Sign another of your PCs in to this server, on its Server page, then turn on Settings › Test machines › Let other PCs run tests here on it."));
         }
         else
         {
             rows.Children.Add(Row("Machine", null, picker));
             rows.Children.Add(note);
-            rows.Children.Add(Row("Pairing code", "Paste the code", code));
             rows.Children.Add(Row("What this PC may do there", $"{MachineLinks.AccessDescription("tests")} Agents and full access aren't offered yet.", access));
+            rows.Children.Add(step);
         }
+        if (latest is not null && TestMachines.Problem is { } trouble) ShowProblem(problem, trouble);
         rows.Children.Add(problem);
 
-        CancellationTokenSource? linking = null;
-        Button submit = null!;
-        submit = PrimaryButton("Link", async () =>
+        void Close(bool stop)
         {
-            if (linking is not null || (picker.SelectedItem as ComboBoxItem)?.Tag is not TestMachineInfo picked || code.Text.Trim().Length == 0) return;
-            linking = new CancellationTokenSource();
-            submit.Content = "Linking…";
-            submit.IsEnabled = picker.IsEnabled = code.IsEnabled = false;
-            problem.Visibility = Visibility.Collapsed;
-            var failed = await TestMachines.LinkAsync(picked, code.Text, "tests", linking.Token);
-            var cancelled = linking.IsCancellationRequested;
+            if (stop && linking is not null) TestMachines.StopLinking(linking);
             linking = null;
-            if (cancelled) return;
-            if (failed is not null)
-            {
-                submit.Content = "Link";
-                submit.IsEnabled = picker.IsEnabled = code.IsEnabled = true;
-                ShowProblem(problem, $"Could not link the machine. {failed}");
-                return;
-            }
-            _linkedNote = $"Linked {picked.Label}";
+            _refreshLinkDialog = null;
             CloseWizard();
-            _refreshTestMachines?.Invoke();
-        });
-        submit.IsEnabled = machines.Count > 0;
-        code.KeyDown += (_, e) =>
-        {
-            if (e.Key == Key.Enter) submit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-        };
+        }
 
         ShowWizard();
         WizardCard.Child = WizardShell(
-            () =>
-            {
-                linking?.Cancel();
-                CloseWizard();
-            },
+            () => Close(stop: false),
             "Link a machine",
-            "This PC can then run a project's tests there. It appears in that machine's Test machines settings, where it can be revoked.",
+            "This PC can then run a project's tests there. It appears under Authorized clients in that machine's Test machines settings, where it can be revoked.",
             null,
             rows,
-            TextButton("Cancel", () =>
-            {
-                linking?.Cancel();
-                CloseWizard();
-            }),
+            TextButton("Cancel", () => Close(stop: true)),
             submit);
-        if (machines.Count > 0) Dispatcher.InvokeAsync(() => (picker.SelectedIndex >= 0 ? code : (Control)picker).Focus(), DispatcherPriority.Loaded);
+        if (choices.Count > 0) Dispatcher.InvokeAsync(() => picker.Focus(), DispatcherPriority.Loaded);
     }
 }

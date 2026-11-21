@@ -60,7 +60,7 @@ public partial class SettingsModal
         ("Sync now", "Server"),
         ("Let other PCs run tests here", "Test machines"),
         ("Authorized clients", "Test machines"),
-        ("Create link", "Test machines"),
+        ("Link a machine", "Test machines"),
         ("Linked machines", "Test machines"),
         ("Work folder", "Test machines"),
         ("Runs here", "Test machines"),
