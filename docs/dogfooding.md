@@ -964,3 +964,59 @@ rows with the same cut-off title, and a message meant for the newest went to an 
   start more than one has is refused, naming them, so `message_part` can't steer the wrong part.
 - **Checked:** `tools/checks/conversation-titles.txt`, with what a login answers made up. Still to
   see with a real login: the titles it writes.
+
+## Test machines: access beyond tests, and agents on another PC (2026-11-21)
+
+The design on #93 named three access levels for a link, tests, agents and full, and only Tests was
+built: the Link dialog said the others weren't offered yet. A long agent task, or a part of a split
+milestone, could only run on the PC the person sat at, while the office PC sat idle between test runs.
+
+- **Agents access, granted by the PC linked to.** The person there chooses, in Settings › Test machines
+  › Authorized clients, the highest access each PC gets: Tests unless they choose Agents. A link is
+  made with the lower of that and what the PC linking asked for (it now picks Tests or Agents in the
+  Link dialog), and the access granted is part of what the link's key and the target's confirmation
+  cover, so the server can't raise it on the way; the PC linking keeps an answer only for what it asked
+  or less. Raising takes effect when that PC links again, which its Linked machines row says, with
+  Link again. Lowering takes effect at once, from either end (`POST /v1/links/{id}/access`, which only
+  ever lowers): the target lowers its own copy first, as that's what it checks jobs against, and the
+  server cancels runs waiting that need more and stops one running. Each PC only ever lowers its own
+  copy to what the server says, never raises it.
+- **Every job carries its access.** A test run needs Tests, an agent task Agents; the signed job says
+  which, the server refuses one above its link's (403) and never hands it out, and the target refuses
+  it unless its own copy of the link and the server's both give it.
+- **An agent task** ("Start an agent on…" on the project page, or AO's `start_agent_on`) is a signed
+  job of the task in the sending PC's words, a pushed commit and the repo from its folder's own origin.
+  The target takes it only for a project it has, with a folder whose own origin is that repo; checks
+  the commit out in its own test clone (never the person's folder) on a new branch `ao/remote-<run>`;
+  starts a conversation there with its own login and its own permission mode for agents from other
+  PCs (Auto, Accept edits or Ask first, never one that asks for nothing); and streams each message, tool
+  and question into the run's log. A question waits for someone at the target, within the run's time
+  limit (8 hours unless the target's own limit says less). Once it's done, the target pushes the new
+  branch to origin, refusing to if origin has that name already, and nothing else; the run window,
+  `read_test_run` and `cancel_test_run` follow and stop it on the PC that sent it. The conversation
+  stays on the target, settled, named for where it came from.
+- **Full access isn't built.** The design gives it one line, "any command", which would let the PC
+  linking, rather than the repo or the target's own settings, decide what runs there; an agent task
+  already covers what the cases ask for. A request for it is granted Agents at most.
+- **Threat model for Agents access.** Whoever controls the PC linking (the person, its agents through
+  `start_agent_on`, or anyone holding its link key) can have an agent on the target do whatever that
+  agent's permission mode lets it do without asking, as the target's Windows user, with the target's
+  agent login and its Git login (it pushes). That is more than Tests, where only the repo decides what
+  runs: here the PC linking writes the task. So it's never the default, it's granted per PC by the
+  person at the target, and it can be lowered or revoked from either end at once. What doesn't change:
+  nothing from the other PC but the task's words reaches the target (no credentials, settings or
+  commands), the server can't write, change, replay or raise a job (signed with the link's key, with a
+  run id the target won't take twice and a 6-hour age limit), links still expire after 30 days unless
+  renewed, and either end still revokes. The agent is told to stay in its clone and not to read or send
+  files from elsewhere, but that is an instruction, not a wall: the permission mode is the wall, and a
+  question it asks waits for a person at the target. The server sees the task's words and the log,
+  as it sees test logs, and logs and verdicts come back unauthenticated.
+- **Checked:** `tools/checks/agent-access.txt` runs linking's access cases against each other; whole
+  agent tasks here against a made-up server with a check login that commits (refused over a Tests
+  link, over one lowered on the server, and signed as needing only Tests; a test run allowed over an
+  Agents link; one that finishes and pushes its branch to a scratch repo standing in for GitHub); and
+  the settings with made-up links of each access. The server's access rules have a unit test; its SQL
+  wasn't run against Postgres. Still to try on two real PCs with a released server: granting Agents
+  on the target and linking again, an agent task from the project page and from `start_agent_on` with
+  a real login, a question it asks answered at the target, lowering mid-run from either end, and
+  fetching and merging the pushed branch.
