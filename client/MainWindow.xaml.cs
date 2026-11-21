@@ -124,12 +124,18 @@ public partial class MainWindow : Window
         StartTray();
         StartInTrayIfAsked();
         StartScreenshotHotkey();
+
+        // Agent sessions that went on while the app was away are picked back up straight away (#101),
+        // and those still running are saved as it closes, so each is read on from as late as can be.
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, () => _ = Conversations);
+        Application.Current.Exit += (_, _) => SaveRunningConversations();
 #if DEBUG
         if (!Headless.Active)
 #endif
         {
             StartMcpServer();
             _ = Ripgrep.EnsureAsync(folders.AgentFolder); // For agent sessions, of either provider.
+            AppCopy.Prepare(folders.AgentFolder); // What their sessions, relays and hooks run from.
         }
 
         // Nothing stays compatible across a release, so a copy that has to update doesn't sync.
@@ -458,11 +464,12 @@ public partial class MainWindow : Window
 
     // A PC that takes test runs may have nobody at it to choose Download update, and it can't take
     // runs until it has, as the server only works with its own release. So it updates by itself,
-    // once nothing it's doing would be cut short. The update restarts it, test runs included.
+    // once nothing it's doing would be cut short. The update restarts it, test runs included. Agents
+    // working don't hold it up, as they go on meanwhile and are picked back up.
     private void UpdateByItselfIfUnattended()
     {
         if (_downloading || _requiredVersion is null || !_testMachines.Settings.Accepting) return;
-        if (_testMachines.Running is not null || CloningProjectName() is not null || AnAgentIsWorking || ProjectWizard.IsCreatingRepo) return;
+        if (_testMachines.Running is not null || CloningProjectName() is not null || ProjectWizard.IsCreatingRepo) return;
         AppLog.Write($"Installing v{_requiredVersion} by itself, as this PC takes test runs.");
         DownloadUpdate_Click(this, new RoutedEventArgs());
     }
@@ -548,10 +555,7 @@ public partial class MainWindow : Window
         {
             return Dialogs.Confirm($"A repo is being created on GitHub. {action} could leave it there with no project pointing at it. Do it anyway?");
         }
-        if (AnAgentIsWorking)
-        {
-            return Dialogs.Confirm($"An agent is still working. {action} stops it partway through. Its conversation so far is kept. Do it anyway?");
-        }
+        // Agents aren't asked about: they go on working meanwhile, and are picked back up (SessionHost).
         return true;
     }
 
@@ -584,6 +588,7 @@ public partial class MainWindow : Window
                 percent => Dispatcher.Invoke(() => UpdateProgress.Value = percent));
             UpdateMessage.Text = "Restarting…";
             _restarting = true;
+            SaveRunningConversations();
             _updates.ApplyUpdatesAndRestart(_requiredUpdate);
         }
         catch (Exception)

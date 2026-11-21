@@ -24,6 +24,8 @@ public partial class SettingsModal
         ("Claude Code", "Providers"),
         ("Codex", "Providers"),
         ("Login folder", "Providers"),
+        ("Go on with another login", "Providers"),
+        ("Usage limits", "Providers"),
         ("Default mode", "Approvals"),
         ("File edits", "Approvals"),
         ("Shell commands", "Approvals"),

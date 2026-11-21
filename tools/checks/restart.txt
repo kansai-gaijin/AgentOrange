@@ -1,0 +1,13 @@
+# Agent sessions go on while Agent Orange restarts (#101): a conversation's program runs in a session
+# of its own, which outlives the app, so an update or a dev build's rebuild doesn't cut its turn short.
+# The login's program is a script that takes a turn as Claude Code would, slowly. This half sends it
+# a message and closes the app partway through the turn; restart-again.txt is the app started again.
+seed "Restart project" 0 0 0
+gitrepo "projects/restart-project"
+slowlogin "Claude (slow)" slow 12
+agentsend "Restart project" "Do the long job."
+sleep 3000
+agentitems
+said "Working: True."
+said "Assistant: Started the long job."
+notsaid "Finished the long job."

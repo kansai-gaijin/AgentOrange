@@ -7,9 +7,10 @@ namespace AgentOrange;
 
 /// <summary>
 /// One of a subscription's limits: how much of it is used, in percent, and when it starts again.
-/// Blocked once it's run out, until it resets.
+/// Blocked once it's run out, until it resets. OnExtraUsage when it has run out and the login goes
+/// on with paid extra usage instead of stopping.
 /// </summary>
-public sealed record AgentLimit(string Kind, double? Used, DateTimeOffset? ResetsAt, bool Blocked)
+public sealed record AgentLimit(string Kind, double? Used, DateTimeOffset? ResetsAt, bool Blocked, bool OnExtraUsage = false)
 {
     public string Name => Kind switch
     {
@@ -186,8 +187,10 @@ public sealed class AgentUsage
         var kind = Str(info, "rateLimitType") ?? "five_hour";
         double? used = info["utilization"] is JsonValue fraction && fraction.TryGetValue<double>(out var part) ? Math.Round(part * 100, 1) : null;
         DateTimeOffset? resets = info["resetsAt"] is JsonValue seconds && seconds.TryGetValue<double>(out var epoch) ? DateTimeOffset.FromUnixTimeSeconds((long)epoch) : null;
-        var overage = Str(info, "overageStatus") is "allowed" or "allowed_warning" || IsTrue(info["isUsingOverage"]) || IsTrue(info["overageInUse"]);
-        return new AgentLimit(kind, used, resets, Str(info, "status") == "rejected" && !overage);
+        var overageInUse = IsTrue(info["isUsingOverage"]) || IsTrue(info["overageInUse"]);
+        var overage = Str(info, "overageStatus") is "allowed" or "allowed_warning" || overageInUse;
+        var rejected = Str(info, "status") == "rejected";
+        return new AgentLimit(kind, used, resets, rejected && !overage, overageInUse || (rejected && overage));
     }
 
     /// <summary>

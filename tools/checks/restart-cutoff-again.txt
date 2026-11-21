@@ -1,0 +1,13 @@
+# The app started again: the turn's session is gone, so it says so, and goes on by itself with a message
+# saying why, which starts its program again.
+sleep 1500
+agentpick "Do the long job."
+agentitems
+said "Notice: Its turn was cut off as Agent Orange restarted."
+said "User (Agent Orange): Your turn was cut off by an Agent Orange restart. Check the working tree for what you'd done, and that the tools you were using are still open (open_tool opens one again), then carry on from where you were."
+said "Working: True."
+notsaid "went on meanwhile"
+sleep 3000
+agentitems
+said "Assistant: Started the long job."
+agentend

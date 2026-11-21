@@ -28,10 +28,55 @@ public partial class MainWindow
             {
                 foreach (var file in Directory.EnumerateFiles(ConversationsFolder, "*.json"))
                 {
-                    if (AgentConversation.Load(file) is { } loaded) Keep(loaded);
+                    if (AgentConversation.Load(file) is not { } loaded) continue;
+                    Keep(loaded);
+                    PickUp(loaded);
                 }
             }
             return _conversations;
+        }
+    }
+
+    /// <summary>Where each conversation's agent program runs, a folder for each, which outlives the app (SessionHost).</summary>
+    internal string SessionsFolder(AgentConversation conversation) => Path.Combine(Settings.Folders.AgentFolder, "sessions", conversation.Id);
+
+    // As it's read, the first time since the app started: its agent program, if it went on while the app
+    // was away, is taken back, and a turn a restart cut off is told to carry on (#101).
+    private void PickUp(AgentConversation conversation)
+    {
+        switch (conversation.PickUp(ProjectFolder(conversation.ProjectId)))
+        {
+            case PickedUp.PickedWorking:
+                conversation.Note("Agent Orange restarted while it worked. It went on meanwhile, and is picked back up from where it was.");
+                break;
+            case PickedUp.CutOff:
+                Dispatcher.BeginInvoke(() => GoOnAfterCutOffAsync(conversation));
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Its turn was cut off as Agent Orange restarted, with nothing left to pick back up: it's said so,
+    /// and the agent is told, so it carries on by itself rather than the person writing out where it was.
+    /// </summary>
+    private async Task GoOnAfterCutOffAsync(AgentConversation conversation)
+    {
+        conversation.Note("Its turn was cut off as Agent Orange restarted.");
+        if (conversation.IsLimited || conversation.Settled || conversation.IsWorking) return;
+        if (await AgentProblemAsync(conversation) is { } problem)
+        {
+            conversation.Note($"It carries on once it can be sent a message again. {problem}");
+            return;
+        }
+        conversation.Send(AgentConversation.CutOffMessage, [], ViewLabel(), DescribeView(), () => PrepareAgent(conversation), automatic: true);
+    }
+
+    /// <summary>Saves the conversations whose programs are running, so after a restart each is read on from as late as can be.</summary>
+    internal void SaveRunningConversations()
+    {
+        foreach (var conversation in _conversations ?? [])
+        {
+            if (conversation.Live is not null) conversation.Save(ConversationsFolder);
         }
     }
 
@@ -44,6 +89,7 @@ public partial class MainWindow
     {
         _conversations!.Add(conversation);
         conversation.LimitsReported += (provider, limits, complete) => Usage.Update(provider, limits, complete);
+        conversation.ExtraUsageStarted += limit => ExtraUsageStarted(conversation, limit);
         conversation.SkillUsed += (skill, how) => RecordSkillUse(conversation, skill, how);
         // Done, with nothing it started still running, or wanting something, with no one looking at it.
         // A turn that ends while its background work goes on isn't done, so that says nothing yet.
@@ -52,6 +98,7 @@ public partial class MainWindow
             if (_agentsWindow?.IsLookingAt(conversation) != true) conversation.Unseen = true;
         };
         conversation.StateChanged += () => ConversationChanged(conversation);
+        conversation.TurnCutOff += () => _ = GoOnAfterCutOffAsync(conversation);
     }
 
     // It started or stopped working, or wants the person.
@@ -62,6 +109,9 @@ public partial class MainWindow
         {
             conversation.LimitHandoffWritten = true;
             WriteLimitHandoff(conversation);
+
+            // Turned on in Settings › Providers: another login with room takes it on now.
+            if (SwitchesLoginAtLimit && conversation.ResumeAtReset && !conversation.Settled) _ = GoOnWithAnotherLoginAsync(conversation);
         }
         // Asked for its handoff note as it was settled, and done answering.
         if (conversation.SettlesAfterHandoff && !conversation.IsWorking && !conversation.IsWaiting)
@@ -91,6 +141,7 @@ public partial class MainWindow
         try
         {
             File.Delete(Path.Combine(ConversationsFolder, $"{conversation.Id}.json"));
+            if (Directory.Exists(SessionsFolder(conversation))) Directory.Delete(SessionsFolder(conversation), recursive: true);
 
             // Its pictures went nowhere else. Files it was sent are the person's own and stay.
             foreach (var picture in conversation.Items.SelectMany(item => item.Attachments ?? []).Where(attachment => attachment.IsImage && Path.GetDirectoryName(attachment.Path) == AttachmentsFolder))
@@ -164,7 +215,8 @@ public partial class MainWindow
         return new AgentConversation.Setup(provider, mcp, servers, AgentSkills.ClaudePlugin(agentFolder, conversation.ProjectId, others),
             AgentBriefing.Write(Settings.Editors, agentFolder, conversation.ProjectId, others, references, ProjectBriefingNotes(conversation.ProjectId)), AttachmentsFolder,
             WriteClaudeSettings(mcp, _sessionSkills[conversation.Id], references, agentFolder, WriteHelperBriefing(agentFolder, conversation.ProjectId)),
-            [.. _sessionSkills[conversation.Id].Select(skill => Path.GetFullPath(skill.Folder)), .. references.Select(reference => reference.Folder)], Ripgrep.Folder(agentFolder));
+            [.. _sessionSkills[conversation.Id].Select(skill => Path.GetFullPath(skill.Folder)), .. references.Select(reference => reference.Folder)],
+            SessionsFolder(conversation), AppCopy.Program(agentFolder), Ripgrep.Folder(agentFolder));
     }
 
     // The skills a project's sessions get besides Agent Orange's own: those the creative tools set up
@@ -270,6 +322,13 @@ public partial class MainWindow
             var conversations = _conversations ?? [];
             foreach (var conversation in conversations.Where(each => each.IsLimited && each.ResumeAtReset && !each.IsWorking && !each.Settled).ToList())
             {
+                // Another login has come to have room, such as one whose limit has reset since.
+                if (SwitchesLoginAtLimit && LoginToGoOnWith(conversation) is not null)
+                {
+                    await GoOnWithAnotherLoginAsync(conversation);
+                    continue;
+                }
+
                 // Long overdue, it's been left on purpose, so it isn't woken.
                 if (ResumesAt(conversation) is not { } resets || resets > DateTimeOffset.UtcNow || DateTimeOffset.UtcNow - resets > TimeSpan.FromHours(24)) continue;
                 await ResumeAsync(conversation);
@@ -358,8 +417,6 @@ public partial class MainWindow
     private bool _takingScreenshot;
 
     internal string ProjectName(string projectId) => _database.ListProjects().FirstOrDefault(project => project.Id == projectId)?.Name ?? "A project that's gone";
-
-    private bool AnAgentIsWorking => _conversations?.Any(conversation => conversation.IsWorking) == true;
 
     private int UnseenAgents => _conversations?.Count(conversation => conversation.Unseen) ?? 0;
 

@@ -141,58 +141,154 @@ internal sealed class McpMissingArgument(string name) : McpException(-32602, $"{
 /// <summary>
 /// What an agent session starts: passes its messages to the running app and the app's answers back,
 /// over standard input and output, which is how MCP runs a program. Nothing else happens in it.
+///
+/// Its session outlives the app (#101), so the relay does too: when the app goes, such as for an
+/// update or a dev build's rebuild, it connects again once the app is back. A request the app had
+/// when it went is told so, as it may or may not have been done, and one sent while it's away waits
+/// a few minutes for it to come back before being told it isn't open.
 /// </summary>
 internal static class McpRelay
 {
+    private static readonly TimeSpan WaitsForApp = TimeSpan.FromMinutes(3);
+
     public static void Run(string projectId)
     {
         var stdin = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
         var stdout = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
-        using var pipe = new NamedPipeClientStream(".", McpServer.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-        try
-        {
-            pipe.Connect(5000);
-        }
-        catch (Exception error) when (error is TimeoutException or IOException)
-        {
-            AnswerNotRunning(stdin, stdout);
-            return;
-        }
+        var lockObject = new object();
+        var asked = new Dictionary<string, JsonNode>(); // Requests the app has, by id, not yet answered.
+        StreamWriter? toApp = null;
+        NamedPipeClientStream? pipe = null;
+        var gaveUp = false; // It stayed away past the wait, so the next request only tries once.
 
-        var toApp = new StreamWriter(pipe, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
-        var fromApp = new StreamReader(pipe, new UTF8Encoding(false), leaveOpen: true);
-        toApp.WriteLine($"project:{projectId}");
-        var up = Task.Run(async () =>
+        void Answer(JsonNode id, string message)
         {
-            while (await stdin.ReadLineAsync() is { } line) await toApp.WriteLineAsync(line);
-        });
-        var down = Task.Run(async () =>
-        {
-            while (await fromApp.ReadLineAsync() is { } line) await stdout.WriteLineAsync(line);
-        });
-        Task.WaitAny(up, down);
-    }
-
-    // Agent Orange isn't open, so every request is told so, rather than left unanswered.
-    private static void AnswerNotRunning(StreamReader stdin, StreamWriter stdout)
-    {
-        while (stdin.ReadLine() is { } line)
-        {
-            try
+            lock (lockObject)
             {
-                if (JsonNode.Parse(line) is JsonObject { } request && request["id"] is { } id)
+                stdout.WriteLine(new JsonObject
                 {
-                    stdout.WriteLine(new JsonObject
+                    ["jsonrpc"] = "2.0",
+                    ["id"] = id.DeepClone(),
+                    ["error"] = new JsonObject { ["code"] = -32000, ["message"] = message },
+                }.ToJsonString());
+            }
+        }
+
+        // The app went: what it had is told so, and the next request connects again.
+        void Lost(NamedPipeClientStream gone)
+        {
+            List<JsonNode> unanswered;
+            lock (lockObject)
+            {
+                if (pipe != gone) return;
+                pipe = null;
+                toApp = null;
+                unanswered = [.. asked.Values];
+                asked.Clear();
+            }
+            gone.Dispose();
+            foreach (var id in unanswered) Answer(id, "Agent Orange restarted before answering, so this may or may not have been done. Check before trying it again.");
+        }
+
+        // Connected, or connecting again, for up to a few minutes while the app restarts.
+        StreamWriter? Connected()
+        {
+            lock (lockObject)
+            {
+                if (toApp is not null) return toApp;
+            }
+            var until = DateTimeOffset.UtcNow + (gaveUp ? TimeSpan.Zero : WaitsForApp);
+            while (true)
+            {
+                var connecting = new NamedPipeClientStream(".", McpServer.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                try
+                {
+                    connecting.Connect(2000);
+                    var writer = new StreamWriter(connecting, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
+                    writer.WriteLine($"project:{projectId}");
+                    lock (lockObject)
                     {
-                        ["jsonrpc"] = "2.0",
-                        ["id"] = id.DeepClone(),
-                        ["error"] = new JsonObject { ["code"] = -32000, ["message"] = "Agent Orange isn't open, so its project can't be read. Ask the person to open it." },
-                    }.ToJsonString());
+                        pipe = connecting;
+                        toApp = writer;
+                        gaveUp = false;
+                    }
+                    var fromApp = new StreamReader(connecting, new UTF8Encoding(false), leaveOpen: true);
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            while (await fromApp.ReadLineAsync() is { } line)
+                            {
+                                lock (lockObject)
+                                {
+                                    if (IdOf(line) is { } id) asked.Remove(id.ToJsonString());
+                                    stdout.WriteLine(line);
+                                }
+                            }
+                        }
+                        catch (Exception error) when (error is IOException or ObjectDisposedException)
+                        {
+                        }
+                        Lost(connecting);
+                    });
+                    return writer;
+                }
+                catch (Exception error) when (error is TimeoutException or IOException)
+                {
+                    connecting.Dispose();
+                    if (DateTimeOffset.UtcNow > until)
+                    {
+                        gaveUp = true;
+                        return null;
+                    }
+                    Thread.Sleep(1000);
                 }
             }
-            catch (JsonException)
+        }
+
+        while (stdin.ReadLine() is { } line)
+        {
+            if (line.Trim().Length == 0) continue;
+            var id = IdOf(line);
+            for (var tries = 0; tries < 2; tries++)
             {
+                if (Connected() is not { } writer)
+                {
+                    if (id is not null) Answer(id, "Agent Orange isn't open, so its project can't be read. Ask the person to open it.");
+                    break;
+                }
+                try
+                {
+                    lock (lockObject)
+                    {
+                        if (id is not null) asked[id.ToJsonString()] = id.DeepClone();
+                        writer.WriteLine(line);
+                    }
+                    break;
+                }
+                catch (Exception error) when (error is IOException or ObjectDisposedException)
+                {
+                    // It went just now. Sent again once it's back, as it never got it.
+                    lock (lockObject)
+                    {
+                        if (id is not null) asked.Remove(id.ToJsonString());
+                    }
+                    if (pipe is { } gone) Lost(gone);
+                }
             }
+        }
+    }
+
+    // A request's id, or an answer's, or null for a notification or anything that isn't JSON.
+    private static JsonNode? IdOf(string line)
+    {
+        try
+        {
+            return JsonNode.Parse(line) is JsonObject message && message["id"] is { } id ? id.DeepClone() : null;
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 }

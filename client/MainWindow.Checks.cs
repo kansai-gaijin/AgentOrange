@@ -207,11 +207,13 @@ public partial class MainWindow
     /// A conversation about the project, working on a task through AO's tools, that a usage limit
     /// stops mid-task, read as Claude Code says it, for Agent Orange to write its handoff note.
     /// </summary>
-    internal string LimitStopForChecks(string projectName, string taskId)
+    internal string LimitStopForChecks(string projectName, string taskId, string? loginLabel = null)
     {
         var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
         _ = Conversations; // Read from the agent files folder first, as opening the agents window does.
         var conversation = NewConversation(project);
+        _checkConversation = conversation;
+        if (loginLabel is not null) conversation.ProviderId = AllAgentLogins().FirstOrDefault(each => each.Label == loginLabel)?.Id ?? throw new InvalidOperationException($"There's no login called {loginLabel}.");
         conversation.Title = "Light the cave";
         conversation.Items.Add(new AgentItem { Id = "asked", Kind = AgentItemKind.User, Text = "Light the cave, then add its sound." });
         conversation.ReadForChecks($$$"""{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"TodoWrite","input":{"todos":[{"content":"Place the lights","status":"completed"},{"content":"Bake the lighting","status":"in_progress"},{"content":"Add the sound","status":"pending"}]}},{"type":"tool_use","id":"t2","name":"mcp__agent-orange__update_task","input":{"id":"{{{taskId}}}","notes":"Lights placed."}}]}}""");
@@ -288,6 +290,87 @@ public partial class MainWindow
     }
 
     internal AgentConversation CheckConversation => _checkConversation ?? throw new InvalidOperationException("Start a conversation with agent first.");
+
+    /// <summary>The check's conversation as it stands: its login, and each thing in it, a line each.</summary>
+    internal string ConversationItemsForChecks()
+    {
+        var conversation = CheckConversation;
+        string Login(string? id) => AllAgentLogins().FirstOrDefault(each => each.Id == id)?.Label ?? id ?? "none";
+        var said = new System.Text.StringBuilder($"Login: {Login(conversation.ProviderId)}. Limited: {conversation.IsLimited}. Working: {conversation.IsWorking}.\n");
+        foreach (var item in conversation.Items)
+        {
+            said.AppendLine(item.Kind == AgentItemKind.Handoff
+                ? $"Handoff: {Login(item.From?.ProviderId)} → {Login(item.To?.ProviderId)}"
+                : $"{item.Kind}{(item.Automatic ? " (Agent Orange)" : "")}: {item.Text}");
+        }
+        return said.ToString();
+    }
+
+    /// <summary>A setting kept on this PC, as its page would save it.</summary>
+    internal void SetSettingForChecks(string key, string value) => _database.SetSetting(key, value);
+
+    /// <summary>
+    /// A Claude login whose program is a script that takes a turn as Claude Code would, slowly: it reads
+    /// the message, says it started, waits so many seconds, then says it finished, and ends.
+    /// </summary>
+    internal void AddSlowLoginForChecks(string label, string folder, int seconds)
+    {
+        var place = Path.Combine(Headless.DataFolder, "programs", folder);
+        Directory.CreateDirectory(place);
+        var program = Path.Combine(place, "claude.cmd");
+        File.WriteAllText(program, string.Join("\r\n",
+            "@echo off",
+            "if \"%~1\"==\"--version\" (echo 9.9.9 ^(Claude Code^)& exit /b 0)",
+            "if \"%~1\"==\"auth\" (echo {\"loggedIn\":true}& exit /b 0)",
+            "set /p asked=",
+            "echo {\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"slow-check\"}",
+            "echo {\"type\":\"assistant\",\"message\":{\"id\":\"m1\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Started the long job.\"}]}}",
+            $"ping -n {seconds + 1} 127.0.0.1 >nul",
+            "echo {\"type\":\"assistant\",\"message\":{\"id\":\"m2\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Finished the long job.\"}]}}",
+            "echo {\"type\":\"result\",\"is_error\":false,\"result\":\"Finished the long job.\"}",
+            ""));
+        Settings.Providers.Save(new AgentProvider(Guid.NewGuid().ToString("N"), ProviderKind.Claude, label, program, Settings.Providers.NewLoginFolder(ProviderKind.Claude), true));
+    }
+
+    /// <summary>A new conversation about the project, sent a message for real, as the person sends one: its program is started in a session of its own.</summary>
+    internal async Task AgentSendForChecks(string projectName, string text)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        _ = Conversations;
+        var conversation = NewConversation(project);
+        _checkConversation = conversation;
+        if (await AgentProblemAsync(conversation) is { } problem) throw new InvalidOperationException(problem);
+        conversation.Send(text, [], ViewLabel(), DescribeView(), () => PrepareAgent(conversation));
+    }
+
+    /// <summary>The conversation the check goes on with, from those read as the app started, by its title.</summary>
+    internal void PickConversationForChecks(string title) =>
+        _checkConversation = Conversations.FirstOrDefault(each => each.Title == title) ?? throw new InvalidOperationException($"There's no conversation called {title}.");
+
+    /// <summary>
+    /// As if the PC restarted: the check conversation's session is ended, and the app with it, at
+    /// once, without saving anything more.
+    /// </summary>
+    internal void CrashForChecks()
+    {
+        var sessions = SessionsFolder(CheckConversation);
+        foreach (var host in Directory.Exists(sessions) ? Directory.EnumerateFiles(sessions, "host.json", SearchOption.AllDirectories) : [])
+        {
+            var id = System.Text.Json.JsonDocument.Parse(File.ReadAllText(host)).RootElement.GetProperty("HostId").GetInt32();
+            try
+            {
+                using var process = System.Diagnostics.Process.GetProcessById(id);
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(5000);
+            }
+            catch (ArgumentException)
+            {
+                // Already gone.
+            }
+        }
+        Headless.Say("done");
+        Environment.Exit(0);
+    }
 
     /// <summary>Opens a project's page as if its check had found everything in order, without running one.</summary>
     internal void OpenForChecks(string name)

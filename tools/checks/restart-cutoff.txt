@@ -1,0 +1,12 @@
+# A turn cut off with nothing to pick back up (#101), as when the PC itself restarts and ends the agent's
+# session along with the app: once the app starts again, it says the turn was cut off and tells the agent
+# to check the working tree and its tools and carry on, rather than leaving the person to write out where
+# it was. This half sends a message, then ends the session and the app at once, partway through the turn.
+seed "Cutoff project" 0 0 0
+gitrepo "projects/cutoff-project"
+slowlogin "Claude (slow)" slow 12
+agentsend "Cutoff project" "Do the long job."
+sleep 3000
+agentitems
+said "Working: True."
+crash

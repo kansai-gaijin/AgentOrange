@@ -1,0 +1,58 @@
+# Going on with another login when a conversation's runs out (#109), once it's turned on in
+# Settings › Providers: the other login of the same kind with the most room takes it on, with the
+# handoff note Agent Orange wrote as it stopped. A login whose limits are nearly used up, or not
+# known, doesn't count as room, and one that goes on to paid extra usage mid-turn is stopped and
+# moved instead. The logins' programs are scripts that say nothing, and stop at once.
+seed "Switch project" 4 1 0
+gitrepo "projects/switch-project"
+login "Claude (one)" one
+login "Claude (two)" two
+login "Claude (three)" three
+heard "Claude (one)" five_hour 100 2
+heard "Claude (two)" five_hour 97 3
+heard "Claude (three)" five_hour 40 3
+heard "Claude (three)" seven_day 60 50
+mcp "Switch project" add_task title "Light the cave" milestone "Milestone 1"
+keep LIGHT "Light the cave \(task (\w+)\)"
+# Off, as it starts: the limit stops it, and it waits for the reset.
+limitstop "Switch project" "$LIGHT" "Claude (one)"
+sleep 1500
+agentitems
+said "Login: Claude (one). Limited: True."
+notsaid "ran out of usage"
+# On: it goes on with Claude (three), not Claude (two), which has only 3% left. Its session
+# couldn't come along, so the handoff note goes with the message.
+setting "agents_switch_login_at_limit" "1"
+limitstop "Switch project" "$LIGHT" "Claude (one)"
+sleep 3000
+agentitems
+said "Login: Claude (three). Limited: False."
+said "Handoff: Claude (one) → Claude (three)"
+said "User (Agent Orange): Claude (one) ran out of usage, so this conversation goes on with Claude (three), whose agent program wasn't there for it. Start from the handoff note Agent Orange wrote as it stopped"
+said "Its plan when it stopped: done: Place the lights. in progress: Bake the lighting. still to do: Add the sound."
+said "Continue where you left off."
+notsaid "<agent-orange-handoff>"
+# Its login goes on with paid extra usage mid-turn: Agent Orange stops it, and it goes on with Claude (three).
+agent "Switch project" "Light the cave, then add its sound."
+feed "login-switch.jsonl" "extra-usage"
+agentstate
+said "Sent: (stopped at its limit)"
+feed "login-switch.jsonl" "stopped"
+sleep 3000
+agentitems
+said "Notice: Its login's limit ran out and it went on with paid extra usage, so Agent Orange stopped it, to go on with another login instead."
+said "Handoff: Claude (one) → Claude (three)"
+said "Login: Claude (three)."
+# No other login has room: it says so, once, and waits.
+heard "Claude (three)" five_hour 100 3
+limitstop "Switch project" "$LIGHT" "Claude (one)"
+sleep 1500
+agentitems
+said "Login: Claude (one). Limited: True."
+said "Notice: There's room left in the limits of no other Claude Code login, so it waits for Claude (one)'s limit to reset."
+# The setting, on the Providers page.
+click "Settings"
+click "Providers"
+expect "Go on with another login"
+scroll end
+shot login-switch-setting

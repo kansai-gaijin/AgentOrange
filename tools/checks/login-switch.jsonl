@@ -1,0 +1,5 @@
+# extra-usage
+{"type":"system","subtype":"init","session_id":"check-session"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1900000000,"overageStatus":"allowed","isUsingOverage":true}}
+# stopped
+{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Interrupted"}

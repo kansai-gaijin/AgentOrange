@@ -90,14 +90,8 @@ public partial class MainWindow
         // Blender Lab's Blender MCP, set up the first time: its extension in Blender and its server for agents.
         if (editor.Id == "blender" && await BlenderMcp.SetUpAsync(Settings.Folders.AgentFolder, settings.ProgramPath, said => AppLog.Write(said)) is { } notSetUp) return notSetUp;
 
-        var start = new ProcessStartInfo(settings.ProgramPath) { UseShellExecute = false };
-        if (folder is not null && Directory.Exists(folder)) start.WorkingDirectory = folder;
-        if (editor.Id == "blender")
-        {
-            start.ArgumentList.Add("--online-mode"); // Its extension only starts on its own when Blender may go online.
-            start.ArgumentList.Add("--python-expr");
-            start.ArgumentList.Add(BlenderMcp.WithoutSplash);
-        }
+        // Its extension only starts on its own when Blender may go online.
+        string[] arguments = editor.Id == "blender" ? ["--online-mode", "--python-expr", BlenderMcp.WithoutSplash] : [];
 
         // Looked at now, as the monitor's last look may have caught the setup's own runs of the program.
         var running = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(settings.ProgramPath)).Length > 0;
@@ -106,20 +100,15 @@ public partial class MainWindow
             return "Blender is open, but its MCP doesn't answer. Ask the person to turn it on in Blender (Edit › Preferences › Add-ons › MCP › Start), "
                 + "or to close Blender so open_tool can start it with its MCP on.";
         }
-        if (!running)
-        {
+        // On its own, so it stays open when Agent Orange restarts, and is still there once it's back (#101).
+        var hidden = false;
 #if DEBUG
-            // A headless run shows nothing on the person's screen.
-            if (Headless.Active) start.CreateNoWindow = true;
+        // A headless run shows nothing on the person's screen.
+        hidden = Headless.Active;
 #endif
-            try
-            {
-                Process.Start(start);
-            }
-            catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
-            {
-                return $"{editor.Name} didn't start: {error.Message}";
-            }
+        if (!running && await DetachedProcess.StartAsync(settings.ProgramPath, arguments, folder is not null && Directory.Exists(folder) ? folder : null, hidden: hidden) is (null, var problem))
+        {
+            return $"{editor.Name} didn't start: {problem}";
         }
 
         // Open but not answering yet is still starting, so it's waited for too.
@@ -139,7 +128,7 @@ public partial class MainWindow
             if (await ReachableAsync(editor) || InStartUp(editor)) return await UntilReadyAsync(editor, folder, TimeSpan.FromMinutes(10), started: false);
             return "Unreal is open, but its MCP doesn't answer on Agent Orange's port. It may be another project. Ask the person to open this one with Open in Unreal Engine, on the project's page.";
         }
-        if (UnrealProject.Open(uproject) is { } problem) return problem;
+        if (await UnrealProject.OpenAsync(uproject) is { } problem) return problem;
 
         var opened = await UntilReadyAsync(editor, folder, TimeSpan.FromMinutes(10), started: true);
         return opened.Contains("after 10 min", StringComparison.Ordinal) ? $"{opened} The first open of a project compiles shaders, which can take longer." : opened;

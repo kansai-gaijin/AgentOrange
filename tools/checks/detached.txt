@@ -1,0 +1,10 @@
+# Programs Agent Orange starts on their own (#101), such as the creative tools it opens and each agent
+# session's host: started by a copy of the app that ends at once, so they're no child of the app's,
+# and out of any job the app runs in, or by WMI when that job won't let them go. Either way they
+# outlive the app. Their arguments go on a command line that reads back as given.
+detach
+said "Started: yes. A child of Agent Orange: no."
+detach wmi
+said "Started by WMI: yes. A child of Agent Orange: no."
+quote "plain" "two words" "say \qhi\q" "C:\folder with space\" "" "back\\slash" "trailing\\"
+said "Read back: the same"

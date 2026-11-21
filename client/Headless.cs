@@ -56,7 +56,12 @@ namespace AgentOrange;
 ///   writefile "Project" "path" "text"      after 1500 command...   (a file in its folder; a command run later, not waited for)
 ///   writepicture "Project" "path"          stored "Project"   (a small picture in its folder; its milestones and tasks as stored)
 ///   writedoc "Project" "lessons" "markdown"   (one of its documents, by its key, as a person's edit saves it)
-///   limitstop "Project" "task id"          settleasks "Project"   (a conversation on the task a usage limit stops; when settling asks for a handoff note)
+///   limitstop "Project" "task id" ["Login"]   settleasks "Project"   (a conversation on the task a usage limit stops, on that login; when settling asks for a handoff note)
+///   agentitems          setting "key" "value"   (the check's conversation, a line for each thing in it; a setting kept on this PC)
+///   slowlogin "Label" folder 12   agentsend "Project" "message"   agentpick "Title"   crash
+///                       (a login whose program takes a turn slowly; a conversation sent a message for real, in a session of its own;
+///                        the conversation to go on with after the app started again; the session and the app ended at once, as a restart of the PC would)
+///   detach [wmi]        quote "arg" ...   (a program started on its own, outside the app's tree and jobs; arguments as a command line, read back)
 ///   agent "Project" "message" [codex]      feed "recorded.jsonl" "part"      agentstate
 ///                       (a conversation sent a message with no program behind it, what its program says fed in from a recording beside the script, and how it stands)
 ///   (In said, refuses, allows and writefile, \n is a line break, \t a tab and \q a double quote.)
@@ -519,7 +524,49 @@ internal static partial class Headless
                 break;
             // A conversation working on a task that a usage limit stops: limitstop "Project" "task id".
             case "limitstop":
-                say(Main().LimitStopForChecks(parts[1], parts[2]));
+                say(Main().LimitStopForChecks(parts[1], parts[2], parts.Length > 3 ? parts[3] : null));
+                break;
+            // The check's conversation, a line for each thing in it, with its login.
+            case "agentitems":
+                say(Main().ConversationItemsForChecks());
+                break;
+            // A setting kept on this PC: setting "agents_switch_login_at_limit" "1".
+            case "setting":
+                Main().SetSettingForChecks(parts[1], parts[2]);
+                break;
+            // A login whose program takes a turn slowly, as Claude Code would: slowlogin "Claude (slow)" slow 12.
+            case "slowlogin" when Active:
+                Main().AddSlowLoginForChecks(parts[1], parts[2], int.Parse(parts[3]));
+                break;
+            // A new conversation sent a message for real, its program started in a session of its own.
+            case "agentsend":
+                await Main().AgentSendForChecks(parts[1], parts[2]);
+                break;
+            // The conversation later lines are about, from those read as the app started, by its title.
+            case "agentpick":
+                Main().PickConversationForChecks(parts[1]);
+                break;
+            // As if the PC restarted: the conversation's session ended, and the app with it, without saving.
+            case "crash" when Active:
+                Main().CrashForChecks();
+                break;
+            // Ends the conversation's program, so nothing a check started is left running.
+            case "agentend":
+                Main().CheckConversation.End();
+                break;
+            // A program started on its own (DetachedProcess), with WMI if asked: detach, or detach wmi.
+            case "detach":
+                var viaWmi = parts.Length > 1 && parts[1] == "wmi";
+                var (detached, notDetached) = await DetachedProcess.StartAsync(Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/d /c ping -n 3 127.0.0.1 >nul", DataFolder, viaWmi);
+                if (detached is not { } started) throw new InvalidOperationException($"It didn't start: {notDetached}");
+                say($"Started{(viaWmi ? " by WMI" : "")}: yes. A child of Agent Orange: {(ParentOf(started) == Environment.ProcessId ? "yes" : "no")}. In a job: {InAJob(started)}, as Agent Orange is: {InAJob(Environment.ProcessId)}.");
+                break;
+            // Arguments put on a command line as a program is started on its own, and read back as Windows reads them.
+            case "quote":
+                var given = parts[1..].Select(Unescape).ToArray();
+                var quoted = string.Join(' ', given.Select(DetachedProcess.Quote));
+                say(quoted);
+                say($"Read back: {(ReadBack($"program {quoted}").Skip(1).SequenceEqual(given) ? "the same" : "DIFFERENT")}");
                 break;
             // Whether settling asks a conversation for its handoff note, in the cases that decide it.
             case "settleasks":
@@ -757,6 +804,53 @@ internal static partial class Headless
 
     [GeneratedRegex(@"""([^""]*)""|\S+")]
     private static partial Regex Tokens();
+
+    // The process that started this one, as Windows keeps it.
+    private static int ParentOf(int processId)
+    {
+        using var process = System.Diagnostics.Process.GetProcessById(processId);
+        var basic = new nint[6]; // PROCESS_BASIC_INFORMATION, whose last field is the parent's id.
+        return NtQueryInformationProcess(process.Handle, 0, basic, basic.Length * nint.Size, out _) == 0 ? (int)basic[5] : -1;
+    }
+
+    private static string InAJob(int processId)
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById(processId);
+            return IsProcessInJob(process.Handle, 0, out var inJob) ? (inJob ? "yes" : "no") : "can't tell";
+        }
+        catch (ArgumentException)
+        {
+            return "it's ended";
+        }
+    }
+
+    // A command line split up as Windows programs split theirs.
+    private static string[] ReadBack(string commandLine)
+    {
+        var list = CommandLineToArgvW(commandLine, out var count);
+        try
+        {
+            return [.. Enumerable.Range(0, count).Select(index => Marshal.PtrToStringUni(Marshal.ReadIntPtr(list, index * nint.Size))!)];
+        }
+        finally
+        {
+            LocalFree(list);
+        }
+    }
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtQueryInformationProcess(nint process, int infoClass, nint[] info, int length, out int returned);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool IsProcessInJob(nint process, nint job, out bool inJob);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern nint CommandLineToArgvW(string commandLine, out int count);
+
+    [DllImport("kernel32.dll")]
+    private static extern nint LocalFree(nint memory);
 
     [DllImport("user32.dll")]
     private static extern nint GetWindowLongPtrW(nint window, int index);
