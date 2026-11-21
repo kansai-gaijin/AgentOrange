@@ -1,0 +1,69 @@
+# Linking test machines needs no typed code (#95), as T3 Code links an environment when it already
+# has a session there: every PC signed in to the same server is the owner's. The two PCs' halves of
+# linking are run against each other first, then Settings › Test machines is shown made-up machines,
+# as checks have no server.
+linkprotocol
+said "ok: both PCs have the same link key"
+said "ok: the target takes a job the PC linking signed"
+said "ok: a key swapped in without its confirmation is refused"
+said "ok: an answer from another PC than the one asked is refused"
+# Before the server has said anything, Link still opens its dialog, and says why there's nothing to pick.
+click "Settings"
+click "Test machines"
+click "Link"
+wait "Link a machine"
+expect "Could not load machines"
+shot link-not-loaded
+click "Cancel"
+waitgone "Link a machine"
+# T3's Linked environments: a dot, the name, the access and status, and Forget. No code anywhere.
+testlinks
+wait "Office PC"
+wait "Tests · Reachable"
+wait "Older PC is on another release of Agent Orange"
+expectnot "Create link"
+expectnot "Pairing code"
+expectnot "Show code"
+expectnot "Renew"
+# As the target: T3's Authorized clients, a client session per PC linked here, with Revoke.
+expect "Agent Orange · Laptop"
+expect "1 client"
+shot linked-machines
+# The Link dialog: the machine and the access, no code. Each machine says whether it can be linked and why.
+click "Link"
+wait "Choose a machine"
+expectnot "Pairing code"
+shot link-dialog
+choose 0 "Studio PC"
+wait "Studio PC answers by itself, in a few seconds, with nobody needing to be there."
+shot link-dialog-studio
+choose 0 "Away PC   Not connected"
+wait "Away PC isn't connected right now. It answers by itself once Agent Orange runs there"
+choose 0 "Spare PC   Not connected"
+wait "Spare PC doesn't let other PCs run tests on it now."
+choose 0 "Older PC   Linked"
+wait "Older PC is on another release of Agent Orange. Update it, then link."
+choose 0 "Old Laptop   Not connected"
+wait "so it's on another release of Agent Orange"
+choose 0 "Ancient PC   Not connected"
+wait "Sign out on its Server page and pair it again"
+choose 0 "Office PC   Linked"
+wait "Already linked. Linking again renews it with the access you pick."
+# Link goes at once and says what happened: here, with no server, that it can't reach it.
+choose 0 "Studio PC"
+click "Link"
+wait "Could not link the machine. Can't reach the server."
+shot link-failed
+click "Cancel"
+waitgone "Link a machine"
+# A link being made shows in Linked machines with what's happening, and Cancel.
+testlinking "Studio PC" "Waiting for Studio PC to answer. It answers by itself in a few seconds."
+wait "Tests · Linking… Waiting for Studio PC to answer."
+shot linking
+# One that didn't link says why, with Try again.
+testlinking "Away PC" failed "Away PC didn't answer in 10 minutes."
+wait "Tests · Could not link. Away PC didn't answer in 10 minutes."
+expect "Try again"
+shot linking-failed
+click "Dismiss"
+waitgone "Could not link. Away PC"

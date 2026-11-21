@@ -44,6 +44,8 @@ namespace AgentOrange;
 ///   migrate             (gives assets without a status the one they have in effect, as starting does)
 ///   testsfile "folder" "text"   (its .agent-orange/tests.json's time limits, or why it isn't valid, say that)
 ///   testmenu "Project" running   testrunstate passed   runwindows 1   (Run tests on…, as if linked to Office PC with a run in that state)
+///   linkprotocol        (both PCs' halves of linking test machines, run against each other)
+///   testlinks           testlinking "Studio PC" "step" | failed "why"   (Settings › Test machines with made-up machines and links, and a link being made)
 ///   testchecks "Project" failed   testrunwindow "Project" check-run   (made-up runs whose checks flip, and a run's window)
 ///   gitrepo "folder" "origin"   gitclone "from" "to"   borrow "folder"   fileis "path" "text"   (repos in the data folder, the clone testruns borrow from, a file's text)
 ///   testrun "folder" "Passed" "text"   (a test run's steps here, from the folder committed as a repo; the verdict and log say that)
@@ -625,6 +627,18 @@ internal static partial class Headless
                 var fileText = File.Exists(Path.Combine(DataFolder, parts[1])) ? await File.ReadAllTextAsync(Path.Combine(DataFolder, parts[1])) : null;
                 say($"{parts[1]}: {fileText ?? "not there"}");
                 if (fileText != parts[2]) throw new InvalidOperationException($"{parts[1]} doesn't say {parts[2]}.");
+                break;
+            // Both PCs' halves of linking run against each other, with answers that mustn't be kept.
+            case "linkprotocol":
+                say(MainWindow.LinkProtocolForChecks());
+                break;
+            // Settings › Test machines as if the server listed made-up machines and links.
+            case "testlinks" when Active:
+                Main().ShowLinksForChecks();
+                break;
+            // A link being made to one of those, at a step or failed: testlinking "Studio PC" "Waiting…" or testlinking "Studio PC" failed "why".
+            case "testlinking" when Active:
+                Main().ShowLinkingForChecks(parts[1], parts[2] == "failed" ? null : parts[2], parts[2] == "failed" ? parts[3] : null);
                 break;
             // Run tests on… for a project, as if linked to Office PC with a run of the commit in that state: testmenu "Project" running.
             case "testmenu" when Active:
