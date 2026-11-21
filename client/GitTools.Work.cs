@@ -64,16 +64,7 @@ public static partial class GitTools
         }
 
         // The default branch, as origin says it, or main or master when it hasn't said.
-        string? defaultBranch = null;
-        if (hasOrigin)
-        {
-            if (await RunAsync("git", folder, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD") is { ExitCode: 0 } head) defaultBranch = head.Output.Trim();
-            foreach (var guess in new[] { "origin/main", "origin/master" })
-            {
-                if (defaultBranch is not null) break;
-                if (await RunAsync("git", folder, "rev-parse", "--verify", "--quiet", guess) is { ExitCode: 0 }) defaultBranch = guess;
-            }
-        }
+        var defaultBranch = hasOrigin ? await DefaultBranchAsync(folder) : null;
 
         // What's changed since it left the default branch, committed or not.
         int insertions = 0, deletions = 0, aheadOfDefault = 0;

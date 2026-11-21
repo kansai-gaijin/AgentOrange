@@ -52,6 +52,7 @@ namespace AgentOrange;
 ///   filehas "logs/agent-orange.log" "text" 1   (a file in the data folder has that text, that many times, or at least once with no number)
 ///   testrun "folder" "Passed" "text"   (a test run's steps here, from the folder committed as a repo; the verdict and log say that)
 ///   runfilter "Input.Jump"   (what later testruns are asked to test only; "" for all)
+///   testrunadd "Project" failed ["filter"] ["HEAD~1"]   (a made-up run, the newest, at the folder's HEAD or that commit; the default branch's verdict read again)
 ///   testmachines "Office PC|busy|windows,gpu" "Laptop|reachable|"   (as if linked to those machines, in that state with those tags, with no runs)
 ///   mcp "Project" update_asset card "Asset 1" status "Needs review"   (an agent's MCP tool; mcprefused expects a refusal)
 ///   mcpjson "Project" add_cards "{\qcards\q:[...]}"   (the same with its arguments as JSON, for lists; mcpjsonrefused too)
@@ -635,6 +636,10 @@ internal static partial class Headless
             // What later testruns are asked to test only, as a run's filter, or "" for all of it.
             case "runfilter":
                 _filterForRuns = parts[1].Length > 0 ? parts[1] : null;
+                break;
+            // A made-up run, the newest, at the folder's HEAD or a commit named: testrunadd "Project" failed ["filter"] ["HEAD~1"].
+            case "testrunadd" when Active:
+                await Main().AddTestRunForChecks(parts[1], parts[2], parts.Length > 3 && parts[3].Length > 0 ? parts[3] : null, parts.Length > 4 ? parts[4] : null);
                 break;
             // As if linked to these machines, with no runs: testmachines "Office PC|busy|windows,gpu" "Laptop|reachable|".
             case "testmachines" when Active:

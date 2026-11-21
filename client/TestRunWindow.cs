@@ -122,6 +122,7 @@ public sealed class TestRunWindow : Window
                 if (read.Run.Finished && !_checksShown)
                 {
                     _checksShown = true;
+                    _main.TestRunEnded(read.Run.ProjectId);
                     await ShowChecksAsync(read.Run);
                 }
                 if (read.Log.Count > 0)

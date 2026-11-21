@@ -226,12 +226,109 @@ public partial class MainWindow
     }
 
     // A project's recent runs as the server has them, or null when it couldn't say.
-    private async Task<List<TestRunInfo>?> TestRunsAsync(string projectId)
+    private async Task<List<TestRunInfo>?> TestRunsAsync(string projectId, int? limit = null)
     {
 #if DEBUG
         if (_testRunsForChecks is { } madeUp) return [.. madeUp];
 #endif
-        return (await _devices.RunsAsync(projectId)).Value;
+        return (await _devices.RunsAsync(projectId, limit)).Value;
+    }
+
+    // The default branch's tests (#93): its latest verdict, shown on the project page while it's a
+    // failure, until a later run passes. Read as the page opens, every minute while it's open, and
+    // as a run's window sees its run end.
+    private const int RunsLookedAtForBranch = 200;
+    private static readonly TimeSpan BranchVerdictEvery = TimeSpan.FromMinutes(1);
+    private readonly Dictionary<string, BranchFailure> _branchFailures = [];
+    private readonly HashSet<string> _readingBranchVerdict = [];
+    private DispatcherTimer? _branchVerdictTimer;
+
+    private sealed record BranchFailure(TestRunInfo Run, string Branch);
+
+    /// <summary>
+    /// The run that says how the default branch stands, when it failed or timed out: the latest
+    /// run of all the tests at the newest commit on that branch that has such a verdict. A run
+    /// passing later, at that commit or a newer one, takes it away. Runs of only some checks, and
+    /// runs that couldn't run or were stopped, say nothing about the branch.
+    /// </summary>
+    internal static TestRunInfo? BranchFailureIn(IEnumerable<TestRunInfo> runs, IReadOnlyList<string> history)
+    {
+        var place = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (var at = 0; at < history.Count; at++) place.TryAdd(history[at], at);
+        var latest = runs
+            .Where(run => run.Filter is null && run.Status is "passed" or "failed" or "timed_out" && place.ContainsKey(run.Commit))
+            .OrderBy(run => place[run.Commit])
+            .ThenByDescending(run => run.CreatedAt)
+            .FirstOrDefault();
+        return latest is { Status: not "passed" } ? latest : null;
+    }
+
+    private async Task ReadBranchVerdictAsync(string projectId)
+    {
+        if (!_readingBranchVerdict.Add(projectId)) return;
+        try
+        {
+            BranchFailure? found = null;
+            if (ProjectFolder(projectId) is { } folder && await GitTools.DefaultBranchAsync(folder) is { } branch)
+            {
+                // With no answer from the server or Git, what's shown stays as it is.
+                if (await GitTools.BranchHistoryAsync(folder, branch) is not { } history || await TestRunsAsync(projectId, RunsLookedAtForBranch) is not { } runs) return;
+                if (BranchFailureIn(runs, history) is { } failed) found = new BranchFailure(failed, branch.StartsWith("origin/", StringComparison.Ordinal) ? branch["origin/".Length..] : branch);
+            }
+            var shown = _branchFailures.GetValueOrDefault(projectId);
+            if (found == shown) return;
+            if (found is null) _branchFailures.Remove(projectId);
+            else _branchFailures[projectId] = found;
+            if (_openProject?.Id == projectId && _pageCheck is not null && FindProject(projectId) is { } project) RenderProjectKeepingFocus(project);
+        }
+        finally
+        {
+            _readingBranchVerdict.Remove(projectId);
+        }
+    }
+
+    // Read again every minute while a project's page is open.
+    private void WatchBranchVerdict(string projectId)
+    {
+        if (_branchVerdictTimer is null)
+        {
+            _branchVerdictTimer = new DispatcherTimer { Interval = BranchVerdictEvery };
+            _branchVerdictTimer.Tick += (_, _) =>
+            {
+                if (_openProject is { } open && ProjectView.Visibility == Visibility.Visible) _ = ReadBranchVerdictAsync(open.Id);
+            };
+            _branchVerdictTimer.Start();
+        }
+        _ = ReadBranchVerdictAsync(projectId);
+    }
+
+    /// <summary>A run's window saw it end, which can change how the default branch stands.</summary>
+    internal void TestRunEnded(string projectId) => _ = ReadBranchVerdictAsync(projectId);
+
+    // Under the folder's actions: the failure, where and when, and its run.
+    private FrameworkElement BranchFailureRow(Project project, BranchFailure failure)
+    {
+        var run = failure.Run;
+        var when = DateTimeOffset.FromUnixTimeSeconds((long)run.CreatedAt).ToLocalTime();
+        var how = run.Status == "timed_out" ? "timed out" : "failed";
+        var exit = run.ExitCode is { } code ? $", exit code {code}" : "";
+        var said = new TextBlock
+        {
+            Text = $"The tests {how} on {failure.Branch}, the default branch, at {(run.Commit.Length > 12 ? run.Commit[..12] : run.Commit)}, on {run.MachineLabel}, {when:d MMM HH:mm}{exit}. This stays until a later run passes there.",
+            Foreground = (Brush)FindResource("Accent"),
+            FontSize = 13,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var open = ActionButton("Open the run");
+        open.Margin = new Thickness(12, 0, 0, 0);
+        open.VerticalAlignment = VerticalAlignment.Center;
+        open.Click += (_, _) => OpenTestRun(run.Id, project.Name);
+        var row = new DockPanel { Margin = new Thickness(0, 10, 0, 0) };
+        DockPanel.SetDock(open, Dock.Right);
+        row.Children.Add(open);
+        row.Children.Add(said);
+        return row;
     }
 
 #if DEBUG
@@ -283,6 +380,25 @@ public partial class MainWindow
             : throw new InvalidOperationException($"{each} isn't name|status|tags.")).ToList();
         _testMachines.ShowForChecks(new MachinesInfo("me", null, [], links));
         _testRunsForChecks = [];
+    }
+
+    /// <summary>
+    /// Headless checks only: a made-up run of all the tests, or only the filter's, newer than any
+    /// other, at the commit the project's folder names (HEAD if not given), on Office PC, in that
+    /// state; then the default branch's verdict is read again, as a run's window does when one ends.
+    /// </summary>
+    internal async Task AddTestRunForChecks(string projectName, string status, string? filter, string? commit)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        var folder = ProjectFolder(project.Id) ?? throw new InvalidOperationException($"{projectName} has no folder.");
+        var (sha, _, _, problem) = await GitTools.PushedHeadAsync(folder, commit);
+        if (problem is not null) throw new InvalidOperationException(problem);
+        _testRunsForChecks ??= [];
+        var at = _testRunsForChecks.Count > 0 ? _testRunsForChecks.Max(run => run.CreatedAt) + 60 : DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 3600;
+        var id = $"check-run-{_testRunsForChecks.Count + 1}";
+        var job = System.Text.Json.JsonSerializer.Serialize(new TestJob(TestJob.TestsKind, id, (long)at, project.Id, project.Name, "", sha, "tests", [], Filter: filter), TestJob.Json);
+        _testRunsForChecks.Insert(0, new TestRunInfo(id, "check-link", "office", "Office PC", "me", "This PC", project.Id, sha, job, "", status, status == "failed" ? 1 : status == "passed" ? 0 : null, false, at, at, status is "queued" or "running" ? null : at, "tests", null));
+        await ReadBranchVerdictAsync(project.Id);
     }
 
     /// <summary>Headless checks only: how many run windows are open.</summary>

@@ -220,6 +220,7 @@ public partial class MainWindow
 
         // Its sections were open while this ran, and someone may be writing in one.
         RenderProjectKeepingFocus(latest);
+        if (folderShown && usable && folderProblem is null) WatchBranchVerdict(latest.Id);
         if (folderShown && usable) await ReadEngineVersionAsync(latest.Id, new FolderAnswer(folder!, project.RepoUrl, folderProblem));
     }
 

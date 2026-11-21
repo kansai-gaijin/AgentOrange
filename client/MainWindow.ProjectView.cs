@@ -128,6 +128,7 @@ public partial class MainWindow
                 }
                 if (!inSection) AddTestRunButton(actions, project, folder);
                 if (actions.Children.Count > 0) body.Children.Add(actions);
+                if (!inSection && _branchFailures.GetValueOrDefault(project.Id) is { } branchFailure) body.Children.Add(BranchFailureRow(project, branchFailure));
             }
             if (folder is not null && found.ForAgents is { } forAgents && (forAgents.Refused is not null || !GitTools.AreAllowed(GitTools.AgentsApprovalKey(folder), forAgents.Settings)))
             {

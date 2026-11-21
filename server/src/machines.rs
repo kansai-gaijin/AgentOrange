@@ -1120,9 +1120,20 @@ pub async fn enqueue(
 #[derive(Deserialize)]
 pub struct RunsQuery {
     project: Option<String>,
+    /// How many, newest first: 30 unless asked, and at most 200.
+    limit: Option<i64>,
 }
 
-/// The latest runs this PC sent or ran.
+const DEFAULT_RUNS_LISTED: i64 = 30;
+const MOST_RUNS_LISTED: i64 = 200;
+
+/// How many runs a list gives, from what was asked.
+fn runs_listed(asked: Option<i64>) -> i64 {
+    asked.unwrap_or(DEFAULT_RUNS_LISTED).clamp(1, MOST_RUNS_LISTED)
+}
+
+/// The latest runs this PC sent or ran. The project page asks for more, to find the last verdict
+/// on its default branch.
 pub async fn list_runs(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1136,9 +1147,9 @@ pub async fn list_runs(
             &format!(
                 "SELECT {RUN_COLUMNS} FROM test_runs r
                  WHERE (r.linker_install = $1 OR r.machine_install = $1) AND ($2::text IS NULL OR r.project_id = $2)
-                 ORDER BY r.created_at DESC LIMIT 30"
+                 ORDER BY r.created_at DESC LIMIT $3"
             ),
-            &[&me, &query.project],
+            &[&me, &query.project, &runs_listed(query.limit)],
         )
         .await
         .map_err(internal_error)?;
@@ -1536,4 +1547,18 @@ pub async fn check_history(
             })
             .collect(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runs_listed_keeps_within_bounds() {
+        assert_eq!(runs_listed(None), 30);
+        assert_eq!(runs_listed(Some(100)), 100);
+        assert_eq!(runs_listed(Some(5000)), 200);
+        assert_eq!(runs_listed(Some(0)), 1);
+        assert_eq!(runs_listed(Some(-3)), 1);
+    }
 }

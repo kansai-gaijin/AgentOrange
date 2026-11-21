@@ -1,0 +1,44 @@
+# The project page shows a failure on the default branch until a later run passes there (#93): the
+# latest run of all the tests at the newest commit on origin's default branch that has a verdict.
+# Runs of only some checks, runs that couldn't run, and commits not on that branch don't count.
+# Made-up runs, as checks have no server; the repo, with two commits, is in the data folder.
+seed "Branch" 0 0 0
+file "upstream/.agent-orange/tests.json" {"test":"Write-Output('all')"}
+gitrepo "upstream"
+file "upstream/notes.txt" "second"
+gitrepo "upstream"
+gitclone "upstream" "projects/branch"
+open "Branch"
+wait "Run tests on…"
+waitgone "the default branch, at"
+# A failure at the older commit shows, with its run.
+testrunadd "Branch" failed "" "HEAD~1"
+wait "the default branch, at"
+wait "This stays until a later run passes there."
+shot branch-failed
+# The newer commit passing takes it away, and the older one failing again later doesn't bring it back.
+testrunadd "Branch" passed "" "HEAD"
+waitgone "the default branch, at"
+testrunadd "Branch" failed "" "HEAD~1"
+waitgone "the default branch, at"
+# The newest commit failing, or timing out, shows.
+testrunadd "Branch" timed_out
+wait "The tests timed out on"
+testrunadd "Branch" failed
+wait "The tests failed on"
+wait ", exit code 1. This stays"
+# A run of only some checks passing says nothing about the whole branch, nor does one that couldn't run.
+testrunadd "Branch" passed "Input.Jump"
+wait "The tests failed on"
+testrunadd "Branch" couldnt_run
+wait "The tests failed on"
+# Its run opens from there.
+click "Open the run"
+runwindows 1
+# A later run passing at that commit takes it away.
+testrunadd "Branch" passed
+waitgone "the default branch, at"
+# A commit made only on this PC isn't on the default branch, so its failure isn't shown.
+gitrepo "projects/branch"
+testrunadd "Branch" failed
+waitgone "the default branch, at"

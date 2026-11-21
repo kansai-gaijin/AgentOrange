@@ -39,6 +39,29 @@ public static partial class GitTools
         return RepoUrlProblem(url) is { } problem ? (null, $"This folder's origin can't be sent to a test machine. {problem}") : (url, null);
     }
 
+    /// <summary>
+    /// Origin's default branch as this PC last heard it, such as origin/main, or origin/main or
+    /// origin/master when origin hasn't said. Null with none of those.
+    /// </summary>
+    public static async Task<string?> DefaultBranchAsync(string folder)
+    {
+        if (await RunAsync("git", folder, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD") is { ExitCode: 0 } head && head.Output.Trim() is { Length: > 0 } said) return said;
+        foreach (var guess in new[] { "origin/main", "origin/master" })
+        {
+            if (await RunAsync("git", folder, "rev-parse", "--verify", "--quiet", guess) is { ExitCode: 0 }) return guess;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// The commits on a branch as this PC has it, newest first, each after every commit built on
+    /// it, as far back as a few thousand. Null when Git couldn't say.
+    /// </summary>
+    public static async Task<List<string>?> BranchHistoryAsync(string folder, string branch) =>
+        await RunAsync("git", folder, "rev-list", "--topo-order", "--max-count=5000", branch, "--") is { ExitCode: 0 } listed
+            ? [.. listed.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)]
+            : null;
+
     /// <summary>A file's text as committed, or null if the commit doesn't have it.</summary>
     public static async Task<string?> FileAtCommitAsync(string folder, string commit, string path) =>
         IsCommitId(commit) && await RunAsync("git", folder, "show", $"{commit}:{path}") is { ExitCode: 0 } shown ? shown.Output : null;

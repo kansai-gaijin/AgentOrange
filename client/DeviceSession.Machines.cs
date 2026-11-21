@@ -126,8 +126,14 @@ public sealed partial class DeviceSession
     public Task<ServerAnswer<IdAnswer>> EnqueueRunAsync(string id, string linkId, string projectId, string commit, string job, string mac) =>
         AskAsync<IdAnswer>(HttpMethod.Post, "/v1/runs", new { id, linkId, projectId, commit, job, mac });
 
-    public Task<ServerAnswer<List<TestRunInfo>>> RunsAsync(string? projectId = null) =>
-        AskAsync<List<TestRunInfo>>(HttpMethod.Get, projectId is null ? "/v1/runs" : $"/v1/runs?project={Uri.EscapeDataString(projectId)}");
+    /// <summary>The newest runs this PC sent or ran, of one project or all: 30, or up to 200 when asked.</summary>
+    public Task<ServerAnswer<List<TestRunInfo>>> RunsAsync(string? projectId = null, int? limit = null)
+    {
+        var query = new List<string>();
+        if (projectId is not null) query.Add($"project={Uri.EscapeDataString(projectId)}");
+        if (limit is { } most) query.Add($"limit={most}");
+        return AskAsync<List<TestRunInfo>>(HttpMethod.Get, query.Count == 0 ? "/v1/runs" : $"/v1/runs?{string.Join('&', query)}");
+    }
 
     public Task<ServerAnswer<TestRunWithLog>> ReadRunAsync(string run, int after) =>
         AskAsync<TestRunWithLog>(HttpMethod.Get, $"/v1/runs/{Uri.EscapeDataString(run)}?after={after}");
