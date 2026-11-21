@@ -280,14 +280,7 @@ public sealed class TestMachines
                 MachineLinks.ForgetKey(_database, known);
             }
 
-            // A link lowered from either end has less access here too. Never more: what this PC
-            // keeps of a link only ever goes down, as only linking again gives more.
-            foreach (var link in latest.Links)
-            {
-                if (MachineLinks.ReadKey(_database, link.Id) is not { } key || MachineLinks.Allows(link.Access, key.Access)) continue;
-                MachineLinks.SaveKey(_database, key with { Access = MachineLinks.Lower(key.Access, link.Access) });
-                AppLog.Write($"The link {(key.ThisPcIsMachine ? $"from {link.LinkerLabel}" : $"to {link.MachineLabel}")} was lowered to {MachineLinks.AccessLabel(link.Access)} access.");
-            }
+            TakeLowered(latest);
 
             // Renewals, unattended, in the window that does background work: as the target, each one
             // asked for is answered; as the PC linking, an answer is checked, and a link with under a
@@ -304,6 +297,20 @@ public sealed class TestMachines
             }
         }
         Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// A link lowered from either end has less access here too. Never more: what this PC keeps of a
+    /// link only ever goes down, as only linking again gives more.
+    /// </summary>
+    internal void TakeLowered(MachinesInfo latest)
+    {
+        foreach (var link in latest.Links)
+        {
+            if (MachineLinks.ReadKey(_database, link.Id) is not { } key || MachineLinks.Allows(link.Access, key.Access)) continue;
+            MachineLinks.SaveKey(_database, key with { Access = MachineLinks.Lower(key.Access, link.Access) });
+            AppLog.Write($"The link {(key.ThisPcIsMachine ? $"from {link.LinkerLabel}" : $"to {link.MachineLabel}")} was lowered to {MachineLinks.AccessLabel(link.Access)} access.");
+        }
     }
 
     /// <summary>What to say when the server didn't give an answer about test machines.</summary>

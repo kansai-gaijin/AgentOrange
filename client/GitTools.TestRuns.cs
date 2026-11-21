@@ -91,6 +91,12 @@ public static partial class GitTools
         return $"on {branch}: {log}";
     }
 
+    /// <summary>Headless checks only: the branches a repo in the data folder has, by name.</summary>
+    internal static async Task<string> BranchesForChecksAsync(string folder) =>
+        await RunAsync("git", folder, "branch", "--list", "--format=%(refname:short)") is { ExitCode: 0 } listed
+            ? string.Join(", ", listed.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            : "unknown";
+
     /// <summary>Headless checks only: a clone of one folder in the data folder into another, as a person's own clone would be.</summary>
     internal static async Task<bool> CloneForChecksAsync(string from, string to)
     {

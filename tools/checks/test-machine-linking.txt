@@ -30,27 +30,29 @@ expect "Agent Orange · Laptop"
 expect "1 client"
 shot linked-machines
 # The Link dialog: the machine and the access, no code. Each machine says whether it can be linked and why.
+# The lists are named, as the page under the dialog has lists of its own (each client's access).
 click "Link"
 wait "Choose a machine"
 expectnot "Pairing code"
+wait "Full access isn't offered: it would let this PC, not the repo or that PC's own settings, decide what runs there."
 shot link-dialog
-choose 0 "Studio PC"
+choose "Machine" "Studio PC"
 wait "Studio PC answers by itself, in a few seconds, with nobody needing to be there."
 shot link-dialog-studio
-choose 0 "Away PC   Not connected"
+choose "Machine" "Away PC   Not connected"
 wait "Away PC isn't connected right now. It answers by itself once Agent Orange runs there"
-choose 0 "Spare PC   Not connected"
+choose "Machine" "Spare PC   Not connected"
 wait "Spare PC doesn't let other PCs run tests on it now."
-choose 0 "Older PC   Linked"
+choose "Machine" "Older PC   Linked"
 wait "Older PC is on another release of Agent Orange. Update it, then link."
-choose 0 "Old Laptop   Not connected"
+choose "Machine" "Old Laptop   Not connected"
 wait "so it's on another release of Agent Orange"
-choose 0 "Ancient PC   Not connected"
+choose "Machine" "Ancient PC   Not connected"
 wait "Sign out on its Server page and pair it again"
-choose 0 "Office PC   Linked"
+choose "Machine" "Office PC   Linked"
 wait "Already linked. Linking again renews it with the access you pick."
 # Link goes at once and says what happened: here, with no server, that it can't reach it.
-choose 0 "Studio PC"
+choose "Machine" "Studio PC"
 click "Link"
 wait "Could not link the machine. Can't reach the server."
 shot link-failed

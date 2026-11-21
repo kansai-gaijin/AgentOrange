@@ -558,7 +558,10 @@ public partial class SettingsModal
         var access = Choice([.. MachineLinks.Offered.Select(MachineLinks.AccessLabel)], MachineLinks.AccessLabel(granted), async label =>
         {
             var level = MachineLinks.Offered.FirstOrDefault(each => MachineLinks.AccessLabel(each) == label) ?? "tests";
-            if (await TestMachines.GrantAsync(client, level) is { } failed) ShowProblem(_accessProblem ??= ProblemText(), failed);
+            var failed = await TestMachines.GrantAsync(client, level);
+            if (failed is not null) ShowProblem(_accessProblem ??= ProblemText(), failed);
+            else if (_accessProblem is not null) _accessProblem.Visibility = Visibility.Collapsed;
+            _refreshTestMachines?.Invoke();
         });
         AutomationProperties.SetName(access, $"Access for {client.LinkerLabel}");
         var more = MachineLinks.Allows(client.Access, granted) ? "" : $"\nGrants {MachineLinks.AccessLabel(granted)}: {client.LinkerLabel} has it once it links again, choosing {MachineLinks.AccessLabel(granted)}.";

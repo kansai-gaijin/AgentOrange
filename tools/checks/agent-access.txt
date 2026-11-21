@@ -1,0 +1,89 @@
+# A link's access beyond tests (#93): the PC linked to chooses the highest it grants each PC, Tests
+# unless chosen; a link is made with the lower of that and what was asked, can be lowered from
+# either end and never raised without linking again; every job says the access it needs and is
+# refused above the link's. With Agents, the PC linking starts an agent conversation on the other
+# for a project both have: it runs with that PC's own login and settings, in its own clone, and
+# pushes its commits to a new branch. Full access isn't offered. Checks have no server, so links are
+# made up, and an agent task runs here against a made-up server, with a check login that commits.
+linkprotocol
+said "ok: a PC asking for Agents is granted Tests where the target grants Tests"
+said "ok: a PC asking for Full access is granted Agents at most"
+said "ok: a target grants Tests until the person there chooses more"
+said "ok: a PC asking for Agents and granted Tests keeps a Tests link"
+said "ok: a Tests link passed off as Agents on the way is refused"
+said "ok: an answer granting more than was asked is refused"
+said "ok: an answer whose access was changed on the way is refused"
+# A project both PCs have: its folder here is a clone of the repo the task is for.
+seed "Remote" 0 0 0
+file "upstream/README.md" "Remote agent check"
+gitrepo "upstream"
+worklogin "Claude (remote)" remote 1
+# Over a link of Tests access, an agent task is refused before anything runs.
+remoteagent "Remote" "upstream" tests
+said "Refused: it needs Agents access, more than the link gives (Tests)."
+said "Verdict: Refused."
+notsaid "Cloning"
+# Lowered on the server meanwhile, it's refused too, whatever this PC's own record says.
+remoteagent "Remote" "upstream" agents lowered
+said "Refused: it needs Agents access, more than the link gives (Tests)."
+# An agent task signed as needing only Tests is refused, as an agent task needs Agents.
+remoteagent "Remote" "upstream" agents saystests
+said "Refused: it says it needs Tests access, which isn't what an agent task needs."
+# A test run over a link of Agents access gets past its access, as Agents includes Tests.
+remoteagent "Remote" "upstream" agents testjob
+notsaid "Refused"
+said "has no .agent-orange/tests.json"
+# Over a link of Agents access: checked out in this PC's own clone on a new branch, the conversation
+# with this PC's login, each thing it does in the log, then its commit pushed as that branch.
+remoteagent "Remote" "upstream" agents
+said "Agent task for Remote, from Laptop, starting at"
+said ", on the new branch ao/remote-"
+said "Login and settings: this PC's own. It may do what auto allows without asking"
+said "Task:\n  Write your part of the check and commit it."
+said "Started a conversation on this PC with its login Claude (remote): \qCheck task · from Laptop\q."
+said "Agent: Started on my part."
+said "Agent: Committed my part."
+said "Pushing its 1 commit to origin as the new branch ao/remote-"
+said "Pushed ao/remote-"
+said "Its last words:\n  Committed my part."
+said "Verdict: Finished."
+said "The server took: Ended finished"
+said "Origin's branches: ao/remote-"
+said "What this PC keeps of it: Check task; Write your part of the check and commit it.; ao/remote-"
+# The conversation stays on this PC, settled, named for where it came from, and never renamed.
+titles
+said "Check task · from Laptop | link"
+# Settings › Test machines with links of each access. As the PC linking: one that now grants more
+# says so, with Link again; as the PC linked to, each client's access is chosen here.
+testaccess
+click "Settings"
+click "Test machines"
+wait "Office PC now grants this PC Agents. Link again to have it."
+wait "Agents · Reachable"
+expect "Agent Orange · Laptop"
+wait "Grants Agents: Laptop has it once it links again, choosing Agents."
+expect "Agent Orange · Tablet"
+shot access-settings
+# Link again opens the Link dialog on that machine, with Agents chosen.
+click "Link Office PC again"
+wait "Link a machine"
+wait "Already linked. Linking again renews it with the access you pick."
+wait "Tests, and also start an agent conversation there on a project both PCs have"
+wait "That PC grants Tests unless the person there chooses Agents for this PC"
+shot link-again-agents
+choose "What this PC may do there" "Tests"
+wait "Full access isn't offered: it would let this PC, not the repo or that PC's own settings, decide what runs there."
+click "Cancel"
+waitgone "Link a machine"
+# Lowering a client's access takes effect on this PC at once, even with no server to tell.
+linkkey "link-tablet" Agents
+choose "Access for Tablet" "Tests"
+wait "Lowered on this PC, which refuses anything more from Tablet now, but the server couldn't be told"
+linkkey "link-tablet" Tests
+shot lowered-here
+# A link lowered from the other end is lowered here too; one the server says is higher never is.
+linkkey "link-studio" Agents
+serverlowers tests
+linkkey "link-studio" Tests
+serverlowers agents
+linkkey "link-studio" Tests

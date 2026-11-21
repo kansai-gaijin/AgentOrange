@@ -47,6 +47,8 @@ namespace AgentOrange;
 ///   testmenu "Project" running   testrunstate passed   runwindows 1   (Run tests on…, as if linked to Office PC with a run in that state)
 ///   linkprotocol        (both PCs' halves of linking test machines, run against each other)
 ///   testlinks           testlinking "Studio PC" "step" | failed "why"   (Settings › Test machines with made-up machines and links, and a link being made)
+///   testaccess          linkkey "link-tablet" Tests   serverlowers tests   (made-up links of each access, keys kept for two; the access kept for one; the server's list lowering one)
+///   remoteagent "Project" "upstream" agents [lowered|saystests|testjob]   (a whole agent task here from another PC, over a link of that access, against a made-up server)
 ///   testchecks "Project" failed   testrunwindow "Project" check-run   (made-up runs whose checks flip, and a run's window)
 ///   gitrepo "folder" "origin"   gitclone "from" "to"   borrow "folder"   fileis "path" "text"   (repos in the data folder, the clone testruns borrow from, a file's text)
 ///   filehas "logs/agent-orange.log" "text" 1   (a file in the data folder has that text, that many times, or at least once with no number)
@@ -330,7 +332,10 @@ internal static partial class Headless
                 (await UntilThereAsync(window, () => Visible<RadioButton>(window).LastOrDefault(radio => Matches(radio, parts[1])), parts[1])).IsChecked = true;
                 break;
             case "choose":
-                var box = await UntilThereAsync(window, () => Visible<ComboBox>(window).ElementAtOrDefault(int.Parse(parts[1])), $"list {parts[1]}");
+                // By its place among the lists shown, or by its name, such as "Machine", as a dialog's can come after a page's.
+                var box = await UntilThereAsync(window, () => int.TryParse(parts[1], out var listAt)
+                    ? Visible<ComboBox>(window).ElementAtOrDefault(listAt)
+                    : Visible<ComboBox>(window).LastOrDefault(list => System.Windows.Automation.AutomationProperties.GetName(list) == parts[1]), $"list {parts[1]}");
                 box.SelectedItem = box.Items.Cast<object>().First(item => (item as ContentControl)?.Content?.ToString() == parts[2] || item.ToString() == parts[2]);
                 break;
             case "answer":
@@ -742,6 +747,24 @@ internal static partial class Headless
             // Settings › Test machines as if the server listed made-up machines and links.
             case "testlinks" when Active:
                 Main().ShowLinksForChecks();
+                break;
+            // Made-up links of each access, from here and to here, with keys kept for two of them (#93).
+            case "testaccess" when Active:
+                Main().ShowAccessForChecks();
+                break;
+            // The access this PC keeps for a link: linkkey "link-tablet" Tests. Fails unless it's that.
+            case "linkkey" when Active:
+                var keySays = Main().LinkKeyForChecks(parts[1]);
+                say(keySays);
+                if (!keySays.EndsWith($": {parts[2]}", StringComparison.Ordinal)) throw new InvalidOperationException($"{parts[1]}'s access here isn't {parts[2]}.");
+                break;
+            // The server's list has the Studio PC link at that access now: serverlowers tests.
+            case "serverlowers" when Active:
+                Main().ServerLowersForChecks(parts[1]);
+                break;
+            // A whole agent task here from another PC, over a link of that access: remoteagent "Project" "upstream" agents [lowered|saystests|testjob].
+            case "remoteagent" when Active:
+                say(await Main().RemoteAgentRunForChecksAsync(parts[1], parts[2], parts[3], parts.Length > 4 ? parts[4] : ""));
                 break;
             // A link being made to one of those, at a step or failed: testlinking "Studio PC" "Waiting…" or testlinking "Studio PC" failed "why".
             case "testlinking" when Active:
