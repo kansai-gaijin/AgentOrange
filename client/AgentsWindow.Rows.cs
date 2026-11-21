@@ -155,7 +155,10 @@ public sealed partial class AgentsWindow
         var slot = new Grid { MinWidth = 32, Children = { status, actions } };
         DockPanel.SetDock(slot, Dock.Right);
         first.Children.Add(slot);
-        var projectName = Ocean.Text(project, Ocean.Secondary, 12);
+        // Another conversation has this title, so the row says what tells this one apart beside its
+        // project, leaving the title its room (#125).
+        var apart = _clashingTitles.Contains(MainWindow.TitleKey(conversation.Title)) ? MainWindow.TellsApart(conversation) : null;
+        var projectName = Ocean.Text(apart is null ? project : $"{project} · {apart}", Ocean.Secondary, 12);
         projectName.TextTrimming = TextTrimming.CharacterEllipsis;
         first.Children.Add(projectName);
 
@@ -176,7 +179,9 @@ public sealed partial class AgentsWindow
         if (!hasThird) second.Children.Add(Provider());
         var title = Ocean.Text(name, failed ? new SolidColorBrush(Color.FromArgb(0xF2, 0xFF, 0xFA, 0xFF)) : muted ? Title75 : Ocean.Foreground, 14, muted ? FontWeights.Normal : FontWeights.Medium);
         title.TextTrimming = TextTrimming.CharacterEllipsis;
-        second.Children.Add(title);
+
+        if (_renaming == conversation) second.Children.Add(RenameBox(conversation));
+        else second.Children.Add(title);
 
         var content = new StackPanel { Children = { first, second } };
 
@@ -207,7 +212,22 @@ public sealed partial class AgentsWindow
         button.ToolTip = ConversationTip(conversation, name, project);
         ToolTipService.SetPlacement(button, PlacementMode.Right);
         ToolTipService.SetInitialShowDelay(button, 600);
-        AutomationProperties.SetName(button, $"{name}, {project}");
+        AutomationProperties.SetName(button, apart is null ? $"{name}, {project}" : $"{name} ({apart}), {project}");
+        AutomationProperties.SetItemType(button, ConversationRowType);
+
+        // As T3's row: F2 or a double-click renames it.
+        button.KeyDown += (_, key) =>
+        {
+            if (key.Key != Key.F2 || _renaming == conversation) return;
+            key.Handled = true;
+            StartRename(conversation);
+        };
+        button.MouseDoubleClick += (_, click) =>
+        {
+            if (_renaming == conversation) return;
+            click.Handled = true;
+            StartRename(conversation);
+        };
         button.MouseEnter += (_, _) =>
         {
             button.Opacity = 1;
@@ -229,6 +249,61 @@ public sealed partial class AgentsWindow
             OfferActions(button, conversation);
         };
         return button;
+    }
+
+    /// <summary>What a conversation's list row is to automation, which won't pick one by a title that several have.</summary>
+    internal const string ConversationRowType = "Conversation";
+
+    // Titles more than one conversation has, as the list was last drawn, whose rows say what tells them apart.
+    private HashSet<string> _clashingTitles = [];
+
+    // The box being typed in, which the list being drawn again replaces with one that carries on.
+    private TextBox? _renameBox;
+    private const string Replaced = "replaced";
+
+    // Its title in a box, picked out and ready to type over.
+    private TextBox RenameBox(AgentConversation conversation)
+    {
+        var before = _renameBox;
+        var box = new TextBox
+        {
+            Text = before?.Text ?? conversation.Title,
+            FontSize = 14,
+            Foreground = Ocean.Foreground,
+            Background = Ocean.Sidebar,
+            CaretBrush = Ocean.Foreground,
+            BorderBrush = Ocean.Border,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(4, 1, 4, 1),
+            MaxLength = AgentConversation.MostTitle,
+        };
+        AutomationProperties.SetName(box, "Conversation title");
+        var done = false;
+        void Finish(string? title)
+        {
+            if (done) return;
+            done = true;
+            FinishRename(conversation, title);
+        }
+        box.KeyDown += (_, key) =>
+        {
+            if (key.Key == Key.Enter) Finish(box.Text);
+            else if (key.Key == Key.Escape) Finish(null);
+            else return;
+            key.Handled = true;
+        };
+        box.LostKeyboardFocus += (_, _) =>
+        {
+            if (box.Tag is not Replaced) Finish(box.Text);
+        };
+        box.Loaded += (_, _) =>
+        {
+            box.Focus();
+            if (before is null) box.SelectAll();
+            else box.CaretIndex = before.CaretIndex;
+        };
+        _renameBox = box;
+        return box;
     }
 
     // Titles kept from before they were made one line.

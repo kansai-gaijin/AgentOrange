@@ -124,6 +124,9 @@ public partial class MainWindow
         // Wanting something, with no one looking at it. Being done says so through Finished, once
         // nothing it started is still running.
         if (conversation.IsWaiting && _agentsWindow?.IsLookingAt(conversation) != true) conversation.Unseen = true;
+
+        // Its first reply says what it's about, so it's named from that rather than its first words (#125).
+        WriteTitleIfDue(conversation);
         conversation.Save(ConversationsFolder);
         _agentsWindow?.ShowConversations();
 

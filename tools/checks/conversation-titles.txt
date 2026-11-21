@@ -1,0 +1,60 @@
+# Conversations get titles that differ (#125). A project's conversations often start with the same
+# words, so once a conversation's first turn has ended, its own login names it from what it's about,
+# in a few words. Where titles still clash, each row says what tells it apart, and anything that
+# picks a conversation by its title (a click on its row, the checks' agentpick and mcpas) refuses
+# one that more than one has, naming them. The person can rename one, and nothing renames it after.
+# There's no real login here: titleanswer is what the login answers. Replies are fed in from
+# conversation-titles.jsonl beside this.
+seed "Globe" 0 3 0
+click "Agents"
+window "Agents"
+titleanswer "{\qtitle\q: \qPriority 9 · orbits and flight limits\q}"
+agent "Globe" "Please continue Priority 9 in Globe with slices 3 and 4, following the plan on the Tasks page"
+titles
+said "| first message"
+feed "conversation-titles.jsonl" "reply"
+titles
+said "Priority 9 · orbits and flight limits | written"
+notsaid "clashes"
+wait "Priority 9 · orbits and flight limits"
+# Another starting the same way, which its login names the same: each row says when it was last
+# active and the start of its id, and clicking the title is refused, naming both.
+agent "Globe" "Please continue Priority 9 in Globe with slices 3 and 4, following the plan on the Tasks page"
+feed "conversation-titles.jsonl" "reply"
+titles
+said "Priority 9 · orbits and flight limits | written | clashes, told apart by"
+shot clashing-titles
+fails click "Priority 9 · orbits and flight limits"
+said "Failed: 2 conversations are called Priority 9 · orbits and flight limits, so it's not clear which:"
+said "Click one by its whole name."
+fails agentpick "Priority 9 · orbits and flight limits"
+said "Failed: 2 conversations are called Priority 9 · orbits and flight limits, so it's not clear which:"
+said "Name one by the start of its id."
+# The person renames one: nothing renames it after, and the titles no longer clash.
+rename "Orbits, second pass"
+titles
+said "Orbits, second pass | person"
+notsaid "clashes"
+click "Priority 9 · orbits and flight limits"
+titleanswer "{\qtitle\q: \qSomething else entirely\q}"
+feed "conversation-titles.jsonl" "reply"
+titles
+said "Orbits, second pass | person"
+notsaid "Something else entirely"
+# Renamed in its row, as F2 or a double-click starts it: what's typed is kept once the box is left.
+renamerow
+set "Conversation title" "Orbits and the glare zone"
+titles
+said "Orbits and the glare zone | person"
+wait "Orbits and the glare zone"
+shot renamed
+# A blank name goes back to the start of its first message.
+rename ""
+titles
+said "Please continue Priority 9 in Globe with slices 3 and 4, fol… | first message"
+# An agent naming a milestone by a start that more than one has, as message_part does to pick a
+# part's conversation, is refused, naming them, rather than given one.
+mcprefused "Globe" message_part milestone "Milestone" part 1 message "Commit what you left."
+said "milestone: 3 milestones are called Milestone, so it's not clear which: Milestone 1; Milestone 2; Milestone 3. Give its whole name."
+mcprefused "Globe" message_part milestone "Milestone 2" part 1 message "Commit what you left."
+said "milestone: it isn't split across agents now."

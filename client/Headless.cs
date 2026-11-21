@@ -76,6 +76,9 @@ namespace AgentOrange;
 ///   worklogin "Label" folder 4 [clash]   mcpas "Title" "Project" tool args...   parallel "Project"
 ///                       (a login whose program commits a part's work of a split milestone, clash for a file every part writes;
 ///                        an MCP tool as that conversation calls it, refused or not; the splits, the folder's files and commits)
+///   titleanswer "{\qtitle\q:\qOrbits\q}"   titles   rename "Orbits"   renamerow   fails click "Orbits"
+///                       (what a login answers when asked to title a conversation; each title, how it came about and what tells it apart;
+///                        the check's conversation renamed, or its row a box to rename it in; a command that has to fail, saying why)
 ///   agent "Project" "message" [codex]      feed "recorded.jsonl" "part"      agentstate
 ///                       (a conversation sent a message with no program behind it, what its program says fed in from a recording beside the script, and how it stands)
 ///   (In said, refuses, allows and writefile, \n is a line break, \t a tab, \q a double quote and \e a backslash.)
@@ -580,6 +583,34 @@ internal static partial class Headless
             case "agentpick":
                 Main().PickConversationForChecks(parts[1]);
                 break;
+            // What a login answers when asked to title a conversation: titleanswer "{\qtitle\q:\qOrbits\q}".
+            case "titleanswer":
+                Main().SetTitleAnswerForChecks(Unescape(parts[1]));
+                break;
+            // Each conversation's title, how it came about, and what tells it apart when another has it.
+            case "titles":
+                say(Main().TitlesForChecks());
+                break;
+            // The check's conversation renamed, as the person renames it: rename "Orbits".
+            case "rename":
+                Main().RenameForChecks(parts[1]);
+                break;
+            // The check's conversation's row becomes a box to rename it in, as F2 or a double-click does it.
+            case "renamerow" when Active:
+                Main().StartRenameForChecks();
+                break;
+            // A command that has to fail, saying why: fails click "Orbits". Then said looks at why.
+            case "fails":
+                try
+                {
+                    await RunOneAsync(window, parts[1..], say, output);
+                }
+                catch (InvalidOperationException error)
+                {
+                    say($"Failed: {error.Message}");
+                    break;
+                }
+                throw new InvalidOperationException($"{string.Join(' ', parts[1..])} didn't fail.");
             // As if the PC restarted: the conversation's session ended, and the app with it, without saving.
             case "crash" when Active:
                 Main().CrashForChecks();
@@ -760,11 +791,25 @@ internal static partial class Headless
     }
 
     // A card's settings button is hidden until hovered, and there's no mouse here.
-    private static Task<ButtonBase> FindButtonAsync(Window window, string name) =>
-        UntilThereAsync(window, () => Descendants(window).OfType<ButtonBase>().Where(candidate => candidate is Button or ToggleButton).LastOrDefault(candidate =>
+    private static async Task<ButtonBase> FindButtonAsync(Window window, string name)
+    {
+        var found = await UntilThereAsync(window, () => Descendants(window).OfType<ButtonBase>().Where(candidate => candidate is Button or ToggleButton).LastOrDefault(candidate =>
             candidate.IsEnabled
             && Matches(candidate, name)
             && (candidate.IsVisible || (candidate.Visibility == Visibility.Hidden && VisualTreeHelper.GetParent(candidate) is UIElement { IsVisible: true }))), name);
+
+        // A conversation picked by its title: one that more than one row has is refused, naming each
+        // by what tells it apart, rather than choosing one (#125).
+        if (AutomationProperties.GetItemType(found) == AgentsWindow.ConversationRowType)
+        {
+            var rows = Descendants(window).OfType<ButtonBase>().Where(each => each.IsVisible && AutomationProperties.GetItemType(each) == AgentsWindow.ConversationRowType && Matches(each, name)).ToList();
+            if (rows.Count > 1)
+            {
+                throw new InvalidOperationException($"{rows.Count} conversations are called {name}, so it's not clear which: {string.Join("; ", rows.Select(each => $"\"{AutomationProperties.GetName(each)}\""))}. Click one by its whole name.");
+            }
+        }
+        return found;
+    }
 
     // Waits as a person would, because what's asked for may not have been drawn yet.
     private static async Task<T> UntilThereAsync<T>(Window window, Func<T?> find, string what) where T : class

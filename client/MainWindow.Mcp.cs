@@ -651,11 +651,23 @@ public partial class MainWindow
     {
         if (asked is null) return null;
         if (asked.Length == 0) return "";
-        // Exactly, then up to a word's end, so "Priority 1" isn't Priority 10, then any start.
+        // Exactly, then up to a word's end, so "Priority 1" isn't Priority 10, then any start. A name
+        // more than one has is refused, naming them, rather than one being picked (#125), as what's
+        // done to it, such as message_part's message, would go to the wrong one.
         var milestones = _database.ListMilestones(project.Id, _database.ProjectStage(project.Id));
-        return (milestones.FirstOrDefault(each => each.Id == asked || each.Milestone.Name.Equals(asked, StringComparison.OrdinalIgnoreCase)).Id
-            ?? milestones.FirstOrDefault(each => Regex.IsMatch(each.Milestone.Name, $@"^{Regex.Escape(asked)}\b", RegexOptions.IgnoreCase)).Id
-            ?? milestones.FirstOrDefault(each => each.Milestone.Name.StartsWith(asked, StringComparison.OrdinalIgnoreCase)).Id)
+        string? Only(Func<(string Id, Milestone Milestone), bool> matches)
+        {
+            var found = milestones.Where(each => matches(each)).ToList();
+            if (found.Count <= 1) return found.FirstOrDefault().Id;
+            var same = found.GroupBy(each => each.Milestone.Name, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1);
+            throw new McpException(-32602, $"milestone: {found.Count} milestones are called {asked}, so it's not clear which: "
+                + string.Join("; ", found.Take(ListedNames).Select(each => same ? $"{each.Milestone.Name} (id {each.Id})" : each.Milestone.Name))
+                + $". Give {(same ? "its id" : "its whole name")}.");
+        }
+        return (milestones.FirstOrDefault(each => each.Id == asked).Id
+            ?? Only(each => each.Milestone.Name.Equals(asked, StringComparison.OrdinalIgnoreCase))
+            ?? Only(each => Regex.IsMatch(each.Milestone.Name, $@"^{Regex.Escape(asked)}\b", RegexOptions.IgnoreCase))
+            ?? Only(each => each.Milestone.Name.StartsWith(asked, StringComparison.OrdinalIgnoreCase)))
             ?? throw new McpException(-32602, milestones.Count == 0
                 ? $"milestone: there's no milestone called {asked}, as the stage has none yet. Leave it out, or ask the person to add one."
                 : $"milestone: there's no milestone called {asked}. They are: {string.Join("; ", milestones.Take(ListedNames).Select(each => each.Milestone.Name))}{(milestones.Count > ListedNames ? "; and more, which list_tasks shows" : "")}.");

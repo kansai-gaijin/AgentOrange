@@ -96,6 +96,46 @@ public sealed partial class AgentConversation
     public required string Id { get; init; }
     public required string ProjectId { get; init; }
     public string Title { get; set; } = "";
+
+    /// <summary>
+    /// How its title came about (#125): null for the start of its first message, "written" once its
+    /// login wrote one from what it's about after the first reply, "person" once the person renamed
+    /// it, which nothing changes after, and "part" for a part of a split milestone, named by its part.
+    /// </summary>
+    public string? TitleFrom { get; set; }
+
+    public const string TitleWritten = "written";
+    public const string TitleByPerson = "person";
+    public const string TitleOfPart = "part";
+
+    /// <summary>The person names it, and nothing renames it after that. Blank goes back to its first message's start.</summary>
+    public void Rename(string title)
+    {
+        var named = System.Text.RegularExpressions.Regex.Replace(title, @"\s+", " ").Trim();
+        if (named.Length > MostTitle) named = named[..MostTitle].TrimEnd();
+        if (named.Length == 0)
+        {
+            Title = FirstMessageTitle();
+            TitleFrom = null;
+        }
+        else
+        {
+            Title = named;
+            TitleFrom = TitleByPerson;
+        }
+        StateChanged?.Invoke();
+    }
+
+    /// <summary>The most a title holds, as T3 keeps them.</summary>
+    public const int MostTitle = 120;
+
+    // As a conversation is first named: the start of its first message.
+    private string FirstMessageTitle()
+    {
+        var first = Items.FirstOrDefault(item => item.Kind == AgentItemKind.User && !item.Automatic);
+        var named = System.Text.RegularExpressions.Regex.Replace(first?.Text ?? "", @"\s+", " ").Trim();
+        return named.Length > 60 ? named[..60].TrimEnd() + "…" : named;
+    }
     public string? ProviderId { get; set; }
 
     /// <summary>The agent program's own name for the conversation, which picks it back up after a restart.</summary>

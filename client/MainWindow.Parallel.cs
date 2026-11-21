@@ -317,6 +317,7 @@ public partial class MainWindow
         conversation.Effort = login.Id == run.ProviderId ? run.Effort : null;
         conversation.PermissionMode = run.PermissionMode;
         conversation.Title = $"{run.MilestoneName} · part {part.Number} of {run.Parts.Count}";
+        conversation.TitleFrom = AgentConversation.TitleOfPart;
         if (await AgentProblemAsync(conversation) is { } problem)
         {
             _conversations?.Remove(conversation); // Never sent anything, so it was never listed.

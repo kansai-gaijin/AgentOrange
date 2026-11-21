@@ -89,7 +89,7 @@ public partial class MainWindow
     internal async Task<(string Text, bool Refused)> CallMcpForChecks(string projectName, string tool, System.Text.Json.Nodes.JsonObject given, string? asConversation = null)
     {
         var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
-        McpCaller.Value = asConversation is null ? null : (Conversations.FirstOrDefault(each => each.Title == asConversation) ?? throw new InvalidOperationException($"There's no conversation called {asConversation}.")).Id;
+        McpCaller.Value = asConversation is null ? null : ConversationTitled(asConversation).Id;
         var result = await McpCallAsync(project.Id, tool, given);
         var text = string.Join("\n", (result["content"] as System.Text.Json.Nodes.JsonArray ?? []).Select(part => part?["text"]?.GetValue<string>()).OfType<string>());
         return (text, result["isError"]?.GetValue<bool>() == true);
@@ -396,8 +396,7 @@ public partial class MainWindow
     }
 
     /// <summary>The conversation the check goes on with, from those read as the app started, by its title.</summary>
-    internal void PickConversationForChecks(string title) =>
-        _checkConversation = Conversations.FirstOrDefault(each => each.Title == title) ?? throw new InvalidOperationException($"There's no conversation called {title}.");
+    internal void PickConversationForChecks(string title) => _checkConversation = ConversationTitled(title);
 
     /// <summary>
     /// As if the PC restarted: the check conversation's session is ended, and the app with it, at

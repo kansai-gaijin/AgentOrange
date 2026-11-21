@@ -488,7 +488,9 @@ public sealed partial class AgentsWindow : Window
     /// <summary>Every conversation, the latest first, each with its project and what it's doing. The settled ones wait at the bottom.</summary>
     internal void ShowConversations()
     {
+        if (_renameBox is not null) _renameBox.Tag = Replaced; // Its row is drawn again with a box that carries on.
         _list.Children.Clear();
+        _clashingTitles = _main.ClashingTitles();
         var search = _search.Text.Trim();
         bool Matches(AgentConversation conversation) => search.Length == 0
             || conversation.Title.Contains(search, StringComparison.OrdinalIgnoreCase)
@@ -558,9 +560,37 @@ public sealed partial class AgentsWindow : Window
             if (_open == conversation) Show(_main.Conversations.Where(each => !each.Settled).OrderByDescending(each => each.Updated).FirstOrDefault());
             ShowConversations();
         });
+        // T3's Rename thread, which edits the title in its row.
+        var rename = Ocean.MenuRow(Ocean.IconText("pencil", "Rename", Ocean.Foreground), () =>
+        {
+            menu!.IsOpen = false;
+            StartRename(conversation);
+        });
         var line = new Border { Height = 1, Background = Ocean.Border, Margin = new Thickness(8, 4, 8, 4) };
-        menu = Ocean.Menu(by, PlacementMode.MousePoint, new StackPanel { Children = { settle, line, delete } });
+        menu = Ocean.Menu(by, PlacementMode.MousePoint, new StackPanel { Children = { settle, rename, line, delete } });
         menu.IsOpen = true;
+    }
+
+    // The conversation whose title is being edited in its row, as T3 renames a thread.
+    private AgentConversation? _renaming;
+
+    /// <summary>Its row's title becomes a box to rename it in: Enter or leaving it keeps what's typed, Escape doesn't.</summary>
+    internal void StartRename(AgentConversation conversation)
+    {
+        if (conversation.Settled) return; // Its slim row has no room to; un-settle it first.
+        _renaming = conversation;
+        _renameBox = null;
+        ShowConversations();
+    }
+
+    private void FinishRename(AgentConversation conversation, string? title)
+    {
+        if (_renaming != conversation) return;
+        _renaming = null;
+        _renameBox = null;
+        if (title is not null && title.Trim() != conversation.Title) conversation.Rename(title);
+        ShowConversations();
+        ShowHeaderFor(conversation);
     }
 
     // A conversation about the project open in the main window, or one picked from a list.
@@ -637,6 +667,12 @@ public sealed partial class AgentsWindow : Window
         _follow = true;
         ScrollToEnd();
         if (conversation is not null) _ = Dispatcher.InvokeAsync(() => _input.Focus(), DispatcherPriority.Input);
+    }
+
+    /// <summary>Its title changed, which the header shows when it's the open one.</summary>
+    internal void ShowHeaderFor(AgentConversation conversation)
+    {
+        if (_open == conversation) ShowHeader();
     }
 
     // The breadcrumb, as T3 Code's: the project, a slash, and the conversation's title.
