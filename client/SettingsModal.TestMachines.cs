@@ -118,6 +118,17 @@ public partial class SettingsModal
             problem.Visibility = Visibility.Collapsed;
         };
 
+        // Claude Code's permission modes, as the composer names them, without the one that asks for nothing.
+        static string ModeLabel(string mode) => mode switch
+        {
+            "acceptEdits" => "Accept edits",
+            "default" => "Ask first",
+            _ => "Auto",
+        };
+        var agentsMode = Choice([.. TestMachineSettings.AgentsModes.Select(ModeLabel)], ModeLabel(settings.AgentsPermissionMode),
+            label => Save(now => now with { AgentsMode = TestMachineSettings.AgentsModes.FirstOrDefault(mode => ModeLabel(mode) == label) ?? "auto" }));
+        AutomationProperties.SetName(agentsMode, "Agents from other PCs");
+
         // What only matters while this PC takes runs is shown only then.
         FrameworkElement[] targetRows =
         [
@@ -126,9 +137,10 @@ public partial class SettingsModal
             Row("Work folder", "Each project gets its own checkout here. A short path keeps clear of tools that can't take long file names.", folder, changeFolder),
             Row("Shell", "What the commands run in here: PowerShell, cmd, or Git Bash.", shell),
             Row("Environment variables", "Set for every run here, one KEY=VALUE a line.", environment),
-            Row("Time limit", "Minutes a whole run may take here, from checking out to the last test, in place of the project's limits. Empty uses the project's.", timeout),
+            Row("Time limit", "Minutes a whole run may take here, from checking out to the last test, in place of the project's limits. Empty uses the project's, and gives an agent task 8 hours.", timeout),
+            Row("Agents from other PCs", "What an agent conversation started here by a PC with Agents access may do without asking: Auto asks only before something risky, Accept edits asks for anything but edits, Ask first asks for edits too. What it asks waits for someone at this PC. It always has this PC's own login and settings.", agentsMode),
         ];
-        var thisPc = Card([Row("Let other PCs run tests here", "Your other PCs signed in to this server can link to this one, with no code to type, as this PC answers by itself. Then they can send a commit of a project's repo to test here, in the background, as you, with nobody needing to be here. What runs is what the repo's .agent-orange/tests.json says at that commit, so anyone who can push to the repo decides it. Each run is listed below with exactly what it ran.", accepting), .. targetRows]);
+        var thisPc = Card([Row("Let other PCs run tests here", "Your other PCs signed in to this server can link to this one, with no code to type, as this PC answers by itself. Then they can send a commit of a project's repo to test here, in the background, as you, with nobody needing to be here. What runs is what the repo's .agent-orange/tests.json says at that commit, so anyone who can push to the repo decides it. A PC you give Agents access, in Authorized clients below, can also start an agent conversation here with a task it writes. Each run is listed below with exactly what it ran.", accepting), .. targetRows]);
         void ShowTargetRows()
         {
             var rows = (StackPanel)thisPc.Child;
@@ -256,9 +268,10 @@ public partial class SettingsModal
             foreach (var client in clients) rows.Add(ClientRow(client));
             if (rows.Count == 0) rows.Add(Row("No client sessions.", "Your other PCs signed in to this server link to this one from their Settings › Test machines › Link. This PC answers by itself while it lets other PCs run tests here."));
             parts.Add(Card([.. rows]));
+            if (_accessProblem is { } accessProblem) parts.Add(accessProblem);
             parts.Add(new TextBlock
             {
-                Text = "A PC you revoke can link again while this PC lets others run tests here, as every PC signed in to your server is yours. To keep one out, remove it under Other devices on the Server page.",
+                Text = "Each PC has Tests access here unless you choose Agents for it: then it can start an agent conversation here, on a project both PCs have, with a task it writes. It works in this PC's own test clone of the project, with this PC's login and settings, as you, and pushes its work to a new branch. Lowering it takes effect at once; more takes effect when that PC links again. A PC you revoke can link again while this PC lets others run tests here, as every PC signed in to your server is yours. To keep one out, remove it under Other devices on the Server page.",
                 FontSize = 12.5,
                 Foreground = (Brush)FindResource("TextMuted"),
                 TextWrapping = TextWrapping.Wrap,
@@ -279,11 +292,13 @@ public partial class SettingsModal
             {
                 var stop = ActionButton("Cancel");
                 stop.Click += (_, _) => running.Cancel();
-                rows.Add(Row($"Running for {running.Run.LinkerLabel}", $"Commit {ShortCommit(running.Run.Commit)}. Its log streams to the PC that sent it.", stop));
+                rows.Add(Row($"Running for {running.Run.LinkerLabel}", $"{(running.Run.IsAgent ? "An agent task, from commit" : "Commit")} {ShortCommit(running.Run.Commit)}. Its log streams to the PC that sent it.", stop));
             }
             foreach (var run in runsHere.Take(10))
             {
-                var commands = (run.Prepare.Length > 0 ? $"Prepare: {run.Prepare}\n" : "") + (run.Test.Length > 0 ? $"Test: {run.Test}" : "");
+                var commands = run.Task is { } task
+                    ? $"Agent task: {(task.Length > 300 ? task[..300] + "…" : task)}{(run.Branch is { } branch ? $"\nPushed to {branch}" : "")}"
+                    : (run.Prepare.Length > 0 ? $"Prepare: {run.Prepare}\n" : "") + (run.Test.Length > 0 ? $"Test: {run.Test}" : "");
                 rows.Add(Row(
                     $"{run.Project} · {TestRunner.VerdictLabel(run.Verdict)}{(run.ExitCode is { } exit ? $" (exit code {exit})" : "")}",
                     $"From {run.From}, {When(run.At)}, at {ShortCommit(run.Commit)}, in {run.Shell}{(run.Folder.Length > 0 ? $", in {run.Folder}" : "")}.{(commands.Length > 0 ? "\n" + commands : "")}{(run.Note is { } why ? "\n" + why : "")}"));
@@ -536,8 +551,22 @@ public partial class SettingsModal
             }
         };
         var expired = client.Status == "expired";
-        return DotRow(expired ? DestructiveDot : SuccessDot, null, $"Agent Orange · {client.LinkerLabel}", $"{MachineLinks.AccessLabel(client.Access)} · {LinkExpiry(client)}", revoke);
+
+        // The highest access this PC grants that one, Tests unless chosen: lower than the link has,
+        // the link goes down at once; higher, it's what that PC gets when it links again.
+        var granted = TestMachines.Settings.GrantFor(client.Linker);
+        var access = Choice([.. MachineLinks.Offered.Select(MachineLinks.AccessLabel)], MachineLinks.AccessLabel(granted), async label =>
+        {
+            var level = MachineLinks.Offered.FirstOrDefault(each => MachineLinks.AccessLabel(each) == label) ?? "tests";
+            if (await TestMachines.GrantAsync(client, level) is { } failed) ShowProblem(_accessProblem ??= ProblemText(), failed);
+        });
+        AutomationProperties.SetName(access, $"Access for {client.LinkerLabel}");
+        var more = MachineLinks.Allows(client.Access, granted) ? "" : $"\nGrants {MachineLinks.AccessLabel(granted)}: {client.LinkerLabel} has it once it links again, choosing {MachineLinks.AccessLabel(granted)}.";
+        return DotRow(expired ? DestructiveDot : SuccessDot, null, $"Agent Orange · {client.LinkerLabel}", $"{MachineLinks.AccessLabel(client.Access)} · {LinkExpiry(client)}{more}", access, revoke);
     }
+
+    // Said under Authorized clients when an access couldn't be changed on the server.
+    private TextBlock? _accessProblem;
 
     private static string LinkExpiry(MachineLinkInfo link)
     {
@@ -568,6 +597,15 @@ public partial class SettingsModal
         forget.Click += (_, _) => ConfirmForget(link);
         var tags = link.MachineTags.Count > 0 ? $"\n{string.Join(", ", link.MachineTags)}" : "";
         var expiry = DateTimeOffset.FromUnixTimeSeconds((long)link.ExpiresAt) > DateTimeOffset.UtcNow ? $"\n{LinkExpiry(link)}" : "";
+
+        // The PC there grants more now, which linking again with it gets.
+        if (link.Offered is { } offered && MachineLinks.Offered.Contains(offered) && !MachineLinks.Allows(link.Access, offered))
+        {
+            var again = ActionButton("Link again");
+            AutomationProperties.SetName(again, $"Link {link.MachineLabel} again");
+            again.Click += (_, _) => OpenLinkDialog(link.Machine, offered);
+            return DotRow(dot, status, link.MachineLabel, $"{MachineLinks.AccessLabel(link.Access)} · {status}{expiry}\n{link.MachineLabel} now grants this PC {MachineLinks.AccessLabel(offered)}. Link again to have it.{tags}", again, forget);
+        }
         return DotRow(dot, status, link.MachineLabel, $"{MachineLinks.AccessLabel(link.Access)} · {status}{expiry}{tags}", forget);
     }
 
@@ -625,11 +663,11 @@ public partial class SettingsModal
     // T3's Link dialog as it is when T3 mints the code itself: the machine and the access, with no
     // code and no address, as everything goes through the server. Machines are the owner's other
     // PCs, as the server knows them. Linking carries on with the dialog closed, in Linked machines.
-    private void OpenLinkDialog(string? machine)
+    private void OpenLinkDialog(string? machine, string? access = null)
     {
         try
         {
-            ShowLinkDialog(machine);
+            ShowLinkDialog(machine, access);
         }
         catch (Exception error)
         {
@@ -642,7 +680,7 @@ public partial class SettingsModal
         }
     }
 
-    private void ShowLinkDialog(string? machine)
+    private void ShowLinkDialog(string? machine, string? wanted)
     {
         var latest = TestMachines.Latest;
         var linkedTo = latest?.Links.Where(each => each.Linker == latest.Me).Select(each => each.Machine).ToHashSet() ?? [];
@@ -666,8 +704,20 @@ public partial class SettingsModal
         var chosen = machine is null ? -1 : choices.FindIndex(each => each.Machine?.Install == machine);
         if (chosen >= 0) picker.SelectedIndex = chosen;
 
-        var access = Choice([.. MachineLinks.AccessLevels.Take(1).Select(MachineLinks.AccessLabel)], MachineLinks.AccessLabel("tests"), _ => { });
+        // Tests unless asked for more. What the PC there grants can be less, as the person there chooses.
+        var chosenAccess = MachineLinks.Offered.Contains(wanted) ? wanted! : "tests";
+        var accessNote = new TextBlock { FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(16, 0, 16, 8) };
+        AutomationProperties.SetName(accessNote, "About this access");
+        void ShowAccess() => accessNote.Text = MachineLinks.AccessDescription(chosenAccess) + (chosenAccess == "tests"
+            ? " Full access isn't offered: it would let this PC, not the repo or that PC's own settings, decide what runs there."
+            : " That PC grants Tests unless the person there chooses Agents for this PC, in its Settings › Test machines › Authorized clients; with Tests, the link is made with Tests. Full access isn't offered.");
+        var access = Choice([.. MachineLinks.Offered.Select(MachineLinks.AccessLabel)], MachineLinks.AccessLabel(chosenAccess), label =>
+        {
+            chosenAccess = MachineLinks.Offered.FirstOrDefault(level => MachineLinks.AccessLabel(level) == label) ?? "tests";
+            ShowAccess();
+        });
         AutomationProperties.SetName(access, "What this PC may do there");
+        ShowAccess();
 
         var note = new TextBlock { FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(16, 0, 16, 8) };
         AutomationProperties.SetName(note, "About this machine");
@@ -737,7 +787,7 @@ public partial class SettingsModal
             problem.Visibility = Visibility.Collapsed;
             submit.Content = "Linking…";
             submit.IsEnabled = picker.IsEnabled = access.IsEnabled = false;
-            linking = TestMachines.StartLink(picked, "tests");
+            linking = TestMachines.StartLink(picked, chosenAccess);
             _refreshLinkDialog = ShowLinking;
             ShowLinking();
         });
@@ -761,7 +811,8 @@ public partial class SettingsModal
         {
             rows.Children.Add(Row("Machine", null, picker));
             rows.Children.Add(note);
-            rows.Children.Add(Row("What this PC may do there", $"{MachineLinks.AccessDescription("tests")} Agents and full access aren't offered yet.", access));
+            rows.Children.Add(Row("What this PC may do there", null, access));
+            rows.Children.Add(accessNote);
             rows.Children.Add(step);
         }
         if (latest is not null && TestMachines.Problem is { } trouble) ShowProblem(problem, trouble);
@@ -779,7 +830,7 @@ public partial class SettingsModal
         WizardCard.Child = WizardShell(
             () => Close(stop: false),
             "Link a machine",
-            "This PC can then run a project's tests there. It appears under Authorized clients in that machine's Test machines settings, where it can be revoked.",
+            "This PC can then run a project's tests there, or with Agents, start an agent there. It appears under Authorized clients in that machine's Test machines settings, where its access can be lowered and it can be revoked.",
             null,
             rows,
             TextButton("Cancel", () => Close(stop: true)),
