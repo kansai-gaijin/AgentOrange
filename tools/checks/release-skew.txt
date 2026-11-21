@@ -1,0 +1,32 @@
+# A test run that straddles a release isn't lost (#124). The server keeps taking a run's log and its
+# end from the release it was taken on, and when a server does turn them away, the test PC keeps the
+# rest of the log and the verdict and sends them once it has updated (release-skew-again.txt, as the
+# update starts the app again). Made up, as checks have no server: one that updates after the log's
+# first part and turns the rest away. The run uses PowerShell and a folder committed as a repo. A
+# file's JSON is one word with no spaces.
+file "skew/.agent-orange/tests.json" {"test":"Start-Sleep(3);Write-Output('tested-at-last')"}
+heldbackrun "skew" 1
+said "Verdict: Passed."
+said "this PC kept the rest of the log and the verdict, to send once it has updated."
+said "The server took: Part 0"
+notsaid "Part 1"
+notsaid "Ended"
+said "Kept: 1"
+filehas "logs/agent-orange.log" "and its report is kept until this PC has updated." 1
+# The run's window, on the PC that sent it, says its report was held back rather than only Lost,
+# then, once the report has come, how it went. Made up as if this PC were linked to Office PC.
+seed "Skew" 0 0 0
+file "upstream/.agent-orange/tests.json" {"test":"Write-Output('tested')"}
+gitrepo "upstream"
+gitclone "upstream" "projects/skew"
+testchecks "Skew" running
+testrunstate lost heldback
+testrunwindow "Skew" check-run
+windowlike "Test run · Skew · Office PC · "
+wait "Held back by a version change"
+wait "The test PC keeps the rest of the log and the verdict, and sends them once it has updated."
+shot held-back
+testrunstate passed heldback
+wait "Its report was held back by a version change, and sent once its test PC had updated."
+expectnot "Held back by a version change"
+shot held-back-sent

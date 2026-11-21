@@ -39,14 +39,25 @@ public sealed record LinkAnswer(string? Answer, string? LinkId, double? ExpiresA
 /// <summary>
 /// A test run as the server keeps it. Job is the text the linker signed, which only the PCs read.
 /// The checks are counted from the results file the repo names, when it names one (#105).
+/// HeldBack is set once the server turned its report away for coming from another release, and
+/// its test PC sends the rest once it has updated (#124).
 /// </summary>
 public sealed record TestRunInfo(
     string Id, string LinkId, string Machine, string MachineLabel, string Linker, string LinkerLabel,
     string ProjectId, string Commit, string Job, string Mac, string Status, int? ExitCode, bool CancelRequested,
     double CreatedAt, double? StartedAt, double? EndedAt, string? LinkAccess, double? LinkExpiresAt,
-    int ChecksPassed = 0, int ChecksFailed = 0, int ChecksSkipped = 0)
+    int ChecksPassed = 0, int ChecksFailed = 0, int ChecksSkipped = 0, bool HeldBack = false)
 {
     public bool Finished => Status is not ("queued" or "running");
+
+    /// <summary>Lost for now: its test PC kept the rest of its report and sends it once it has updated.</summary>
+    public bool AwaitingReport => Status == "lost" && HeldBack;
+
+    /// <summary>What to say about a report held back by a version change, or null when it wasn't.</summary>
+    public string? HeldBackText => !HeldBack ? null
+        : AwaitingReport ? "Its test PC was on another release than the server, which turned its report away. The test PC keeps the rest of the log and the verdict, and sends them once it has updated."
+        : Finished ? "Its report was held back by a version change, and sent once its test PC had updated."
+        : "The server turned part of its report away, as its test PC is on another release. The test PC sends the rest once it has updated.";
 
     /// <summary>Started by an agent with run_tests, as the signed job says (#117), rather than by a person.</summary>
     public bool ByAgent => TestJob.StartedByIn(Job) == TestJob.ByAgent;
@@ -63,9 +74,9 @@ public sealed record TestRunWithLog(
     string Id, string LinkId, string Machine, string MachineLabel, string Linker, string LinkerLabel,
     string ProjectId, string Commit, string Job, string Mac, string Status, int? ExitCode, bool CancelRequested,
     double CreatedAt, double? StartedAt, double? EndedAt, string? LinkAccess, double? LinkExpiresAt, List<RunLogLine> Log,
-    int ChecksPassed = 0, int ChecksFailed = 0, int ChecksSkipped = 0)
+    int ChecksPassed = 0, int ChecksFailed = 0, int ChecksSkipped = 0, bool HeldBack = false)
 {
-    public TestRunInfo Run => new(Id, LinkId, Machine, MachineLabel, Linker, LinkerLabel, ProjectId, Commit, Job, Mac, Status, ExitCode, CancelRequested, CreatedAt, StartedAt, EndedAt, LinkAccess, LinkExpiresAt, ChecksPassed, ChecksFailed, ChecksSkipped);
+    public TestRunInfo Run => new(Id, LinkId, Machine, MachineLabel, Linker, LinkerLabel, ProjectId, Commit, Job, Mac, Status, ExitCode, CancelRequested, CreatedAt, StartedAt, EndedAt, LinkAccess, LinkExpiresAt, ChecksPassed, ChecksFailed, ChecksSkipped, HeldBack);
 }
 
 /// <summary>Whether to keep going with a run, as the server says.</summary>
@@ -148,11 +159,13 @@ public sealed partial class DeviceSession
     public Task<ServerAnswer<RunKeepGoing>> HeartbeatAsync(string run) =>
         AskAsync<RunKeepGoing>(HttpMethod.Post, $"/v1/runs/{Uri.EscapeDataString(run)}/heartbeat");
 
-    public Task<ServerAnswer<RunKeepGoing>> AppendLogAsync(string run, int seq, string text) =>
-        AskAsync<RunKeepGoing>(HttpMethod.Post, $"/v1/runs/{Uri.EscapeDataString(run)}/log", new { seq, text });
+    /// <summary>Held back, it's a part kept while the server was on another release, sent once this PC has updated (#124).</summary>
+    public Task<ServerAnswer<RunKeepGoing>> AppendLogAsync(string run, int seq, string text, bool heldBack = false) =>
+        AskAsync<RunKeepGoing>(HttpMethod.Post, $"/v1/runs/{Uri.EscapeDataString(run)}/log", heldBack ? new { seq, text, heldBack } : (object)new { seq, text });
 
-    public Task<ServerAnswer<bool>> EndRunAsync(string run, string status, int? exitCode, IReadOnlyList<CheckResult>? checks = null) =>
-        AskAsync<bool>(HttpMethod.Post, $"/v1/runs/{Uri.EscapeDataString(run)}/end", new { status, exitCode, checks = checks ?? [] });
+    /// <summary>Held back, the server still takes it for a run it called lost meanwhile (#124).</summary>
+    public Task<ServerAnswer<bool>> EndRunAsync(string run, string status, int? exitCode, IReadOnlyList<CheckResult>? checks = null, bool heldBack = false) =>
+        AskAsync<bool>(HttpMethod.Post, $"/v1/runs/{Uri.EscapeDataString(run)}/end", heldBack ? new { status, exitCode, checks = checks ?? [], heldBack } : (object)new { status, exitCode, checks = checks ?? [] });
 
     /// <summary>How each check went in a run, by name (#105).</summary>
     public Task<ServerAnswer<List<CheckResult>>> RunChecksAsync(string run) =>

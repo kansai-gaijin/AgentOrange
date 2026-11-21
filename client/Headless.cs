@@ -53,6 +53,9 @@ namespace AgentOrange;
 ///   testrun "folder" "Passed" "text"   (a test run's steps here, from the folder committed as a repo; the verdict and log say that)
 ///   runfilter "Input.Jump"   (what later testruns are asked to test only; "" for all)
 ///   testrunadd "Project" failed ["filter"] ["HEAD~1"]   (a made-up run, the newest, at the folder's HEAD or that commit; the default branch's verdict read again)
+///   heldbackrun "folder" 1   heldbacksend   testrunstate lost heldback
+///                       (a whole run here, its server updating after 1 part of its log and turning the rest away; this PC updated, sending what it kept;
+///                        the made-up run's report held back by a version change)
 ///   testworkfolder "test-runs"   junction "link" "target"   gone "path"   (this PC takes runs into that folder; a junction; nothing's at the path, all in the data folder)
 ///   testmachines "Office PC|busy|windows,gpu" "Laptop|reachable|"   (as if linked to those machines, in that state with those tags, with no runs)
 ///   mcp "Project" update_asset card "Asset 1" status "Needs review"   (an agent's MCP tool; mcprefused expects a refusal)
@@ -719,7 +722,16 @@ internal static partial class Headless
                 break;
             // That made-up run changes state, as the server would say: testrunstate passed.
             case "testrunstate" when Active:
-                Main().SetTestRunForChecks(parts[1]);
+                Main().SetTestRunForChecks(parts[1], parts.Length > 2 && parts[2] == "heldback");
+                break;
+            // A whole run here, telling a made-up server that updates after that many parts of its log
+            // and turns the rest away: heldbackrun "folder" 1. Then said looks at what it says.
+            case "heldbackrun" when Active:
+                say(await Main().HeldBackRunForChecksAsync(Path.Combine(DataFolder, parts[1]), int.Parse(parts[2])));
+                break;
+            // This PC has updated, and sends what it kept: heldbacksend. Then said looks at what the server took.
+            case "heldbacksend" when Active:
+                say(await Main().SendHeldReportsForChecksAsync());
                 break;
             // As if linked to Office PC and Laptop, with runs of the project's commit whose checks flip,
             // the latest by an agent in that state: testchecks "Project" failed.

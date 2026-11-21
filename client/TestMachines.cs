@@ -212,6 +212,13 @@ public sealed class TestMachines
             // Answered by itself while this PC takes runs, in the window that does background work.
             if (settings.Accepting && _hasSyncTurn()) await AnswerLinkRequestsAsync();
 
+            // What a run kept back while the server was on another release, once this PC has updated (#124).
+            if (_hasSyncTurn() && Running is null && TestRunner.HeldReports(_database).Count > 0)
+            {
+                await TestRunner.SendHeldReportsAsync(_database, _devices);
+                Changed?.Invoke();
+            }
+
             // Not while a clone is being removed, which a run would then be checking out into.
             if (settings.Accepting && Running is null && RemovingClone is null && _hasSyncTurn() && DateTimeOffset.UtcNow - _claimedAt >= ClaimEvery)
             {

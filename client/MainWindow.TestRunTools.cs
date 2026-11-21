@@ -74,7 +74,9 @@ public partial class MainWindow
         if (run.Finished && run.ExitCode is { } code) said.Append($" (exit code {code})");
         said.Append($" on {run.MachineLabel} at {ShortCommit(run.Commit)}{(run.Filter is { } filter ? $", testing only {filter}" : "")}, sent {When(run.CreatedAt)}, started by {(run.ByAgent ? "an agent" : "a person")}");
         if (run.Checks > 0) said.Append($". Checks: {TestChecks.Summary(run.ChecksPassed, run.ChecksFailed, run.ChecksSkipped)}");
-        return said.Append('.').ToString();
+        said.Append('.');
+        if (run.HeldBackText is { } heldBack) said.Append($" {heldBack}");
+        return said.ToString();
     }
 
     private async Task<object> ListTestRunsForAgentAsync(Project project, JsonObject given)
@@ -242,7 +244,7 @@ public partial class MainWindow
         // Waited for first, with no log, then read whole.
         var watch = Stopwatch.StartNew();
         var (run, _) = await ReadTestRunAsync(id, int.MaxValue);
-        while (run is { Finished: false } && watch.Elapsed.TotalSeconds < seconds)
+        while (run is { Finished: false } or { AwaitingReport: true } && watch.Elapsed.TotalSeconds < seconds)
         {
             await Task.Delay(TimeSpan.FromSeconds(Math.Min(2, Math.Max(0.1, seconds - watch.Elapsed.TotalSeconds))));
             (run, _) = await ReadTestRunAsync(id, int.MaxValue);

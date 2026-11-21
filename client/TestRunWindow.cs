@@ -119,7 +119,8 @@ public sealed class TestRunWindow : Window
                     return;
                 }
                 Show(read.Run);
-                if (read.Run.Finished && !_checksShown)
+                // Lost for now, while its test PC holds back the rest of its report (#124).
+                if (read.Run.Finished && !read.Run.AwaitingReport && !_checksShown)
                 {
                     _checksShown = true;
                     _main.TestRunEnded(read.Run.ProjectId);
@@ -134,7 +135,7 @@ public sealed class TestRunWindow : Window
                 }
                 if (read.Log.Count == 0)
                 {
-                    if (read.Run.Finished) _poll.Stop(); // All of it is here now.
+                    if (read.Run.Finished && !read.Run.AwaitingReport) _poll.Stop(); // All of it is here now.
                     break;
                 }
             }
@@ -152,10 +153,11 @@ public sealed class TestRunWindow : Window
         Title = $"Test run · {_projectName} · {run.MachineLabel} · {sentAt:d MMM HH:mm}";
 
         var verdict = TestRunner.VerdictLabel(run.Status);
-        _status.Text = run.Status == "running" && run.CancelRequested ? "Cancelling…"
+        _status.Text = run.AwaitingReport ? "Held back by a version change"
+            : run.Status == "running" && run.CancelRequested ? "Cancelling…"
             : run.ExitCode is { } code && run.Finished ? $"{verdict} (exit code {code})"
             : verdict;
-        _status.Foreground = run.Status switch
+        _status.Foreground = run.AwaitingReport ? (Brush)FindResource("TextStrong") : run.Status switch
         {
             "passed" => new SolidColorBrush(Color.FromRgb(0x5F, 0xD0, 0x8A)),
             "failed" or "lost" or "timed_out" or "couldnt_run" or "refused" or "expired" => new SolidColorBrush(Color.FromRgb(0xE8, 0x6B, 0x6B)),
@@ -167,7 +169,7 @@ public sealed class TestRunWindow : Window
         var repo = job is null ? "" : $"\n{job.RepoUrl}";
         var what = job?.Filter is { } filter ? $"testing only {filter}, with testWithFilter from {TestsFile.RelativePath} there" : $"running what {TestsFile.RelativePath} says there";
         _projectId = run.ProjectId;
-        _details.Text = $"On {run.MachineLabel}, at {(run.Commit.Length > 12 ? run.Commit[..12] : run.Commit)}, {what}. Started by {(run.ByAgent ? "an agent" : "a person")}.{repo}";
+        _details.Text = $"On {run.MachineLabel}, at {(run.Commit.Length > 12 ? run.Commit[..12] : run.Commit)}, {what}. Started by {(run.ByAgent ? "an agent" : "a person")}.{(run.HeldBackText is { } heldBack ? $"\n{heldBack}" : "")}{repo}";
         _cancel.Visibility = run.Finished ? Visibility.Collapsed : Visibility.Visible;
     }
 

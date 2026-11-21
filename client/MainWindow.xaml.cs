@@ -216,6 +216,13 @@ public partial class MainWindow : Window
         // Only the window that syncs takes test runs, so two windows never run the same one.
         _testMachines = new TestMachines(_database, _server, _devices, () => _sync.HasTurn && _requiredVersion is null);
         Settings.TestMachines = _testMachines;
+
+        // A run ending is when an update that waited for it is installed, rather than a minute later (#124).
+        _testMachines.Changed += () =>
+        {
+            if (UpdateOverlay.Visibility == Visibility.Visible && !_downloading) ShowUpdateMessage();
+            UpdateByItselfIfUnattended();
+        };
         Settings.Start();
 
         // Dev builds aren't installed, so there's nothing for them to update.
@@ -530,8 +537,13 @@ public partial class MainWindow : Window
         const string required = "This update is required to keep using Agent Orange.";
         UpdateMessage.Text = CloningProjectName() is { } name
             ? $"{required} {name} is still cloning, and updating stops that, so you can wait for it to finish first."
+            : TestRunGoingOn() is { } run
+            ? $"{required} A test run for {run} is going on here, and updating would stop it, so this PC installs the update by itself once the run ends."
             : required;
     }
+
+    // Who the test run going on here is for, while there is one (#124).
+    private string? TestRunGoingOn() => _testMachines?.Running is { } runner ? runner.Run.LinkerLabel : null;
 
     private string? CloningProjectName()
     {
@@ -572,6 +584,10 @@ public partial class MainWindow : Window
     {
         if (_downloading || _requiredVersion is null) return;
         if (!ConfirmStoppingClone("Updating")) return;
+
+        // A run updating stops would end as lost, so only the person can choose that; by itself, this
+        // PC waits for the run to end (#124).
+        if (TestRunGoingOn() is { } run && (sender == this || !Dialogs.Confirm($"A test run for {run} is going on here. Updating stops it, and it ends as lost. This PC installs the update by itself once the run ends. Update now anyway?"))) return;
         _downloading = true;
 
         DownloadUpdate.Visibility = Visibility.Collapsed;

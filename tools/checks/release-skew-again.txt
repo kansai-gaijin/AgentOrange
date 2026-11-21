@@ -1,0 +1,15 @@
+# The app started again, as the update that waited for the run starts it, and is on the server's
+# release now. What the run kept goes, from the part the server didn't take, marked held back, so
+# the server takes it for a run it called lost meanwhile, then its end; nothing is kept after.
+heldbacksend
+said "The server took: Part 1, held back"
+said "Ended passed (exit code 0), held back"
+said "The server is on another release and turned its report away"
+said "tested-at-last"
+said "Verdict: Passed (exit code 0)"
+said "Kept: 0"
+filehas "logs/agent-orange.log" "held-back report: passed." 1
+# Sent once only.
+heldbacksend
+notsaid "Part"
+said "Kept: 0"

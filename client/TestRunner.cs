@@ -88,7 +88,7 @@ public sealed record RunHere(string RunId, DateTimeOffset At, string From, strin
 /// .agent-orange/tests.json there, runs prepare and test in a Windows job of their own with this
 /// PC's overrides, and streams the log. Whatever happens, the run ends on the server.
 /// </summary>
-public sealed class TestRunner(LocalDatabase database, DeviceSession devices, TestMachineSettings settings, TestRunInfo run)
+public sealed partial class TestRunner(LocalDatabase database, IRunServer devices, TestMachineSettings settings, TestRunInfo run)
 {
     private static readonly TimeSpan HeartbeatEvery = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan LogEvery = TimeSpan.FromSeconds(1);
@@ -149,13 +149,17 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
             {
                 AppLog.Write($"Test run {run.Id} couldn't send the end of its log: {error.Message}");
             }
-            if (!_lost) await EndOnServerAsync(verdict, exitCode);
+            if (!_lost && !_heldBack) await EndOnServerAsync(verdict, exitCode);
+
+            // The server is on another release and turned it away, so the rest waits for this PC to update.
+            if (!_lost && _heldBack) HoldBack(verdict, exitCode);
         }
+        var note = _truncated ? $"{record.Note} Its log was cut short.".Trim() : record.Note;
         return record with
         {
             Verdict = _lost ? "lost" : verdict,
             ExitCode = exitCode,
-            Note = _truncated ? $"{record.Note} Its log was cut short.".Trim() : record.Note,
+            Note = !_lost && _heldBack ? $"{note} {HeldBackNote}".Trim() : note,
         };
     }
 
@@ -182,6 +186,11 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         for (var tries = 0; tries < 10; tries++)
         {
             var ended = await devices.EndRunAsync(run.Id, verdict, exitCode, _checks);
+            if (ended.VersionsDiffer)
+            {
+                HeldBackBy("its end");
+                return;
+            }
 
             // Checks the server won't take never keep the run from ending: it ends without them.
             if (ended.Status is { } refused && (int)refused is >= 400 and < 500 && refused != HttpStatusCode.Gone && _checks.Count > 0)
@@ -197,7 +206,8 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         AppLog.Write($"Test run {run.Id} ended as {verdict}, but the server couldn't be told.");
     }
 
-    private async Task<(string Verdict, int? ExitCode, RunHere Record)> RunJobAsync(RunHere record)
+    // Only a job that passes every check runs.
+    private async Task<(string Verdict, int? ExitCode, RunHere Record)> CheckedJobAsync(RunHere record)
     {
         (string, int?, RunHere) Refuse(string why)
         {
@@ -239,6 +249,14 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
 
         if (settings.WorkFolder.Trim().Length == 0 || !Path.IsPathFullyQualified(settings.WorkFolder)) return Refuse("this PC has no work folder set.");
         return await RunStepsAsync(job, record);
+    }
+
+    private async Task<(string Verdict, int? ExitCode, RunHere Record)> RunJobAsync(RunHere record)
+    {
+#if DEBUG
+        if (_jobForChecks is { } madeUp) return await RunStepsAsync(madeUp, record);
+#endif
+        return await CheckedJobAsync(record);
     }
 
     // The job checked out: its steps, from checking out to the test command's exit code.
@@ -384,6 +402,23 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         runner.SaySteps();
         lock (runner._pendingLock) return (verdict, record.Note, runner._pending.ToString());
     }
+
+    // Headless checks only: the job run as it is, without a link, by RunForChecksAsync.
+    private TestJob? _jobForChecks;
+
+    /// <summary>
+    /// Headless checks only: a whole run, from a local repo, without a link, telling the server
+    /// it's given (a made-up one) about it as a real run does, ending and all. What this PC keeps of it.
+    /// </summary>
+    internal static async Task<RunHere> RunForChecksAsync(LocalDatabase database, IRunServer server, TestMachineSettings settings, string repo, string commit, string projectName)
+    {
+        var run = new TestRunInfo(MachineLinks.NewId(), "", "", "", "", "a check", "check-project", commit, "", "", "running", null, false, 0, null, null, null, null);
+        var runner = new TestRunner(database, server, settings, run)
+        {
+            _jobForChecks = new TestJob(TestJob.TestsKind, run.Id, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), run.ProjectId, projectName, repo, commit, "tests", []),
+        };
+        return await runner.RunAsync();
+    }
 #endif
 
     /// <summary>A length of time as the log says it: 8s, 2m 14s, 1h 02m.</summary>
@@ -516,7 +551,7 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
             try
             {
                 await FlushAsync();
-                if (DateTimeOffset.UtcNow - lastBeat < HeartbeatEvery) continue;
+                if (_heldBack || DateTimeOffset.UtcNow - lastBeat < HeartbeatEvery) continue;
                 lastBeat = DateTimeOffset.UtcNow;
                 Hear(await devices.HeartbeatAsync(run.Id));
             }
@@ -529,6 +564,11 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
 
     private void Hear(ServerAnswer<RunKeepGoing> answer)
     {
+        if (answer.VersionsDiffer)
+        {
+            HeldBackBy("its report");
+            return;
+        }
         if (answer.Status == HttpStatusCode.Gone)
         {
             // Its lease ran out while this PC couldn't reach the server, so it's been called lost.
@@ -553,6 +593,7 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
     {
         while (!_truncated)
         {
+            if (_heldBack) return; // Kept for after this PC has updated.
             if (_inFlight is null)
             {
                 lock (_pendingLock)
@@ -570,7 +611,7 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
                 _nextSeq++;
                 continue;
             }
-            if (sent.Status is { } status && (int)status is >= 400 and < 500 && status is not (HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests or HttpStatusCode.Gone))
+            if (sent.Status is { } status && (int)status is >= 400 and < 500 && status is not (HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests or HttpStatusCode.Gone or HttpStatusCode.UpgradeRequired))
             {
                 AppLog.Write($"Test run {run.Id}'s log was refused by the server ({(int)status}), so the rest isn't sent.");
                 _truncated = true;
@@ -582,21 +623,23 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
     }
 
     // As much from the front as fits in a part, by its UTF-8 size, never splitting a surrogate pair.
-    private string TakeChunk()
+    private string TakeChunk() => TakeChunk(_pending);
+
+    private static string TakeChunk(StringBuilder pending)
     {
         var bytes = 0;
         var end = 0;
-        while (end < _pending.Length)
+        while (end < pending.Length)
         {
-            var letter = _pending[end];
-            var pair = char.IsHighSurrogate(letter) && end + 1 < _pending.Length && char.IsLowSurrogate(_pending[end + 1]);
+            var letter = pending[end];
+            var pair = char.IsHighSurrogate(letter) && end + 1 < pending.Length && char.IsLowSurrogate(pending[end + 1]);
             var size = pair ? 4 : letter < 0x80 ? 1 : letter < 0x800 ? 2 : 3;
             if (bytes + size > MaxChunkBytes) break;
             bytes += size;
             end += pair ? 2 : 1;
         }
-        var chunk = _pending.ToString(0, end);
-        _pending.Remove(0, end);
+        var chunk = pending.ToString(0, end);
+        pending.Remove(0, end);
         return chunk;
     }
 }

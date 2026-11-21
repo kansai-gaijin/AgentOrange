@@ -219,7 +219,7 @@ public partial class MainWindow
         {
             var log = after == -1 ? new List<RunLogLine> { new(0, _testLogForChecks) } : [];
             return new(new TestRunWithLog(madeUp.Id, madeUp.LinkId, madeUp.Machine, madeUp.MachineLabel, madeUp.Linker, madeUp.LinkerLabel, madeUp.ProjectId, madeUp.Commit, madeUp.Job, madeUp.Mac,
-                madeUp.Status, madeUp.ExitCode, madeUp.CancelRequested, madeUp.CreatedAt, madeUp.StartedAt, madeUp.EndedAt, madeUp.LinkAccess, madeUp.LinkExpiresAt, log, madeUp.ChecksPassed, madeUp.ChecksFailed, madeUp.ChecksSkipped), System.Net.HttpStatusCode.OK);
+                madeUp.Status, madeUp.ExitCode, madeUp.CancelRequested, madeUp.CreatedAt, madeUp.StartedAt, madeUp.EndedAt, madeUp.LinkAccess, madeUp.LinkExpiresAt, log, madeUp.ChecksPassed, madeUp.ChecksFailed, madeUp.ChecksSkipped, madeUp.HeldBack), System.Net.HttpStatusCode.OK);
         }
 #endif
         return await _devices.ReadRunAsync(runId, after);
@@ -363,10 +363,44 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>Headless checks only: the made-up run changes state, as the server would say it had, not being cancelled.</summary>
-    internal void SetTestRunForChecks(string status)
+    /// <summary>
+    /// Headless checks only: the made-up run changes state, as the server would say it had, not
+    /// being cancelled; held back, its report was turned away for coming from another release (#124).
+    /// </summary>
+    internal void SetTestRunForChecks(string status, bool heldBack = false)
     {
-        if (_testRunsForChecks is { Count: > 0 } runs) runs[0] = runs[0] with { Status = status, CancelRequested = false };
+        if (_testRunsForChecks is { Count: > 0 } runs) runs[0] = runs[0] with { Status = status, CancelRequested = false, HeldBack = heldBack };
+    }
+
+    // The made-up server a held-back run told about it, which later takes what was kept.
+    private MadeUpRunServer? _runServerForChecks;
+
+    /// <summary>
+    /// Headless checks only: a whole run here of a folder committed as a repo, telling a made-up
+    /// server that updates after that many parts of its log, which then turns the rest away (#124).
+    /// Its verdict and note, what the server took, and how many reports this PC keeps.
+    /// </summary>
+    internal async Task<string> HeldBackRunForChecksAsync(string repo, int releasedAfterParts)
+    {
+        var commit = await GitTools.CommitAllForChecksAsync(repo) ?? throw new InvalidOperationException($"{repo} couldn't be committed.");
+        _runServerForChecks = new MadeUpRunServer(releasedAfterParts);
+        var settings = new TestMachineSettings(true, "Check PC", [], System.IO.Path.Combine(Headless.DataFolder, "test-runs"));
+        var done = await TestRunner.RunForChecksAsync(_database, _runServerForChecks, settings, repo, commit, "Check project");
+        return $"Verdict: {TestRunner.VerdictLabel(done.Verdict)}. {done.Note}\nThe server took: {string.Join(", ", _runServerForChecks.Took)}\nKept: {TestRunner.HeldReports(_database).Count}";
+    }
+
+    /// <summary>
+    /// Headless checks only: this PC has updated, so the made-up server (a new one, after the app
+    /// started again) takes its release, and the reports kept are sent. What it took, the log
+    /// it was sent, and how many reports this PC still keeps.
+    /// </summary>
+    internal async Task<string> SendHeldReportsForChecksAsync()
+    {
+        var server = _runServerForChecks ?? new MadeUpRunServer(0);
+        server.Updated = true;
+        var (took, logged) = (server.Took.Count, server.Log.Length);
+        await TestRunner.SendHeldReportsAsync(_database, server);
+        return $"The server took: {string.Join(", ", server.Took.Skip(took))}\n{server.Log[logged..]}Kept: {TestRunner.HeldReports(_database).Count}";
     }
 
     /// <summary>
