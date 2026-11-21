@@ -1,0 +1,16 @@
+# A run asked to test only some checks puts its filter in the repo's own testWithFilter, from
+# .agent-orange/tests.json at that commit, and a run without one runs the test command (#93). Runs
+# here use PowerShell and a folder committed as a repo. A file's JSON is one word with no spaces.
+file "filtered/.agent-orange/tests.json" {"test":"Write-Output('all')","testWithFilter":"Write-Output('only:{filter}')"}
+testsfile "filtered" "30 minutes"
+testrun "filtered" "Passed" "Test: Write-Output('all')" "> Write-Output('all')"
+runfilter "Input.Jump*"
+testrun "filtered" "Passed" "Filter: Input.Jump*, put in testWithFilter" "Test: Write-Output('only:Input.Jump*')" "only:Input.Jump*"
+# A commit whose tests.json has no testWithFilter can't take a filter, so the run couldn't run, saying why.
+file "filtered/.agent-orange/tests.json" {"test":"Write-Output('all')"}
+testrun "filtered" "Couldn't run" "This run asked to test only Input.Jump*" "saying how to pass a filter to its tests."
+runfilter ""
+testrun "filtered" "Passed" "Test: Write-Output('all')"
+# testWithFilter has to say where the filter goes.
+file "broken/.agent-orange/tests.json" {"test":"Write-Output('all')","testWithFilter":"Write-Output('none')"}
+testsfile "broken" "must have {filter} where the filter goes"

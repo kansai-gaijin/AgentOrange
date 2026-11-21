@@ -25,9 +25,16 @@ said "Office PC is already testing"
 said "so no other run was sent: run check-run"
 mcp "Agent runs" run_tests machine "office" commit "HEAD"
 said "so no other run was sent"
+# With no machine named, one offering the tags tests.json asks for is picked: Office PC offers windows.
+mcp "Agent runs" run_tests
+said "Picked Office PC: it offers windows, which .agent-orange/tests.json asks for, and it's already testing this commit."
+said "so no other run was sent: run check-run"
+# A filter only when the repo says how to pass one, and only as one plain word.
+mcprefused "Agent runs" run_tests machine "Office PC" filter "Clock.DayNight"
+said "filter: .agent-orange/tests.json at that commit has no \qtestWithFilter\q"
+mcprefused "Agent runs" run_tests filter "Clock;calc"
+said "filter: A filter is one word of letters, digits and"
 # The same rules as a person's runs: a machine not answering, one not linked, a commit not a commit.
-mcprefused "Agent runs" run_tests
-said "run_tests needs machine: this PC is linked to more than one test machine. Its test machines: Laptop, Office PC."
 mcprefused "Agent runs" run_tests machine "Laptop"
 said "machine: Laptop is not answering right now"
 mcprefused "Agent runs" run_tests machine "Basement PC"
@@ -69,6 +76,25 @@ mcprefused "Agent runs" read_test_run run "nope"
 said "run: there's no run nope. list_test_runs gives each run's id."
 mcprefused "Agent runs" read_test_run run "check-run" seconds "900"
 said "seconds must be from 0 to 300"
+# cancel_test_run goes as Cancel run does: one waiting never starts, one running is asked to stop,
+# and one that's ended can't be.
+testrunstate queued
+mcp "Agent runs" cancel_test_run run "check-run"
+said "Cancelled run check-run: it was waiting on Office PC, so it never starts."
+mcp "Agent runs" read_test_run run "check-run" lines "0"
+said "Run check-run: Cancelled on Office PC"
+testrunstate running
+mcp "Agent runs" cancel_test_run run "check-run"
+said "Asked Office PC to stop run check-run."
+mcp "Agent runs" cancel_test_run run "check-run"
+said "Office PC was already asked to stop run check-run"
+mcp "Agent runs" read_test_run run "check-run" lines "0"
+said "Run check-run: Running, cancelling on Office PC"
+testrunstate passed
+mcprefused "Agent runs" cancel_test_run run "check-run"
+said "run: check-run has already ended: Passed. Only a run waiting or running can be cancelled."
+mcprefused "Agent runs" cancel_test_run run "nope"
+said "run: there's no run nope."
 # A check's history, and one that's only ever failed isn't flagged.
 mcp "Agent runs" check_history check "Clock.DayNight"
 said "Clock.DayNight flips between pass and fail at the same commit, on Office PC at"
@@ -83,6 +109,7 @@ said "check: no run of Agent runs has a check called Nothing.Here."
 briefing "Agent runs" "use Agent Orange's run_tests"
 mcptools
 said "run_tests"
+said "cancel_test_run"
 said "check_history"
 # The run list says which runs an agent started, and offers the checks that flip.
 open "Agent runs"

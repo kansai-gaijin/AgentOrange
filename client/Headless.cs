@@ -51,6 +51,8 @@ namespace AgentOrange;
 ///   gitrepo "folder" "origin"   gitclone "from" "to"   borrow "folder"   fileis "path" "text"   (repos in the data folder, the clone testruns borrow from, a file's text)
 ///   filehas "logs/agent-orange.log" "text" 1   (a file in the data folder has that text, that many times, or at least once with no number)
 ///   testrun "folder" "Passed" "text"   (a test run's steps here, from the folder committed as a repo; the verdict and log say that)
+///   runfilter "Input.Jump"   (what later testruns are asked to test only; "" for all)
+///   testmachines "Office PC|busy|windows,gpu" "Laptop|reachable|"   (as if linked to those machines, in that state with those tags, with no runs)
 ///   mcp "Project" update_asset card "Asset 1" status "Needs review"   (an agent's MCP tool; mcprefused expects a refusal)
 ///   mcpjson "Project" add_cards "{\qcards\q:[...]}"   (the same with its arguments as JSON, for lists; mcpjsonrefused too)
 ///   said "text"         notsaid "text"     saidunder 8000   (what the last command said has it, hasn't, or is under so many bytes)
@@ -80,6 +82,7 @@ internal static partial class Headless
 
     private static readonly Queue<string> Answers = new();
     private static string? _borrowForRuns;
+    private static string? _filterForRuns;
     private static string _script = "";
     private static string _output = "";
     private static StreamWriter? _log;
@@ -611,7 +614,7 @@ internal static partial class Headless
                 var runRepo = Path.Combine(DataFolder, parts[1]);
                 var runCommit = await GitTools.CommitAllForChecksAsync(runRepo) ?? throw new InvalidOperationException($"{parts[1]} couldn't be committed.");
                 var runSettings = new TestMachineSettings(true, "Check PC", [], Path.Combine(DataFolder, "test-runs"), BorrowFrom: _borrowForRuns is { } borrowing ? new() { ["check-project"] = borrowing } : null);
-                var (runVerdict, runNote, runLog) = await TestRunner.RunStepsForChecksAsync(runSettings, runRepo, runCommit, "Check project");
+                var (runVerdict, runNote, runLog) = await TestRunner.RunStepsForChecksAsync(runSettings, runRepo, runCommit, "Check project", _filterForRuns);
                 say(runLog.TrimEnd());
                 say($"Verdict: {TestRunner.VerdictLabel(runVerdict)}{(runNote is null ? "" : $". {runNote}")}");
                 if (TestRunner.VerdictLabel(runVerdict) != parts[2]) throw new InvalidOperationException($"The run was {TestRunner.VerdictLabel(runVerdict)}, not {parts[2]}.");
@@ -628,6 +631,14 @@ internal static partial class Headless
             // The clone later testruns borrow from, a folder in the data folder, or "" for none.
             case "borrow":
                 _borrowForRuns = parts[1].Length > 0 ? Path.Combine(DataFolder, parts[1]) : null;
+                break;
+            // What later testruns are asked to test only, as a run's filter, or "" for all of it.
+            case "runfilter":
+                _filterForRuns = parts[1].Length > 0 ? parts[1] : null;
+                break;
+            // As if linked to these machines, with no runs: testmachines "Office PC|busy|windows,gpu" "Laptop|reachable|".
+            case "testmachines" when Active:
+                Main().SetUpTestMachinesForChecks(parts[1..]);
                 break;
             // Fails unless a file in the data folder has exactly this text.
             case "fileis":

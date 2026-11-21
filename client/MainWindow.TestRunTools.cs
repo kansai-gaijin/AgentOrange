@@ -24,13 +24,16 @@ public partial class MainWindow
     [
         new("list_test_runs", "The test machines this PC is linked to, with whether each can take a run now and the tags it offers; the project's recent test runs, newest first, each with its id, machine, commit, state, who started it and how its checks went; and the checks that flip between pass and fail at the same commit or differ between machines.",
             new JsonObject { ["commit"] = Text("Only runs of this commit, by its id or the start of it.") }, [], (_, _) => "", ListTestRunsForAgentAsync),
-        new("run_tests", "Runs the project's tests on a linked test machine, for a commit pushed to origin: the one checked out in the project's folder, or the one given. The machine runs what .agent-orange/tests.json says at that commit. If that machine is already testing the commit, or has it waiting, that run is given back instead of sending another. Then read_test_run with seconds waits for its verdict.",
+        new("run_tests", "Runs the project's tests on a linked test machine, for a commit pushed to origin: the one checked out in the project's folder, or the one given. The machine runs what .agent-orange/tests.json says at that commit. With no machine named, one is picked that offers every tag tests.json asks for, preferring one already testing that commit, then one free now. If that machine is already testing the commit, or has it waiting, that run is given back instead of sending another. Then read_test_run with seconds waits for its verdict.",
             new JsonObject
             {
-                ["machine"] = Text("The test machine, by its name as list_test_runs gives it. Can be left out when only one is linked."),
+                ["machine"] = Text("The test machine, by its name as list_test_runs gives it. Left out, one is picked by the tags .agent-orange/tests.json asks for."),
                 ["commit"] = Text("A commit id, the start of one, or a branch or tag, pushed to origin. The commit checked out in the project's folder if not given."),
+                ["filter"] = Text($"Test only what this names, such as one check: it's put in tests.json's testWithFilter at that commit, where {TestsFile.FilterPlaceholder} is. One word of {TestsFile.FilterCharacters}. All the tests if not given."),
             },
             [], (_, _) => "", RunTestsForAgentAsync),
+        new("cancel_test_run", "Cancels a test run that's waiting or running, as Cancel run in its window does: one waiting never starts, and the machine stops one running and ends it Cancelled. Any run of this project this PC sent or ran, by whoever started it.",
+            new JsonObject { ["run"] = Text("The run's id, from run_tests or list_test_runs.") }, ["run"], (_, _) => "", CancelTestRunForAgentAsync),
         new("read_test_run", "A test run's state and verdict, where and at which commit it ran, who started it, how each check went (when the repo's tests.json names a results file) with any that flip, and the end of its log. With seconds, it first waits up to that long for the run to finish, instead of sleep.",
             new JsonObject
             {
@@ -51,7 +54,7 @@ public partial class MainWindow
     {
         "reachable" => "can take a run now",
         "busy" => "running tests, so a run waits its turn",
-        "expired" => "its link expired, so it needs linking again in Settings › Test machines",
+        "expired" => "past its link's expiry, so it needs linking again in Settings › Test machines",
         "unreachable" => "not answering right now, so it can't take a run until Agent Orange runs there",
         "other_release" => "on another release of Agent Orange, so it can't take a run until it updates",
         var other => other,
@@ -67,7 +70,7 @@ public partial class MainWindow
         var said = new StringBuilder($"run {run.Id}: {TestRunner.VerdictLabel(run.Status)}");
         if (run.Status == "running" && run.CancelRequested) said.Append(", cancelling");
         if (run.Finished && run.ExitCode is { } code) said.Append($" (exit code {code})");
-        said.Append($" on {run.MachineLabel} at {ShortCommit(run.Commit)}, sent {When(run.CreatedAt)}, started by {(run.ByAgent ? "an agent" : "a person")}");
+        said.Append($" on {run.MachineLabel} at {ShortCommit(run.Commit)}{(run.Filter is { } filter ? $", testing only {filter}" : "")}, sent {When(run.CreatedAt)}, started by {(run.ByAgent ? "an agent" : "a person")}");
         if (run.Checks > 0) said.Append($". Checks: {TestChecks.Summary(run.ChecksPassed, run.ChecksFailed, run.ChecksSkipped)}");
         return said.Append('.').ToString();
     }
@@ -109,34 +112,119 @@ public partial class MainWindow
         var links = LinksThisPcSendsOver();
         if (links.Count == 0) throw new McpException(-32602, _testMachines.Problem ?? "This PC isn't linked to any test machines, so there's nowhere to run the tests. Ask the person to link one in Settings › Test machines.");
         var names = string.Join(", ", links.Select(each => each.MachineLabel));
-        MachineLinkInfo link;
+        var filter = Given(given, "filter") is { Length: > 0 } filterAsked ? filterAsked : null;
+        if (filter is not null && TestsFile.FilterProblem(filter) is { } unsafeFilter) throw new McpException(-32602, $"filter: {unsafeFilter}");
+
+        // A machine named is looked at first; otherwise one is picked once the commit's tags are known.
+        MachineLinkInfo? link = null;
         if (Given(given, "machine") is { Length: > 0 } asked)
         {
             link = links.FirstOrDefault(each => each.MachineLabel.Equals(asked, StringComparison.OrdinalIgnoreCase))
                 ?? links.FirstOrDefault(each => each.MachineLabel.StartsWith(asked, StringComparison.OrdinalIgnoreCase))
                 ?? throw new McpException(-32602, $"machine: this PC isn't linked to a test machine called {asked}. Its test machines: {names}.");
-        }
-        else if (links.Count == 1) link = links[0];
-        else throw new McpException(-32602, $"run_tests needs machine: this PC is linked to more than one test machine. Its test machines: {names}.");
 
-        // The same as the Run tests on… list allows.
-        if (link.Status is not ("reachable" or "busy")) throw new McpException(-32602, $"machine: {link.MachineLabel} is {MachineState(link)}.");
+            // The same as the Run tests on… list allows.
+            if (link.Status is not ("reachable" or "busy")) throw new McpException(-32602, $"machine: {link.MachineLabel} is {MachineState(link)}.");
+        }
         var (folder, folderProblem) = await GitFolderAsync(project.Id);
         if (folder is null) throw new McpException(-32602, folderProblem!);
         var named = Given(given, "commit") is { Length: > 0 } commitAsked ? commitAsked : null;
         var (_, commit, setup, problem) = await TestMachines.WhatToSendAsync(folder, named);
         if (problem is not null || commit is null || setup is null) throw new McpException(-32602, $"{(named is null ? "" : "commit: ")}{problem ?? "That commit can't be sent."}");
-        if (setup.Tags.Where(tag => !TestMachines.HasTags(link.MachineTags, [tag])).ToList() is { Count: > 0 } missing)
+        if (TestMachines.FilterProblem(setup, filter) is { } noFilter) throw new McpException(-32602, $"filter: {noFilter}");
+        var runs = await TestRunsAsync(project.Id) ?? [];
+
+        var picked = "";
+        if (link is null) (link, picked) = PickTestMachine(links, setup, runs, project.Id, commit, filter);
+        else if (setup.Tags.Where(tag => !TestMachines.HasTags(link.MachineTags, [tag])).ToList() is { Count: > 0 } missing)
             throw new McpException(-32602, $"machine: {link.MachineLabel} doesn't offer {string.Join(", ", missing)}, which {TestsFile.RelativePath} asks for.{(links.Count > 1 ? $" Its test machines: {names}." : "")}");
 
         // A run of this commit already there is the one to wait for, not a second.
-        if (_testMachines.SameRun(await TestRunsAsync(project.Id) ?? [], link.Id, project.Id, commit) is { } same)
-            return $"{link.MachineLabel} is already {(same.Status == "running" ? "testing" : "waiting to test")} {ShortCommit(commit)}, so no other run was sent: {RunLine(same)} read_test_run with seconds waits for its verdict.";
+        var only = filter is null ? "" : $", testing only {filter}";
+        if (_testMachines.SameRun(runs, link.Id, project.Id, commit, filter) is { } same)
+            return $"{picked}{link.MachineLabel} is already {(same.Status == "running" ? "testing" : "waiting to test")} {ShortCommit(commit)}{only}, so no other run was sent: {RunLine(same)} read_test_run with seconds waits for its verdict.";
 
-        var (runId, failed, existing) = await _testMachines.RunTestsAsync(link, project, folder, commit, TestJob.ByAgent);
-        if (existing is not null) return $"{link.MachineLabel} is already testing {ShortCommit(commit)}, or has it waiting, so no other run was sent: {RunLine(existing)}";
-        if (runId is null) throw new McpException(-32603, failed ?? "The tests couldn't be sent.");
-        return $"Sent {ShortCommit(commit)} to {link.MachineLabel} as run {runId}. It {(link.Status == "busy" ? "waits its turn, as the machine is running tests" : "starts within a few seconds")}, running what {TestsFile.RelativePath} says at that commit ({setup.LimitsText}). read_test_run with run {runId} and seconds waits for its verdict.";
+        var (runId, failed, existing) = await _testMachines.RunTestsAsync(link, project, folder, commit, TestJob.ByAgent, filter);
+        if (existing is not null) return $"{picked}{link.MachineLabel} is already testing {ShortCommit(commit)}{only}, or has it waiting, so no other run was sent: {RunLine(existing)}";
+        if (runId is null) throw new McpException(-32603, $"{picked}{failed ?? "The tests couldn't be sent."}");
+        var what = filter is null ? $"what {TestsFile.RelativePath} says at that commit" : $"testWithFilter from {TestsFile.RelativePath} at that commit, with {filter} for {TestsFile.FilterPlaceholder}";
+        return $"{picked}Sent {ShortCommit(commit)} to {link.MachineLabel} as run {runId}. It {(link.Status == "busy" ? "waits its turn, as the machine is running tests" : "starts within a few seconds")}, running {what} ({setup.LimitsText}). read_test_run with run {runId} and seconds waits for its verdict.";
+    }
+
+    // With no machine named: one offering every tag the repo asks for at that commit, one already
+    // testing it first, then one free now, then one running tests, by name. With more than one
+    // linked, which one and why, said before the rest.
+    private (MachineLinkInfo Link, string Said) PickTestMachine(List<MachineLinkInfo> links, TestSetup setup, List<TestRunInfo> runs, string projectId, string commit, string? filter)
+    {
+        var tags = string.Join(", ", setup.Tags);
+        var offering = links.Where(link => TestMachines.HasTags(link.MachineTags, setup.Tags)).ToList();
+        if (offering.Count == 0)
+        {
+            var offers = string.Join(" ", links.Select(link => $"{link.MachineLabel} offers {(link.MachineTags.Count > 0 ? string.Join(", ", link.MachineTags) : "no tags")}."));
+            throw new McpException(-32602, $"No test machine this PC is linked to offers {tags}, which {TestsFile.RelativePath} asks for. {offers} A machine's tags are set in its own Settings › Test machines.");
+        }
+        var usable = offering.Where(link => link.Status is "reachable" or "busy").ToList();
+        if (usable.Count == 0)
+        {
+            var fit = setup.Tags.Length > 0 ? $" offering {tags}, which {TestsFile.RelativePath} asks for," : "";
+            throw new McpException(-32602, $"No test machine{fit} can take a run now: {string.Join(" ", offering.Select(link => $"{link.MachineLabel} is {MachineState(link)}."))}");
+        }
+        var link = usable
+            .OrderBy(each => _testMachines.SameRun(runs, each.Id, projectId, commit, filter) is null ? 1 : 0)
+            .ThenBy(each => each.Status == "reachable" ? 0 : 1)
+            .ThenBy(each => each.MachineLabel, StringComparer.CurrentCultureIgnoreCase)
+            .First();
+        if (links.Count == 1) return (link, "");
+        var why = setup.Tags.Length > 0 ? $"it offers {tags}, which {TestsFile.RelativePath} asks for, and " : "";
+        var state = _testMachines.SameRun(runs, link.Id, projectId, commit, filter) is not null ? "it's already testing this commit"
+            : link.Status == "reachable" ? "it can take a run now"
+            : "no machine that fits is free now";
+        return (link, $"Picked {link.MachineLabel}: {why}{state}. ");
+    }
+
+    private async Task<object> CancelTestRunForAgentAsync(Project project, JsonObject given)
+    {
+        var asked = Required(given, "run").ToLowerInvariant();
+        var id = await RunIdForAgentAsync(project, asked);
+        var (run, _) = await ReadTestRunAsync(id, int.MaxValue);
+        if (run is null) throw new McpException(-32602, $"run: there's no run {asked} this PC sent or ran, or the server couldn't say. list_test_runs gives each run's id.");
+        if (run.ProjectId != project.Id) throw new McpException(-32602, $"run: {asked} is a run of another project.");
+        if (run.Finished) throw new McpException(-32602, $"run: {run.Id} has already ended: {TestRunner.VerdictLabel(run.Status)}. Only a run waiting or running can be cancelled.");
+        if (run.CancelRequested) return $"{run.MachineLabel} was already asked to stop run {run.Id}, and ends it Cancelled once it has. read_test_run with seconds waits for that.";
+
+        var cancelled = await CancelTestRunAsync(run.Id);
+        if (cancelled.Status == System.Net.HttpStatusCode.Conflict)
+        {
+            var (now, _) = await ReadTestRunAsync(id, int.MaxValue);
+            throw new McpException(-32602, $"run: {run.Id} ended before it could be cancelled{(now is { Finished: true } ? $": {TestRunner.VerdictLabel(now.Status)}" : "")}.");
+        }
+        if (!cancelled.Worked) throw new McpException(-32603, TestMachines.DescribeProblem(cancelled.Status) ?? "The server couldn't cancel the run.");
+        return run.Status == "queued"
+            ? $"Cancelled run {run.Id}: it was waiting on {run.MachineLabel}, so it never starts."
+            : $"Asked {run.MachineLabel} to stop run {run.Id}. It ends it Cancelled within a few seconds, ending what the tests started. read_test_run with seconds waits for that.";
+    }
+
+    /// <summary>Cancels a run, as its window's Cancel run does: on the server, or a made-up one in headless checks.</summary>
+    internal async Task<ServerAnswer<bool>> CancelTestRunAsync(string runId)
+    {
+#if DEBUG
+        if (_testRunsForChecks is { } madeUp && madeUp.FindIndex(run => run.Id == runId) is >= 0 and var at)
+        {
+            if (madeUp[at].Finished) return new(false, System.Net.HttpStatusCode.Conflict);
+            madeUp[at] = madeUp[at].Status == "queued" ? madeUp[at] with { Status = "cancelled", CancelRequested = true } : madeUp[at] with { CancelRequested = true };
+            return new(true, System.Net.HttpStatusCode.NoContent);
+        }
+#endif
+        return await _devices.CancelRunAsync(runId);
+    }
+
+    // A run's id, or the start of one the list has.
+    private async Task<string> RunIdForAgentAsync(Project project, string asked)
+    {
+        if (MachineLinks.IsId(asked)) return asked;
+        var recent = await TestRunsAsync(project.Id) ?? [];
+        var like = recent.Where(run => run.Id == asked).ToList() is { Count: 1 } exact ? exact : [.. recent.Where(run => asked.Length >= 6 && run.Id.StartsWith(asked, StringComparison.OrdinalIgnoreCase))];
+        return like.Count == 1 ? like[0].Id : throw new McpException(-32602, $"run: there's no run {asked}{(like.Count > 1 ? " alone: more than one run starts that way" : "")}. list_test_runs gives each run's id.");
     }
 
     private async Task<object> ReadTestRunForAgentAsync(Project project, JsonObject given)
@@ -147,14 +235,7 @@ public partial class MainWindow
         var lines = given["lines"] is JsonValue linesValue ? linesValue.GetValue<int>() : DefaultLogLines;
         if (lines < 0 || lines > MostLogLines) throw new McpException(-32602, $"lines must be from 0 to {MostLogLines}; it was {lines}.");
 
-        // A run's id, or the start of one the list has.
-        var id = asked;
-        if (!MachineLinks.IsId(asked))
-        {
-            var recent = await TestRunsAsync(project.Id) ?? [];
-            var like = recent.Where(run => run.Id == asked).ToList() is { Count: 1 } exact ? exact : [.. recent.Where(run => asked.Length >= 6 && run.Id.StartsWith(asked, StringComparison.OrdinalIgnoreCase))];
-            id = like.Count == 1 ? like[0].Id : throw new McpException(-32602, $"run: there's no run {asked}{(like.Count > 1 ? " alone: more than one run starts that way" : "")}. list_test_runs gives each run's id.");
-        }
+        var id = await RunIdForAgentAsync(project, asked);
 
         // Waited for first, with no log, then read whole.
         var watch = Stopwatch.StartNew();

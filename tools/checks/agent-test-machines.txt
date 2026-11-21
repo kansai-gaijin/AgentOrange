@@ -1,0 +1,46 @@
+# With more than one test machine linked and none named, run_tests picks one that offers every tag
+# .agent-orange/tests.json asks for at the commit (#93): one already testing it first, then one free
+# now, then one running tests. A filter is passed only as one plain word. Made up as if this PC were
+# linked to these machines, with no runs, as checks have no server; the repo is in the data folder.
+seed "Tagged" 0 0 0
+file "upstream/.agent-orange/tests.json" {"test":"Write-Output('all')","tags":["windows","gpu"],"testWithFilter":"Write-Output('only:{filter}')"}
+gitrepo "upstream"
+gitclone "upstream" "projects/tagged"
+# Studio PC offers both tags and is free; Office PC offers both but is busy; Laptop lacks gpu.
+testmachines "Office PC|busy|windows,gpu" "Laptop|reachable|windows" "Studio PC|reachable|gpu,Windows,node-22"
+mcprefused "Tagged" run_tests
+said "Picked Studio PC: it offers windows, gpu, which .agent-orange/tests.json asks for, and it can take a run now."
+said "This PC has no key for its link to Studio PC. Link it again."
+# With Studio PC away, Office PC waits its turn rather than Laptop, which lacks gpu.
+testmachines "Office PC|busy|windows,gpu" "Laptop|reachable|windows" "Studio PC|unreachable|gpu,windows"
+mcprefused "Tagged" run_tests
+said "Picked Office PC: it offers windows, gpu, which .agent-orange/tests.json asks for, and no machine that fits is free now."
+# None that fits can take a run, and none fits at all, each saying why.
+testmachines "Office PC|expired|windows,gpu" "Laptop|reachable|windows"
+mcprefused "Tagged" run_tests
+said "No test machine offering windows, gpu, which .agent-orange/tests.json asks for, can take a run now: Office PC is past its link's expiry"
+testmachines "Laptop|reachable|windows" "Basement PC|reachable|"
+mcprefused "Tagged" run_tests
+said "No test machine this PC is linked to offers windows, gpu, which .agent-orange/tests.json asks for. Basement PC offers no tags. Laptop offers windows."
+# A machine named is still the one used, and still has to offer the tags.
+mcprefused "Tagged" run_tests machine "Laptop"
+said "machine: Laptop doesn't offer gpu, which .agent-orange/tests.json asks for."
+# One machine linked needs no picking, and still has to offer the tags.
+testmachines "Studio PC|reachable|gpu,windows"
+mcprefused "Tagged" run_tests
+notsaid "Picked"
+said "This PC has no key for its link to Studio PC."
+testmachines "Laptop|reachable|windows"
+mcprefused "Tagged" run_tests
+said "No test machine this PC is linked to offers windows, gpu"
+# A filter goes in tests.json's testWithFilter, as one plain word, never as shell or an option.
+testmachines "Studio PC|reachable|gpu,windows"
+mcprefused "Tagged" run_tests filter "Jump;calc"
+said "filter: A filter is one word of letters, digits and . _ - : / = ~ + *"
+mcprefused "Tagged" run_tests filter "--config=evil"
+said "filter: A filter is one word"
+mcprefused "Tagged" run_tests filter "$(calc)"
+said "filter: A filter is one word"
+mcprefused "Tagged" run_tests filter "Input.Jump*"
+notsaid "filter:"
+said "This PC has no key for its link to Studio PC."

@@ -182,7 +182,7 @@ public partial class MainWindow
             open.Activate();
             return open;
         }
-        var window = new TestRunWindow(this, _devices, runId, projectName) { Owner = null };
+        var window = new TestRunWindow(this, runId, projectName) { Owner = null };
         _testRunWindows[runId] = window;
         window.Closed += (_, _) => _testRunWindows.Remove(runId);
         window.Show();
@@ -266,10 +266,23 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>Headless checks only: the made-up run changes state, as the server would say it had.</summary>
+    /// <summary>Headless checks only: the made-up run changes state, as the server would say it had, not being cancelled.</summary>
     internal void SetTestRunForChecks(string status)
     {
-        if (_testRunsForChecks is { Count: > 0 } runs) runs[0] = runs[0] with { Status = status };
+        if (_testRunsForChecks is { Count: > 0 } runs) runs[0] = runs[0] with { Status = status, CancelRequested = false };
+    }
+
+    /// <summary>
+    /// Headless checks only: as if this PC were linked to these machines, each "name|status|tags"
+    /// with its tags split by commas, and the server had no runs.
+    /// </summary>
+    internal void SetUpTestMachinesForChecks(IEnumerable<string> machines)
+    {
+        var links = machines.Select((each, at) => each.Split('|') is [var name, var status, var tags]
+            ? new MachineLinkInfo($"check-link-{at}", $"machine-{at}", name, [.. tags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)], "me", "This PC", "tests", 0, DateTimeOffset.UtcNow.AddDays(20).ToUnixTimeSeconds(), status, 0)
+            : throw new InvalidOperationException($"{each} isn't name|status|tags.")).ToList();
+        _testMachines.ShowForChecks(new MachinesInfo("me", null, [], links));
+        _testRunsForChecks = [];
     }
 
     /// <summary>Headless checks only: how many run windows are open.</summary>

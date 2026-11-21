@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -20,7 +19,6 @@ public sealed class TestRunWindow : Window
     private static readonly TimeSpan PollEvery = TimeSpan.FromSeconds(1.5);
 
     private readonly MainWindow _main;
-    private readonly DeviceSession _devices;
     private readonly string _runId;
     private readonly string _projectName;
     private readonly TextBlock _status = new() { FontSize = 16, FontWeight = FontWeights.SemiBold };
@@ -45,10 +43,9 @@ public sealed class TestRunWindow : Window
     private int _after = -1;
     private bool _reading;
 
-    public TestRunWindow(MainWindow main, DeviceSession devices, string runId, string projectName)
+    public TestRunWindow(MainWindow main, string runId, string projectName)
     {
         _main = main;
-        _devices = devices;
         _runId = runId;
         _projectName = projectName;
         Title = $"Test run · {projectName}";
@@ -68,7 +65,7 @@ public sealed class TestRunWindow : Window
         _cancel.Click += async (_, _) =>
         {
             _cancel.IsEnabled = false;
-            var cancelled = await _devices.CancelRunAsync(_runId);
+            var cancelled = await _main.CancelTestRunAsync(_runId);
             if (!cancelled.Worked) _cancel.IsEnabled = true;
             await ReadAsync();
         };
@@ -165,16 +162,11 @@ public sealed class TestRunWindow : Window
         };
 
         // The commands are the repo's, which the log shows as the machine read them.
-        var repo = "";
-        try
-        {
-            if (JsonSerializer.Deserialize<TestJob>(run.Job, TestJob.Json) is { } job) repo = $"\n{job.RepoUrl}";
-        }
-        catch (JsonException)
-        {
-        }
+        var job = TestJob.Read(run.Job);
+        var repo = job is null ? "" : $"\n{job.RepoUrl}";
+        var what = job?.Filter is { } filter ? $"testing only {filter}, with testWithFilter from {TestsFile.RelativePath} there" : $"running what {TestsFile.RelativePath} says there";
         _projectId = run.ProjectId;
-        _details.Text = $"On {run.MachineLabel}, at {(run.Commit.Length > 12 ? run.Commit[..12] : run.Commit)}, running what {TestsFile.RelativePath} says there. Started by {(run.ByAgent ? "an agent" : "a person")}.{repo}";
+        _details.Text = $"On {run.MachineLabel}, at {(run.Commit.Length > 12 ? run.Commit[..12] : run.Commit)}, {what}. Started by {(run.ByAgent ? "an agent" : "a person")}.{repo}";
         _cancel.Visibility = run.Finished ? Visibility.Collapsed : Visibility.Visible;
     }
 
