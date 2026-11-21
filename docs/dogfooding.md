@@ -865,3 +865,42 @@ now:
   - A PC that stops taking runs turns down the requests waiting for it, so the PC linking hears why at once.
 - **Checked:** `tools/checks/test-machine-linking.txt` runs both PCs' halves against each other. Both end up with the same key. A job and a renewal signed on one side are taken by the other. The PC linking refuses each of these: a swapped key, a wrong confirmation, a changed or too-long expiry, an answer from another PC, an answer for other access and an answer to another request. The check then goes through the page and the dialog with made-up machines.
 - **Still to try on two real PCs:** linking a PC that's online, one that's away and comes online within the 10 minutes, one on another release, and turning the switch off while a request waits.
+
+## Test machines: the rest of the issue, and Git LFS's own hooks (2026-11-21)
+
+What was left of #93 after agents got their own test runs, and one thing from the Git settings check
+(#20):
+
+- **A machine picked by its tags.** With more than one test machine linked, an agent had to name one,
+  and the project's `tags` in `.agent-orange/tests.json` only refused a machine without them. Now
+  `run_tests` with no machine named picks one that offers every tag the repo asks for at that commit:
+  one already testing it first, then one free now, then one running tests (which waits its turn), and
+  says which and why. None that fits says what each machine offers; none that can take a run says why.
+  AO still knows nothing about what a tag means.
+- **cancel_test_run** for agents, with the same rules as a person's Cancel run: one waiting never
+  starts, one running is asked to stop and ends Cancelled, and one that's ended can't be.
+- **A filter on a run.** An agent checking one fix had to run the whole suite. `tests.json` can now
+  have `testWithFilter`, the test command with `{filter}` where a filter goes, such as
+  `npm test -- -t {filter}`, and `run_tests` takes `filter`. The commands still come only from the
+  repo at the signed commit: the filter travels in the signed job, both PCs check it's one word of
+  letters, digits and `. _ - : / = ~ + *` (so no shell AO uses reads it as anything but a word, and it
+  can't start as an option), and the target puts it in the repo's own command. A commit without
+  `testWithFilter` can't take one. The log shows the filter and the command that ran.
+- **The default branch on the project page.** A failure on the default branch now shows under the
+  folder's actions, with Open the run, until a later run passes there: the latest run of all the
+  tests at the newest commit on origin's default branch that has a verdict. Runs of only some checks,
+  runs that couldn't run, and commits not on that branch say nothing about it.
+- **Disk on the test PC.** A test clone of a big game is tens of GB. Settings › Test machines on the
+  test PC lists its test clones with the disk each uses and when it last ran, and Remove, which asks
+  first. Only folders the runner made are offered, a link inside one is removed as a link and never
+  followed, and no run starts while one is being removed.
+- **Git LFS's hooks asked about in every LFS repo.** The hooks `git lfs install` writes were known to
+  be safe only in Git LFS 3.5's form (printf); the Git LFS 3.4 on the dogfooding PC writes them with
+  echo, so every LFS repo asked before agents could work in it. Both forms are known now, each only
+  when it calls `git lfs` with its own hook's name, and the `filter.lfs` settings only as Git LFS
+  writes them. Anything else in a hook still asks.
+- **Left for #94:** access levels beyond Tests, `agents` and `full`. The Link dialog still offers Tests
+  only.
+- **Checked:** `tools/checks/agent-test-machines.txt`, `test-run-filter.txt`, `test-run-branch.txt`,
+  `test-clones.txt`, `agents-git-lfs.txt`, and `agent-test-runs.txt` for cancel, with made-up machines
+  and runs where a server would be. Still to try on two real PCs: each of these against a real run.
