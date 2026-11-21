@@ -32,8 +32,12 @@ public sealed record EditorDefinition(string Id, string Name, bool IsEngine, Mcp
     public string InstallFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", Name);
 }
 
-/// <summary>ApiReference is the person's own choice of the tool's scripting API reference, a file or a folder, over where it usually is.</summary>
-public sealed record EditorSettings(string ProgramPath, McpKind Kind, string Address, string ApiReference = "");
+/// <summary>
+/// ApiReference is the person's own choice of the tool's scripting API reference, a file or a folder,
+/// over where it usually is. OneAtATime is whether only one agent conversation may use it at once,
+/// as with a game's one editor; null for the usual, which is yes for an engine and no for a tool.
+/// </summary>
+public sealed record EditorSettings(string ProgramPath, McpKind Kind, string Address, string ApiReference = "", bool? OneAtATime = null);
 
 public sealed record EditorInstance(int ProcessId, string WindowTitle, bool HoldsMcp);
 
@@ -111,6 +115,13 @@ public sealed partial class EditorMonitor
         }
         return new EditorSettings(FindProgram(editor) ?? "", editor.DefaultKind, editor.DefaultAddress);
     }
+
+    /// <summary>Only one agent conversation may use it at once (#94): as set in Settings › Editors, or else yes for an engine.</summary>
+    public bool IsOneAtATime(EditorDefinition editor) => SettingsOf(editor).OneAtATime ?? editor.IsEngine;
+
+    /// <summary>A tool by its name or id, as a task's uses or an agent names it, or null when it isn't one.</summary>
+    public static EditorDefinition? Named(string name) =>
+        Definitions.FirstOrDefault(editor => editor.Name.Equals(name.Trim(), StringComparison.OrdinalIgnoreCase) || editor.Id.Equals(name.Trim(), StringComparison.OrdinalIgnoreCase));
 
     public void Save(EditorDefinition editor, EditorSettings settings)
     {

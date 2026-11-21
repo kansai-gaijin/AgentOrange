@@ -4,8 +4,11 @@ using System.Text.Json.Serialization;
 
 namespace AgentOrange;
 
-/// <summary>T3 Code's kinds of background work, and Agent Orange's waits, which hold a turn while it runs.</summary>
-public enum BackgroundKind { Subagent, Command, Monitor, Task, Wait }
+/// <summary>
+/// T3 Code's kinds of background work, Agent Orange's waits, which hold a turn while it runs, and the
+/// parts of a milestone it split across agents (#94), which hold the conversation that split it.
+/// </summary>
+public enum BackgroundKind { Subagent, Command, Monitor, Task, Wait, Part }
 
 /// <summary>
 /// One piece of work an agent left going: a command it started in the background, a Monitor following
@@ -48,7 +51,7 @@ public sealed class BackgroundWork
     public bool IsRunning => Ended is null;
 
     /// <summary>T3's rule: helper agents and other background tasks hold the conversation, and commands and Monitors only once awaited.</summary>
-    public bool Holds => Awaited || Kind is BackgroundKind.Subagent or BackgroundKind.Task;
+    public bool Holds => Awaited || Kind is BackgroundKind.Subagent or BackgroundKind.Task or BackgroundKind.Part;
 }
 
 /// <summary>
@@ -68,8 +71,28 @@ public sealed partial class AgentConversation
     /// <summary>Everything it left going since its program started, the latest last.</summary>
     [JsonIgnore] public List<BackgroundWork> Work { get; } = [];
 
+    /// <summary>
+    /// The parts of a milestone it split across agents, each its own conversation, as Agent Orange keeps
+    /// them (<see cref="SetParts"/>). Unlike the rest, they outlive its program.
+    /// </summary>
+    [JsonIgnore] public List<BackgroundWork> Parts { get; private set; } = [];
+
+    /// <summary>On the window's thread: Stop was asked for its background work, which includes parts of a split it started.</summary>
+    public event Action? PartsStopAsked;
+
     /// <summary>Its background work still running, in the order it started: what the line above the box and the Background work panel list.</summary>
-    [JsonIgnore] public List<BackgroundWork> PendingWork => [.. Work.Where(work => work.IsRunning && work.InBackground && work.Kind != BackgroundKind.Wait)];
+    [JsonIgnore] public List<BackgroundWork> PendingWork => [.. Work.Where(work => work.IsRunning && work.InBackground && work.Kind != BackgroundKind.Wait), .. Parts.Where(part => part.IsRunning)];
+
+    /// <summary>How the parts of its splits stand now. The last of them ending, with no turn going, finishes it.</summary>
+    public void SetParts(List<BackgroundWork> parts)
+    {
+        var held = Parts.Any(part => part.IsRunning);
+        var changed = parts.Count != Parts.Count || parts.Zip(Parts).Any(pair => pair.First.Id != pair.Second.Id || pair.First.IsRunning != pair.Second.IsRunning || pair.First.Activity != pair.Second.Activity);
+        Parts = parts;
+        if (!changed) return;
+        if (held && !IsWorking && BackgroundJobs == 0) FinishSoon();
+        StateChanged?.Invoke();
+    }
 
     /// <summary>How many of those it waits on.</summary>
     [JsonIgnore] public int BackgroundJobs => PendingWork.Count(work => work.Holds);
@@ -103,7 +126,12 @@ public sealed partial class AgentConversation
     {
         if (PendingWork.Count == 0 || IsStoppingWork) return;
         _stoppingWork = DateTimeOffset.UtcNow;
-        if (_codex) StopCodexWork();
+        if (Parts.Any(part => part.IsRunning)) PartsStopAsked?.Invoke();
+        if (Work.All(work => !work.IsRunning || !work.InBackground || work.Kind == BackgroundKind.Wait))
+        {
+            // Only parts, which are conversations of their own: its program goes on.
+        }
+        else if (_codex) StopCodexWork();
         else if (_process is not null) End();
 #if DEBUG
         else if (Headless.Active) WrittenForChecks.Add("(its program ended)");
@@ -128,6 +156,7 @@ public sealed partial class AgentConversation
         BackgroundKind.Monitor => ("monitor", "monitors"),
         BackgroundKind.Task => ("background task", "background tasks"),
         BackgroundKind.Wait => ("wait", "waits"),
+        BackgroundKind.Part => ("part", "parts"),
         _ => ("command", "commands"),
     };
 

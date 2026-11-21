@@ -49,9 +49,12 @@ public static class AssetStatus
 /// A task someone made, in a stage of a project: what's to be done, with notes, a day to have it done
 /// by, a milestone and the card it's about, if it has them. Ticked off by hand. Order is its place
 /// among its milestone's. Evidence is what shows the work, such as a screenshot, and Handoff where
-/// the last conversation on it left off.
+/// the last conversation on it left off. Uses is what it works on that another task at the same time
+/// mustn't: a tool by its name (such as the game's engine), or anything else by a name of the
+/// project's own, such as "save files" or "src/net". Tasks with none in common can run at once (#94).
 /// </summary>
-public sealed record ProjectTask(string Stage, string Title, string? Notes = null, string? Due = null, bool Done = false, string? Milestone = null, double Order = 0, string? Card = null, TaskEvidence[]? Evidence = null, HandoffNote? Handoff = null);
+public sealed record ProjectTask(string Stage, string Title, string? Notes = null, string? Due = null, bool Done = false, string? Milestone = null, double Order = 0, string? Card = null, TaskEvidence[]? Evidence = null, HandoffNote? Handoff = null,
+    string[]? Uses = null);
 
 /// <summary>
 /// A milestone in a stage: what it's for, what has to be true for it to be done, notes about it, and

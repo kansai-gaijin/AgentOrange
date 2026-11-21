@@ -18,9 +18,15 @@ public partial class MainWindow
 
     private void StartMcpServer()
     {
-        _mcp = new McpServer((projectId, method, parameters) => Dispatcher.InvokeAsync(() => McpAnswerAsync(projectId, method, parameters)).Task.Unwrap());
+        _mcp = new McpServer((projectId, conversationId, method, parameters) => Dispatcher.InvokeAsync(() => McpAnswerAsync(projectId, method, parameters, conversationId)).Task.Unwrap());
         _mcp.Start();
     }
+
+    // The conversation the tool call being answered came from, when its relay said, for the length of that call.
+    private static readonly AsyncLocal<string?> McpCaller = new();
+
+    /// <summary>The conversation the tool call being answered came from, or null when its session didn't say.</summary>
+    private AgentConversation? CallingConversation => McpCaller.Value is { } id ? _conversations?.FirstOrDefault(each => each.Id == id) : null;
 
     private const string McpInstructions =
         "Agent Orange holds the whole design of the game: there is no separate design document. Start with get_project, "
@@ -32,6 +38,13 @@ public partial class MainWindow
         + "When a milestone or task is ready for the person to judge, put its pictures, clips, decisions and what you didn't check on its review page with write_review, and read_review for their answer. "
         + "To wait for a file, a log line, a port or a process, use wait_for rather than sleep. "
         + "To test a pushed commit on a linked test machine, use run_tests, then read_test_run with seconds for its verdict; check_history before adding a retry to a check.";
+
+    // Async, so the caller set here flows to the call's own awaits and no further.
+    private async Task<JsonNode?> McpAnswerAsync(string projectId, string method, JsonNode? parameters, string? caller)
+    {
+        McpCaller.Value = caller;
+        return await McpAnswerAsync(projectId, method, parameters);
+    }
 
     private async Task<JsonNode?> McpAnswerAsync(string projectId, string method, JsonNode? parameters) => method switch
     {

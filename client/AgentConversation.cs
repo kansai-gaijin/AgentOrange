@@ -148,6 +148,14 @@ public sealed partial class AgentConversation
     /// <summary>It finished, or wants something, while no one was looking.</summary>
     public bool Unseen { get; set; }
 
+    /// <summary>
+    /// One part of a milestone split across agents (#94): the split it's part of and which part, and
+    /// the Git worktree of the project it works in, when that isn't the project's own folder.
+    /// </summary>
+    public string? PartOf { get; set; }
+    public int PartNumber { get; set; }
+    public string? WorkFolder { get; set; }
+
     [JsonIgnore] public string? Folder { get; set; }
     [JsonIgnore] public bool IsWorking { get; private set; }
     [JsonIgnore] public DateTimeOffset WorkingSince { get; private set; }
@@ -376,7 +384,10 @@ public sealed partial class AgentConversation
     {
         try
         {
-            return HostedSession.Start(AgentProviders.SessionStartInfo(setup.Provider, arguments, Folder!, setup.ToolsFolder), setup.Sessions, setup.HostProgram);
+            var info = AgentProviders.SessionStartInfo(setup.Provider, arguments, Folder!, setup.ToolsFolder);
+            // Agent Orange's MCP relay, which the program starts, says which conversation its calls are from.
+            info.Environment[McpRelay.ConversationVariable] = Id;
+            return HostedSession.Start(info, setup.Sessions, setup.HostProgram);
         }
         catch (Exception error) when (error is Win32Exception or IOException or UnauthorizedAccessException)
         {
