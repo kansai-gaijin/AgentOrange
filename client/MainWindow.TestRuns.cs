@@ -119,7 +119,7 @@ public partial class MainWindow
                 foreach (var each in sent)
                 {
                     var when = DateTimeOffset.FromUnixTimeSeconds((long)each.CreatedAt).ToLocalTime();
-                    Add($"{TestRunner.VerdictLabel(each.Status)} on {each.MachineLabel}, {when:d MMM HH:mm}{(each.Filter is { } only ? $", only {only}" : "")}{(each.ByAgent ? ", started by an agent" : "")}", () => OpenTestRun(each.Id, project.Name));
+                    Add($"{TestRunner.VerdictLabel(each.Status)} on {each.MachineLabel}, {when:d MMM HH:mm}{(each.Filter is { } only ? $", only {only}" : "")}{(each.IsAgent ? ", an agent task" : "")}{(each.ByAgent ? ", started by an agent" : "")}", () => OpenTestRun(each.Id, project.Name));
                 }
             }
 

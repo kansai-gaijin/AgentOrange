@@ -127,6 +127,7 @@ public partial class MainWindow
                     actions.Children.Add(git);
                 }
                 if (!inSection) AddTestRunButton(actions, project, folder);
+                if (!inSection) AddRemoteAgentButton(actions, project, folder);
                 if (actions.Children.Count > 0) body.Children.Add(actions);
                 if (!inSection && _branchFailures.GetValueOrDefault(project.Id) is { } branchFailure) body.Children.Add(BranchFailureRow(project, branchFailure));
             }

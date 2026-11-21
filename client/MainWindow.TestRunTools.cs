@@ -36,7 +36,7 @@ public partial class MainWindow
             [], (_, _) => "", RunTestsForAgentAsync),
         new("cancel_test_run", "Cancels a test run that's waiting or running, as Cancel run in its window does: one waiting never starts, and the machine stops one running and ends it Cancelled. Any run of this project this PC sent or ran, by whoever started it.",
             new JsonObject { ["run"] = Text("The run's id, from run_tests or list_test_runs.") }, ["run"], (_, _) => "", CancelTestRunForAgentAsync),
-        new("read_test_run", "A test run's state and verdict, where and at which commit it ran, who started it, how each check went (when the repo's tests.json names a results file) with any that flip, and the end of its log. With seconds, it first waits up to that long for the run to finish, instead of sleep.",
+        new("read_test_run", "A test run's state and verdict, where and at which commit it ran, who started it, how each check went (when the repo's tests.json names a results file) with any that flip, and the end of its log. With seconds, it first waits up to that long for the run to finish, instead of sleep. An agent task started with start_agent_on reads the same way: its log is its conversation there, ending with the branch its work was pushed to.",
             new JsonObject
             {
                 ["run"] = Text("The run's id, from run_tests or list_test_runs."),
@@ -69,10 +69,11 @@ public partial class MainWindow
     // A run in a line, as agents are told it.
     private static string RunLine(TestRunInfo run)
     {
-        var said = new StringBuilder($"run {run.Id}: {TestRunner.VerdictLabel(run.Status)}");
+        var said = new StringBuilder($"{(run.IsAgent ? "agent task" : "run")} {run.Id}: {TestRunner.VerdictLabel(run.Status)}");
         if (run.Status == "running" && run.CancelRequested) said.Append(", cancelling");
         if (run.Finished && run.ExitCode is { } code) said.Append($" (exit code {code})");
-        said.Append($" on {run.MachineLabel} at {ShortCommit(run.Commit)}{(run.Filter is { } filter ? $", testing only {filter}" : "")}, sent {When(run.CreatedAt)}, started by {(run.ByAgent ? "an agent" : "a person")}");
+        if (run.IsAgent && TestJob.Read(run.Job)?.Title is { } title) said.Append($", \"{title}\"");
+        said.Append($" on {run.MachineLabel} {(run.IsAgent ? "from" : "at")} {ShortCommit(run.Commit)}{(run.Filter is { } filter ? $", testing only {filter}" : "")}{(run.IsAgent ? $", on the branch {TestRunner.AgentBranch(run.Id)}" : "")}, sent {When(run.CreatedAt)}, started by {(run.ByAgent ? "an agent" : "a person")}");
         if (run.Checks > 0) said.Append($". Checks: {TestChecks.Summary(run.ChecksPassed, run.ChecksFailed, run.ChecksSkipped)}");
         said.Append('.');
         if (run.HeldBackText is { } heldBack) said.Append($" {heldBack}");

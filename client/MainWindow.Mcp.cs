@@ -41,7 +41,8 @@ public partial class MainWindow
         + "When a milestone or task is ready for the person to judge, put its pictures, clips, decisions and what you didn't check on its review page with write_review, and read_review for their answer. "
         + "To wait for a file, a log line, a port or a process, use wait_for rather than sleep. "
         + "To test a pushed commit on a linked test machine, use run_tests, then read_test_run with seconds for its verdict; check_history before adding a retry to a check. "
-        + "To have several agents work on a milestone at once, give its tasks their uses, then split_milestone; merge_parts once they're done.";
+        + "To have several agents work on a milestone at once, give its tasks their uses, then split_milestone; merge_parts once they're done. "
+        + "To hand a long task to an agent on another of the person's PCs linked with Agents access, push, then start_agent_on with the whole task, and read_test_run to follow it.";
 
     // Async, so the caller set here flows to the call's own awaits and no further.
     private async Task<JsonNode?> McpAnswerAsync(string projectId, string method, JsonNode? parameters, string? caller)
@@ -196,6 +197,7 @@ public partial class MainWindow
 
         // Test runs on the PCs this one is linked to.
         .. TestRunTools(),
+        .. RemoteAgentTools(),
 
         // A work slice's review page, for the person to judge it on.
         .. ReviewTools(),

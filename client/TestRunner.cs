@@ -208,6 +208,7 @@ public sealed partial class TestRunner(LocalDatabase database, IRunServer device
         "lost" => "Lost",
         "refused" => "Refused",
         "expired" => "Expired, never started",
+        "finished" => "Finished",
         _ => status,
     };
 

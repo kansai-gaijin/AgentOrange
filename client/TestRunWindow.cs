@@ -150,7 +150,7 @@ public sealed class TestRunWindow : Window
     {
         // Each run's window says which run it is, as several can be open.
         var sentAt = DateTimeOffset.FromUnixTimeSeconds((long)run.CreatedAt).ToLocalTime();
-        Title = $"Test run · {_projectName} · {run.MachineLabel} · {sentAt:d MMM HH:mm}";
+        Title = $"{(run.IsAgent ? "Agent task" : "Test run")} · {_projectName} · {run.MachineLabel} · {sentAt:d MMM HH:mm}";
 
         var verdict = TestRunner.VerdictLabel(run.Status);
         _status.Text = run.AwaitingReport ? "Held back by a version change"
@@ -159,7 +159,7 @@ public sealed class TestRunWindow : Window
             : verdict;
         _status.Foreground = run.AwaitingReport ? (Brush)FindResource("TextStrong") : run.Status switch
         {
-            "passed" => new SolidColorBrush(Color.FromRgb(0x5F, 0xD0, 0x8A)),
+            "passed" or "finished" => new SolidColorBrush(Color.FromRgb(0x5F, 0xD0, 0x8A)),
             "failed" or "lost" or "timed_out" or "couldnt_run" or "refused" or "expired" => new SolidColorBrush(Color.FromRgb(0xE8, 0x6B, 0x6B)),
             _ => (Brush)FindResource("TextStrong"),
         };
@@ -169,7 +169,11 @@ public sealed class TestRunWindow : Window
         var repo = job is null ? "" : $"\n{job.RepoUrl}";
         var what = job?.Filter is { } filter ? $"testing only {filter}, with testWithFilter from {TestsFile.RelativePath} there" : $"running what {TestsFile.RelativePath} says there";
         _projectId = run.ProjectId;
-        _details.Text = $"On {run.MachineLabel}, at {(run.Commit.Length > 12 ? run.Commit[..12] : run.Commit)}, {what}. Started by {(run.ByAgent ? "an agent" : "a person")}.{(run.HeldBackText is { } heldBack ? $"\n{heldBack}" : "")}{repo}";
+        var at = run.Commit.Length > 12 ? run.Commit[..12] : run.Commit;
+        _details.Text = run.IsAgent
+            ? $"An agent conversation on {run.MachineLabel}, with its login and settings, from {at}, on the new branch {TestRunner.AgentBranch(run.Id)}, which its commits are pushed to once it's done: {job?.Title}. Started by {(run.ByAgent ? "an agent" : "a person")}.{(run.HeldBackText is { } held ? $"\n{held}" : "")}{repo}"
+            : $"On {run.MachineLabel}, at {at}, {what}. Started by {(run.ByAgent ? "an agent" : "a person")}.{(run.HeldBackText is { } heldBack ? $"\n{heldBack}" : "")}{repo}";
+        _cancel.Content = run.IsAgent ? "Stop the agent" : "Cancel run";
         _cancel.Visibility = run.Finished ? Visibility.Collapsed : Visibility.Visible;
     }
 
