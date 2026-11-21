@@ -15,10 +15,11 @@ public partial class MainWindow
     private readonly HashSet<string> _titlesAsked = [];
 
     // Once a turn has ended with a reply, for a conversation still named by its first message. Once a
-    // run of the app at most, so one whose login couldn't answer is asked again after a restart.
+    // run of the app at most, so one whose login couldn't answer is asked again after a restart. Only
+    // a turn that ended in this run counts, so conversations read as the app starts aren't all asked at once.
     private void WriteTitleIfDue(AgentConversation conversation)
     {
-        if (conversation.TitleFrom is not null || conversation.Settled || conversation.IsWorking || conversation.IsWaiting) return;
+        if (conversation.TitleFrom is not null || conversation.Settled || conversation.IsWorking || conversation.IsWaiting || conversation.TurnEndedAt == default) return;
         if (!conversation.Items.Any(item => item.Kind == AgentItemKind.Assistant && item.Text.Trim().Length > 0)) return;
         if (!_titlesAsked.Add(conversation.Id)) return;
         _ = WriteTitleAsync(conversation);
@@ -42,7 +43,8 @@ public partial class MainWindow
     private async Task<(string? Text, string? Problem)> AskForTitleAsync(AgentConversation conversation, string prompt)
     {
 #if DEBUG
-        if (_titleAnswerForChecks is { } madeUp) return (madeUp, null);
+        // Checks' logins are scripts that only play a turn, so only titleanswer names a conversation there.
+        if (Headless.Active) return (_titleAnswerForChecks, _titleAnswerForChecks is null ? "checks have no real login to ask" : null);
 #endif
         if (AgentProviderFor(conversation) is not { } login) return (null, "it has no login to ask");
         if ((conversation.WorkFolder ?? ProjectFolder(conversation.ProjectId)) is not { } folder) return (null, "its project has no folder on this PC");

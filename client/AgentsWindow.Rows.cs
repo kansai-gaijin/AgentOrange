@@ -420,7 +420,10 @@ public sealed partial class AgentsWindow
             click.Handled = true;
             OfferActions(button, conversation);
         };
-        AutomationProperties.SetName(button, $"{name}, settled");
+        var apart = _clashingTitles.Contains(MainWindow.TitleKey(conversation.Title)) ? MainWindow.TellsApart(conversation) : null;
+        AutomationProperties.SetName(button, apart is null ? $"{name}, settled" : $"{name} ({apart}), settled");
+        AutomationProperties.SetItemType(button, ConversationRowType);
+        if (apart is not null) button.ToolTip = $"{name} · {apart}";
         return button;
     }
 }

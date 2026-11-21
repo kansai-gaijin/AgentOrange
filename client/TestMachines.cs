@@ -213,7 +213,7 @@ public sealed class TestMachines
             if (settings.Accepting && _hasSyncTurn()) await AnswerLinkRequestsAsync();
 
             // What a run kept back while the server was on another release, once this PC has updated (#124).
-            if (_hasSyncTurn() && Running is null && TestRunner.HeldReports(_database).Count > 0)
+            if (_hasSyncTurn() && Running is null && !_devices.VersionsDiffer && TestRunner.HeldReports(_database).Count > 0)
             {
                 await TestRunner.SendHeldReportsAsync(_database, _devices);
                 Changed?.Invoke();
