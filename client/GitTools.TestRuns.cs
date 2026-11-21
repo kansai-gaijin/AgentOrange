@@ -83,6 +83,14 @@ public static partial class GitTools
         return await RunAsync("git", folder, "rev-parse", "HEAD") is { ExitCode: 0 } head ? head.Output.Trim() : null;
     }
 
+    /// <summary>Headless checks only: the branch checked out and the subjects of its latest commits, newest first.</summary>
+    internal static async Task<string> LogForChecksAsync(string folder)
+    {
+        var branch = await RunAsync("git", folder, "symbolic-ref", "--quiet", "--short", "HEAD") is { ExitCode: 0 } named ? named.Output.Trim() : "no branch";
+        var log = await RunAsync("git", folder, "log", "-8", "--format=%s") is { ExitCode: 0 } subjects ? string.Join(" | ", subjects.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries)) : "unknown";
+        return $"on {branch}: {log}";
+    }
+
     /// <summary>Headless checks only: a clone of one folder in the data folder into another, as a person's own clone would be.</summary>
     internal static async Task<bool> CloneForChecksAsync(string from, string to)
     {

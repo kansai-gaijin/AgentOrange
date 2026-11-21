@@ -44,7 +44,7 @@ public partial class MainWindow
     // was away, is taken back, and a turn a restart cut off is told to carry on (#101).
     private void PickUp(AgentConversation conversation)
     {
-        switch (conversation.PickUp(ProjectFolder(conversation.ProjectId)))
+        switch (conversation.PickUp(FolderOf(conversation)))
         {
             case PickedUp.PickedWorking:
                 conversation.Note("Agent Orange restarted while it worked. It went on meanwhile, and is picked back up from where it was.");
@@ -99,6 +99,7 @@ public partial class MainWindow
         };
         conversation.StateChanged += () => ConversationChanged(conversation);
         conversation.TurnCutOff += () => _ = GoOnAfterCutOffAsync(conversation);
+        conversation.PartsStopAsked += () => StopParts(conversation);
     }
 
     // It started or stopped working, or wants the person.
@@ -125,6 +126,9 @@ public partial class MainWindow
         if (conversation.IsWaiting && _agentsWindow?.IsLookingAt(conversation) != true) conversation.Unseen = true;
         conversation.Save(ConversationsFolder);
         _agentsWindow?.ShowConversations();
+
+        // A part of a split milestone, or one waiting on parts, or one that frees a tool or a place for the next part.
+        ParallelChanged();
     }
 
     internal AgentConversation NewConversation(Project project)
@@ -184,9 +188,14 @@ public partial class MainWindow
         // An agent runs Git in the folder as it works, which runs whatever the folder's own settings say to.
         if (await AgentsGitProblemAsync(folder) is { } problem) return problem;
 
-        conversation.Folder = folder;
+        // A part of a split milestone works in its own worktree of the project, which shares its Git settings.
+        if (conversation.WorkFolder is { } own && !Directory.Exists(own)) return $"Its worktree at {own} is gone, so it has nowhere to work. Its branch is still in the project's repo.";
+        conversation.Folder = conversation.WorkFolder ?? folder;
         return null;
     }
+
+    /// <summary>Where a conversation works: its own worktree, for a part of a split milestone, or else the project's folder.</summary>
+    internal string? FolderOf(AgentConversation conversation) => conversation.WorkFolder is { } own && Directory.Exists(own) ? own : ProjectFolder(conversation.ProjectId);
 
     /// <summary>The project's folder on this PC, if it has one.</summary>
     internal string? ProjectFolder(string projectId) =>
@@ -341,6 +350,9 @@ public partial class MainWindow
                 if (ResumesAt(conversation) is not { } resets || resets > DateTimeOffset.UtcNow || DateTimeOffset.UtcNow - resets > TimeSpan.FromHours(24)) continue;
                 await ResumeAsync(conversation);
             }
+
+            // Parts of split milestones waiting for a place, a tool or a login with room.
+            ParallelChanged();
 
             var wanted = _agentsWindow is not null || conversations.Any(each => each.IsLimited);
             if (!wanted || DateTimeOffset.UtcNow - lastProbe < TimeSpan.FromMinutes(5)) return;

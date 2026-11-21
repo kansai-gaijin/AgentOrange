@@ -78,17 +78,18 @@ public partial class MainWindow
     /// Calls one of the MCP tools agents get, in this app, as an agent's session would through the
     /// relay, which a check can't use as it would reach whichever copy of the app is running.
     /// </summary>
-    internal Task<(string Text, bool Refused)> CallMcpForChecks(string projectName, string tool, IReadOnlyList<string> pairs)
+    internal Task<(string Text, bool Refused)> CallMcpForChecks(string projectName, string tool, IReadOnlyList<string> pairs, string? asConversation = null)
     {
         var given = new System.Text.Json.Nodes.JsonObject();
         for (var i = 0; i + 1 < pairs.Count; i += 2) given[pairs[i]] = pairs[i + 1];
-        return CallMcpForChecks(projectName, tool, given);
+        return CallMcpForChecks(projectName, tool, given, asConversation);
     }
 
-    /// <summary>The same, with the arguments as JSON, for lists such as add_cards' cards.</summary>
-    internal async Task<(string Text, bool Refused)> CallMcpForChecks(string projectName, string tool, System.Text.Json.Nodes.JsonObject given)
+    /// <summary>The same, with the arguments as JSON, for lists such as add_cards' cards, and as the conversation with that title calls it, when one is named.</summary>
+    internal async Task<(string Text, bool Refused)> CallMcpForChecks(string projectName, string tool, System.Text.Json.Nodes.JsonObject given, string? asConversation = null)
     {
         var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        McpCaller.Value = asConversation is null ? null : (Conversations.FirstOrDefault(each => each.Title == asConversation) ?? throw new InvalidOperationException($"There's no conversation called {asConversation}.")).Id;
         var result = await McpCallAsync(project.Id, tool, given);
         var text = string.Join("\n", (result["content"] as System.Text.Json.Nodes.JsonArray ?? []).Select(part => part?["text"]?.GetValue<string>()).OfType<string>());
         return (text, result["isError"]?.GetValue<bool>() == true);
@@ -333,6 +334,54 @@ public partial class MainWindow
             "echo {\"type\":\"result\",\"is_error\":false,\"result\":\"Finished the long job.\"}",
             ""));
         Settings.Providers.Save(new AgentProvider(Guid.NewGuid().ToString("N"), ProviderKind.Claude, label, program, Settings.Providers.NewLoginFolder(ProviderKind.Claude), true));
+    }
+
+    /// <summary>
+    /// A Claude login whose program does a part's work of a split milestone, as Claude Code would take a
+    /// turn: it writes a file named after the folder it works in (and with clash, the same shared.txt
+    /// every part writes, which conflicts), commits it there, waits so many seconds, and finishes.
+    /// Called again with the same label, its program is written again.
+    /// </summary>
+    internal void AddWorkLoginForChecks(string label, string folder, int seconds, bool clash)
+    {
+        var place = Path.Combine(Headless.DataFolder, "programs", folder);
+        Directory.CreateDirectory(place);
+        var program = Path.Combine(place, "claude.cmd");
+        File.WriteAllText(program, string.Join("\r\n",
+            "@echo off",
+            "if \"%~1\"==\"--version\" (echo 9.9.9 ^(Claude Code^)& exit /b 0)",
+            "if \"%~1\"==\"auth\" (echo {\"loggedIn\":true}& exit /b 0)",
+            "set /p asked=",
+            "echo {\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"part-check\"}",
+            "echo {\"type\":\"assistant\",\"message\":{\"id\":\"m1\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Started on my part.\"}]}}",
+            "for %%I in (.) do set here=%%~nxI",
+            "echo %here%> \"%here%.txt\"",
+            clash ? "echo %here%> shared.txt" : "rem",
+            "git add -A >nul 2>&1",
+            "git -c user.name=\"Agent Orange check\" -c user.email=agent-orange-check commit -q -m \"Work of %here%\" >nul 2>&1",
+            $"ping -n {seconds + 1} 127.0.0.1 >nul",
+            "echo {\"type\":\"assistant\",\"message\":{\"id\":\"m2\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Committed my part.\"}]}}",
+            "echo {\"type\":\"result\",\"is_error\":false,\"result\":\"Committed my part.\"}",
+            ""));
+        if (Settings.Providers.List().Any(each => each.Label == label)) return;
+        Settings.Providers.Save(new AgentProvider(Guid.NewGuid().ToString("N"), ProviderKind.Claude, label, program, Settings.Providers.NewLoginFolder(ProviderKind.Claude), true));
+    }
+
+    /// <summary>The project's milestones split across agents, how each part stands, and its folder's files, changes and latest commits.</summary>
+    internal async Task<string> ParallelForChecksAsync(string projectName)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == projectName) ?? throw new InvalidOperationException($"There's no project called {projectName}.");
+        var said = new System.Text.StringBuilder();
+        foreach (var run in ParallelRunsHere.Where(each => each.ProjectId == project.Id))
+        {
+            said.AppendLine(PartsReport(run));
+            foreach (var part in run.Parts.Where(part => part.Worktree is not null)) said.AppendLine($"Part {part.Number}'s worktree is {(Directory.Exists(part.Worktree) ? "there" : "gone")}.");
+        }
+        var folder = ProjectFolder(project.Id)!;
+        said.AppendLine($"Files: {string.Join(", ", Directory.EnumerateFiles(folder).Select(Path.GetFileName).Order(StringComparer.Ordinal))}");
+        said.AppendLine($"Not committed: {(await GitTools.NotCommittedAsync(folder) is { } left ? left.Count == 0 ? "none" : string.Join(", ", left) : "unknown")}");
+        said.Append($"Commits: {await GitTools.LogForChecksAsync(folder)}");
+        return said.ToString();
     }
 
     /// <summary>A new conversation about the project, sent a message for real, as the person sends one: its program is started in a session of its own.</summary>

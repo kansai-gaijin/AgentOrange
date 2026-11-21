@@ -103,8 +103,14 @@ public partial class SettingsModal
                 return;
             }
             reference.Text = referencePath;
-            Editors.Save(editor, new EditorSettings(path, chosenKind, cleaned, referencePath));
+            Editors.Save(editor, Editors.SettingsOf(editor) with { ProgramPath = path, Kind = chosenKind, Address = cleaned, ApiReference = referencePath });
         }
+
+        // Only one agent conversation at a time, as a game's one editor allows (#94).
+        var oneAtATime = Toggle(Editors.IsOneAtATime(editor));
+        System.Windows.Automation.AutomationProperties.SetName(oneAtATime, $"{editor.Name}: one agent at a time");
+        oneAtATime.Checked += (_, _) => Editors.Save(editor, Editors.SettingsOf(editor) with { OneAtATime = true });
+        oneAtATime.Unchecked += (_, _) => Editors.Save(editor, Editors.SettingsOf(editor) with { OneAtATime = false });
 
         foreach (var field in new[] { program, address, reference })
         {
@@ -158,6 +164,7 @@ public partial class SettingsModal
             Row("MCP type", "How to reach its MCP. A relay is the program started again by agents, which passes their calls to the open copy.", kind),
             Row("MCP address", "On this PC. For a relay, the arguments that start it.", address),
             Row("API reference", $"A file or folder listing {editor.Name}'s scripting API, such as a generated stub file or its docs. Agents search it before using a name, rather than guessing.{usually}", reference, referenceFile, referenceFolder),
+            Row("One agent at a time", $"Only one agent conversation uses {editor.Name} at once, and a milestone split across agents keeps its tasks that use it in one part, one after another.{(editor.IsEngine ? " On for an engine unless turned off, as the game's project opens in one editor." : "")}", oneAtATime),
         };
 
         // Once it's installed from its releases, the program setting follows it there.

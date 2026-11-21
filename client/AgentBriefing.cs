@@ -55,6 +55,8 @@ public static class AgentBriefing
             - Give a task evidence of its work with update_task's evidence, such as the screenshot or log that shows it done, rather than writing file paths into its notes. Write what's worth knowing about a milestone as a whole in its notes, with update_milestone.
             - When a tool isn't as you expected and it cost a try, such as an argument with another name or a step it needs first, add a lesson with add_lesson, saying the tool and what showed it, so later conversations don't hit it again.
             - When a milestone or task is ready for the person to judge, fill its review page with write_review rather than a long reply: what it did, the pictures, short clips and compare renders that show it, each with the render settings it was taken at, the decisions you made and what you didn't check. The person accepts it or asks for changes there; read_review gives their answer.
+            - You may use subagents (helper agents) for independent pieces inside a task, such as code and its tests while a design note is written. Never start a second copy of a tool that's used one agent at a time, such as the game's engine (marked below); Agent Orange refuses another conversation's calls to it while one has it.
+            - When you plan a milestone, give each task its uses (add_task or update_task uses): the tools it needs, such as the game's engine or Blender, and anything of the project's own that another task at the same time mustn't change, such as save files or a folder of code. Then split_milestone can run the independent ones at once, each part an agent conversation in a Git worktree of its own, while tasks that share something stay in one part, one after another; you wait on the parts and are told when they've stopped, and merge_parts merges their branches in order. message_part steers one. If you're a part yourself, work only on your tasks, in your folder, and commit there.
             - Before you stop with work left over, such as at the end of a turn mid-milestone, write a handoff note with write_handoff on the milestone or task you were on: where things stand, what's still open, the decisions made and the next step, in a few lines. The next conversation starts from it. Agent Orange also asks for one when the conversation is settled.
 
             With Claude Code, Agent Orange's tools are always loaded. Some others load only on demand, such as Monitor and TaskStop: load them with ToolSearch, query select:Monitor,TaskStop, before their first use, and again after your context is summarised, which forgets them. Calling one that isn't loaded fails with "This tool's input schema was not in your prompt".
@@ -82,7 +84,7 @@ public static class AgentBriefing
             var settings = editors.SettingsOf(editor);
             // The same ones the session's MCP config gives it.
             var reaches = settings.Address.Length > 0 && (settings.Kind == McpKind.Http || settings.Kind == McpKind.Relay && File.Exists(settings.ProgramPath));
-            if (reaches) reachable.Add($"- {editor.Name}, through its MCP server \"{editor.Id}\"");
+            if (reaches) reachable.Add($"- {editor.Name}, through its MCP server \"{editor.Id}\"{(editors.IsOneAtATime(editor) ? ", one agent at a time" : "")}");
             else notReachable.Add(editor.Name);
         }
         said.AppendLine(reachable.Count > 0 ? string.Join("\n", reachable) : "- None yet. Editors are set up in Agent Orange's Settings, under Editors.");

@@ -81,7 +81,7 @@ public partial class MainWindow
         Func<(bool Done, string Said)> look;
         if (file is not null)
         {
-            var path = Path.IsPathRooted(file) ? file : Path.Combine(ProjectFolder(project.Id) ?? throw new McpException(-32602, $"file: {file} is a path in the project's folder, and this project has no folder on this PC. Give a whole path."), file);
+            var path = Path.IsPathRooted(file) ? file : Path.Combine(CallerFolder(project) ?? throw new McpException(-32602, $"file: {file} is a path in the project's folder, and this project has no folder on this PC. Give a whole path."), file);
             look = text is null ? FileChange(path, file) : FileText(path, file, text, Yes(given, "existing"));
         }
         else if (port is not null)

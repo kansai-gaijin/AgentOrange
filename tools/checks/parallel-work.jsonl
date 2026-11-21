@@ -1,0 +1,4 @@
+# split
+{"type":"system","subtype":"init","session_id":"lead-check","permissionMode":"auto"}
+{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"Milestone 2 is split across two agents; I'll wait for them."}]},"parent_tool_use_id":null,"session_id":"lead-check"}
+{"type":"result","subtype":"success","is_error":false,"result":"Milestone 2 is split across two agents; I'll wait for them.","session_id":"lead-check"}

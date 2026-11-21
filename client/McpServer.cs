@@ -13,7 +13,7 @@ namespace AgentOrange;
 /// line of JSON-RPC each, to the running app over a pipe only this Windows account can open. The app
 /// answers from its own database, on its window's thread, so what it shows and what agents see agree.
 /// </summary>
-internal sealed class McpServer(Func<string, string, JsonNode?, Task<JsonNode?>> handle)
+internal sealed class McpServer(Func<string, string?, string, JsonNode?, Task<JsonNode?>> handle)
 {
 #if DEBUG
     public const string PipeName = "AgentOrange-Dev-Mcp";
@@ -43,8 +43,9 @@ internal sealed class McpServer(Func<string, string, JsonNode?, Task<JsonNode?>>
         }
     }
 
-    // One agent session: its project first, then a request a line. Each is answered when it's done,
-    // not in turn, so a long one, such as wait_for or open_tool, doesn't hold up the session's others.
+    // One agent session: its project first (and the conversation it's for, after a tab, from a relay
+    // that knows it), then a request a line. Each is answered when it's done, not in turn, so a long
+    // one, such as wait_for or open_tool, doesn't hold up the session's others.
     private async Task ServeOneAsync(NamedPipeServerStream pipe)
     {
         var answering = new List<Task>();
@@ -55,8 +56,9 @@ internal sealed class McpServer(Func<string, string, JsonNode?, Task<JsonNode?>>
                 using var reader = new StreamReader(pipe, new UTF8Encoding(false), leaveOpen: true);
                 await using var writer = new StreamWriter(pipe, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
                 using var writing = new SemaphoreSlim(1, 1);
-                var first = await reader.ReadLineAsync();
-                var projectId = first is not null && first.StartsWith("project:", StringComparison.Ordinal) ? first["project:".Length..] : "";
+                var first = (await reader.ReadLineAsync() ?? "").Split('\t');
+                var projectId = first[0].StartsWith("project:", StringComparison.Ordinal) ? first[0]["project:".Length..] : "";
+                var conversationId = first.Skip(1).FirstOrDefault(part => part.StartsWith("conversation:", StringComparison.Ordinal))?["conversation:".Length..] is { Length: > 0 } named ? named : null;
 
                 async Task SendAsync(JsonObject answer)
                 {
@@ -80,7 +82,7 @@ internal sealed class McpServer(Func<string, string, JsonNode?, Task<JsonNode?>>
                     JsonObject answer;
                     try
                     {
-                        var result = await handle(projectId, method, parameters);
+                        var result = await handle(projectId, conversationId, method, parameters);
                         answer = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = result ?? new JsonObject() };
                     }
                     catch (McpException error)
@@ -151,8 +153,16 @@ internal static class McpRelay
 {
     private static readonly TimeSpan WaitsForApp = TimeSpan.FromMinutes(3);
 
+    /// <summary>
+    /// The conversation a session is for, which Agent Orange puts in its program's environment (and in
+    /// Codex's config for this server), so a call can be told apart from another conversation's, such
+    /// as for a tool only one agent uses at a time.
+    /// </summary>
+    public const string ConversationVariable = "AGENT_ORANGE_CONVERSATION";
+
     public static void Run(string projectId)
     {
+        var conversation = Environment.GetEnvironmentVariable(ConversationVariable) is { Length: > 0 } named && !named.Contains('\t') ? $"\tconversation:{named}" : "";
         var stdin = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
         var stdout = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
         var lockObject = new object();
@@ -205,7 +215,7 @@ internal static class McpRelay
                 {
                     connecting.Connect(2000);
                     var writer = new StreamWriter(connecting, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
-                    writer.WriteLine($"project:{projectId}");
+                    writer.WriteLine($"project:{projectId}{conversation}");
                     lock (lockObject)
                     {
                         pipe = connecting;

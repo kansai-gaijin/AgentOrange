@@ -68,6 +68,12 @@ the mechanic's rules, then the UI on top of those rules, then putting it togethe
 Things that don't depend on each other can go in parallel. Generating, assembling and checking are
 separate tasks. Each task says what done looks like.
 
+Give each task its `uses`: the tools it needs (such as the game's engine, or Blender) and anything of
+the project's own that another task working at the same time mustn't change (such as save files, or a
+folder of code). Tasks that share a use stay one after another; ones with nothing in common can run at
+once when the milestone is split across agents (`split_milestone`). Leave `uses` out only for a task
+that truly needs nothing another task touches, such as a design note.
+
 A task is done only when what it says is met, with evidence: tick it (`update_task`) and say in its
 notes what shows it, such as the screenshots or the play-through. A slice is playable only once it's
 been played (the `play-and-review` skill), never because its code or assets exist. Never mark an

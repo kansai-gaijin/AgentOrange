@@ -19,8 +19,8 @@ public sealed partial class AgentsWindow
     private readonly Border _workLine = new() { Visibility = Visibility.Collapsed, Padding = new Thickness(4, 0, 4, 8) };
     private StackPanel? _workSections; // The open Background work dialog's sections, redrawn as the work changes.
 
-    // T3 lists its kinds in this order.
-    private static readonly BackgroundKind[] KindOrder = [BackgroundKind.Subagent, BackgroundKind.Command, BackgroundKind.Monitor, BackgroundKind.Task];
+    // T3 lists its kinds in this order; parts of a milestone split across agents go first, as the biggest.
+    private static readonly BackgroundKind[] KindOrder = [BackgroundKind.Part, BackgroundKind.Subagent, BackgroundKind.Command, BackgroundKind.Monitor, BackgroundKind.Task];
 
     /// <summary>T3's rule for the line: it waits if any of it is awaited, a subagent, or a background task, and only runs otherwise.</summary>
     private static bool LineWaits(IEnumerable<BackgroundWork> work) => work.Any(each => each.Holds);
@@ -42,7 +42,7 @@ public sealed partial class AgentsWindow
 
         // Muted after the title: a subagent's latest progress, or with several, every label.
         string? description;
-        if (items.Count == 1) description = items[0].Work.Kind == BackgroundKind.Subagent ? OneSpace(items[0].Work.Activity) : null;
+        if (items.Count == 1) description = items[0].Work.Kind is BackgroundKind.Subagent or BackgroundKind.Part ? OneSpace(items[0].Work.Activity) : null;
         else
         {
             var latest = items.Where(each => OneSpace(each.Work.Activity) is not null).OrderByDescending(each => each.Work.ActivityAt).FirstOrDefault();
@@ -52,7 +52,7 @@ public sealed partial class AgentsWindow
         // As T3 lays it out: the icon, the words (cut short with an ellipsis when they don't fit), and the
         // actions straight after them, never squeezed.
         var row = new StackPanel { Orientation = Orientation.Horizontal };
-        var icon = AgentIcons.Line(items.All(each => each.Work.Kind != BackgroundKind.Subagent) ? "terminal" : "circle-dashed", 14, Ocean.MutedText);
+        var icon = AgentIcons.Line(items.All(each => each.Work.Kind is not (BackgroundKind.Subagent or BackgroundKind.Part)) ? "terminal" : "circle-dashed", 14, Ocean.MutedText);
         icon.Margin = new Thickness(0, 1, 6, 0);
         icon.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(icon);
@@ -232,7 +232,9 @@ public sealed partial class AgentsWindow
         var command = work.Command?.Trim();
         var described = work.Title.Trim();
         var title = described.Length > 0 && described != command ? described : command is { Length: > 0 } ? "Command" : AgentConversation.KindWords(work.Kind).One;
-        var state = Ocean.Text(work.Awaited ? "Waiting" : "Running", Ocean.MutedText, 12);
+        // A part says how it stands, such as Running, 1 of 2 tasks done.
+        var stateWords = work.Kind == BackgroundKind.Part && OneSpace(work.Activity) is { } part ? part : work.Awaited ? "Waiting" : "Running";
+        var state = Ocean.Text(stateWords, Ocean.MutedText, 12);
         state.Margin = new Thickness(12, 0, 0, 0);
         state.VerticalAlignment = VerticalAlignment.Bottom;
         var heading = Ocean.Wrapped(title, Ocean.Foreground, 14, 20);
@@ -281,7 +283,7 @@ public sealed partial class AgentsWindow
             AutomationProperties.SetName(shown, $"Output of {title}");
             section.Children.Add(shown);
         }
-        AutomationProperties.SetName(section, $"{title}, {(work.Awaited ? "Waiting" : "Running")}");
+        AutomationProperties.SetName(section, $"{title}, {stateWords}");
         return section;
     }
 }

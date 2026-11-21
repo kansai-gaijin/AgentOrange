@@ -70,6 +70,9 @@ namespace AgentOrange;
 ///                       (a login whose program takes a turn slowly; a conversation sent a message for real, in a session of its own;
 ///                        the conversation to go on with after the app started again; the session and the app ended at once, as a restart of the PC would)
 ///   detach [wmi]        quote "arg" ...   (a program started on its own, outside the app's tree and jobs; arguments as a command line, read back)
+///   worklogin "Label" folder 4 [clash]   mcpas "Title" "Project" tool args...   parallel "Project"
+///                       (a login whose program commits a part's work of a split milestone, clash for a file every part writes;
+///                        an MCP tool as that conversation calls it, refused or not; the splits, the folder's files and commits)
 ///   agent "Project" "message" [codex]      feed "recorded.jsonl" "part"      agentstate
 ///                       (a conversation sent a message with no program behind it, what its program says fed in from a recording beside the script, and how it stands)
 ///   (In said, refuses, allows and writefile, \n is a line break, \t a tab, \q a double quote and \e a backslash.)
@@ -552,6 +555,20 @@ internal static partial class Headless
             case "slowlogin" when Active:
                 Main().AddSlowLoginForChecks(parts[1], parts[2], int.Parse(parts[3]));
                 break;
+            // A login whose program does a part's work of a split milestone: worklogin "Label" folder 4 [clash].
+            case "worklogin" when Active:
+                Main().AddWorkLoginForChecks(parts[1], parts[2], int.Parse(parts[3]), parts.Length > 4 && parts[4] == "clash");
+                break;
+            // One of the MCP tools as the conversation with that title calls it, whether or not it's refused:
+            // mcpas "Title" "Project" open_tool tool "Unreal Engine".
+            case "mcpas":
+                var (asSaid, asRefused) = await Main().CallMcpForChecks(parts[2], parts[3], parts[4..], parts[1]);
+                say($"{parts[3]}{(asRefused ? " refused" : "")}: {asSaid}");
+                break;
+            // The project's milestones split across agents, each part, and its folder's files and commits.
+            case "parallel":
+                say(await Main().ParallelForChecksAsync(parts[1]));
+                break;
             // A new conversation sent a message for real, its program started in a session of its own.
             case "agentsend":
                 await Main().AgentSendForChecks(parts[1], parts[2]);
@@ -835,7 +852,12 @@ internal static partial class Headless
                 if (source == own || source.RootVisual is not FrameworkElement over || over is Window || !over.IsVisible) continue;
                 var at = over.PointToScreen(new Point(0, 0));
                 var offset = target.TransformFromDevice.Transform(new Point(at.X - origin.X, at.Y - origin.Y));
-                layers.Add((over, new Rect(offset, new Size(over.ActualWidth, over.ActualHeight))));
+                var placed = new Rect(offset, new Size(over.ActualWidth, over.ActualHeight));
+
+                // Windows keeps a popup on the screen, far from the window kept off it, which would make a
+                // picture tens of thousands of pixels wide: it's drawn in the middle of the window instead.
+                if (!placed.IntersectsWith(new Rect(size))) placed = new Rect(new Point(Math.Max(0, (size.Width - placed.Width) / 2), Math.Max(0, (size.Height - placed.Height) / 2)), placed.Size);
+                layers.Add((over, placed));
             }
         }
         var bounds = layers.Select(layer => layer.Bounds).Aggregate(Rect.Union);

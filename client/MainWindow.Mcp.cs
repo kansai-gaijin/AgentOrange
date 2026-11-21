@@ -18,9 +18,18 @@ public partial class MainWindow
 
     private void StartMcpServer()
     {
-        _mcp = new McpServer((projectId, method, parameters) => Dispatcher.InvokeAsync(() => McpAnswerAsync(projectId, method, parameters)).Task.Unwrap());
+        _mcp = new McpServer((projectId, conversationId, method, parameters) => Dispatcher.InvokeAsync(() => McpAnswerAsync(projectId, method, parameters, conversationId)).Task.Unwrap());
         _mcp.Start();
     }
+
+    // The conversation the tool call being answered came from, when its relay said, for the length of that call.
+    private static readonly AsyncLocal<string?> McpCaller = new();
+
+    /// <summary>The conversation the tool call being answered came from, or null when its session didn't say.</summary>
+    private AgentConversation? CallingConversation => McpCaller.Value is { } id ? _conversations?.FirstOrDefault(each => each.Id == id) : null;
+
+    /// <summary>Where the calling conversation works, which for a part of a split milestone is its own worktree, or else the project's folder.</summary>
+    private string? CallerFolder(Project project) => CallingConversation is { } caller && caller.ProjectId == project.Id ? FolderOf(caller) : ProjectFolder(project.Id);
 
     private const string McpInstructions =
         "Agent Orange holds the whole design of the game: there is no separate design document. Start with get_project, "
@@ -31,7 +40,15 @@ public partial class MainWindow
         + "When a tool isn't as you expected, add a lesson with add_lesson; before you stop with work left over, write a handoff note with write_handoff. "
         + "When a milestone or task is ready for the person to judge, put its pictures, clips, decisions and what you didn't check on its review page with write_review, and read_review for their answer. "
         + "To wait for a file, a log line, a port or a process, use wait_for rather than sleep. "
-        + "To test a pushed commit on a linked test machine, use run_tests, then read_test_run with seconds for its verdict; check_history before adding a retry to a check.";
+        + "To test a pushed commit on a linked test machine, use run_tests, then read_test_run with seconds for its verdict; check_history before adding a retry to a check. "
+        + "To have several agents work on a milestone at once, give its tasks their uses, then split_milestone; merge_parts once they're done.";
+
+    // Async, so the caller set here flows to the call's own awaits and no further.
+    private async Task<JsonNode?> McpAnswerAsync(string projectId, string method, JsonNode? parameters, string? caller)
+    {
+        McpCaller.Value = caller;
+        return await McpAnswerAsync(projectId, method, parameters);
+    }
 
     private async Task<JsonNode?> McpAnswerAsync(string projectId, string method, JsonNode? parameters) => method switch
     {
@@ -129,10 +146,10 @@ public partial class MainWindow
                 ["open_only"] = Flag("Leave out tasks that are done, as status open does."),
             }, [], (project, given) => ListTasksFor(project, given)),
         new("add_task", "Adds a task, such as one found while working.",
-            new JsonObject { ["title"] = Text("What's to be done."), ["notes"] = Text("Anything more about it."), ["milestone"] = Text("Its milestone, by name or the start of it."), ["page"] = Text("The page of the card it's about."), ["card"] = Text("The card it's about, by name or id."), ["due"] = Text("A day to have it done by, as yyyy-mm-dd."), ["evidence"] = EvidenceArgument() },
+            new JsonObject { ["title"] = Text("What's to be done."), ["notes"] = Text("Anything more about it."), ["milestone"] = Text("Its milestone, by name or the start of it."), ["page"] = Text("The page of the card it's about."), ["card"] = Text("The card it's about, by name or id."), ["due"] = Text("A day to have it done by, as yyyy-mm-dd."), ["evidence"] = EvidenceArgument(), ["uses"] = Text(UsesNote) },
             ["title"], (project, given) => AddTaskFor(project, given)),
-        new("update_task", "Changes a task: ticks it done (or not), or changes what it says, its notes, date, milestone, card or place in the list, or adds evidence of its work.",
-            new JsonObject { ["id"] = Text("The task's id, from list_tasks."), ["done"] = Flag("Whether it's done."), ["title"] = Text("What's to be done."), ["notes"] = Text("Its notes, replacing the old ones."), ["due"] = Text("yyyy-mm-dd, or empty for none."), ["milestone"] = Text("Its milestone, by name, or empty for none."), ["page"] = Text("The page of the card it's about."), ["card"] = Text("The card it's about, or empty for none."), ["position"] = Number("Where it goes among its milestone's tasks, 1 for first; they're listed in this order."), ["evidence"] = EvidenceArgument() },
+        new("update_task", "Changes a task: ticks it done (or not), or changes what it says, its notes, date, milestone, card, what it uses or place in the list, or adds evidence of its work.",
+            new JsonObject { ["id"] = Text("The task's id, from list_tasks."), ["done"] = Flag("Whether it's done."), ["title"] = Text("What's to be done."), ["notes"] = Text("Its notes, replacing the old ones."), ["due"] = Text("yyyy-mm-dd, or empty for none."), ["milestone"] = Text("Its milestone, by name, or empty for none."), ["page"] = Text("The page of the card it's about."), ["card"] = Text("The card it's about, or empty for none."), ["position"] = Number("Where it goes among its milestone's tasks, 1 for first; they're listed in this order."), ["evidence"] = EvidenceArgument(), ["uses"] = Text(UsesNote + " Replaces what it had; empty for nothing.") },
             ["id"], (project, given) => UpdateTaskFor(project, given)),
         new("update_milestone", "Changes a milestone's notes: what's worth knowing about it as a whole, such as how its parts fit, what was tried, or what it waits on. Its name, what it's for and when it's done are the person's to change.",
             new JsonObject { ["milestone"] = Text("The milestone, by its name or the start of it."), ["notes"] = Text("Its notes, in Markdown, replacing the old ones; empty for none."), ["mode"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("replace", "append"), ["description"] = "replace or append: swap the notes for these, or add these at their end. replace when not given." } },
@@ -182,6 +199,9 @@ public partial class MainWindow
 
         // A work slice's review page, for the person to judge it on.
         .. ReviewTools(),
+
+        // A milestone split across agents that work at once.
+        .. ParallelTools(),
     ]);
 
     private async Task<JsonObject> McpCallAsync(string projectId, string name, JsonObject given)
@@ -198,7 +218,10 @@ public partial class MainWindow
         try
         {
             given = CheckedArguments(tool, given);
-            var result = tool.RunAsync is { } runAsync ? await runAsync(project, given) : tool.Run(project, given);
+
+            // A tool only one agent uses at a time is refused while another conversation has it (#94).
+            if (tool.Name is "open_tool" or "use_tool" or "start_tool_call" or "tool_tools" or "focus_tool" && Given(given, "tool") is { Length: > 0 } toolName) TakeToolForCall(project, toolName);
+            var result =tool.RunAsync is { } runAsync ? await runAsync(project, given) : tool.Run(project, given);
             return result is JsonObject made ? made : ToolResult(result.ToString() ?? "");
         }
         catch (McpMissingArgument missing) when (tool.Properties.ContainsKey(missing.Name))
@@ -281,6 +304,7 @@ public partial class MainWindow
         if (task.Due is { } due) said.Append($", by {due}");
         if (task.Card is { } cardId && AssetOwnerChoices(_database, project.Id, stage).FirstOrDefault(choice => choice.Card.Id == cardId) is { Card: not null } belongs) said.Append($", about the {KindOfCard(belongs.Page)} {CardName(belongs.Card, belongs.Page)}");
         if (task.Notes is { Length: > 0 } notes) said.Append($". Notes: {notes.Replace("\n", " ")}");
+        if (task.Uses is { Length: > 0 } uses) said.Append($". Uses: {string.Join(", ", uses)}");
         if (task.Evidence is { Length: > 0 } evidence) said.Append($". Evidence: {EvidenceList(evidence)}");
         return said.ToString();
     }
@@ -558,7 +582,7 @@ public partial class MainWindow
     }
 
     // What list_tasks can give for each task, besides its id.
-    private static readonly string[] TaskFields = ["title", "done", "due", "card", "notes", "evidence", "handoff"];
+    private static readonly string[] TaskFields = ["title", "done", "due", "card", "uses", "notes", "evidence", "handoff"];
 
     private string ListTasksFor(Project project, JsonObject given)
     {
@@ -580,6 +604,7 @@ public partial class MainWindow
             if (fields.Contains("done")) said.Append($"[{(task.Done ? "x" : " ")}] ");
             said.Append(fields.Contains("title") ? $"{task.Title} (task {Short(id)})" : $"task {Short(id)}");
             if (fields.Contains("due") && task.Due is { } due) said.Append($", by {due}");
+            if (fields.Contains("uses") && task.Uses is { Length: > 0 } uses) said.Append($", uses {string.Join(", ", uses)}");
             if (fields.Contains("card") && task.Card is { } cardId && cards.FirstOrDefault(choice => choice.Card.Id == cardId) is { Card: not null } belongs) said.Append($", about the {KindOfCard(belongs.Page)} {CardName(belongs.Card, belongs.Page)}");
             said.AppendLine();
             if (fields.Contains("notes") && task.Notes is { Length: > 0 } notes) said.AppendLine($"  Notes: {notes.Replace("\n", " ")}");
@@ -663,7 +688,7 @@ public partial class MainWindow
         var due = Day(Given(given, "due"), "due") is { Length: > 0 } day ? day : null;
         var title = Required(given, "title");
         var evidence = EvidenceFiles(project, given["evidence"]) is { Count: > 0 } files ? KeepEvidence(project, files) : null;
-        var id = _database.SaveTask(project.Id, null, new ProjectTask(stage, title, Given(given, "notes") is { Length: > 0 } notes ? notes : null, due, false, milestone, order, card, evidence));
+        var id = _database.SaveTask(project.Id, null, new ProjectTask(stage, title, Given(given, "notes") is { Length: > 0 } notes ? notes : null, due, false, milestone, order, card, evidence, Uses: UsesGiven(given) is { Length: > 0 } uses ? uses : null));
         McpChanged(project);
         return $"Added: {TaskSummary(project, id, _database.ListTasks(project.Id, stage).First(each => each.Id == id).Task)}";
     }
@@ -680,6 +705,7 @@ public partial class MainWindow
         if (Day(Given(given, "due"), "due") is { } due) task = task with { Due = due.Length > 0 ? due : null };
         if (MilestoneId(project, Given(given, "milestone")) is { } milestone) task = task with { Milestone = milestone.Length > 0 ? milestone : null };
         if (CardId(project, given) is { } card) task = task with { Card = card.Length > 0 ? card : null };
+        if (UsesGiven(given) is { } uses) task = task with { Uses = uses.Length > 0 ? uses : null };
         if (given["position"] is JsonValue position && position.TryGetValue<int>(out var place))
         {
             // Between the two it now goes between, so nothing else needs moving.

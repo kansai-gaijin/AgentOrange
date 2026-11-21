@@ -191,6 +191,8 @@ public sealed partial class AgentConversation
                     if (Str(each, "command") is { } command) codex["command"] = command;
                     if (each["args"] is JsonArray args) codex["args"] = args.DeepClone();
                     if (each["env"] is JsonObject env) codex["env"] = env.DeepClone();
+                    // Agent Orange's own is told which conversation it's for, as Codex passes few of its own variables on.
+                    if (name == "agent-orange") codex["env"] = new JsonObject { [McpRelay.ConversationVariable] = Id };
                     codex["tool_timeout_sec"] = 3900;
                     config[$"mcp_servers.{name}"] = codex;
                 }
