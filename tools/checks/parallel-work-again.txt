@@ -1,0 +1,27 @@
+# After parallel-work.txt, with the app started again: the splits are kept on this PC, so the one
+# stopped on a conflict still says so, with its part's worktree there to settle it in. Then the
+# settings that decide how many work at once and which tools only one agent uses at a time.
+open "Split project"
+click "Tasks"
+wait "Split across 2 agents, from "
+wait "in shared.txt. Nothing of part 2 was merged"
+wait "Part 2 · Stopped working, 0 of 1 task done · ao/milestone-3-"
+mcp "Split project" parallel_status milestone "Milestone 3"
+said "- Part 1: Merged, 0 of 1 task done."
+said "Last merge: Part 2's branch ao/milestone-3-"
+parallel "Split project"
+said "Part 2's worktree is there."
+said "Not committed: none"
+# Settings › Providers: how many conversations work at once.
+click "← Split project"
+click "← Projects"
+click "Settings"
+click "Providers"
+scroll end
+expect "Conversations at once"
+shot parallel-setting
+# Settings › Engines: the game's engine is used one agent at a time unless turned off.
+tool unreal "programs/unreal/UnrealEditor.exe" ""
+click "Engines"
+expect "One agent at a time"
+shot one-at-a-time

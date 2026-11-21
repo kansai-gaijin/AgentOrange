@@ -14,9 +14,13 @@ namespace AgentOrange;
 /// </summary>
 public partial class MainWindow
 {
+    /// <summary>The split the page shows under a milestone: the one going, or the last one, once over, until it's hidden.</summary>
+    private ParallelRun? ShownRunOf(string projectId, string milestoneId) =>
+        ParallelRunsHere.LastOrDefault(run => run.ProjectId == projectId && run.Milestone == milestoneId) is { } run && (!run.Over || run.MergeNote is not null && !run.Hidden) ? run : null;
+
     /// <summary>What the split's lines show, so they're built again when any of it changes.</summary>
     private string SplitKey(string projectId, string milestoneId) =>
-        RunOf(projectId, milestoneId) is { } run ? $"{run.Id}|{run.MergeNote}|{string.Join("|", run.Parts.Select(part => PartState(run, part).Words))}" : "";
+        ShownRunOf(projectId, milestoneId) is { } run ? $"{run.Id}|{run.MergeNote}|{run.Over}|{string.Join("|", run.Parts.Select(part => PartState(run, part).Words))}" : "";
 
     /// <summary>The header's button that splits the milestone, when it has tasks enough and isn't split already.</summary>
     private Button? SplitButton(Project project, string milestoneId, Milestone milestone, int openTasks)
@@ -54,7 +58,9 @@ public partial class MainWindow
         {
             var where = part.InProjectFolder ? $"In the project's own folder, as {project.Engine} opens the project there" : "In a worktree of its own";
             var uses = part.Uses.Count > 0 ? $" · uses {string.Join(", ", part.Uses)}" : "";
-            rows.Children.Add(FormLabel($"Part {at + 1} · {where}{uses}", above: 10));
+            var label = FormLabel($"Part {at + 1} · {where}{uses}", above: 10);
+            label.TextWrapping = TextWrapping.Wrap;
+            rows.Children.Add(label);
             foreach (var task in part.Tasks) rows.Children.Add(new TextBlock { Text = task.Title, FontSize = 13.5, Foreground = (Brush)FindResource("TextStrong"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(10, 0, 0, 3) });
         }
         if (plan.Parts.Count < 2)
@@ -102,7 +108,7 @@ public partial class MainWindow
     /// <summary>The lines under a split milestone's header: how each part stands, and what can be done with them.</summary>
     private IEnumerable<ListLine> SplitLines(Project project, string milestoneId)
     {
-        if (RunOf(project.Id, milestoneId) is not { } run) yield break;
+        if (ShownRunOf(project.Id, milestoneId) is not { } run) yield break;
         yield return new ListLine($"split:{milestoneId}", SplitKey(project.Id, milestoneId), () => InPage(SplitPanel(project, run), TasksWidth));
     }
 
@@ -131,9 +137,20 @@ public partial class MainWindow
             AutomationProperties.SetName(stop, $"Stop the parts of {run.MilestoneName}");
             actions.Children.Add(stop);
         }
+        else if (run.Over)
+        {
+            var hide = TextButton("Hide", () =>
+            {
+                run.Hidden = true;
+                SaveParallelRuns();
+                if (_openProject?.Id == project.Id) RenderProject(project);
+            });
+            AutomationProperties.SetName(hide, $"Hide the split of {run.MilestoneName}");
+            actions.Children.Add(hide);
+        }
         DockPanel.SetDock(actions, Dock.Right);
         heading.Children.Add(actions);
-        heading.Children.Add(new TextBlock { Text = $"Split across {run.Parts.Count} agents, from {run.BaseBranch}", FontSize = 13.5, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextStrong"), VerticalAlignment = VerticalAlignment.Center });
+        heading.Children.Add(new TextBlock { Text = run.Over ? $"Split across {run.Parts.Count} agents, from {run.BaseBranch}: done" : $"Split across {run.Parts.Count} agents, from {run.BaseBranch}", FontSize = 13.5, FontWeight = FontWeights.SemiBold, Foreground = (Brush)FindResource("TextStrong"), VerticalAlignment = VerticalAlignment.Center });
         panel.Children.Add(heading);
 
         foreach (var part in run.Parts)

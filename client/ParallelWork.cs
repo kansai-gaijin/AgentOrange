@@ -70,6 +70,9 @@ public sealed class ParallelRun
     /// <summary>What the last merge said, such as a conflict.</summary>
     public string? MergeNote { get; set; }
 
+    /// <summary>Over, and taken off the Tasks page by the person.</summary>
+    public bool Hidden { get; set; }
+
     /// <summary>Every part merged or stopped: nothing of it is left.</summary>
     public bool Over => Parts.All(part => part.State is ParallelPart.Merged or ParallelPart.Stopped);
 }

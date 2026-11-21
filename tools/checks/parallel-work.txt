@@ -1,0 +1,121 @@
+# A milestone's open tasks split across agent conversations that work at once (#94). Tasks that
+# share what they use go one after another in one part; the part that uses the game's engine (one
+# agent at a time) works in the project's own folder, and every other part in a Git worktree of its
+# own, on a branch of its own. Each part commits there, and once all have stopped, they're merged
+# in order into the branch they came from, stopping on a conflict with the folder as it was.
+# The logins' programs are scripts: Claude (lead) takes a turn slowly and does nothing, and
+# Claude (parts) commits a file named after the folder it works in.
+seed "Split project" 0 3 0 "Unreal Engine"
+writefile "Split project" "README.md" "Split check\n"
+gitrepo "projects/split-project"
+writefile "Split project" ".git/config" "[user]\n\tname = Agent Orange check\n\temail = agent-orange-check\n"
+slowlogin "Claude (lead)" lead 3
+worklogin "Claude (parts)" parts 4
+mcpjson "Split project" add_tasks "{\qtasks\q:[{\qtitle\q:\qWrite the save format\q,\qmilestone\q:\qMilestone 1\q,\quses\q:\qsave files\q},{\qtitle\q:\qLoad old saves\q,\qmilestone\q:\qMilestone 1\q,\quses\q:\qsave files\q},{\qtitle\q:\qWrite the design note\q,\qmilestone\q:\qMilestone 1\q},{\qtitle\q:\qBuild the test level\q,\qmilestone\q:\qMilestone 1\q,\quses\q:\qUnreal Engine, level art\q},{\qtitle\q:\qPlay-test the level\q,\qmilestone\q:\qMilestone 1\q,\quses\q:\qeditor\q}]}"
+said "5. Added: [ ] Play-test the level"
+said "Uses: editor"
+# How it would split: the two that use save files together, the note alone, and the engine's two
+# (the editor is the game's engine) in the project's folder.
+mcp "Split project" split_milestone milestone "Milestone 1"
+said "Milestone 1 would be split into 3 parts, each a conversation of its own, at most 3 working at once"
+said "- Part 1, in a Git worktree of its own, on a branch of its own, using save files:\n  - Write the save format"
+said "  - Load old saves"
+said "- Part 2, in a Git worktree of its own, on a branch of its own:\n  - Write the design note"
+said "- Part 3, in the project's own folder, as Unreal Engine opens the project there, using Unreal Engine, level art (Unreal Engine one agent at a time):\n  - Build the test level"
+said "Call split_milestone again with start true to start it."
+# With two at once, the independent ones share a part.
+setting "parallel_most_at_once" "2"
+mcp "Split project" split_milestone milestone "Milestone 1"
+said "would be split into 2 parts"
+said "- Part 2, in the project's own folder"
+notsaid "- Part 3"
+setting "parallel_most_at_once" "3"
+# From the Tasks page, with the login that commits.
+open "Split project"
+click "Tasks"
+expect "Uses save files"
+click "Split Milestone 1 across agents"
+expect "Split Milestone 1 across agents"
+expect "Part 3 · In the project's own folder, as Unreal Engine opens the project there · uses Unreal Engine, level art"
+choose 0 "Claude (parts)"
+shot split-form
+click "Start"
+wait "Split across 3 agents, from "
+wait "Part 1 · Working, 0 of 2 tasks done · ao/milestone-1-"
+wait "Part 3 · Working, 0 of 2 tasks done · in the project's folder"
+shot split-working
+# The engine is used one agent at a time: another conversation is refused it while part 3 has it.
+mcpas "Milestone 1 · part 1 of 3" "Split project" open_tool tool "Unreal Engine"
+said "open_tool refused: tool: Unreal Engine is used by one agent at a time (Settings › Editors), and the conversation \qMilestone 1 · part 3 of 3\q is using it now."
+mcpas "Milestone 1 · part 3 of 3" "Split project" open_tool tool "Unreal Engine"
+notsaid "one agent at a time"
+# Each part works in its own folder; the sidebar says which part each is.
+click "Agents"
+window "Agents"
+wait "Part 1 of 3 · Working"
+shot split-sidebar
+window "Agent Orange"
+# Once all have stopped, they're merged in order.
+wait "Merge parts"
+wait "Part 2 · Stopped working, 0 of 1 task done · ao/milestone-1-"
+shot split-finished
+parallel "Split project"
+said "Part 1's worktree is there."
+click "Merge the parts of Milestone 1"
+wait "Merged parts 1, 2, 3 of Milestone 1 into "
+parallel "Split project"
+said "Part 1's worktree is gone."
+said "Part 2's worktree is gone."
+said "Files: README.md, milestone-1-"
+said "split-project.txt"
+said "Not committed: none"
+said "Merge part 2 of Milestone 1 (ao/milestone-1-"
+said "Merge part 1 of Milestone 1 (ao/milestone-1-"
+said "Work of split-project"
+shot split-merged
+# A coordinating agent splits Milestone 2, and waits on its parts as background work, which start with
+# its own login (the slow one, which commits nothing). It's told once they've all stopped.
+mcpjson "Split project" add_tasks "{\qtasks\q:[{\qtitle\q:\qWrite the music note\q,\qmilestone\q:\qMilestone 2\q},{\qtitle\q:\qWrite the sound note\q,\qmilestone\q:\qMilestone 2\q}]}"
+agent "Split project" "Split milestone 2 across agents"
+mcpas "Split milestone 2 across agents" "Split project" split_milestone milestone "Milestone 2" start true
+said "Started.\nMilestone 2, split across 2 agents from "
+said "This conversation waits on the parts as background work"
+feed "parallel-work.jsonl" "split"
+mcp "Split project" parallel_status
+said "- Part 1: Working, 0 of 1 task done. branch ao/milestone-2-"
+agentstate
+said "Working: no, in the background: 2, waited on: 2, waiting on it: yes"
+window "Agents"
+wait "Waiting on 2 parts"
+shot split-parent-waiting
+window "Agent Orange"
+wait "Merge parts"
+sleep 1500
+agentitems
+said "User (Agent Orange): The parts of Milestone 2 have all stopped working. Merge them with merge_parts, or first ask a part for more with message_part."
+said "- Part 2: Stopped working, 0 of 1 task done. branch ao/milestone-2-"
+said "Its last words: Finished the long job."
+mcpas "Split milestone 2 across agents" "Split project" message_part milestone "Milestone 2" part 3 message "Commit it."
+said "message_part refused: part: Milestone 2 has parts 1 to 2; it was 3."
+mcpas "Split milestone 2 across agents" "Split project" merge_parts milestone "Milestone 2"
+said "merge_parts: None of the parts had anything to merge."
+# Two parts that write the same file: the first is merged, the second stops on the conflict, with
+# the project's folder as it was before it.
+worklogin "Claude (parts)" parts 2 clash
+mcpjson "Split project" add_tasks "{\qtasks\q:[{\qtitle\q:\qWrite the credits\q,\qmilestone\q:\qMilestone 3\q},{\qtitle\q:\qWrite the help page\q,\qmilestone\q:\qMilestone 3\q}]}"
+click "Split Milestone 3 across agents"
+choose 0 "Claude (parts)"
+click "Start"
+wait "Split across 2 agents, from "
+wait "Merge parts"
+click "Merge the parts of Milestone 3"
+wait "Part 2's branch ao/milestone-3-"
+wait "conflicts with what's on "
+wait "in shared.txt. Nothing of part 2 was merged, and the project's folder is as it was before it. Part 1 was merged first."
+scroll end
+shot split-conflict
+parallel "Split project"
+said "Not committed: none"
+said "Part 2's worktree is there."
+said "Work of milestone-3-"
+notsaid "Merge part 2 of Milestone 3"

@@ -1041,7 +1041,7 @@ public sealed partial class AgentsWindow : Window
         var meta = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 4, 4, 0) };
         if (item.Automatic)
         {
-            meta.Children.Add(Ocean.IconText("refresh-cw", "Sent for you, to go on after a usage limit", Ocean.MutedText, 12, 12));
+            meta.Children.Add(Ocean.IconText("refresh-cw", AutomaticWhy(item), Ocean.MutedText, 12, 12));
         }
         else
         {
@@ -1056,6 +1056,9 @@ public sealed partial class AgentsWindow : Window
         }
         meta.Opacity = item.Automatic ? 1 : 0;
         message.Children.Add(meta);
+
+        // Why Agent Orange sent it, which before there were other reasons was only ever a usage limit's reset.
+        static string AutomaticWhy(AgentItem sent) => sent.SentFor ?? "Sent for you, to go on after a usage limit";
         message.Background = Brushes.Transparent;
         if (!item.Automatic)
         {

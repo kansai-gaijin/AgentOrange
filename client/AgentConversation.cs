@@ -50,8 +50,9 @@ public sealed class AgentItem
     /// <summary>A message from the person: the pictures and files sent with it.</summary>
     public List<AgentAttachment>? Attachments { get; set; }
 
-    /// <summary>A message Agent Orange sent for the person, such as going on once a usage limit reset.</summary>
+    /// <summary>A message Agent Orange sent for the person, such as going on once a usage limit reset, and why, when it says.</summary>
     public bool Automatic { get; set; }
+    public string? SentFor { get; set; }
 
     /// <summary>A turn's last reply: the files the turn changed, and the checkpoints before and after it, as T3 Code keeps them.</summary>
     public List<TurnChange>? Changes { get; set; }
@@ -259,7 +260,7 @@ public sealed partial class AgentConversation
     /// Sends a message, starting the agent program if it isn't running. What the person is looking at
     /// goes first, in a block Agent Orange writes, so the agent knows what "this" means.
     /// </summary>
-    public void Send(string text, IReadOnlyList<AgentAttachment> attachments, string viewLabel, string viewDetail, Func<Setup> prepare, bool automatic = false)
+    public void Send(string text, IReadOnlyList<AgentAttachment> attachments, string viewLabel, string viewDetail, Func<Setup> prepare, bool automatic = false, string? sentFor = null)
     {
         if (Folder is null) return;
         Settled = false;
@@ -274,7 +275,7 @@ public sealed partial class AgentConversation
         PendingFrom = null;
         PendingTo = null;
         _skillsThisTurn.Clear();
-        Add(new AgentItem { Id = NewId(), Kind = AgentItemKind.User, Text = text, View = viewLabel, Attachments = attachments.Count == 0 ? null : [.. attachments], Automatic = automatic });
+        Add(new AgentItem { Id = NewId(), Kind = AgentItemKind.User, Text = text, View = viewLabel, Attachments = attachments.Count == 0 ? null : [.. attachments], Automatic = automatic, SentFor = automatic ? sentFor : null });
         var named = text.Length > 0 ? text : attachments.Any(attachment => attachment.IsImage) ? "A picture" : $"About {attachments.FirstOrDefault()?.Name}";
         // One line, as T3's titles are.
         named = System.Text.RegularExpressions.Regex.Replace(named, @"\s+", " ").Trim();

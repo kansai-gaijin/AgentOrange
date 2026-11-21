@@ -83,7 +83,8 @@ public partial class MainWindow
             throw new McpException(-32602, $"part: part {part.Number} hasn't started yet ({PartState(run, part).Words}), so there's no conversation to tell.");
         if (await AgentProblemAsync(conversation) is { } problem) throw new McpException(-32602, $"part: part {part.Number} can't be sent anything right now: {problem}");
         var from = CallingConversation is { } caller ? $"\"{TitleOf(caller)}\", which split this milestone" : "the conversation coordinating this milestone";
-        conversation.Send($"From {from}:\n\n{message}", [], ViewLabel(), DescribeView(), () => PrepareAgent(conversation), automatic: true);
+        conversation.Send($"From {from}:\n\n{message}", [], ViewLabel(), DescribeView(), () => PrepareAgent(conversation), automatic: true,
+            sentFor: "Sent by the conversation that split this milestone");
         return $"Sent to part {part.Number}{(conversation.IsWorking ? ", which takes it up after what it's doing now" : "")}.";
     }
 

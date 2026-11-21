@@ -185,7 +185,7 @@ public partial class MainWindow
     internal (string Words, bool Over, bool Busy) PartState(ParallelRun run, ParallelPart part)
     {
         var tasks = _database.ListTasks(run.ProjectId, run.Stage).Where(each => part.Tasks.Contains(each.Id)).ToList();
-        var done = $"{tasks.Count(each => each.Task.Done)} of {part.Tasks.Count} tasks done";
+        var done = $"{tasks.Count(each => each.Task.Done)} of {part.Tasks.Count} {(part.Tasks.Count == 1 ? "task" : "tasks")} done";
         switch (part.State)
         {
             case ParallelPart.Merged:
@@ -333,7 +333,8 @@ public partial class MainWindow
             if (ToolUsed(project, name) is { } tool) _toolUsers[tool.Id] = (conversation.Id, DateTimeOffset.UtcNow);
         }
         AppLog.Write($"Started part {part.Number} of {run.MilestoneName} ({run.Id}) with {login.Label}, in {conversation.Folder}.");
-        conversation.Send(PartBrief(project, run, part), [], ViewLabel(), DescribeView(), () => PrepareAgent(conversation), automatic: true);
+        conversation.Send(PartBrief(project, run, part), [], ViewLabel(), DescribeView(), () => PrepareAgent(conversation), automatic: true,
+            sentFor: $"Sent by Agent Orange: part {part.Number} of {run.MilestoneName}, split across agents");
     }
 
     /// <summary>What a part's conversation is first sent: its tasks, where it works, and the rules of working beside the others.</summary>
@@ -367,7 +368,7 @@ public partial class MainWindow
     private void ShowParts()
     {
         var changedProjects = new HashSet<string>();
-        foreach (var run in ParallelRunsHere)
+        foreach (var run in ParallelRunsHere.Where(run => !run.Over))
         {
             foreach (var part in run.Parts)
             {
@@ -417,7 +418,8 @@ public partial class MainWindow
     private async Task TellParentAsync(AgentConversation parent, ParallelRun run)
     {
         if (parent.Settled || await AgentProblemAsync(parent) is not null) return;
-        parent.Send(PartsReport(run, done: true), [], ViewLabel(), DescribeView(), () => PrepareAgent(parent), automatic: true);
+        parent.Send(PartsReport(run, done: true), [], ViewLabel(), DescribeView(), () => PrepareAgent(parent), automatic: true,
+            sentFor: $"Sent by Agent Orange: the parts of {run.MilestoneName} it waited on have stopped");
     }
 
     /// <summary>How a split's parts stand, for the agent that split it and for parallel_status.</summary>
