@@ -175,6 +175,8 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 - The git actions on a real repo: a commit with a blank message (written by the login), push, a pull request, "Commit on new branch", the default-branch warning.
 - A turn that changes files, to see its changed-files card and open its diff.
 - Each Third Party service's Check, once they have keys (#9). The user plans to add an OpenAI key first.
+- Sessions and tools across restarts (#101) with real agents: a Claude Code and a Codex conversation mid-turn through a `dotnet watch` rebuild and through a real update (the checks use a scripted agent), Unreal or Blender staying open through both, and an AO tool call made while the app is away.
+- Going on with another login (#109) with real logins: a real limit stop, and Claude Code's own extra-usage event (the check feeds a recorded one).
 
 **Dogfooding so far (2026-11-15):**
 - **The design is in AO.** Animal Planet's GDD was brought in by hand through the app: cards with concept art, boards laid out in columns, and fixes along the way (`docs/dogfooding.md`). The user called the first, text-dump pass "so damn lazily" done: use what the app offers (pictures, Title and Image nodes, layout), as a person would.
