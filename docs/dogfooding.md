@@ -994,7 +994,10 @@ milestone, could only run on the PC the person sat at, while the office PC sat i
   limit (8 hours unless the target's own limit says less). Once it's done, the target pushes the new
   branch to origin, refusing to if origin has that name already, and nothing else; the run window,
   `read_test_run` and `cancel_test_run` follow and stop it on the PC that sent it. The conversation
-  stays on the target, settled, named for where it came from.
+  stays on the target, settled, named for where it came from. As T3 fences work a link started, it
+  can't use the target's own links (`run_tests`, `cancel_test_run` and `start_agent_on` refuse it), so
+  what one PC was granted doesn't pass on to the PCs the target links to. Revoking a PC on the target
+  puts its grant back to Tests.
 - **Full access isn't built.** The design gives it one line, "any command", which would let the PC
   linking, rather than the repo or the target's own settings, decide what runs there; an agent task
   already covers what the cases ask for. A request for it is granted Agents at most.

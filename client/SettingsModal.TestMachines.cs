@@ -271,7 +271,7 @@ public partial class SettingsModal
             if (_accessProblem is { } accessProblem) parts.Add(accessProblem);
             parts.Add(new TextBlock
             {
-                Text = "Each PC has Tests access here unless you choose Agents for it: then it can start an agent conversation here, on a project both PCs have, with a task it writes. It works in this PC's own test clone of the project, with this PC's login and settings, as you, and pushes its work to a new branch. Lowering it takes effect at once; more takes effect when that PC links again. A PC you revoke can link again while this PC lets others run tests here, as every PC signed in to your server is yours. To keep one out, remove it under Other devices on the Server page.",
+                Text = "Each PC has Tests access here unless you choose Agents for it: then it can start an agent conversation here, on a project both PCs have, with a task it writes. It works in this PC's own test clone of the project, with this PC's login and settings, as you, and pushes its work to a new branch. Lowering it takes effect at once; more takes effect when that PC links again. A PC you revoke goes back to Tests, and can link again while this PC lets others run tests here, as every PC signed in to your server is yours. To keep one out, remove it under Other devices on the Server page.",
                 FontSize = 12.5,
                 Foreground = (Brush)FindResource("TextMuted"),
                 TextWrapping = TextWrapping.Wrap,
@@ -301,7 +301,7 @@ public partial class SettingsModal
                     : (run.Prepare.Length > 0 ? $"Prepare: {run.Prepare}\n" : "") + (run.Test.Length > 0 ? $"Test: {run.Test}" : "");
                 rows.Add(Row(
                     $"{run.Project} · {TestRunner.VerdictLabel(run.Verdict)}{(run.ExitCode is { } exit ? $" (exit code {exit})" : "")}",
-                    $"From {run.From}, {When(run.At)}, at {ShortCommit(run.Commit)}, in {run.Shell}{(run.Folder.Length > 0 ? $", in {run.Folder}" : "")}.{(commands.Length > 0 ? "\n" + commands : "")}{(run.Note is { } why ? "\n" + why : "")}"));
+                    $"From {run.From}, {When(run.At)}, at {ShortCommit(run.Commit)}, {(run.Task is null ? "in" : "an agent, as")} {run.Shell}{(run.Folder.Length > 0 ? $", in {run.Folder}" : "")}.{(commands.Length > 0 ? "\n" + commands : "")}{(run.Note is { } why ? "\n" + why : "")}"));
             }
             parts.Add(Card([.. rows]));
         }

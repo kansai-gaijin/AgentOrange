@@ -599,6 +599,12 @@ public sealed class TestMachines
         var removed = await _devices.RemoveLinkAsync(link.Id);
         if (!removed.Worked && removed.Status != HttpStatusCode.NotFound) return DescribeProblem(removed.Status) ?? "Could not forget the link.";
         MachineLinks.ForgetKey(_database, link.Id);
+
+        // Revoked here, a PC that links again starts from Tests, as any PC does.
+        if (link.Machine == Latest?.Me && Settings is { Grants: { } grants } settings && grants.ContainsKey(link.Linker))
+        {
+            Save(settings with { Grants = new Dictionary<string, string>(grants.Where(each => each.Key != link.Linker)) });
+        }
         await RefreshAsync();
         return null;
     }

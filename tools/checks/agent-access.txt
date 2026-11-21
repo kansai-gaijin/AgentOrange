@@ -53,6 +53,13 @@ said "What this PC keeps of it: Check task; Write your part of the check and com
 # The conversation stays on this PC, settled, named for where it came from, and never renamed.
 titles
 said "Check task · from Laptop | link"
+# What it was granted ends here: it can't use this PC's own links, as T3 fences work a link started.
+mcpas "Check task · from Laptop" "Remote" start_agent_on task "Go on elsewhere"
+said "start_agent_on refused: This conversation was started on this PC by Laptop, over a link, so it can't start an agent on another PC over this PC's own links."
+mcpas "Check task · from Laptop" "Remote" run_tests
+said "run_tests refused: This conversation was started on this PC by Laptop"
+# This PC's own agents can't start one either, with no PC linked with Agents access.
+mcprefused "Remote" start_agent_on task "Do the long task"
 # Settings › Test machines with links of each access. As the PC linking: one that now grants more
 # says so, with Link again; as the PC linked to, each client's access is chosen here.
 testaccess

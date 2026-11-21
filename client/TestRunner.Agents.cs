@@ -51,7 +51,7 @@ public sealed partial class TestRunner
         var folder = Path.Combine(settings.WorkFolder, FolderName(job));
         var branch = AgentBranch(run.Id);
         var title = job.Title is { Length: > 0 } named ? named : "An agent task";
-        record = record with { Project = job.ProjectName, Folder = folder, Shell = $"agent, {settings.AgentsPermissionMode}", Test = title, Task = job.Task, Branch = branch };
+        record = record with { Project = job.ProjectName, Folder = folder, Shell = $"{settings.AgentsPermissionMode} allows", Test = title, Task = job.Task, Branch = branch };
         Line($"Agent task for {job.ProjectName}, from {run.LinkerLabel}, starting at {job.Commit}");
         Line($"Repo: {job.RepoUrl}");
         Line($"Folder: {folder}, on the new branch {branch}");

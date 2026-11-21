@@ -114,6 +114,7 @@ public partial class MainWindow
 
     private async Task<object> RunTestsForAgentAsync(Project project, JsonObject given)
     {
+        RefuseFromAnotherPc("run tests on another PC");
         var links = LinksThisPcSendsOver();
         if (links.Count == 0) throw new McpException(-32602, _testMachines.Problem ?? "This PC isn't linked to any test machines, so there's nowhere to run the tests. Ask the person to link one in Settings › Test machines.");
         var names = string.Join(", ", links.Select(each => each.MachineLabel));
@@ -189,6 +190,7 @@ public partial class MainWindow
 
     private async Task<object> CancelTestRunForAgentAsync(Project project, JsonObject given)
     {
+        RefuseFromAnotherPc("cancel a run");
         var asked = Required(given, "run").ToLowerInvariant();
         var id = await RunIdForAgentAsync(project, asked);
         var (run, _) = await ReadTestRunAsync(id, int.MaxValue);

@@ -59,8 +59,19 @@ public partial class MainWindow
             ["task"], (_, _) => "", StartAgentOnForAgentAsync),
     ];
 
+    /// <summary>
+    /// A conversation another PC started here never uses this PC's own links, as T3 fences work a
+    /// link started from this machine's own links: what it was granted ends here, and doesn't pass on
+    /// to the PCs this one links to.
+    /// </summary>
+    private void RefuseFromAnotherPc(string what)
+    {
+        if (CallingConversation is { FromPc: { } from }) throw new McpException(-32602, $"This conversation was started on this PC by {from}, over a link, so it can't {what} over this PC's own links. Say in your reply what should be run, for {from} to do it.");
+    }
+
     private async Task<object> StartAgentOnForAgentAsync(Project project, JsonObject given)
     {
+        RefuseFromAnotherPc("start an agent on another PC");
         var task = Required(given, "task");
         var links = LinksThisPcSendsOver();
         var withAgents = links.Where(link => _testMachines.AgentsProblem(link) is null).ToList();
