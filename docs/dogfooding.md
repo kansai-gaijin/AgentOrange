@@ -768,3 +768,26 @@ a dev server read as a job: subagents hold the conversation, and a command does 
 waits on it (the new `background_wait` tool, which the briefing asks for before ending a turn on tests or a
 build), so a server it leaves running shows Running but the conversation is Done. While held, the list row
 says Waiting, settling is refused, and the finished notice waits until nothing held is left.
+
+## Agents: a restart cut their turn short, and a limit made them wait (2026-11-21)
+
+From the same review: Agent Orange owned the processes of the tools it opened and of every agent session,
+so a restart (a dev rebuild, or an update) closed the editor under the agent and cut its turn short, 4
+times in one session (#101). Each time meant reopening the tool and explaining again, and on 20 Nov the
+person wrote out the state by hand (what was uncommitted, which tool to reopen, where to carry on). Usage
+limits stopped work mid-slice about six times, one for about 4 hours, though the person had a second login
+with room (#109).
+
+- **Tools and sessions now outlive the app.** The tools it opens and each agent's program are started on
+  their own, no child of the app's and out of any job it runs in (or by WMI when the job won't let them
+  go). The agent's program runs in a small host, from a copy of the app the update and rebuilds don't
+  touch, which writes everything the agent says to the session's folder. Once the app is back it reads on
+  from where it had got to, says it picked the conversation back up, and the turn finishes as if nothing
+  had happened. The relay to AO's own tools connects again too. A turn whose session went with the app
+  (the PC restarted) is said to be cut off, and the agent is told to check the working tree and its tools
+  and carry on, so the person doesn't write that out.
+- **A limit can move the conversation to another login.** With Settings › Providers › Go on with another
+  login on, the login of the same kind with the most room takes the conversation on at once, its session
+  carried when it can be, or else with the handoff note Agent Orange wrote as it stopped. Only known room
+  counts, so paid extra usage never does, and a login that goes on to extra usage mid-turn is stopped and
+  moved instead.
