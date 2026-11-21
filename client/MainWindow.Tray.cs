@@ -1,4 +1,6 @@
+using System.ComponentModel;
 using System.Windows;
+using System.Windows.Interop;
 using System.Windows.Threading;
 
 namespace AgentOrange;
@@ -9,6 +11,7 @@ public partial class MainWindow
     private const string TrayHintSetting = "tray_hint_shown";
     private Tray? _tray;
     private bool _quitting;
+    private bool _closeChosen; // The person chose Close on the window itself, and its Closing hasn't run yet.
 
     private void StartTray()
     {
@@ -51,9 +54,81 @@ public partial class MainWindow
                 return;
             }
 #endif
-            if (HideToTray()) WindowState = WindowState.Normal;
+            if (HideToTray())
+            {
+                WindowState = WindowState.Normal;
+                AppLog.Write("Started in the tray, as Windows started it.");
+            }
         };
     }
+
+    // Notes the person choosing Close on the window (its button, its menu or Alt+F4), so a close
+    // asked for from elsewhere, such as by Windows or another program, can be told apart.
+    private void WatchForChosenClose()
+    {
+        SourceInitialized += (_, _) =>
+        {
+            if (HwndSource.FromHwnd(new WindowInteropHelper(this).Handle) is not { } source) return;
+            source.AddHook((IntPtr _, int message, IntPtr wParam, IntPtr _, ref bool _) =>
+            {
+                const int SystemCommand = 0x0112, CloseCommand = 0xF060;
+                if (message == SystemCommand && ((int)wParam & 0xFFF0) == CloseCommand) _closeChosen = true;
+                return IntPtr.Zero;
+            });
+        };
+#if DEBUG
+        DevWatch.Start(QuitOutright);
+#endif
+    }
+
+    // Every way the window closes or hides says so in the log, so an app that's gone can be explained.
+    private void CloseOrHide(CancelEventArgs closing)
+    {
+        var chosen = _closeChosen || _quitting;
+        _closeChosen = false;
+        if (_restarting)
+        {
+            AppLog.Write("Closing to restart.");
+            return;
+        }
+#if DEBUG
+        if (!chosen && DevWatch.Active)
+        {
+            QuitOutright("something other than the person closed its window, as dotnet watch does to restart it");
+            return;
+        }
+#endif
+        if (HideToTray())
+        {
+            closing.Cancel = true;
+            AppLog.Write(chosen ? "Closed to the tray." : "Closed to the tray, asked by something other than the person, such as Windows or another program.");
+            return;
+        }
+        closing.Cancel = !ConfirmStoppingClone("Closing");
+        AppLog.Write(closing.Cancel
+            ? "Kept open, as the person chose not to stop what's running."
+            : chosen ? "Closing, as the person chose." : "Closing, asked by something other than the person, such as Windows or another program.");
+    }
+
+#if DEBUG
+    // Under dotnet watch, the next build can't replace the program's files until this copy has gone.
+    private void QuitOutright(string why)
+    {
+        AppLog.Write($"Quitting outright, as {why}.");
+        Dispatcher.InvokeAsync(() =>
+        {
+            _quitting = _restarting = true;
+            Application.Current.Shutdown();
+        });
+
+        // A dialog or a busy window can hold that up, and the build waiting for it can't tell.
+        _ = Task.Delay(TimeSpan.FromSeconds(5)).ContinueWith(_ =>
+        {
+            AppLog.Write("Still running 5 s after being asked to quit, so ending now.");
+            Environment.Exit(0);
+        }, TaskScheduler.Default);
+    }
+#endif
 
     // False means the window should close the way it usually does.
     private bool HideToTray()

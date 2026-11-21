@@ -46,6 +46,7 @@ namespace AgentOrange;
 ///   testmenu "Project" running   testrunstate passed   runwindows 1   (Run tests on…, as if linked to Office PC with a run in that state)
 ///   testchecks "Project" failed   testrunwindow "Project" check-run   (made-up runs whose checks flip, and a run's window)
 ///   gitrepo "folder" "origin"   gitclone "from" "to"   borrow "folder"   fileis "path" "text"   (repos in the data folder, the clone testruns borrow from, a file's text)
+///   filehas "logs/agent-orange.log" "text" 1   (a file in the data folder has that text, that many times, or at least once with no number)
 ///   testrun "folder" "Passed" "text"   (a test run's steps here, from the folder committed as a repo; the verdict and log say that)
 ///   mcp "Project" update_asset card "Asset 1" status "Needs review"   (an agent's MCP tool; mcprefused expects a refusal)
 ///   mcpjson "Project" add_cards "{\qcards\q:[...]}"   (the same with its arguments as JSON, for lists; mcpjsonrefused too)
@@ -578,6 +579,17 @@ internal static partial class Headless
                 var fileText = File.Exists(Path.Combine(DataFolder, parts[1])) ? await File.ReadAllTextAsync(Path.Combine(DataFolder, parts[1])) : null;
                 say($"{parts[1]}: {fileText ?? "not there"}");
                 if (fileText != parts[2]) throw new InvalidOperationException($"{parts[1]} doesn't say {parts[2]}.");
+                break;
+            // A file in the data folder has that text in it, as many times as a third word says (at least once without one).
+            case "filehas":
+                var hasPath = Path.Combine(DataFolder, parts[1]);
+                using (var reading = new FileStream(hasPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    var hasText = await new StreamReader(reading).ReadToEndAsync();
+                    var times = Regex.Matches(hasText, Regex.Escape(parts[2])).Count;
+                    say($"{parts[1]} has \"{parts[2]}\" {times} times");
+                    if (parts.Length > 3 ? times != int.Parse(parts[3]) : times == 0) throw new InvalidOperationException($"{parts[1]} doesn't have {parts[2]} {(parts.Length > 3 ? $"{parts[3]} times" : "in it")}.");
+                }
                 break;
             // Run tests on… for a project, as if linked to Office PC with a run of the commit in that state: testmenu "Project" running.
             case "testmenu" when Active:
