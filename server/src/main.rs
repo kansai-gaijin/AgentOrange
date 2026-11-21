@@ -90,7 +90,10 @@ async fn main() {
                 "/v1/machines/{install}/link-requests",
                 post(machines::request_link),
             )
-            .route("/v1/link-requests/{id}", get(machines::link_request))
+            .route(
+                "/v1/link-requests/{id}",
+                get(machines::link_request).delete(machines::withdraw_link_request),
+            )
             .route(
                 "/v1/link-requests/{id}/accept",
                 post(machines::accept_link_request),

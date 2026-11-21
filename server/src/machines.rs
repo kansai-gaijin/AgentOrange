@@ -2,17 +2,21 @@
 //! Code's linked environments let one machine's agents work on another. PCs here rarely reach
 //! each other, but both always reach this server, so it carries the work as a mailbox.
 //!
-//! A link is made on the target PC with a one-time code that never comes here. The two PCs swap
-//! ephemeral P-256 public keys through here, each authenticated with the code, and derive the
-//! link's key from their ECDH secret, so a code cracked later from what's stored here gives
-//! nothing. Jobs carry a MAC made with that key, over a run id and time the target won't take
-//! twice or late, and say only which commit of which repo to test: the repo URL is the linking
-//! PC's own git remote, and the commands are in the repo, in .agent-orange/tests.json at that
-//! commit. So nothing this server or another paired PC can change decides what runs; whoever can
-//! push to the repo can, which running its tests already trusts. This server can relay, keep,
-//! delay or drop jobs. Verdicts and logs come back unauthenticated. Links are renewed the same
-//! way: a request and an answer each MACed with the link's key. Nothing here knows what a
-//! project, a tag or a command means.
+//! Every PC paired here is the owner's, so linking needs no typed code, as T3 Code mints its own
+//! code when it already has a session on the other machine: this server is that session. The PC
+//! linking asks for a link to a PC that lets others run tests on it, which is that PC's consent,
+//! and that PC answers by itself. The two swap ephemeral P-256 public keys through here, each
+//! request and answer coming from a paired login this server checked, and derive the link's key
+//! from their ECDH secret, which never comes here. So this server is trusted while a link is
+//! made, to pass on the keys as sent, but not after: what it keeps can't sign a job, and a server
+//! taken over later can't make one. Jobs carry a MAC made with that key, over a run id and time
+//! the target won't take twice or late, and say only which commit of which repo to test: the repo
+//! URL is the linking PC's own git remote, and the commands are in the repo, in
+//! .agent-orange/tests.json at that commit. So nothing this server or another paired PC can change
+//! after linking decides what runs; whoever can push to the repo can, which running its tests
+//! already trusts. This server can relay, keep, delay or drop jobs. Verdicts and logs come back
+//! unauthenticated. Links are renewed with a request and an answer each MACed with the link's key.
+//! Nothing here knows what a project, a tag or a command means.
 //!
 //! Everything is keyed by the PC (its install), not its login, as a PC has a login at each of
 //! this server's addresses.
@@ -61,10 +65,8 @@ const RUN_ENDINGS: [&str; 6] = [
     "refused",
 ];
 
-// Link proofs a target turned down, counted per PC linking, as wrong pairing keys are per caller.
-// There's no limit across all PCs, as one PC could then lock out every other: each PC is a
-// paired login, the target also throws a code away after 5 wrong proofs, and a code lasts 5
-// minutes, so guessing 60 bits gets nowhere either way.
+// Link requests a target turned down, counted per PC linking, so one PC can't keep asking. There's
+// no limit across all PCs, as one PC could then lock out every other.
 const MAX_REJECTED_LINKS: u32 = 5;
 const REJECTED_LINK_WINDOW: Duration = Duration::from_secs(60);
 
@@ -168,7 +170,12 @@ pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
          ALTER TABLE machine_links ADD COLUMN IF NOT EXISTS renew_mac TEXT;
          ALTER TABLE machine_links ADD COLUMN IF NOT EXISTS renewed_nonce TEXT;
          ALTER TABLE machine_links ADD COLUMN IF NOT EXISTS renewed_expires_at BIGINT;
-         ALTER TABLE machine_links ADD COLUMN IF NOT EXISTS renewed_mac TEXT;",
+         ALTER TABLE machine_links ADD COLUMN IF NOT EXISTS renewed_mac TEXT;
+         -- Why a target turned a request down, in a word the PC linking turns into words.
+         ALTER TABLE machine_link_requests ADD COLUMN IF NOT EXISTS reason TEXT;
+         -- When the PC last used these routes, which only its own release can, so a PC that syncs
+         -- but hasn't been here lately is on another release.
+         ALTER TABLE test_machines ADD COLUMN IF NOT EXISTS seen_at TIMESTAMPTZ;",
     )
     .await
 }
@@ -180,6 +187,14 @@ async fn caller(state: &AppState, headers: &HeaderMap) -> Result<String, StatusC
     if client_is_out_of_date(headers) {
         return Err(StatusCode::UPGRADE_REQUIRED);
     }
+    state
+        .db
+        .execute(
+            "UPDATE test_machines SET seen_at = now() WHERE install_hash = $1",
+            &[&install],
+        )
+        .await
+        .map_err(internal_error)?;
     Ok(install)
 }
 
@@ -211,10 +226,24 @@ async fn settle_lost_runs(db: &Client) -> Result<(), StatusCode> {
     Ok(())
 }
 
-fn status(expired: bool, accepting: bool, last_seen: f64, now: f64, busy: bool) -> &'static str {
+/// A PC that synced lately but hasn't used these routes for this long is on another release.
+const OTHER_RELEASE_SECONDS: f64 = 60.0;
+
+/// The PC's state: `machine_seen` is when it last used these routes, `pc_seen` when it last used
+/// any, such as to sync.
+fn status(
+    expired: bool,
+    accepting: bool,
+    machine_seen: f64,
+    pc_seen: f64,
+    now: f64,
+    busy: bool,
+) -> &'static str {
     if expired {
         "expired"
-    } else if !accepting || now - last_seen > REACHABLE_SECONDS {
+    } else if now - pc_seen <= REACHABLE_SECONDS && now - machine_seen > OTHER_RELEASE_SECONDS {
+        "other_release"
+    } else if !accepting || now - machine_seen > REACHABLE_SECONDS {
         "unreachable"
     } else if busy {
         "busy"
@@ -284,9 +313,23 @@ pub struct MachinesResponse {
     machines: Vec<MachineView>,
     /// Links from this PC to others, and from others to this one.
     links: Vec<LinkView>,
+    /// The owner's other PCs paired here that have never said whether they take runs, so the PC
+    /// linking can say why they can't be linked yet.
+    others: Vec<OtherPc>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OtherPc {
+    label: String,
+    /// "other_release" when it's on a release from before test machines or another one, or
+    /// "pair_again" when it paired before pairing said which PC it was.
+    reason: &'static str,
+    last_seen_at: f64,
 }
 
 const LAST_SEEN: &str = "COALESCE((SELECT EXTRACT(EPOCH FROM MAX(d.last_seen_at))::float8 FROM devices d WHERE d.install_hash = {pc}), 0)";
+const MACHINE_SEEN: &str = "COALESCE(EXTRACT(EPOCH FROM m.seen_at)::float8, 0)";
 const BUSY: &str = "EXISTS (SELECT 1 FROM test_runs r WHERE r.machine_install = {pc} AND r.status = 'running' AND r.lease_until > now())";
 
 pub async fn list(
@@ -300,12 +343,12 @@ pub async fn list(
         .db
         .query(
             &format!(
-                "SELECT m.install_hash, m.label, m.tags, m.accepting, {}, {}, EXTRACT(EPOCH FROM now())::float8
+                "SELECT m.install_hash, m.label, m.tags, m.accepting, {MACHINE_SEEN}, {}, EXTRACT(EPOCH FROM now())::float8, {}
                  FROM test_machines m
                  WHERE EXISTS (SELECT 1 FROM devices d WHERE d.install_hash = m.install_hash)
                  ORDER BY lower(m.label)",
-                LAST_SEEN.replace("{pc}", "m.install_hash"),
                 BUSY.replace("{pc}", "m.install_hash"),
+                LAST_SEEN.replace("{pc}", "m.install_hash"),
             ),
             &[],
         )
@@ -321,7 +364,14 @@ pub async fn list(
             tags: row.get(2),
             accepting: row.get(3),
             last_seen_at: row.get(4),
-            status: status(false, row.get(3), row.get(4), row.get(6), row.get(5)),
+            status: status(
+                false,
+                row.get(3),
+                row.get(4),
+                row.get(7),
+                row.get(6),
+                row.get(5),
+            ),
         };
         if view.install == me {
             this_machine = Some(view);
@@ -342,12 +392,13 @@ pub async fn list(
                     COALESCE(m.accepting, false), COALESCE(m.tags, '{{}}'),
                     {}, {}, EXTRACT(EPOCH FROM now())::float8,
                     l.renew_nonce, l.renew_sent_at, l.renew_expires_at, l.renew_mac,
-                    l.renewed_nonce, l.renewed_expires_at, l.renewed_mac
+                    l.renewed_nonce, l.renewed_expires_at, l.renewed_mac, {}
                  FROM machine_links l LEFT JOIN test_machines m ON m.install_hash = l.machine_install
                  WHERE l.machine_install = $1 OR l.linker_install = $1
                  ORDER BY l.linked_at",
-                LAST_SEEN.replace("{pc}", "l.machine_install"),
+                MACHINE_SEEN,
                 BUSY.replace("{pc}", "l.machine_install"),
+                LAST_SEEN.replace("{pc}", "l.machine_install"),
             ),
             &[&me],
         )
@@ -388,9 +439,37 @@ pub async fn list(
                 row.get(6),
                 row.get(9),
                 row.get(11),
+                row.get(21),
                 row.get(13),
                 row.get(12),
             ),
+        })
+        .collect();
+
+    // PCs, by install, that never said anything here; a login without an install is a PC of its own.
+    let other_rows = state
+        .db
+        .query(
+            "SELECT MIN(d.name), bool_or(d.install_hash IS NULL), EXTRACT(EPOCH FROM MAX(d.last_seen_at))::float8
+             FROM devices d
+             WHERE d.install_hash IS NULL
+                OR (d.install_hash <> $1 AND NOT EXISTS (SELECT 1 FROM test_machines m WHERE m.install_hash = d.install_hash))
+             GROUP BY COALESCE(d.install_hash, d.id)
+             ORDER BY lower(MIN(d.name))",
+            &[&me],
+        )
+        .await
+        .map_err(internal_error)?;
+    let others = other_rows
+        .iter()
+        .map(|row| OtherPc {
+            label: row.get(0),
+            reason: if row.get(1) {
+                "pair_again"
+            } else {
+                "other_release"
+            },
+            last_seen_at: row.get(2),
         })
         .collect();
 
@@ -399,6 +478,7 @@ pub async fn list(
         this_machine,
         machines,
         links,
+        others,
     }))
 }
 
@@ -466,8 +546,7 @@ fn is_public_key(text: &str) -> bool {
 pub struct LinkRequestBody {
     access: String,
     nonce: String,
-    proof: String,
-    /// The PC linking's ephemeral public key, which the proof covers.
+    /// The PC linking's ephemeral public key, which the link's key is derived from.
     key: String,
 }
 
@@ -476,7 +555,8 @@ pub struct Created {
     id: String,
 }
 
-/// Asks a PC for a link. Only the target can check the proof, as only it has the code.
+/// Asks a PC for a link, which it answers by itself while it lets others run tests on it. This
+/// login being one of the owner's PCs is what's checked, as pairing with this server already did.
 pub async fn request_link(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -486,7 +566,6 @@ pub async fn request_link(
     let me = caller(&state, &headers).await?;
     if !ACCESS_LEVELS.contains(&body.access.as_str())
         || !is_hex(&body.nonce, 32)
-        || !is_hex(&body.proof, 64)
         || !is_public_key(&body.key)
     {
         return Err(StatusCode::BAD_REQUEST);
@@ -524,21 +603,20 @@ pub async fn request_link(
         Some(true) => {}
     }
 
-    // A few at a time, so a PC can't queue up guesses faster than the target turns them down.
+    // A few at a time, so a PC can't queue up requests faster than the target answers them.
     let id = random_hex::<16>();
     let inserted = state
         .db
         .execute(
             "INSERT INTO machine_link_requests (id, machine_install, linker_install, access, nonce, proof, linker_key)
-             SELECT $1, $2, $3, $4, $5, $6, $8
-             WHERE (SELECT count(*) FROM machine_link_requests WHERE linker_install = $3 AND answer IS NULL) < $7",
+             SELECT $1, $2, $3, $4, $5, '', $7
+             WHERE (SELECT count(*) FROM machine_link_requests WHERE linker_install = $3 AND answer IS NULL) < $6",
             &[
                 &id,
                 &machine,
                 &me,
                 &body.access,
                 &body.nonce,
-                &body.proof,
                 &MAX_UNANSWERED_PER_LINKER,
                 &body.key,
             ],
@@ -559,7 +637,6 @@ pub struct PendingLinkRequest {
     linker_label: String,
     access: String,
     nonce: String,
-    proof: String,
     key: String,
 }
 
@@ -573,7 +650,7 @@ pub async fn pending_link_requests(
         .db
         .query(
             "SELECT r.id, r.linker_install, COALESCE((SELECT d.name FROM devices d WHERE d.install_hash = r.linker_install LIMIT 1), ''),
-                r.access, r.nonce, r.proof, r.linker_key
+                r.access, r.nonce, r.linker_key
              FROM machine_link_requests r
              WHERE r.machine_install = $1 AND r.answer IS NULL AND r.created_at > now() - interval '10 minutes'
              ORDER BY r.created_at",
@@ -589,8 +666,7 @@ pub async fn pending_link_requests(
                 linker_label: row.get(2),
                 access: row.get(3),
                 nonce: row.get(4),
-                proof: row.get(5),
-                key: row.get(6),
+                key: row.get(5),
             })
             .collect(),
     ))
@@ -605,6 +681,8 @@ pub struct LinkAnswer {
     expires_at: Option<f64>,
     key: Option<String>,
     confirm: Option<String>,
+    /// Why the target turned it down, when it did.
+    reason: Option<String>,
 }
 
 /// The PC linking waits on this for the target's answer.
@@ -617,7 +695,7 @@ pub async fn link_request(
     let row = state
         .db
         .query_opt(
-            "SELECT r.answer, r.link_id, r.machine_expires_at, r.machine_key, r.confirm
+            "SELECT r.answer, r.link_id, r.machine_expires_at, r.machine_key, r.confirm, r.reason
              FROM machine_link_requests r
              WHERE r.id = $1 AND r.linker_install = $2 AND r.created_at > now() - interval '10 minutes'",
             &[&id, &me],
@@ -631,7 +709,30 @@ pub async fn link_request(
         expires_at: row.get(2),
         key: row.get(3),
         confirm: row.get(4),
+        reason: row.get(5),
     }))
+}
+
+/// The PC linking gave up waiting, so the target won't answer it. Not one already answered,
+/// which the PC linking reads instead, to end a link it won't keep.
+pub async fn withdraw_link_request(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    let me = caller(&state, &headers).await?;
+    let removed = state
+        .db
+        .execute(
+            "DELETE FROM machine_link_requests WHERE id = $1 AND linker_install = $2 AND answer IS NULL",
+            &[&id, &me],
+        )
+        .await
+        .map_err(internal_error)?;
+    if removed == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -643,8 +744,8 @@ pub struct AcceptBody {
     key: String,
     /// When the target says the link ends, which it decided itself.
     expires_at: f64,
-    /// The target's MAC over the whole exchange, keyed with the code and the link's key, which
-    /// the PC linking checks before it keeps the link.
+    /// The target's MAC over the whole exchange, keyed with the link's key, which the PC linking
+    /// checks before it keeps the link, so both are sure they have the same key.
     confirm: String,
 }
 
@@ -654,8 +755,8 @@ pub struct Accepted {
     expires_at: f64,
 }
 
-/// The target checked the proof and took the code. A link between the same two PCs is replaced,
-/// which is how one is renewed.
+/// The target took the request. A link between the same two PCs is replaced, which is how one
+/// that expired is made again.
 pub async fn accept_link_request(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -706,20 +807,33 @@ pub async fn accept_link_request(
     }))
 }
 
-/// The proof didn't match, or the target had no code. Counts against the PC that asked.
+/// Why a target turns a request down, which the PC linking says in words.
+const REJECT_REASONS: [&str; 3] = ["not_accepting", "access", "unreadable"];
+
+#[derive(Deserialize)]
+pub struct RejectBody {
+    reason: String,
+}
+
+/// The target won't take the request: it no longer lets others run tests on it, the access
+/// asked for is more than it offers, or the key sent isn't one. Counts against the PC that asked.
 pub async fn reject_link_request(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(request): Path<String>,
+    Json(body): Json<RejectBody>,
 ) -> Result<StatusCode, StatusCode> {
     let me = caller(&state, &headers).await?;
+    if !REJECT_REASONS.contains(&body.reason.as_str()) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let row = state
         .db
         .query_opt(
-            "UPDATE machine_link_requests SET answer = 'rejected'
+            "UPDATE machine_link_requests SET answer = 'rejected', reason = $3
              WHERE id = $1 AND machine_install = $2 AND answer IS NULL
              RETURNING linker_install",
-            &[&request, &me],
+            &[&request, &me, &body.reason],
         )
         .await
         .map_err(internal_error)?
@@ -764,7 +878,7 @@ pub async fn request_renewal(
         .await
         .map_err(internal_error)?;
     if asked == 0 {
-        // Gone, expired, or not this PC's: only a new code made on the target links them again.
+        // Gone, expired, or not this PC's: only linking again links them.
         return Err(StatusCode::NOT_FOUND);
     }
     Ok(StatusCode::NO_CONTENT)
