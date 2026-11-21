@@ -656,12 +656,21 @@ public static partial class GitTools
     [GeneratedRegex(@"^(https://|ssh://|git@|[\w.-]+@[\w.-]+:|\.\.?/)")]
     private static partial Regex AllowedSubmoduleUrl();
 
-    [GeneratedRegex(@"\A#!/bin/sh\r?\ncommand -v git-lfs >/dev/null 2>&1 \|\| \{ printf >&2 ""\\n%s\\n\\n"" ""[^""$`]*""; exit 2; \}\r?\ngit lfs (pre-push|post-checkout|post-commit|post-merge) ""\$@""\s*\z")]
+    // A hook exactly as git lfs install writes it: Git LFS 3.5 and later say what's missing with
+    // printf, earlier ones with echo, and then it only calls git lfs with the hook's own name, which
+    // HooksInFolder checks against the file's. The message can't hold a quote, a $, a backtick or a
+    // backslash other than \n, so nothing in it runs.
+    [GeneratedRegex(@"\A#!/bin/sh\r?\ncommand -v git-lfs >/dev/null 2>&1 \|\| \{ (printf >&2 ""\\n%s\\n\\n"" ""[^""$`\\\r\n]*""|echo >&2 ""([^""$`\\\r\n]|\\n)*""); exit 2; \}\r?\ngit lfs (?<hook>pre-push|post-checkout|post-commit|post-merge) ""\$@""\s*\z")]
     private static partial Regex StandardLfsHook();
 
+    /// <summary>Whether a hook is one Git LFS wrote for itself, calling git lfs with its own name and nothing else.</summary>
+    internal static bool IsStandardLfsHook(string fileName, string text) =>
+        StandardLfsHook().Match(text) is { Success: true } hook && hook.Groups["hook"].Value.Equals(fileName, StringComparison.OrdinalIgnoreCase);
+
     // A key and its value, as Git lists them. What a clone, Git LFS and submodules set up for
-    // themselves, and nothing that can name a program, a hook or another settings file.
-    [GeneratedRegex(@"\A((core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks|longpaths|autocrlf|eol|safecrlf)|remote\.[^\r\n]*\.(url|fetch|pushurl|tagopt|prune|promisor|partialclonefilter|gh-resolved)|branch\.[^\r\n]*\.(remote|merge)|submodule\.[^\r\n]*\.(url|active|branch|ignore)|lfs\.repositoryformatversion|user\.(name|email))\n[^\r\n]*\z|filter\.lfs\.(clean|smudge|process)\ngit-lfs [^&|;<>`$\r\n]*\z|filter\.lfs\.required\n(true|false)\z|lfs\.[^\r\n]*\.access\n(basic|none|private|negotiate|ntlm)\z|lfs\.[^\r\n]*\.locksverify\n(true|false)\z|core\.fsmonitor\nfalse\z|core\.hookspath\n/dev/null\z|submodule\.[^\r\n]*\.update\n(checkout|none)\z)", RegexOptions.IgnoreCase)]
+    // themselves, and nothing that can name a program, a hook or another settings file. Git LFS's
+    // filters only as git lfs install writes them (with --skip-smudge too), running git-lfs itself.
+    [GeneratedRegex(@"\A((core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks|longpaths|autocrlf|eol|safecrlf)|remote\.[^\r\n]*\.(url|fetch|pushurl|tagopt|prune|promisor|partialclonefilter|gh-resolved)|branch\.[^\r\n]*\.(remote|merge)|submodule\.[^\r\n]*\.(url|active|branch|ignore)|lfs\.repositoryformatversion|user\.(name|email))\n[^\r\n]*\z|filter\.lfs\.clean\ngit-lfs clean (-- )?%f\z|filter\.lfs\.smudge\ngit-lfs smudge (--skip )?(-- )?%f\z|filter\.lfs\.process\ngit-lfs filter-process( --skip)?\z|filter\.lfs\.required\n(true|false)\z|lfs\.[^\r\n]*\.access\n(basic|none|private|negotiate|ntlm)\z|lfs\.[^\r\n]*\.locksverify\n(true|false)\z|core\.fsmonitor\nfalse\z|core\.hookspath\n/dev/null\z|submodule\.[^\r\n]*\.update\n(checkout|none)\z)", RegexOptions.IgnoreCase)]
     private static partial Regex SafeWhileFinishing();
 
     // Besides those, what a folder people work in usually has, none of which can name a program,

@@ -68,7 +68,7 @@ namespace AgentOrange;
 ///   detach [wmi]        quote "arg" ...   (a program started on its own, outside the app's tree and jobs; arguments as a command line, read back)
 ///   agent "Project" "message" [codex]      feed "recorded.jsonl" "part"      agentstate
 ///                       (a conversation sent a message with no program behind it, what its program says fed in from a recording beside the script, and how it stands)
-///   (In said, refuses, allows and writefile, \n is a line break, \t a tab and \q a double quote.)
+///   (In said, refuses, allows and writefile, \n is a line break, \t a tab, \q a double quote and \e a backslash.)
 /// </summary>
 internal static partial class Headless
 {
@@ -250,7 +250,8 @@ internal static partial class Headless
     }
 
     // A command is one line with no double quotes in its words, so \n stands for a line break, \t for a tab and \q for a double quote.
-    private static string Unescape(string text) => text.Replace("\\n", "\n").Replace("\\t", "\t").Replace("\\q", "\"");
+    // \e last, so "\en" is a backslash and an n, as a shell script can need.
+    private static string Unescape(string text) => text.Replace("\\n", "\n").Replace("\\t", "\t").Replace("\\q", "\"").Replace("\\e", "\\");
 
     private static MainWindow Main() =>
         Application.Current.Windows.OfType<MainWindow>().FirstOrDefault() ?? throw new InvalidOperationException("The main window isn't open.");

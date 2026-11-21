@@ -261,7 +261,7 @@ public static partial class GitTools
         if (!hooks.Exists) return found;
         foreach (var hook in hooks.EnumerateFiles().Where(file => !file.Name.EndsWith(".sample", StringComparison.OrdinalIgnoreCase)))
         {
-            if (hook.Length <= MaxHookBytes && StandardLfsHook().IsMatch(File.ReadAllText(hook.FullName))) continue;
+            if (hook.Length <= MaxHookBytes && IsStandardLfsHook(hook.Name, File.ReadAllText(hook.FullName))) continue;
 
             // Read as it goes, as one could be any size, and approving it covers everything in it.
             using var contents = hook.OpenRead();
