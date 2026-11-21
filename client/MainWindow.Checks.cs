@@ -289,6 +289,22 @@ public partial class MainWindow
 
     internal AgentConversation CheckConversation => _checkConversation ?? throw new InvalidOperationException("Start a conversation with agent first.");
 
+    /// <summary>
+    /// Opens a project's page with its real check, except that GitHub's and Git's answer about access
+    /// is made up and comes after a wait, and nothing else asks GitHub. The page check's time limit
+    /// can be made shorter, and the project can be one this PC has never worked on.
+    /// </summary>
+    internal void OpenWithCheckForChecks(string name, int waitMs, string access, int? limitMs, bool newHere)
+    {
+        var project = _database.ListProjects().FirstOrDefault(each => each.Name == name) ?? throw new InvalidOperationException($"There's no project called {name}.");
+        _madeUpRepoCheck = (TimeSpan.FromMilliseconds(waitMs), Enum.Parse<RepoAccess>(access));
+        if (limitMs is { } limit) RepoCheckLimit = TimeSpan.FromMilliseconds(limit);
+        _database.SetSetting(VerifiedSetting(project.Id), newHere ? "" : GitTools.RepoKey(project.RepoUrl));
+        _openSection = null;
+        _openCard = null;
+        _ = OpenProjectAsync(project);
+    }
+
     /// <summary>Opens a project's page as if its check had found everything in order, without running one.</summary>
     internal void OpenForChecks(string name)
     {

@@ -64,6 +64,17 @@ public partial class MainWindow
 
         if (_pageCheck is not { } found)
         {
+            // Its sections come from this PC's own copy, so on a PC that has worked on this repo they
+            // show while the check runs (#91). Only what needs the repo, such as its folder's Git
+            // actions, waits for it.
+            if (!IsBusyWith(project.Id) && HasWorkedOnRepoHere(project) && _database.GetProjectFolder(project.Id) is not null)
+            {
+                if (!inSection) body.Children.Add(new TextBlock { Text = "Checking the repo…", Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), HorizontalAlignment = HorizontalAlignment.Center });
+                AddOverview(body, project);
+                AddOwnBusy(body, project);
+                AddPageProblem(body);
+                return;
+            }
             body.Children.Add(CenteredNote(IsBusyWith(project.Id) ? "The repo is checked once this finishes." : "Checking the repo…"));
             AddOwnBusy(body, project);
             AddPageProblem(body);
@@ -86,6 +97,7 @@ public partial class MainWindow
                 RepoAccess.Offline => ("Couldn't reach GitHub, so the repo wasn't checked.", "This new project's repo hasn't been checked yet. That happens the next time it opens with a connection."),
                 RepoAccess.GitPushUnchecked => ("GitHub says you have access, but Git on this PC couldn't finish checking whether it can push.", "Whether this PC can push to it hasn't been checked yet. It's checked again the next time this opens. If this keeps happening, check this PC's Git setup."),
                 RepoAccess.GitOffline => ("GitHub says you have access, but Git on this PC couldn't connect to it.", "This PC hasn't reached it through Git yet. It's checked again the next time this opens. If this keeps happening, check this PC's network for Git, such as a proxy or a blocked SSH port."),
+                RepoAccess.TookTooLong => ("GitHub and Git took too long to answer, so the repo wasn't checked. It's checked again in a minute.", "This new project's repo hasn't been checked yet. It's checked again in a minute."),
                 _ => ("GitHub didn't give a clear answer, so the repo wasn't checked.", "This new project's repo hasn't been checked yet. It's checked again the next time this opens."),
             };
             body.Children.Add(new TextBlock { Text = hasHadAccess ? $"{reason} This PC has had access before." : $"{reason} {forNewProject}", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });

@@ -34,6 +34,7 @@ public enum RepoAccess
     CheckFailed,
     GitPushUnchecked,
     GitOffline,
+    TookTooLong,
 }
 
 /// <summary>Account is the signed-in GitHub account this applies to, when there is one.</summary>
@@ -49,10 +50,10 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
     public bool GitHubSeesRepo => Access is RepoAccess.Allowed or RepoAccess.ReadOnly or RepoAccess.GitCantReach or RepoAccess.GitReadOnly or RepoAccess.GitPushUnchecked or RepoAccess.GitOffline;
 
     /// <summary>Whether the page shows the folder at all, which is when it's worth looking through.</summary>
-    public bool ShowsFolder => Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitPushUnchecked or RepoAccess.GitOffline or RepoAccess.GitCantReach or RepoAccess.GitReadOnly;
+    public bool ShowsFolder => Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitPushUnchecked or RepoAccess.GitOffline or RepoAccess.GitCantReach or RepoAccess.GitReadOnly or RepoAccess.TookTooLong;
 
     /// <summary>No clear answer, so a PC that has had access, or a project made here, can keep working.</summary>
-    public bool IsUnanswered => Access is RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitPushUnchecked or RepoAccess.GitOffline;
+    public bool IsUnanswered => Access is RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitPushUnchecked or RepoAccess.GitOffline or RepoAccess.TookTooLong;
 
     public (string Heading, string Description) Describe() => Access switch
     {
@@ -72,6 +73,7 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
         RepoAccess.Offline => ("Couldn't reach GitHub", "This PC seems to be offline or blocked from GitHub, and it hasn't had access to this repo before."),
         RepoAccess.GitOffline => ("Git on this PC can't get through", "GitHub says you have access, but Git here couldn't connect to it. Check this PC's network for Git, such as a proxy or a blocked SSH port, then try again."),
         RepoAccess.GitPushUnchecked => ("Couldn't check pushing", "Your GitHub account has access, but Git on this PC couldn't finish checking whether it can push to this repo. Try again in a moment, and if this keeps happening, check this PC's Git setup, such as a proxy or firewall."),
+        RepoAccess.TookTooLong => ("The repo check took too long", "GitHub and Git didn't answer in time, and this PC hasn't had access to this repo before. It's checked again in a minute. If this keeps happening, check this PC's network, or whether Git is waiting on a sign-in."),
         RepoAccess.Allowed => ("You have access", ""),
         _ => ("Couldn't check this repo", "GitHub gave an unexpected answer. Try again in a moment."),
     };

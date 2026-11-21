@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Media.Effects;
 
@@ -80,10 +81,13 @@ public partial class MainWindow
         RenderProject(project);
         if (IsBusyWith(project.Id)) return;
 
+        // What it asks GitHub and Git has a time limit, as the page's repo parts wait on it (#91).
+        var took = Stopwatch.StartNew();
         var folder = _database.GetProjectFolder(project.Id);
         var runnable = folder is null ? FolderGitSettings.None : await GitTools.FolderRunnableSettingsAsync(folder);
         var useFolderSettings = runnable is not null && (folder is null || GitTools.AreAllowed(folder, runnable));
-        var check = await GitTools.CheckRepoAccessAsync(project.RepoUrl, folder, useFolderSettings);
+        var check = await WithinRepoCheckLimitAsync(AskRepoAccessAsync(project.RepoUrl, folder, useFolderSettings), took, new RepoCheck(RepoAccess.TookTooLong));
+        var accessTook = took.Elapsed;
 
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);
         var folderShown = folderExists && check.ShowsFolder;
@@ -91,9 +95,9 @@ public partial class MainWindow
         var folderProblem = folderShown ? await GitTools.FolderProblemDetailAsync(folder!, project.RepoUrl) : null;
 
         // It may have been connected while offline, when nothing could say the repo had files.
-        var askAboutRepo = usable && check.GitHubSeesRepo;
+        var askAboutRepo = usable && check.GitHubSeesRepo && AsksGitHub;
         var lacksFiles = askAboutRepo && folderExists && folderProblem is null
-            && await GitTools.FolderHasNoCommitsAsync(folder!) == true && await GitTools.RepoHasContentAsync(project.RepoUrl) == true;
+            && await GitTools.FolderHasNoCommitsAsync(folder!) == true && await WithinRepoCheckLimitAsync(GitTools.RepoHasContentAsync(project.RepoUrl), took, null) == true;
 
         // A folder with its own commits may not be this project at all, however it was connected.
         // This keeps saying so until the two share a commit, which is then remembered for that
@@ -101,7 +105,7 @@ public partial class MainWindow
         // repo, as one deleted and made again under the same name is a different repo.
         var repoKey = check.RepoId is { } repoId ? $"{GitTools.RepoKey(project.RepoUrl)}|{repoId}" : GitTools.RepoKey(project.RepoUrl);
         var history = askAboutRepo && folderExists && folderProblem is null && !lacksFiles && !_database.FolderSharesRepo(folder!, repoKey)
-            ? await GitTools.CompareFolderHistoryAsync(folder!, project.RepoUrl)
+            ? await WithinRepoCheckLimitAsync(GitTools.CompareFolderHistoryAsync(folder!, project.RepoUrl), took, FolderHistory.CantTell)
             : FolderHistory.CantTell;
         if (history == FolderHistory.SharesCommits) _database.RememberFolderSharesRepo(folder!, repoKey);
         var mayNotMatch = history == FolderHistory.SharesNothing;
@@ -110,9 +114,18 @@ public partial class MainWindow
         if (folderExists && check.IsDenied) _database.ForgetFolderSharesRepo(folder!);
 
         // Asked before the latest copy of the project is read below, as this can take a while.
-        var renamed = check.GitHubSeesRepo
-            ? await GitTools.RenamedRepoUrlAsync(project.RepoUrl)
+        var renamed = check.GitHubSeesRepo && AsksGitHub
+            ? await WithinRepoCheckLimitAsync(GitTools.RenamedRepoUrlAsync(project.RepoUrl), took, null)
             : null;
+
+        // What made a slow one slow, for the log.
+        if (took.Elapsed > TimeSpan.FromSeconds(10) || check.Access == RepoAccess.TookTooLong)
+        {
+            AppLog.Write($"Checking {project.Name}'s repo took {took.Elapsed.TotalSeconds:0.0} s, {accessTook.TotalSeconds:0.0} s of it asking GitHub and Git about access{(check.Access == RepoAccess.TookTooLong ? ", which didn't answer in time" : $" ({check.Access})")}.");
+        }
+
+        // Asked again soon, rather than in the usual few minutes.
+        if (check.Access == RepoAccess.TookTooLong) _lastAccessCheck = DateTimeOffset.UtcNow - AccessCheckInterval + TimeSpan.FromMinutes(1);
 
         if (navigation != _navigation) return; // They moved on, or something newer started.
 
@@ -202,7 +215,9 @@ public partial class MainWindow
             folderEngine,
             renamedHeldBy,
             pushesTo);
-        RenderProject(latest);
+
+        // Its sections were open while this ran, and someone may be writing in one.
+        RenderProjectKeepingFocus(latest);
         if (folderShown && usable) await ReadEngineVersionAsync(latest.Id, new FolderAnswer(folder!, project.RepoUrl, folderProblem));
     }
 
@@ -281,6 +296,38 @@ public partial class MainWindow
         return check.IsUnanswered && (_database.GetSetting(VerifiedSetting(project.Id)) == repoKey || _database.GetSetting(CreatedHereSetting(project.Id)) == repoKey);
     }
 
+    // Let in before, or made here: what can keep working when the check gets no clear answer.
+    private bool HasWorkedOnRepoHere(Project project) => CanWorkIn(project, new RepoCheck(RepoAccess.TookTooLong));
+
+    // Long enough for a slow network, short enough that the page's repo parts don't look stuck.
+    private static TimeSpan RepoCheckLimit = TimeSpan.FromSeconds(30);
+
+    // The answer, or what to go by if it hasn't come within the page check's limit. One that's left
+    // behind finishes by itself, as each Git and GitHub command has its own limit.
+    private static async Task<T> WithinRepoCheckLimitAsync<T>(Task<T> asking, Stopwatch took, T otherwise)
+    {
+        var left = RepoCheckLimit - took.Elapsed;
+        if (left > TimeSpan.Zero && await Task.WhenAny(asking, Task.Delay(left)) == asking) return await asking;
+        _ = asking.ContinueWith(late => _ = late.Exception, TaskContinuationOptions.OnlyOnFaulted);
+        return otherwise;
+    }
+
+    private Task<RepoCheck> AskRepoAccessAsync(string url, string? folder, bool useFolderSettings)
+    {
+#if DEBUG
+        if (_madeUpRepoCheck is { } madeUp) return Task.Delay(madeUp.Wait).ContinueWith(_ => new RepoCheck(madeUp.Access), TaskScheduler.Default);
+#endif
+        return GitTools.CheckRepoAccessAsync(url, folder, useFolderSettings);
+    }
+
+    // Headless checks make up GitHub's answer, and nothing else may ask it about their made-up repos.
+#if DEBUG
+    private (TimeSpan Wait, RepoAccess Access)? _madeUpRepoCheck;
+    private bool AsksGitHub => _madeUpRepoCheck is null;
+#else
+    private static bool AsksGitHub => true;
+#endif
+
     private static string VerifiedSetting(string projectId) => $"project_verified:{projectId}";
 
     // Created on this PC with no connection, so nothing has said it can't be used yet.
@@ -299,7 +346,7 @@ public partial class MainWindow
         var folder = _database.GetProjectFolder(project.Id);
         var runnable = folder is null ? FolderGitSettings.None : await GitTools.FolderRunnableSettingsAsync(folder);
         var useFolderSettings = runnable is not null && (folder is null || GitTools.AreAllowed(folder, runnable));
-        var latest = await GitTools.CheckRepoAccessAsync(project.RepoUrl, folder, useFolderSettings);
+        var latest = await AskRepoAccessAsync(project.RepoUrl, folder, useFolderSettings);
 
         // The folder may have changed too, as anything can happen to it while no one's looking.
         var folderExists = folder is not null && await GitTools.FolderExistsAsync(folder);

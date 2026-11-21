@@ -38,6 +38,7 @@ namespace AgentOrange;
 ///   briefing "Project" "text"   briefingnot "Project" "text"   (what the project's agents are told says that, or doesn't)
 ///   skillsays "Project" skill-name "text"   (the project's agents get that skill, and it says that)
 ///   open "Name"         (its page, as if its repo's check had found everything in order)
+///   opencheck "Name" 3000 Allowed [1000] [new]   (its page with the real check, GitHub's answer made up and coming after 3 s; a shorter limit; a PC new to it)
 ///   timed 500 click "X" (any command, then how long until the page settles, failing past 500 ms)
 ///   expect "text"       expectnot "text"   (fails unless something shown says exactly that, or nothing does)
 ///   inview "text"       (fails unless it's in sight, not scrolled away)
@@ -425,6 +426,10 @@ internal static partial class Headless
             // Its page, without a check of its repo, which would ask GitHub.
             case "open":
                 Main().OpenForChecks(parts[1]);
+                break;
+            // Its page with the real check, GitHub's answer made up: opencheck "Name" 3000 Allowed [limit ms] [new].
+            case "opencheck":
+                Main().OpenWithCheckForChecks(parts[1], int.Parse(parts[2]), parts[3], parts.Length > 4 && int.TryParse(parts[4], out var checkLimit) ? checkLimit : null, parts.Contains("new"));
                 break;
             case "timed":
                 await TimedAsync(window, int.Parse(parts[1]), parts[2..], say, output);
