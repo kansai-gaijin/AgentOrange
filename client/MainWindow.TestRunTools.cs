@@ -10,9 +10,11 @@ namespace AgentOrange;
 /// rather than the person starting each run and typing its result back to the agent. A run goes
 /// exactly as "Run tests on…" sends one, over this PC's links with the same checks here and on the
 /// machine, and its signed job says an agent started it, which the run list shows. A machine
-/// already testing that commit, or with it waiting, isn't sent it again. And the checks that flip
-/// between pass and fail at the same commit, or differ between machines (#105), with each one's
-/// history, so an agent looks for the cause before adding a retry.
+/// already testing that commit, or with it waiting, isn't sent it again. With none named, a machine
+/// is picked by the tags the repo asks for (#93), and a run can be asked to test only what a filter
+/// names, through the repo's own testWithFilter. A run can be cancelled as its window's Cancel run
+/// does. And the checks that flip between pass and fail at the same commit, or differ between
+/// machines (#105), with each one's history, so an agent looks for the cause before adding a retry.
 /// </summary>
 public partial class MainWindow
 {
