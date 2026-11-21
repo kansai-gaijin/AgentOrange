@@ -1,0 +1,29 @@
+# A project's page shows its sections while its repo is checked, on a PC that has worked on the
+# repo before, and the check has a time limit (#91). GitHub's answer is made up, and nothing asks it.
+seed "Slow" 4 1 4
+gitrepo "projects/slow" "https://github.com/example/slow"
+# GitHub takes 4 s to answer: the sections are there at once, and the repo's own parts come after.
+opencheck "Slow" 4000 Allowed
+wait "Checking the repo…"
+expect "Assets delivered"
+expect "Characters"
+expectnot "Run tests on…"
+shot checking-with-sections
+waitgone "Checking the repo…"
+expect "Assets delivered"
+expect "Run tests on…"
+shot checked
+# GitHub never answers in time: the page stops waiting at the limit, says so, and keeps working.
+opencheck "Slow" 60000 Allowed 1500
+wait "Checking the repo…"
+wait "GitHub and Git took too long to answer, so the repo wasn't checked. It's checked again in a minute. This PC has had access before."
+expect "Assets delivered"
+shot took-too-long
+# A PC that has never worked on the repo shows only the check, then says why it can't go on.
+opencheck "Slow" 1000 Allowed 300000 new
+wait "Checking the repo…"
+expectnot "Assets delivered"
+opencheck "Slow" 60000 Allowed 1500 new
+wait "The repo check took too long"
+expectnot "Assets delivered"
+shot new-here-took-too-long

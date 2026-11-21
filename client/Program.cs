@@ -97,6 +97,11 @@ public static class Program
                 System.Windows.MessageBoxImage.Error);
         };
         AppDomain.CurrentDomain.UnhandledException += (_, e) => AppLog.Write($"Crashed: {e.ExceptionObject}");
+
+        // How it ended, so the log never just stops. Only being ended from outside, as Task Manager
+        // or a dotnet watch restart does, leaves no line, and the next start says so.
+        app.SessionEnding += (_, e) => AppLog.Write($"Windows is {(e.ReasonSessionEnding == System.Windows.ReasonSessionEnding.Logoff ? "signing out" : "shutting down")}, so the app closes.");
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => AppLog.Write($"Ended (process {Environment.ProcessId})");
         TaskScheduler.UnobservedTaskException += (_, e) => AppLog.Write($"A background task failed: {e.Exception}");
         app.InitializeComponent();
         app.Run();

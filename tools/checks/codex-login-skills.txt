@@ -1,0 +1,14 @@
+# A Codex session gets Agent Orange's skills, and not those set up in its login's folder or the
+# person's ~/.agents for their own use of Codex (#89). Codex only switches one off by its SKILL.md's
+# path, on its command line. Its own, in .system, stay. Checks use a home folder in their data.
+seed "Codex project" 0 0 0
+agentsetup "Codex project"
+notsaid "skills.config"
+writefile "(agent files)" "check-codex-login/skills/personal-one/SKILL.md" "---\nname: personal-one\ndescription: The person's own.\n---\n"
+writefile "(agent files)" "check-codex-login/skills/group/nested-one/SKILL.md" "---\nname: nested-one\ndescription: The person's own, in a folder of them.\n---\n"
+writefile "(agent files)" "check-codex-login/skills/.system/imagegen/SKILL.md" "---\nname: imagegen\ndescription: Codex's own.\n---\n"
+agentsetup "Codex project"
+said "skills.config=[{path='"
+said "/check-codex-login/skills/personal-one/SKILL.md',enabled=false}"
+said "/check-codex-login/skills/group/nested-one/SKILL.md',enabled=false}"
+notsaid "imagegen"

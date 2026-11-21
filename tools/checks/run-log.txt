@@ -1,0 +1,5 @@
+# The log says how every run ended (#90). A run that started and has no end after it, as one
+# ended from outside leaves, is noted when the app starts again; one that ended as usual isn't.
+# Process 99999999 can't be a real one, as Windows numbers them in fours.
+file "logs/agent-orange.log" "2026-11-20 10:00:00 Started dev build (process 99999999)"
+filehas "logs/agent-orange.log" "Started dev build (process 99999999)" 1

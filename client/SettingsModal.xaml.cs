@@ -832,6 +832,7 @@ public partial class SettingsModal : UserControl
             }
 #endif
             AppIsRestarting();
+            AppLog.Write("Restarting, to use the database in its new folder.");
             Process.Start(Environment.ProcessPath!);
             Application.Current.Shutdown();
         };

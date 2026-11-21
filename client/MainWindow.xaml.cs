@@ -58,7 +58,11 @@ public partial class MainWindow : Window
         }
 
         AppLog.Start(folders.LogsFolder);
-        AppLog.Write($"Started {(_updates.IsInstalled ? $"v{_updates.CurrentVersion}" : "dev build")}");
+        AppLog.Write($"Started {(_updates.IsInstalled ? $"v{_updates.CurrentVersion}" : "dev build")} (process {Environment.ProcessId})");
+#if DEBUG
+        if (DevWatch.Active) AppLog.Write($"Started by dotnet watch, start {DevWatch.Iteration}.");
+#endif
+        AppLog.NoteSilentEnds();
 
         _database = OpenDatabase(folders.DatabasePath);
         ProjectWizard.ClaimFolder = async (folder, name) =>
@@ -120,7 +124,8 @@ public partial class MainWindow : Window
         _devices.ClientVersion = _updates.IsInstalled ? _updates.CurrentVersion?.ToString() : null;
         Settings.ConfirmStoppingWork = ConfirmStoppingClone;
         Settings.AppIsRestarting = () => _restarting = true;
-        Closing += (_, closing) => closing.Cancel = !_restarting && (HideToTray() || !ConfirmStoppingClone("Closing"));
+        WatchForChosenClose();
+        Closing += (_, closing) => CloseOrHide(closing);
         StartTray();
         StartInTrayIfAsked();
         StartScreenshotHotkey();
@@ -341,7 +346,11 @@ public partial class MainWindow : Window
                     "Agent Orange",
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Warning);
-                if (answer != MessageBoxResult.Yes) Environment.Exit(0);
+                if (answer != MessageBoxResult.Yes)
+                {
+                    AppLog.Write("Closing, leaving the damaged database as it is, as the person chose.");
+                    Environment.Exit(0);
+                }
             }
 
             try
@@ -587,6 +596,7 @@ public partial class MainWindow : Window
                 _requiredUpdate,
                 percent => Dispatcher.Invoke(() => UpdateProgress.Value = percent));
             UpdateMessage.Text = "Restarting…";
+            AppLog.Write($"Restarting to install v{_requiredVersion}.");
             _restarting = true;
             SaveRunningConversations();
             _updates.ApplyUpdatesAndRestart(_requiredUpdate);

@@ -64,6 +64,17 @@ public partial class MainWindow
 
         if (_pageCheck is not { } found)
         {
+            // Its sections come from this PC's own copy, so on a PC that has worked on this repo they
+            // show while the check runs (#91). Only what needs the repo, such as its folder's Git
+            // actions, waits for it.
+            if (!IsBusyWith(project.Id) && HasWorkedOnRepoHere(project) && _database.GetProjectFolder(project.Id) is not null)
+            {
+                if (!inSection) body.Children.Add(new TextBlock { Text = "Checking the repo…", Foreground = (Brush)FindResource("TextMuted"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), HorizontalAlignment = HorizontalAlignment.Center });
+                AddOverview(body, project);
+                AddOwnBusy(body, project);
+                AddPageProblem(body);
+                return;
+            }
             body.Children.Add(CenteredNote(IsBusyWith(project.Id) ? "The repo is checked once this finishes." : "Checking the repo…"));
             AddOwnBusy(body, project);
             AddPageProblem(body);
@@ -86,6 +97,7 @@ public partial class MainWindow
                 RepoAccess.Offline => ("Couldn't reach GitHub, so the repo wasn't checked.", "This new project's repo hasn't been checked yet. That happens the next time it opens with a connection."),
                 RepoAccess.GitPushUnchecked => ("GitHub says you have access, but Git on this PC couldn't finish checking whether it can push.", "Whether this PC can push to it hasn't been checked yet. It's checked again the next time this opens. If this keeps happening, check this PC's Git setup."),
                 RepoAccess.GitOffline => ("GitHub says you have access, but Git on this PC couldn't connect to it.", "This PC hasn't reached it through Git yet. It's checked again the next time this opens. If this keeps happening, check this PC's network for Git, such as a proxy or a blocked SSH port."),
+                RepoAccess.TookTooLong => ("GitHub and Git took too long to answer, so the repo wasn't checked. It's checked again in a minute.", "This new project's repo hasn't been checked yet. It's checked again in a minute."),
                 _ => ("GitHub didn't give a clear answer, so the repo wasn't checked.", "This new project's repo hasn't been checked yet. It's checked again the next time this opens."),
             };
             body.Children.Add(new TextBlock { Text = hasHadAccess ? $"{reason} This PC has had access before." : $"{reason} {forNewProject}", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
@@ -116,6 +128,14 @@ public partial class MainWindow
                 }
                 if (!inSection) AddTestRunButton(actions, project, folder);
                 if (actions.Children.Count > 0) body.Children.Add(actions);
+            }
+            if (folder is not null && found.ForAgents is { } forAgents && (forAgents.Refused is not null || !GitTools.AreAllowed(GitTools.AgentsApprovalKey(folder), forAgents.Settings)))
+            {
+                var rows = new List<FrameworkElement>();
+                AddAgentsSettingsRow(rows, project, folder, forAgents);
+                var allow = Card(rows.ToArray());
+                allow.Margin = new Thickness(0, 10, 0, 0);
+                body.Children.Add(allow);
             }
             if (found.FolderMayNotMatch)
             {
@@ -503,6 +523,42 @@ public partial class MainWindow
         }, $"finish|{folder}|{settings.Fingerprint}");
         allow.IsEnabled = !IsBusy;
         rows.Add(Row("Finishing would use this folder's own Git settings", $"They can run programs, so only allow them if you trust where this folder came from: {settings.Shown}", allow));
+    }
+
+    // Agents run Git in the folder, and so do the Git actions and the agents window (#20).
+    private void AddAgentsSettingsRow(List<FrameworkElement> rows, Project project, string folder, FinishLook look)
+    {
+        if (look.Refused is { } refused)
+        {
+            rows.Add(Row("Agents and Git actions can't work in this folder", refused));
+            return;
+        }
+        if (!look.Settings.CanBeApproved)
+        {
+            rows.Add(Row("This folder's own Git settings can't be used", "There are too many of them to show here, and they can only be allowed once you've been able to read them all. Cut them down, or use another copy."));
+            return;
+        }
+
+        var allow = TwoClickAction("Allow", () => AllowAgentsSettingsAsync(project, folder, look.Settings.Fingerprint), $"agents|{folder}|{look.Settings.Fingerprint}");
+        allow.IsEnabled = !IsBusy;
+        rows.Add(Row("Agents and Git actions would use this folder's own Git settings and hooks", $"Agents run Git in this folder, and so do the Git actions here and in the agents window, which can run programs these name or send your login somewhere else. Only allow them if you trust where this folder came from. A change to any of them asks again: {look.Settings.Shown}", allow));
+    }
+
+    private async Task AllowAgentsSettingsAsync(Project project, string folder, string fingerprint)
+    {
+        // Only what was on show: anything changed since is shown again instead.
+        if (await GitTools.LookBeforeAgentsAsync(folder) is { Refused: null } look && look.Settings.Fingerprint == fingerprint)
+        {
+            GitTools.RememberAllowedFolderSettings(GitTools.AgentsApprovalKey(folder), fingerprint);
+
+            // How Git reaches the repo was among what was shown, so this app's own checks may use it too.
+            if (await GitTools.FolderRunnableSettingsAsync(folder) is { IsEmpty: false, CanBeApproved: true } connection
+                && await GitTools.LookBeforeAgentsAsync(folder) is { Refused: null } still && still.Settings.Fingerprint == fingerprint)
+            {
+                _database.AllowFolderSettings(folder, connection.Fingerprint);
+            }
+        }
+        await RecheckIfStillOpenAsync(project.Id);
     }
 
     private void AddGetProjectOptions(StackPanel body, Project project, string? linkedFolder, PageCheck found)

@@ -38,6 +38,7 @@ namespace AgentOrange;
 ///   briefing "Project" "text"   briefingnot "Project" "text"   (what the project's agents are told says that, or doesn't)
 ///   skillsays "Project" skill-name "text"   (the project's agents get that skill, and it says that)
 ///   open "Name"         (its page, as if its repo's check had found everything in order)
+///   opencheck "Name" 3000 Allowed [1000] [new]   (its page with the real check, GitHub's answer made up and coming after 3 s; a shorter limit; a PC new to it)
 ///   timed 500 click "X" (any command, then how long until the page settles, failing past 500 ms)
 ///   expect "text"       expectnot "text"   (fails unless something shown says exactly that, or nothing does)
 ///   inview "text"       (fails unless it's in sight, not scrolled away)
@@ -48,6 +49,7 @@ namespace AgentOrange;
 ///   testlinks           testlinking "Studio PC" "step" | failed "why"   (Settings › Test machines with made-up machines and links, and a link being made)
 ///   testchecks "Project" failed   testrunwindow "Project" check-run   (made-up runs whose checks flip, and a run's window)
 ///   gitrepo "folder" "origin"   gitclone "from" "to"   borrow "folder"   fileis "path" "text"   (repos in the data folder, the clone testruns borrow from, a file's text)
+///   filehas "logs/agent-orange.log" "text" 1   (a file in the data folder has that text, that many times, or at least once with no number)
 ///   testrun "folder" "Passed" "text"   (a test run's steps here, from the folder committed as a repo; the verdict and log say that)
 ///   mcp "Project" update_asset card "Asset 1" status "Needs review"   (an agent's MCP tool; mcprefused expects a refusal)
 ///   mcpjson "Project" add_cards "{\qcards\q:[...]}"   (the same with its arguments as JSON, for lists; mcpjsonrefused too)
@@ -432,6 +434,10 @@ internal static partial class Headless
             case "open":
                 Main().OpenForChecks(parts[1]);
                 break;
+            // Its page with the real check, GitHub's answer made up: opencheck "Name" 3000 Allowed [limit ms] [new].
+            case "opencheck":
+                Main().OpenWithCheckForChecks(parts[1], int.Parse(parts[2]), parts[3], parts.Length > 4 && int.TryParse(parts[4], out var checkLimit) ? checkLimit : null, parts.Contains("new"));
+                break;
             case "timed":
                 await TimedAsync(window, int.Parse(parts[1]), parts[2..], say, output);
                 break;
@@ -639,6 +645,17 @@ internal static partial class Headless
             // A link being made to one of those, at a step or failed: testlinking "Studio PC" "Waiting…" or testlinking "Studio PC" failed "why".
             case "testlinking" when Active:
                 Main().ShowLinkingForChecks(parts[1], parts[2] == "failed" ? null : parts[2], parts[2] == "failed" ? parts[3] : null);
+                break;
+            // A file in the data folder has that text in it, as many times as a third word says (at least once without one).
+            case "filehas":
+                var hasPath = Path.Combine(DataFolder, parts[1]);
+                using (var reading = new FileStream(hasPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    var hasText = await new StreamReader(reading).ReadToEndAsync();
+                    var times = Regex.Matches(hasText, Regex.Escape(parts[2])).Count;
+                    say($"{parts[1]} has \"{parts[2]}\" {times} times");
+                    if (parts.Length > 3 ? times != int.Parse(parts[3]) : times == 0) throw new InvalidOperationException($"{parts[1]} doesn't have {parts[2]} {(parts.Length > 3 ? $"{parts[3]} times" : "in it")}.");
+                }
                 break;
             // Run tests on… for a project, as if linked to Office PC with a run of the commit in that state: testmenu "Project" running.
             case "testmenu" when Active:

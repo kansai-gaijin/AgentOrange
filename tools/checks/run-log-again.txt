@@ -1,0 +1,4 @@
+# Started again: the run before ended as usual, and says so; the made-up one never did, and is noted once.
+filehas "logs/agent-orange.log" "Ended (process " 1
+filehas "logs/agent-orange.log" "Ended with no word on why (process 99999999), the run started at 2026-11-20 10:00:00" 1
+filehas "logs/agent-orange.log" "Ended with no word on why" 1

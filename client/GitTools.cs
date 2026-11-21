@@ -34,6 +34,7 @@ public enum RepoAccess
     CheckFailed,
     GitPushUnchecked,
     GitOffline,
+    TookTooLong,
 }
 
 /// <summary>Account is the signed-in GitHub account this applies to, when there is one.</summary>
@@ -49,10 +50,10 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
     public bool GitHubSeesRepo => Access is RepoAccess.Allowed or RepoAccess.ReadOnly or RepoAccess.GitCantReach or RepoAccess.GitReadOnly or RepoAccess.GitPushUnchecked or RepoAccess.GitOffline;
 
     /// <summary>Whether the page shows the folder at all, which is when it's worth looking through.</summary>
-    public bool ShowsFolder => Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitPushUnchecked or RepoAccess.GitOffline or RepoAccess.GitCantReach or RepoAccess.GitReadOnly;
+    public bool ShowsFolder => Access is RepoAccess.Allowed or RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitPushUnchecked or RepoAccess.GitOffline or RepoAccess.GitCantReach or RepoAccess.GitReadOnly or RepoAccess.TookTooLong;
 
     /// <summary>No clear answer, so a PC that has had access, or a project made here, can keep working.</summary>
-    public bool IsUnanswered => Access is RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitPushUnchecked or RepoAccess.GitOffline;
+    public bool IsUnanswered => Access is RepoAccess.Offline or RepoAccess.CheckFailed or RepoAccess.GitPushUnchecked or RepoAccess.GitOffline or RepoAccess.TookTooLong;
 
     public (string Heading, string Description) Describe() => Access switch
     {
@@ -72,6 +73,7 @@ public sealed record RepoCheck(RepoAccess Access, string? Account = null)
         RepoAccess.Offline => ("Couldn't reach GitHub", "This PC seems to be offline or blocked from GitHub, and it hasn't had access to this repo before."),
         RepoAccess.GitOffline => ("Git on this PC can't get through", "GitHub says you have access, but Git here couldn't connect to it. Check this PC's network for Git, such as a proxy or a blocked SSH port, then try again."),
         RepoAccess.GitPushUnchecked => ("Couldn't check pushing", "Your GitHub account has access, but Git on this PC couldn't finish checking whether it can push to this repo. Try again in a moment, and if this keeps happening, check this PC's Git setup, such as a proxy or firewall."),
+        RepoAccess.TookTooLong => ("The repo check took too long", "GitHub and Git didn't answer in time, and this PC hasn't had access to this repo before. It's checked again in a minute. If this keeps happening, check this PC's network, or whether Git is waiting on a sign-in."),
         RepoAccess.Allowed => ("You have access", ""),
         _ => ("Couldn't check this repo", "GitHub gave an unexpected answer. Try again in a moment."),
     };
@@ -661,6 +663,15 @@ public static partial class GitTools
     // themselves, and nothing that can name a program, a hook or another settings file.
     [GeneratedRegex(@"\A((core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks|longpaths|autocrlf|eol|safecrlf)|remote\.[^\r\n]*\.(url|fetch|pushurl|tagopt|prune|promisor|partialclonefilter|gh-resolved)|branch\.[^\r\n]*\.(remote|merge)|submodule\.[^\r\n]*\.(url|active|branch|ignore)|lfs\.repositoryformatversion|user\.(name|email))\n[^\r\n]*\z|filter\.lfs\.(clean|smudge|process)\ngit-lfs [^&|;<>`$\r\n]*\z|filter\.lfs\.required\n(true|false)\z|lfs\.[^\r\n]*\.access\n(basic|none|private|negotiate|ntlm)\z|lfs\.[^\r\n]*\.locksverify\n(true|false)\z|core\.fsmonitor\nfalse\z|core\.hookspath\n/dev/null\z|submodule\.[^\r\n]*\.update\n(checkout|none)\z)", RegexOptions.IgnoreCase)]
     private static partial Regex SafeWhileFinishing();
+
+    // Besides those, what a folder people work in usually has, none of which can name a program,
+    // a hook, a file to read or another settings file, or send Git somewhere else (#20).
+    [GeneratedRegex(@"\A(core\.(quotepath|commentchar|commentstring|abbrev|checkstat|trustctime|untrackedcache|splitindex|preloadindex|fscache|multipackindex|commitgraph|sparsecheckout|sparsecheckoutcone|whitespace|warnambiguousrefs|bigfilethreshold|compression|fsync|fsyncmethod)|remote\.[^\r\n]*\.(mirror|skipdefaultupdate|skipfetchall)|branch\.[^\r\n]*\.(rebase|description)|pull\.(rebase|ff)|push\.(default|autosetupremote|followtags)|fetch\.(prune|prunetags|writecommitgraph|parallel)|init\.defaultbranch|merge\.(ff|conflictstyle|renames)|rebase\.(autostash|autosquash|updaterefs)|rerere\.(enabled|autoupdate)|gc\.[^\r\n]*|index\.[^\r\n]*|feature\.[^\r\n]*|pack\.[^\r\n]*|extensions\.(worktreeconfig|objectformat|refstorage)|color\.[^\r\n]*|column\.[^\r\n]*|advice\.[^\r\n]*|status\.(showuntrackedfiles|submodulesummary|relativepaths|short|branch|aheadbehind|renames)|diff\.(renames|renamelimit|algorithm|colormoved|mnemonicprefix|noprefix|submodule|indentheuristic|context|interhunkcontext|ignoresubmodules)|lfs\.(fetchrecentalways|fetchrecentrefsdays|locksverify)|maintenance\.(auto|strategy)|user\.signingkey|commit\.(gpgsign|verbose|cleanup)|tag\.gpgsign)\n[^\r\n]*\z", RegexOptions.IgnoreCase)]
+    private static partial Regex SafeForAgents();
+
+    // A word in a setting's value that could be a path to a file.
+    [GeneratedRegex(@"[^\s'""]+")]
+    private static partial Regex NamedPath();
 
     [GeneratedRegex(@"^(https://github\.com/|ssh://git@github\.com/|git@github\.com:)", RegexOptions.IgnoreCase)]
     private static partial Regex AllowedLargeFileUrl();

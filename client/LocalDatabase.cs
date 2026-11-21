@@ -1617,6 +1617,7 @@ public sealed class LocalDatabase
         {
             SetSetting(AllowedSettingsKey(old), "");
             SetSetting(AllowedSettingsKey(GitTools.FinishApprovalKey(old)), "");
+            SetSetting(AllowedSettingsKey(GitTools.AgentsApprovalKey(old)), "");
             SetSetting(SharesRepoKey(old), "");
             SetSetting(EngineHereKey(projectId), "");
         }
@@ -1665,6 +1666,7 @@ public sealed class LocalDatabase
                 {
                     var folder = key[prefix.Length..];
                     if (folder.EndsWith("|finish", StringComparison.Ordinal)) folder = folder[..^"|finish".Length];
+                    if (folder.EndsWith("|agents", StringComparison.Ordinal)) folder = folder[..^"|agents".Length];
                     if (FolderIsGone(folder)) gone.Add(key);
                 }
             }

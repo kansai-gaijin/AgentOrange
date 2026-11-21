@@ -1,6 +1,7 @@
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace AgentOrange;
 
@@ -42,12 +43,93 @@ public static partial class GitTools
         return new FinishLook(SummedUp([.. own, .. inSubmodules.Lines]), inSubmodules.Refused);
     }
 
+    /// <summary>
+    /// What agents, and this app's own Git in the agents window and the Git actions, would use of a
+    /// folder's own settings (#20). Agents run any Git command there, and the app runs status, diff,
+    /// fetch, commit and push, which can start a program in many ways: core.fsmonitor, hooks, filter
+    /// and diff drivers, editors, pagers, signing and credential programs, included settings files.
+    /// So, as before finishing a download, anything not known to be safe needs allowing: the
+    /// settings, the hooks wherever core.hooksPath puts them, each file in the folder a setting
+    /// names, and what its submodules keep. Hooks and named files go in by what's in them, so a pull
+    /// that changes one asks again. Refused says it can't be allowed at all, and null means this
+    /// couldn't be read.
+    /// </summary>
+    public static async Task<FinishLook?> LookBeforeAgentsAsync(string folder)
+    {
+        if (!await FolderExistsAsync(folder)) return new FinishLook(FolderGitSettings.None, null);
+        var own = await ReadSettingLinesAsync(folder, ".", setting => SafeWhileFinishing().IsMatch(setting) || SafeForAgents().IsMatch(setting));
+        if (own is null) return null;
+        var lines = new List<string>(own);
+        try
+        {
+            lines.AddRange(await Task.Run(() => FilesNamedIn(folder, own)));
+
+            // Where Git itself looks for hooks: core.hooksPath, or the Git data's own, wherever that is.
+            var hooks = await RunAsync("git", folder, "rev-parse", "--git-path", "hooks");
+            if (hooks is null) return null;
+            if (hooks.ExitCode == 0 && hooks.Output.Trim() is { Length: > 0 } hooksPath)
+            {
+                var hooksFolder = Path.GetFullPath(hooksPath, folder);
+                lines.AddRange(await Task.Run(() => HooksInFolder(hooksFolder, Path.GetRelativePath(folder, hooksFolder))));
+            }
+
+            // A folder that keeps its Git data elsewhere, as a linked worktree does, has its
+            // submodules' data there too; Git's own answers above already cover its settings and hooks.
+            if (await Task.Run(() => Directory.Exists(Path.Combine(folder, ".git"))))
+            {
+                if (await LookThroughSubmodulesAsync(folder, withOwnHooks: false) is not { } inSubmodules) return null;
+                if (inSubmodules.Refused is { } refused) return new FinishLook(SummedUp(lines), refused.Replace("so nothing was run in this folder", "so agents can't work in this folder"));
+                lines.AddRange(inSubmodules.Lines);
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            AppLog.Write($"Couldn't look through a folder's Git settings for agents: {error.Message}");
+            return null;
+        }
+        return new FinishLook(SummedUp(lines), null);
+    }
+
+    public static string AgentsApprovalKey(string folder) => $"{Path.TrimEndingDirectorySeparator(folder)}|agents";
+
+    // A file in the folder that a setting names, such as the script a credential helper, fsmonitor
+    // or sshCommand's -F points at: allowing the setting has to cover what's in it, as a pull can
+    // change it. Anything the value names that isn't a file there is left to the setting's own text.
+    private static List<string> FilesNamedIn(string folder, IEnumerable<string> settings)
+    {
+        var found = new List<string>();
+        var inside = Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder)) + Path.DirectorySeparatorChar;
+        foreach (var setting in settings)
+        {
+            var parts = setting.Split('\n', 2);
+            if (parts.Length < 2) continue;
+            foreach (Match token in QuotedText().Matches(parts[1]).Concat(NamedPath().Matches(parts[1])))
+            {
+                var named = token.Value.Trim('\'', '"').TrimStart('!');
+                if (named.Contains("://") || named.IndexOfAny(['/', '\\']) < 0 || named.IndexOfAny(Path.GetInvalidPathChars()) >= 0) continue;
+                string full;
+                try
+                {
+                    full = Path.GetFullPath(named.StartsWith("~/", StringComparison.Ordinal) ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), named[2..]) : named, folder);
+                }
+                catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    continue;
+                }
+                if (!full.StartsWith(inside, StringComparison.OrdinalIgnoreCase) || !File.Exists(full)) continue;
+                using var contents = File.OpenRead(full);
+                found.Add($"{OneLine(parts[0])}: the file {OneLine(Path.GetRelativePath(folder, full))} ({Convert.ToHexString(SHA256.HashData(contents))[..12]})");
+            }
+        }
+        return found.Distinct().ToList();
+    }
+
     private const int MaxSubmoduleDepth = 8;
     private const int MaxHookBytes = 1_000_000;
 
     private sealed record SubmoduleLook(List<string> Lines, string? Refused);
 
-    private static async Task<SubmoduleLook?> LookThroughSubmodulesAsync(string folder)
+    private static async Task<SubmoduleLook?> LookThroughSubmodulesAsync(string folder, bool withOwnHooks = true)
     {
         var lines = new List<string>();
         try
@@ -56,7 +138,7 @@ public static partial class GitTools
             if (await Task.Run(() => File.Exists(gitDirectory))) return new SubmoduleLook(lines, "This folder keeps its Git data somewhere else, which a clone from this app never does, so what it would use can't be checked and nothing was run in it. If you trust it, run git submodule update --init --recursive and git lfs pull in the folder yourself.");
             if (!await Task.Run(() => Directory.Exists(gitDirectory))) return new SubmoduleLook(lines, null);
             if (await Task.Run(() => File.Exists(Path.Combine(gitDirectory, "commondir")))) return new SubmoduleLook(lines, CantBeUsed("This folder's Git data", "it has a commondir file, which keeps its hooks and settings somewhere else"));
-            lines.AddRange(await Task.Run(() => HooksIn(gitDirectory, ".git")));
+            if (withOwnHooks) lines.AddRange(await Task.Run(() => HooksIn(gitDirectory, ".git")));
             var places = new HashSet<string>(await Task.Run(() => GitFolderSafety.ModuleDirectories(gitDirectory)), StringComparer.OrdinalIgnoreCase);
 
             // A submodule's folder can also keep its Git data itself, or say it's somewhere else.
@@ -170,10 +252,12 @@ public static partial class GitTools
     }
 
     // Anything that isn't one of Git's samples, or a hook Git LFS added for itself.
-    private static List<string> HooksIn(string place, string name)
+    private static List<string> HooksIn(string place, string name) => HooksInFolder(Path.Combine(place, "hooks"), name);
+
+    private static List<string> HooksInFolder(string folder, string name)
     {
         var found = new List<string>();
-        var hooks = new DirectoryInfo(Path.Combine(place, "hooks"));
+        var hooks = new DirectoryInfo(folder);
         if (!hooks.Exists) return found;
         foreach (var hook in hooks.EnumerateFiles().Where(file => !file.Name.EndsWith(".sample", StringComparison.OrdinalIgnoreCase)))
         {

@@ -1,0 +1,43 @@
+# Agents, and the Git actions, run Git in a project's folder, so everything its own settings and
+# hooks could run needs allowing first: settings not known to be safe, hooks wherever core.hooksPath
+# puts them, and what's in a file a setting names, so a pull that changes one asks again (#20).
+# GitHub's answer about the repo is made up, and the repo is one in the data folder.
+seed "Hooks" 0 0 0
+file "upstream/.agent-orange/tests.json" {"test":"Write-Output('tested')","tags":["windows"]}
+gitrepo "upstream"
+gitclone "upstream" "projects/hooks"
+gitrepo "projects/hooks" "https://github.com/example/hooks"
+testchecks "Hooks" running
+# A plain clone has nothing to allow.
+opencheck "Hooks" 0 Allowed
+waitgone "Checking the repo…"
+expectnot "Agents and Git actions would use this folder's own Git settings and hooks"
+# A setting that runs a program named by a file in the folder, hooks somewhere of the folder's own.
+writefile "Hooks" ".git/config" "[core]\n\tfsmonitor = tools/watch.sh\n\thooksPath = .githooks\n"
+writefile "Hooks" "tools/watch.sh" "#!/bin/sh\necho watching\n"
+writefile "Hooks" ".githooks/pre-commit" "#!/bin/sh\nexit 0\n"
+opencheck "Hooks" 0 Allowed
+waitgone "Checking the repo…"
+wait "Agents and Git actions would use this folder's own Git settings and hooks"
+wait "core.fsmonitor tools/watch.sh"
+wait "core.hookspath .githooks"
+wait "core.fsmonitor: the file tools\watch.sh ("
+wait ".githooks: the hook pre-commit ("
+shot agents-settings
+# Agents can't use the folder until then.
+mcprefused "Hooks" run_tests machine "Office PC"
+said "This folder's own Git settings and hooks need allowing first, on the project's page."
+click "Allow"
+click "Are you sure?"
+waitgone "Agents and Git actions would use this folder's own Git settings and hooks"
+# Past that, it goes on to the next thing a run needs: here, a commit that's on origin.
+mcprefused "Hooks" run_tests machine "Office PC"
+notsaid "need allowing first"
+said "Push the commit checked out here first."
+# The hook changes, as a pull could change it: asked again.
+writefile "Hooks" ".githooks/pre-commit" "echo changed\n"
+opencheck "Hooks" 0 Allowed
+waitgone "Checking the repo…"
+wait "Agents and Git actions would use this folder's own Git settings and hooks"
+mcprefused "Hooks" run_tests machine "Office PC"
+said "need allowing first"
