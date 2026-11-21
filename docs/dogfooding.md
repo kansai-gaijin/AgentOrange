@@ -3,6 +3,18 @@
 What got in the way while using Agent Orange to make the games, and what was done about it. Newest first.
 Anything not fixed on the spot is a GitHub issue, not a line here.
 
+## 2026-11-21 · One agent at a time was slow (#94)
+
+Each conversation worked through a slice's tasks one after another, a build agent used no subagents,
+and the only way to run work at once was to start conversations by hand and keep them apart. Now a
+milestone can be split across agents: tasks say what they use (a tool such as the game's engine, or
+a name of the project's own), tasks that share something stay in one part, and each part is a
+conversation in a Git worktree of its own, at most so many at once, never two on a tool used one
+agent at a time. The engine's part works in the project's own folder. Parts commit on their branches
+and are merged in order, stopping on a conflict. From the Tasks page ("Split across agents"), or by a
+coordinating agent with split_milestone, which waits on the parts. Briefs now say subagents are fine
+for independent pieces of a task, but never a second copy of the engine.
+
 ## 2026-11-15 · Unreal 5.9: the game's project, made and opened from Agent Orange
 
 With Unreal set as the engine and nothing in the folder, the project page had nothing to offer: no
