@@ -42,7 +42,7 @@ public sealed partial class AgentConversation
         Process? process;
         try
         {
-            process = Process.Start(AgentProviders.SessionStartInfo(setup.Provider, "app-server -c thread_unload_delay_secs=0", Folder!, setup.ToolsFolder));
+            process = Process.Start(AgentProviders.SessionStartInfo(setup.Provider, $"app-server -c thread_unload_delay_secs=0{LoginSkillsOff(setup.Provider.LoginFolder)}", Folder!, setup.ToolsFolder));
         }
         catch (Exception error) when (error is Win32Exception or IOException or UnauthorizedAccessException)
         {
@@ -117,8 +117,77 @@ public sealed partial class AgentConversation
         return true;
     }
 
-    // The thread: new, or the conversation's own picked back up after a restart.
+    // A login's own skills, in its folder and in the person's ~/.agents, are for their own use of
+    // Codex, as are its MCP servers (#89). Codex only switches a skill off by its SKILL.md's path, and
+    // only for the whole program, so each is named on its command line: only their paths are listed,
+    // nothing in them is read. Codex's own (in .system) stay, as a project's own in its repo do.
+    // The command line goes through cmd, which takes about 8000 characters, so as many as fit.
+    internal static string LoginSkillsOff(string loginFolder)
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+#if DEBUG
+        if (Headless.Active) home = Path.Combine(Headless.DataFolder, "home"); // Never the person's own.
+#endif
+        string[] roots = [Path.Combine(loginFolder, "skills"), Path.Combine(home, ".agents", "skills")];
+        var entries = new List<string>();
+        var length = 0;
+        var left = 0;
+        foreach (var skill in roots.SelectMany(root => SkillFiles(root, 0)))
+        {
+            // Quotes can't be in a TOML literal string, and cmd would read a % as the start of a variable.
+            var path = skill.Replace('\\', '/');
+            var entry = $"{{path='{path}',enabled=false}}";
+            if (path.IndexOfAny(['\'', '"', '%']) >= 0 || length + entry.Length > 6000)
+            {
+                left++;
+                continue;
+            }
+            entries.Add(entry);
+            length += entry.Length + 1;
+        }
+        if (left > 0) AppLog.Write($"Couldn't switch off {left} of a Codex login's own skills for its sessions, as there were too many or their paths can't be passed on.");
+        return entries.Count == 0 ? "" : $" -c \"skills.config=[{string.Join(",", entries)}]\"";
+    }
+
+    // Each SKILL.md under a folder, as Codex finds them, past folders starting with a dot.
+    private static IEnumerable<string> SkillFiles(string folder, int depth)
+    {
+        if (depth > 6) return [];
+        try
+        {
+            if (!Directory.Exists(folder)) return [];
+            var here = Path.Combine(folder, "SKILL.md");
+            if (depth > 0 && File.Exists(here)) return [here];
+            return Directory.EnumerateDirectories(folder)
+                .Where(inside => !Path.GetFileName(inside).StartsWith('.'))
+                .ToList()
+                .SelectMany(inside => SkillFiles(inside, depth + 1))
+                .ToList();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
+    }
+
+    // Before the thread: Agent Orange's skills as a root of Codex's own (the same folder Claude Code
+    // gets as a plugin), and the names of the login's own MCP servers, so they can be switched off.
     private void OpenCodexThread(Setup setup)
+    {
+        Rpc("skills/extraRoots/set", new JsonObject { ["extraRoots"] = new JsonArray(Path.GetFullPath(Path.Combine(setup.SkillsPlugin, "skills"))) }, (_, error) =>
+        {
+            if (error is not null) AppLog.Write($"Codex didn't take Agent Orange's skills as its own: {Str(error, "message")}");
+        });
+        Rpc("config/read", new JsonObject { ["includeLayers"] = false, ["cwd"] = Folder }, (result, error) =>
+        {
+            if (error is not null) AppLog.Write($"Codex didn't say which MCP servers its login sets up: {Str(error, "message")}");
+            var loginServers = (result?["config"]?["mcp_servers"] as JsonObject)?.Select(server => server.Key).ToList() ?? [];
+            OpenCodexThread(setup, loginServers);
+        });
+    }
+
+    // The thread: new, or the conversation's own picked back up after a restart.
+    private void OpenCodexThread(Setup setup, IReadOnlyList<string> loginServers)
     {
         var config = new JsonObject
         {
@@ -145,6 +214,13 @@ public sealed partial class AgentConversation
         catch (Exception error) when (error is IOException or JsonException or UnauthorizedAccessException)
         {
             AppLog.Write($"Couldn't give Codex the editors: {error.Message}");
+        }
+
+        // Only Agent Orange's own, as Claude Code's --strict-mcp-config does. Codex adds a thread's to
+        // its login's rather than replacing them, so the login's are switched off by name.
+        foreach (var name in loginServers)
+        {
+            if (!config.ContainsKey($"mcp_servers.{name}")) config[$"mcp_servers.{name}.enabled"] = false;
         }
 
         var parameters = new JsonObject { ["cwd"] = Folder, ["config"] = config };

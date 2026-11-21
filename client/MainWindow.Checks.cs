@@ -177,6 +177,9 @@ public partial class MainWindow
         var start = AgentProviders.SessionStartInfo(login, "-p", ProjectFolder(project.Id) ?? agentFolder, Ripgrep.Folder(agentFolder));
         var started = $"Started as: {start.FileName} {start.Arguments}\n" + string.Join("\n", new[] { "PYTHONUTF8", "PYTHONIOENCODING", "VSLANG", "DOTNET_CLI_UI_LANGUAGE", "LANG", "PATH" }
             .Select(name => $"{name}={(start.Environment.TryGetValue(name, out var value) ? value : "")}"));
+        // And a made-up Codex login's: its own skills switched off for the session (#89).
+        var codexLogin = new AgentProvider("check-codex", ProviderKind.Codex, "Check Codex", "codex", Path.Combine(agentFolder, "check-codex-login"), true);
+        started += $"\nCodex started as: {AgentProviders.SessionStartInfo(codexLogin, $"app-server{AgentConversation.LoginSkillsOff(codexLogin.LoginFolder)}", ProjectFolder(project.Id) ?? agentFolder).Arguments}";
         // What a helper agent is told as it starts, through the hook, as Claude Code would run it.
         using var helperSaid = new StringWriter();
         ProjectLessons.RunHelperHook(helpers, helperSaid);
