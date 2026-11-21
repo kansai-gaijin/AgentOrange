@@ -265,7 +265,9 @@ public partial class MainWindow
             var inIt = data.Made.Where(each => each.Task.Milestone == id).ToList();
             var done = inIt.Count(each => each.Task.Done);
             var open = IsOpen(data, id, done, inIt.Count);
-            lines.Add(new ListLine($"m:{id}", $"{milestone}|{done}|{inIt.Count}|{open}|{data.Milestones.Count}|{data.ReviewKey(id)}", () => InPage(MilestoneHeader(project, view, data, id, milestone, done, inIt.Count, open), TasksWidth)));
+            lines.Add(new ListLine($"m:{id}", $"{milestone}|{done}|{inIt.Count}|{open}|{data.Milestones.Count}|{data.ReviewKey(id)}|{RunOf(project.Id, id)?.Id}", () => InPage(MilestoneHeader(project, view, data, id, milestone, done, inIt.Count, open), TasksWidth)));
+            // Split across agents: how its parts stand, open or closed, as they're at work.
+            lines.AddRange(SplitLines(project, id));
             if (!open) continue;
 
             if (milestone.Goal is { Length: > 0 } goal) lines.Add(new ListLine($"goal:{id}", goal, () => InPage(Note(goal, 0), TasksWidth)));
@@ -376,6 +378,7 @@ public partial class MainWindow
         add.Click += (_, _) => OpenTaskForm(add, project, stage, null, id);
         AutomationProperties.SetName(add, $"Add a task to {milestone.Name}");
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Children = { add, edit } };
+        if (SplitButton(project, id, milestone, count - done) is { } split) buttons.Children.Insert(0, split);
         if (data.Reviews.TryGetValue(id, out var review)) buttons.Children.Insert(0, ReviewLink(project, id, milestone.Name, review));
 
         var finished = count > 0 && done == count;
@@ -446,7 +449,7 @@ public partial class MainWindow
     {
         var card = task.Card is { } cardId && data.Cards.TryGetValue(cardId, out var belongs) ? CardName(belongs.Card, belongs.Page) : null;
         // A list in a record says only its type, so its evidence is said by how much there is.
-        return new ListLine($"task:{id}", $"{task}|{overdue}|{milestoneName}|{card}|{EvidenceCount(task.Evidence)}|{data.ReviewKey(id)}", () => InPage(MadeTaskRow(project, view, data, id, task, overdue, milestoneName), TasksWidth));
+        return new ListLine($"task:{id}", $"{task}|{overdue}|{milestoneName}|{card}|{EvidenceCount(task.Evidence)}|{data.ReviewKey(id)}|{string.Join(",", task.Uses ?? [])}", () => InPage(MadeTaskRow(project, view, data, id, task, overdue, milestoneName), TasksWidth));
     }
 
     private ListLine AssetTaskLine(Project project, AssetTask task, bool overdue) =>
@@ -488,7 +491,7 @@ public partial class MainWindow
         var words = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         words.Children.Add(new TextBlock { Text = task.Title, FontSize = 14, Foreground = (Brush)FindResource(task.Done ? "TextMuted" : "TextStrong"), TextWrapping = TextWrapping.Wrap, TextDecorations = task.Done ? TextDecorations.Strikethrough : null });
         // Away from its milestone, it says which one it's in.
-        var aside = string.Join(" · ", new[] { milestoneName, task.Notes?.Split('\n')[0], EvidenceCount(task.Evidence), task.Handoff is null ? null : "Handoff note" }.Where(each => each is { Length: > 0 }));
+        var aside = string.Join(" · ", new[] { milestoneName, task.Notes?.Split('\n')[0], task.Uses is { Length: > 0 } uses ? $"Uses {string.Join(", ", uses)}" : null, EvidenceCount(task.Evidence), task.Handoff is null ? null : "Handoff note" }.Where(each => each is { Length: > 0 }));
         if (aside.Length > 0)
         {
             words.Children.Add(new TextBlock { Text = aside, FontSize = 12.5, Foreground = (Brush)FindResource("TextMuted"), TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 1, 0, 0) });
@@ -771,6 +774,14 @@ public partial class MainWindow
         rows.Children.Add(cardButton);
         rows.Children.Add(cardList);
 
+        // What it works on that another task at the same time mustn't, for splitting its milestone across agents (#94).
+        var uses = Field(string.Join(", ", task?.Uses ?? []));
+        uses.Width = double.NaN;
+        uses.ToolTip = "Separated by commas: a tool, such as the game's engine or Blender, or a name of the project's own, such as save files. Tasks that share any go one after another when the milestone is split across agents. Empty when it's independent.";
+        AutomationProperties.SetName(uses, "Uses");
+        rows.Children.Add(FormLabel("Uses", above: 12));
+        rows.Children.Add(uses);
+
         // What shows its work, such as an agent's screenshots: a click opens one, and each can be taken off.
         var evidence = new List<TaskEvidence>(task?.Evidence ?? []);
         var attaching = new List<string>();
@@ -842,7 +853,7 @@ public partial class MainWindow
                 }
             }
             // What the form doesn't change, such as whether it's done, stays as it is.
-            var saved = (task ?? new ProjectTask(stage, typed)) with { Title = typed, Notes = notesText.Length > 0 ? notesText : null, Due = DayText(due), Milestone = chosen, Order = order, Card = card, Evidence = evidence.Count > 0 ? [.. evidence] : null, Handoff = handoff };
+            var saved = (task ?? new ProjectTask(stage, typed)) with { Title = typed, Notes = notesText.Length > 0 ? notesText : null, Due = DayText(due), Milestone = chosen, Order = order, Card = card, Evidence = evidence.Count > 0 ? [.. evidence] : null, Handoff = handoff, Uses = SplitUses(uses.Text) is { Length: > 0 } used ? used : null };
             foreach (var picture in (task?.Evidence ?? []).Except(evidence).Select(each => each.Picture).OfType<string>()) _database.DeleteDocumentPicture(picture);
             _database.SaveTask(project.Id, existing?.Id, saved);
 

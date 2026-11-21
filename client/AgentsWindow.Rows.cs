@@ -159,8 +159,10 @@ public sealed partial class AgentsWindow
         projectName.TextTrimming = TextTrimming.CharacterEllipsis;
         first.Children.Add(projectName);
 
-        // Line 2: the title, with the provider's icon when there's no third line.
-        var hasThird = repo?.Branch is not null;
+        // Line 2: the title, with the provider's icon when there's no third line. A part of a split
+        // milestone works on a branch of its own, which its third line says, with how it stands.
+        var part = _main.PartLine(conversation);
+        var hasThird = repo?.Branch is not null || part is not null;
         var second = new DockPanel { Margin = new Thickness(0, 4, 0, 0) };
         FrameworkElement Provider()
         {
@@ -183,7 +185,7 @@ public sealed partial class AgentsWindow
         {
             var third = new DockPanel { Margin = new Thickness(0, 2, 0, 0) };
             third.Children.Add(Provider());
-            if (repo!.PullRequestOpen && repo.PullRequestUrl is { } address)
+            if (part is null && repo!.PullRequestOpen && repo.PullRequestUrl is { } address)
             {
                 var pr = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
                 pr.Children.Add(WithGap(AgentIcons.Line("git-pull-request-arrow", 12, Emerald), 4));
@@ -191,7 +193,9 @@ public sealed partial class AgentsWindow
                 DockPanel.SetDock(pr, Dock.Right);
                 third.Children.Add(pr);
             }
-            var branch = Ocean.Text(MiddleOut(repo.Branch!, 34), Ocean.Secondary, 12);
+            var branch = Ocean.Text(part ?? MiddleOut(repo!.Branch!, 34), Ocean.Secondary, 12);
+            branch.TextTrimming = TextTrimming.CharacterEllipsis;
+            if (part is not null) branch.ToolTip = part;
             third.Children.Add(branch);
             content.Children.Add(third);
         }

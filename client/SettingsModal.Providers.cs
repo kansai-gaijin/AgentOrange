@@ -71,6 +71,17 @@ public partial class SettingsModal
 
         var switchLogin = SettingToggle(MainWindow.SwitchLoginSetting, false);
         AutomationProperties.SetName(switchLogin, "Go on with another login");
+
+        // How many agent conversations may work at once: parts of a milestone split across agents wait for a place (#94).
+        var atOnce = new ComboBox { Style = (Style)FindResource("Choice"), Width = 90 };
+        AutomationProperties.SetName(atOnce, "Conversations at once");
+        for (var most = 1; most <= MainWindow.MostAtOnceLimit; most++) atOnce.Items.Add(new ComboBoxItem { Content = most.ToString(System.Globalization.CultureInfo.InvariantCulture), Tag = most });
+        var keptAtOnce = int.TryParse(Database.GetSetting(MainWindow.MostAtOnceSetting), out var kept) && kept is >= 1 and <= MainWindow.MostAtOnceLimit ? kept : MainWindow.DefaultMostAtOnce;
+        atOnce.SelectedItem = atOnce.Items.OfType<ComboBoxItem>().First(item => (int)item.Tag == keptAtOnce);
+        atOnce.SelectionChanged += (_, _) =>
+        {
+            if (atOnce.SelectedItem is ComboBoxItem { Tag: int chosen }) Database.SetSetting(MainWindow.MostAtOnceSetting, chosen.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        };
         return
         [
             Section("Providers"),
@@ -79,6 +90,10 @@ public partial class SettingsModal
             Card(Row("Go on with another login",
                 "When a conversation's login reaches its usage limit, another login of the same kind with room left in its limits takes it on straight away, with its handoff note. Paid extra usage never counts as room, and a login that goes on to it is moved instead.",
                 switchLogin)),
+            Section("Parallel work"),
+            Card(Row("Conversations at once",
+                "The most agent conversations working at the same time. A milestone split across agents is split into at most this many parts, and a part waits for a place before it starts. It also starts only with a login that has room in its limits, or another of the same kind when Go on with another login is on.",
+                atOnce)),
         ];
     }
 

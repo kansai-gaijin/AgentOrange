@@ -202,6 +202,14 @@ public partial class MainWindow
         return (tasks.All(each => each.Task.Done) ? $"Finished, {done}" : $"Stopped working, {done}", true, false);
     }
 
+    /// <summary>A part's conversation's line in the sidebar: which part, its branch and how it stands, or null for a conversation that isn't one.</summary>
+    internal string? PartLine(AgentConversation conversation)
+    {
+        if (conversation.PartOf is not { } runId || ParallelRunsHere.FirstOrDefault(run => run.Id == runId) is not { } run) return null;
+        if (run.Parts.FirstOrDefault(part => part.Number == conversation.PartNumber) is not { } part) return null;
+        return $"Part {part.Number} of {run.Parts.Count} · {PartState(run, part).Words} · {(part.InProjectFolder ? run.BaseBranch : part.Branch)}";
+    }
+
     private AgentConversation? PartConversation(ParallelPart part) => part.Conversation is { } id ? Conversations.FirstOrDefault(each => each.Id == id) : null;
 
     // Working, or wanting the person: what counts against how many may work at once.
