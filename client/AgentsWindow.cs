@@ -385,6 +385,13 @@ public sealed partial class AgentsWindow : Window
 
     internal bool IsLookingAt(AgentConversation conversation) => IsActive && _open == conversation;
 
+    /// <summary>Opens a conversation, as clicking its row does, such as a part of a split milestone from the Tasks page.</summary>
+    internal void OpenConversation(AgentConversation conversation)
+    {
+        Show(conversation);
+        ShowConversations();
+    }
+
 #if DEBUG
     /// <summary>For headless checks: opens a conversation, as clicking its row does.</summary>
     internal void ShowForChecks(AgentConversation conversation)
