@@ -111,6 +111,7 @@ public partial class MainWindow
         var mayNotMatch = history == FolderHistory.SharesNothing;
         var folderEngine = folderShown && usable && folderProblem is null ? await EngineVersions.DetectAsync(folder!) : null;
         var pushesTo = folderShown && usable && folderProblem is null ? await GitTools.PushesElsewhereAsync(folder!, project.RepoUrl) : null;
+        var forAgents = folderShown && usable && folderProblem is null ? await GitTools.LookBeforeAgentsAsync(folder!) : null;
         if (folderExists && check.IsDenied) _database.ForgetFolderSharesRepo(folder!);
 
         // Asked before the latest copy of the project is read below, as this can take a while.
@@ -214,7 +215,8 @@ public partial class MainWindow
             mayNotMatch,
             folderEngine,
             renamedHeldBy,
-            pushesTo);
+            pushesTo,
+            forAgents);
 
         // Its sections were open while this ran, and someone may be writing in one.
         RenderProjectKeepingFocus(latest);
@@ -283,7 +285,8 @@ public partial class MainWindow
         bool FolderMayNotMatch,
         string? FolderEngine,
         string? RenamedRepoHeldBy,
-        string? FolderPushesTo);
+        string? FolderPushesTo,
+        FinishLook? ForAgents = null); // What agents and the Git actions would use of the folder's own settings and hooks.
 
     private Project? FindProject(string id) => _database.ListProjects().FirstOrDefault(project => project.Id == id);
 

@@ -664,6 +664,15 @@ public static partial class GitTools
     [GeneratedRegex(@"\A((core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks|longpaths|autocrlf|eol|safecrlf)|remote\.[^\r\n]*\.(url|fetch|pushurl|tagopt|prune|promisor|partialclonefilter|gh-resolved)|branch\.[^\r\n]*\.(remote|merge)|submodule\.[^\r\n]*\.(url|active|branch|ignore)|lfs\.repositoryformatversion|user\.(name|email))\n[^\r\n]*\z|filter\.lfs\.(clean|smudge|process)\ngit-lfs [^&|;<>`$\r\n]*\z|filter\.lfs\.required\n(true|false)\z|lfs\.[^\r\n]*\.access\n(basic|none|private|negotiate|ntlm)\z|lfs\.[^\r\n]*\.locksverify\n(true|false)\z|core\.fsmonitor\nfalse\z|core\.hookspath\n/dev/null\z|submodule\.[^\r\n]*\.update\n(checkout|none)\z)", RegexOptions.IgnoreCase)]
     private static partial Regex SafeWhileFinishing();
 
+    // Besides those, what a folder people work in usually has, none of which can name a program,
+    // a hook, a file to read or another settings file, or send Git somewhere else (#20).
+    [GeneratedRegex(@"\A(core\.(quotepath|commentchar|commentstring|abbrev|checkstat|trustctime|untrackedcache|splitindex|preloadindex|fscache|multipackindex|commitgraph|sparsecheckout|sparsecheckoutcone|whitespace|warnambiguousrefs|bigfilethreshold|compression|fsync|fsyncmethod)|remote\.[^\r\n]*\.(mirror|skipdefaultupdate|skipfetchall)|branch\.[^\r\n]*\.(rebase|description)|pull\.(rebase|ff)|push\.(default|autosetupremote|followtags)|fetch\.(prune|prunetags|writecommitgraph|parallel)|init\.defaultbranch|merge\.(ff|conflictstyle|renames)|rebase\.(autostash|autosquash|updaterefs)|rerere\.(enabled|autoupdate)|gc\.[^\r\n]*|index\.[^\r\n]*|feature\.[^\r\n]*|pack\.[^\r\n]*|extensions\.(worktreeconfig|objectformat|refstorage)|color\.[^\r\n]*|column\.[^\r\n]*|advice\.[^\r\n]*|status\.(showuntrackedfiles|submodulesummary|relativepaths|short|branch|aheadbehind|renames)|diff\.(renames|renamelimit|algorithm|colormoved|mnemonicprefix|noprefix|submodule|indentheuristic|context|interhunkcontext|ignoresubmodules)|lfs\.(fetchrecentalways|fetchrecentrefsdays|locksverify)|maintenance\.(auto|strategy)|user\.signingkey|commit\.(gpgsign|verbose|cleanup)|tag\.gpgsign)\n[^\r\n]*\z", RegexOptions.IgnoreCase)]
+    private static partial Regex SafeForAgents();
+
+    // A word in a setting's value that could be a path to a file.
+    [GeneratedRegex(@"[^\s'""]+")]
+    private static partial Regex NamedPath();
+
     [GeneratedRegex(@"^(https://github\.com/|ssh://git@github\.com/|git@github\.com:)", RegexOptions.IgnoreCase)]
     private static partial Regex AllowedLargeFileUrl();
 

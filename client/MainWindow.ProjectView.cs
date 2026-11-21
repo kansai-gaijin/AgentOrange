@@ -129,6 +129,14 @@ public partial class MainWindow
                 if (!inSection) AddTestRunButton(actions, project, folder);
                 if (actions.Children.Count > 0) body.Children.Add(actions);
             }
+            if (folder is not null && found.ForAgents is { } forAgents && (forAgents.Refused is not null || !GitTools.AreAllowed(GitTools.AgentsApprovalKey(folder), forAgents.Settings)))
+            {
+                var rows = new List<FrameworkElement>();
+                AddAgentsSettingsRow(rows, project, folder, forAgents);
+                var allow = Card(rows.ToArray());
+                allow.Margin = new Thickness(0, 10, 0, 0);
+                body.Children.Add(allow);
+            }
             if (found.FolderMayNotMatch)
             {
                 body.Children.Add(new TextBlock { Text = "This folder doesn't have the repo's latest commits. It may just be behind, but it may not be the same project, so check before pushing.", Foreground = (Brush)FindResource("Accent"), FontSize = 13, Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap });
@@ -515,6 +523,42 @@ public partial class MainWindow
         }, $"finish|{folder}|{settings.Fingerprint}");
         allow.IsEnabled = !IsBusy;
         rows.Add(Row("Finishing would use this folder's own Git settings", $"They can run programs, so only allow them if you trust where this folder came from: {settings.Shown}", allow));
+    }
+
+    // Agents run Git in the folder, and so do the Git actions and the agents window (#20).
+    private void AddAgentsSettingsRow(List<FrameworkElement> rows, Project project, string folder, FinishLook look)
+    {
+        if (look.Refused is { } refused)
+        {
+            rows.Add(Row("Agents and Git actions can't work in this folder", refused));
+            return;
+        }
+        if (!look.Settings.CanBeApproved)
+        {
+            rows.Add(Row("This folder's own Git settings can't be used", "There are too many of them to show here, and they can only be allowed once you've been able to read them all. Cut them down, or use another copy."));
+            return;
+        }
+
+        var allow = TwoClickAction("Allow", () => AllowAgentsSettingsAsync(project, folder, look.Settings.Fingerprint), $"agents|{folder}|{look.Settings.Fingerprint}");
+        allow.IsEnabled = !IsBusy;
+        rows.Add(Row("Agents and Git actions would use this folder's own Git settings and hooks", $"Agents run Git in this folder, and so do the Git actions here and in the agents window, which can run programs these name or send your login somewhere else. Only allow them if you trust where this folder came from. A change to any of them asks again: {look.Settings.Shown}", allow));
+    }
+
+    private async Task AllowAgentsSettingsAsync(Project project, string folder, string fingerprint)
+    {
+        // Only what was on show: anything changed since is shown again instead.
+        if (await GitTools.LookBeforeAgentsAsync(folder) is { Refused: null } look && look.Settings.Fingerprint == fingerprint)
+        {
+            GitTools.RememberAllowedFolderSettings(GitTools.AgentsApprovalKey(folder), fingerprint);
+
+            // How Git reaches the repo was among what was shown, so this app's own checks may use it too.
+            if (await GitTools.FolderRunnableSettingsAsync(folder) is { IsEmpty: false, CanBeApproved: true } connection
+                && await GitTools.LookBeforeAgentsAsync(folder) is { Refused: null } still && still.Settings.Fingerprint == fingerprint)
+            {
+                _database.AllowFolderSettings(folder, connection.Fingerprint);
+            }
+        }
+        await RecheckIfStillOpenAsync(project.Id);
     }
 
     private void AddGetProjectOptions(StackPanel body, Project project, string? linkedFolder, PageCheck found)

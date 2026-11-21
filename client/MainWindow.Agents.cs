@@ -131,8 +131,7 @@ public partial class MainWindow
         if (IsBusyWith(conversation.ProjectId)) return "This project is busy. Send this once that finishes.";
 
         // An agent runs Git in the folder as it works, which runs whatever the folder's own settings say to.
-        var runnable = await GitTools.FolderRunnableSettingsAsync(folder);
-        if (runnable is null || !GitTools.AreAllowed(folder, runnable)) return "This folder's own Git settings need allowing first, on the project's page.";
+        if (await AgentsGitProblemAsync(folder) is { } problem) return problem;
 
         conversation.Folder = folder;
         return null;
@@ -146,9 +145,18 @@ public partial class MainWindow
     internal async Task<(string? Folder, string? Problem)> GitFolderAsync(string projectId)
     {
         if (ProjectFolder(projectId) is not { } folder) return (null, "This project has no folder on this PC yet. Set one up on its project page.");
-        var runnable = await GitTools.FolderRunnableSettingsAsync(folder);
-        if (runnable is null || !GitTools.AreAllowed(folder, runnable)) return (null, "This folder's own Git settings need allowing first, on the project's page.");
+        if (await AgentsGitProblemAsync(folder) is { } problem) return (null, problem);
         return (folder, null);
+    }
+
+    // Agents, and the app's own Git for them, use everything the folder's settings and hooks say
+    // to, not only how Git reaches the repo (#20). Null when they're allowed.
+    private static async Task<string?> AgentsGitProblemAsync(string folder)
+    {
+        var look = await GitTools.LookBeforeAgentsAsync(folder);
+        if (look is null) return "This folder's own Git settings couldn't be read, so nothing runs Git in it yet. Try again in a moment.";
+        if (look.Refused is { } refused) return refused;
+        return GitTools.AreAllowed(GitTools.AgentsApprovalKey(folder), look.Settings) ? null : "This folder's own Git settings and hooks need allowing first, on the project's page.";
     }
 
     internal AgentConversation.Setup PrepareAgent(AgentConversation conversation)
