@@ -529,11 +529,21 @@ public sealed class TestMachines
     }
 
     /// <summary>
-    /// A run this PC sent that's waiting or running on that link, for that project and commit, which
-    /// sending again would only repeat (#118).
+    /// A run this PC sent that's waiting or running on that link, for that project and commit, and
+    /// the same filter or none, which sending again would only repeat (#118).
     /// </summary>
-    public TestRunInfo? SameRun(IEnumerable<TestRunInfo> runs, string linkId, string projectId, string? commit) =>
-        commit is null ? null : runs.FirstOrDefault(run => !run.Finished && run.Linker == Latest?.Me && run.LinkId == linkId && run.ProjectId == projectId && string.Equals(run.Commit, commit, StringComparison.OrdinalIgnoreCase));
+    public TestRunInfo? SameRun(IEnumerable<TestRunInfo> runs, string linkId, string projectId, string? commit, string? filter = null) =>
+        commit is null ? null : runs.FirstOrDefault(run => !run.Finished && run.Linker == Latest?.Me && run.LinkId == linkId && run.ProjectId == projectId && string.Equals(run.Commit, commit, StringComparison.OrdinalIgnoreCase) && run.Filter == filter);
+
+    /// <summary>
+    /// Why a run of this setup can't be asked to test only what the filter names, or null when it can:
+    /// the filter has to be one plain word, and the repo has to say how to pass one.
+    /// </summary>
+    public static string? FilterProblem(TestSetup setup, string? filter) =>
+        filter is null ? null
+        : TestsFile.FilterProblem(filter) is { } unsafeFilter ? unsafeFilter
+        : setup.TestWithFilter is null ? $"{TestsFile.RelativePath} at that commit has no \"testWithFilter\", the test command with {TestsFile.FilterPlaceholder} where a filter goes, so its tests can't be asked to run only some. Add it in Project settings › Tests, then commit and push it."
+        : null;
 
     // Links a run is being sent over right now, so a second click doesn't send it twice.
     private readonly HashSet<string> _sending = [];
@@ -546,13 +556,13 @@ public sealed class TestMachines
     /// that run. An agent's run (#117) goes the same way, with the same checks here and on the
     /// target, and only says in the signed job that an agent started it.
     /// </summary>
-    public async Task<(string? RunId, string? Problem, TestRunInfo? Existing)> RunTestsAsync(MachineLinkInfo link, Project project, string folder, string? commit = null, string? startedBy = null)
+    public async Task<(string? RunId, string? Problem, TestRunInfo? Existing)> RunTestsAsync(MachineLinkInfo link, Project project, string folder, string? commit = null, string? startedBy = null, string? filter = null)
     {
         var sending = $"{link.Id}|{project.Id}";
         if (!_sending.Add(sending)) return (null, $"The tests are already being sent to {link.MachineLabel}.", null);
         try
         {
-            return await SendRunAsync(link, project, folder, commit, startedBy);
+            return await SendRunAsync(link, project, folder, commit, startedBy, filter);
         }
         finally
         {
@@ -560,7 +570,7 @@ public sealed class TestMachines
         }
     }
 
-    private async Task<(string? RunId, string? Problem, TestRunInfo? Existing)> SendRunAsync(MachineLinkInfo link, Project project, string folder, string? named, string? startedBy)
+    private async Task<(string? RunId, string? Problem, TestRunInfo? Existing)> SendRunAsync(MachineLinkInfo link, Project project, string folder, string? named, string? startedBy, string? filter)
     {
         if (MachineLinks.ReadKey(_database, link.Id) is not { ThisPcIsMachine: false } key) return (null, $"This PC has no key for its link to {link.MachineLabel}. Link it again.", null);
         if (link.Status == "expired" || key.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return (null, $"The link to {link.MachineLabel} expired. Link it again in Settings › Test machines.", null);
@@ -568,13 +578,15 @@ public sealed class TestMachines
         if (problem is not null || repoUrl is null || commit is null || setup is null) return (null, problem, null);
         var missing = setup.Tags.Where(tag => !HasTags(link.MachineTags, [tag])).ToList();
         if (missing.Count > 0) return (null, $"{link.MachineLabel} doesn't offer {string.Join(", ", missing)}, which {TestsFile.RelativePath} asks for.", null);
+        if (FilterProblem(setup, filter) is { } badFilter) return (null, badFilter, null);
 
         // Asked again now, as the list may be from before another click sent it.
         var runs = await _devices.RunsAsync(project.Id);
-        if (SameRun(runs.Value ?? [], link.Id, project.Id, commit) is { } same) return (null, null, same);
+        if (SameRun(runs.Value ?? [], link.Id, project.Id, commit, filter) is { } same) return (null, null, same);
 
+        // The filter is signed with the rest, and the target checks it again before putting it in the repo's command.
         var runId = MachineLinks.NewId();
-        var job = JsonSerializer.Serialize(new TestJob(TestJob.TestsKind, runId, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), project.Id, project.Name, repoUrl, commit.ToLowerInvariant(), "tests", setup.Tags, startedBy), TestJob.Json);
+        var job = JsonSerializer.Serialize(new TestJob(TestJob.TestsKind, runId, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), project.Id, project.Name, repoUrl, commit.ToLowerInvariant(), "tests", setup.Tags, startedBy, filter), TestJob.Json);
         var mac = MachineLinks.JobMac(key.Key, runId, link.Id, project.Id, commit, job);
         var sent = await _devices.EnqueueRunAsync(runId, link.Id, project.Id, commit.ToLowerInvariant(), job, mac);
         if (sent.Value is { } run) return (run.Id, null, null);

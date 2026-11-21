@@ -16,28 +16,34 @@ namespace AgentOrange;
 /// origin, the access it needs and the tags it asked for, and signs it with the link's key. The
 /// commands are in the repo, in .agent-orange/tests.json at that commit. StartedBy is "agent" for a
 /// run an agent started with run_tests (#117), and left out for a person's, so the run list can
-/// say which, signed with the rest. It changes nothing about what runs or who may run it.
+/// say which, signed with the rest. It changes nothing about what runs or who may run it. Filter,
+/// when set, asks for only some of the tests: the target checks it's one plain word and puts it
+/// in the repo's own testWithFilter at that commit, so it decides nothing else about what runs.
 /// </summary>
 public sealed record TestJob(string Kind, string RunId, long SentAt, string ProjectId, string ProjectName, string RepoUrl, string Commit, string Access, string[] Tags,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? StartedBy = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? StartedBy = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Filter = null)
 {
     public const string TestsKind = "tests";
     public const string ByAgent = "agent";
 
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    /// <summary>Who a job says started it, "agent" or null for a person, or null when it can't be read.</summary>
-    public static string? StartedByIn(string job)
+    /// <summary>The job, or null when it can't be read.</summary>
+    public static TestJob? Read(string job)
     {
         try
         {
-            return JsonSerializer.Deserialize<TestJob>(job, Json)?.StartedBy;
+            return JsonSerializer.Deserialize<TestJob>(job, Json);
         }
         catch (JsonException)
         {
             return null;
         }
     }
+
+    /// <summary>Who a job says started it, "agent" or null for a person, or null when it can't be read.</summary>
+    public static string? StartedByIn(string job) => Read(job)?.StartedBy;
 }
 
 /// <summary>How this PC runs tests for others: its own, never synced, and applied over what a job asks for.</summary>
@@ -222,6 +228,7 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
             return Refuse("it isn't a test job this version can read.");
         }
         if (!MachineLinks.Allows(key.Access, job.Access)) return Refuse($"it needs {MachineLinks.AccessLabel(job.Access)} access, more than the link gives.");
+        if (job.Filter is { } filter && TestsFile.FilterProblem(filter) is not null) return Refuse("its filter isn't one plain word, so it can't be put in a test command.");
 
         // Signed, but it could still be one sent before, sent again.
         if (!string.Equals(job.RunId, run.Id, StringComparison.OrdinalIgnoreCase)) return Refuse("its run id isn't the one it was signed with.");
@@ -277,6 +284,15 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
             return ("couldnt_run", null, record with { Note = why });
         }
 
+        // Only some of the tests, when asked: the repo's own command for that, with the filter put in.
+        if (job.Filter is not null && setup.TestWithFilter is null)
+        {
+            var why = $"This run asked to test only {job.Filter}, but {TestsFile.RelativePath} at this commit has no \"testWithFilter\" saying how to pass a filter to its tests.";
+            Line(why);
+            return ("couldnt_run", null, record with { Note = why });
+        }
+        var testCommand = setup.TestCommand(job.Filter);
+
         // This PC's own limit is for the whole run, in place of the repo's. Otherwise the repo's: one
         // for the whole run, or, with prepareTimeoutMinutes, one for checking out and prepare and
         // another for the test command, from when it starts.
@@ -285,13 +301,14 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
         var prepareLimitText = split ? $"prepareTimeoutMinutes in {TestsFile.RelativePath} gives checking out and prepare {TestsFile.Minutes(setup.PrepareTimeoutMinutes!.Value)}" : wholeRunText;
         var first = TimeSpan.FromMinutes(Math.Clamp(settings.TimeoutMinutes ?? setup.PrepareTimeoutMinutes ?? setup.TimeoutMinutes, 1, 24 * 60)) - (DateTimeOffset.UtcNow - started);
         limit.CancelAfter(first > TimeSpan.Zero ? first : TimeSpan.Zero);
-        record = record with { Prepare = setup.Prepare, Test = setup.Test };
+        record = record with { Prepare = setup.Prepare, Test = testCommand };
 
         // Exactly what runs.
         Line($"From {TestsFile.RelativePath} at this commit:");
         Line($"Shell: {settings.Shell}. Time limit: {(settings.TimeoutMinutes is { } shown ? $"{TestsFile.Minutes(shown)} for the whole run, set on this PC" : setup.LimitsText)}.");
         if (setup.Prepare.Length > 0) Line($"Prepare: {setup.Prepare}");
-        Line($"Test: {setup.Test}");
+        if (job.Filter is { } filter) Line($"Filter: {filter}, put in testWithFilter, as this run asked to test only that.");
+        Line($"Test: {testCommand}");
         if (setup.Results is { } resultsAt) Line($"Results file: {resultsAt}");
         foreach (var (name, _) in settings.Variables()) Line($"Environment: {name} is set by this PC.");
         Line("");
@@ -315,10 +332,10 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
             limit.CancelAfter(TimeSpan.FromMinutes(setup.TimeoutMinutes));
             testLimitText = $"timeoutMinutes in {TestsFile.RelativePath} gives the test command {TestsFile.Minutes(setup.TimeoutMinutes)}";
         }
-        Line($"> {setup.Test}");
+        Line($"> {testCommand}");
         step.Restart();
         var testStarted = DateTime.UtcNow;
-        var tested = await RunCommandAsync(setup.Test, folder, limit.Token);
+        var tested = await RunCommandAsync(testCommand, folder, limit.Token);
         Took("Test", step);
         if (_cancelled || _lost) return (_lost ? "lost" : "cancelled", null, record);
         if (limit.IsCancellationRequested) return TimedOut("the test command", testLimitText);
@@ -358,11 +375,11 @@ public sealed class TestRunner(LocalDatabase database, DeviceSession devices, Te
     /// Headless checks only: a run's steps on this PC, from a local repo, without the server or a
     /// link, which a real run never goes without. The verdict, its note and the whole log.
     /// </summary>
-    internal static async Task<(string Verdict, string? Note, string Log)> RunStepsForChecksAsync(TestMachineSettings settings, string repo, string commit, string projectName)
+    internal static async Task<(string Verdict, string? Note, string Log)> RunStepsForChecksAsync(TestMachineSettings settings, string repo, string commit, string projectName, string? filter = null)
     {
         var run = new TestRunInfo(MachineLinks.NewId(), "", "", "", "", "a check", "check-project", commit, "", "", "running", null, false, 0, null, null, null, null);
         var runner = new TestRunner(null!, null!, settings, run);
-        var job = new TestJob(TestJob.TestsKind, run.Id, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), run.ProjectId, projectName, repo, commit, "tests", []);
+        var job = new TestJob(TestJob.TestsKind, run.Id, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), run.ProjectId, projectName, repo, commit, "tests", [], Filter: filter);
         var (verdict, _, record) = await runner.RunStepsAsync(job, new RunHere(run.Id, DateTimeOffset.Now, run.LinkerLabel, run.ProjectId, commit, settings.Shell, "", "", "", "couldnt_run", null, null));
         runner.SaySteps();
         lock (runner._pendingLock) return (verdict, record.Note, runner._pending.ToString());

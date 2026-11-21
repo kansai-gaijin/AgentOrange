@@ -620,6 +620,10 @@ public partial class ProjectSettingsModal : UserControl
                 (all, value) => (all with { Prepare = value }, null)),
             ("Test command", "Runs the tests, in the repo's folder on the test machine. Its exit code is the verdict: 0 passed, anything else failed.", current.Test, 300,
                 (all, value) => value.Length > 0 ? (all with { Test = value }, null) : (null, $"{TestsFile.RelativePath} needs a test command.")),
+            ("Test command with a filter", $"Optional. Runs only some of the tests, for a run asked to, such as an agent's checking one fix: the test command with {TestsFile.FilterPlaceholder} where the filter goes, like npm test -- -t {TestsFile.FilterPlaceholder}. A filter is one word of {TestsFile.FilterCharacters}, so it's only ever read as a word.", current.TestWithFilter ?? "", 300,
+                (all, value) => value.Length == 0 ? (all with { TestWithFilter = null }, null)
+                    : value.Contains(TestsFile.FilterPlaceholder, StringComparison.Ordinal) ? (all with { TestWithFilter = value }, null)
+                    : (null, $"Put {TestsFile.FilterPlaceholder} where the filter goes, or leave it empty.")),
             ("Couldn't run exit code", "Optional. An exit code of the test command that means the tests couldn't run, rather than that they failed.", current.CouldNotRunExitCode?.ToString() ?? "", 80,
                 (all, value) => value.Length == 0 ? (all with { CouldNotRunExitCode = null }, null)
                     : int.TryParse(value, out var code) && code != 0 ? (all with { CouldNotRunExitCode = code }, null)

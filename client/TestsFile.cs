@@ -6,8 +6,19 @@ using System.Text.Json.Nodes;
 namespace AgentOrange;
 
 /// <summary>How a project's tests run on a test machine, as its repo says at a commit.</summary>
-public sealed record TestSetup(string Prepare, string Test, int? CouldNotRunExitCode, string[] Tags, int TimeoutMinutes, int? PrepareTimeoutMinutes = null, string? Results = null)
+public sealed record TestSetup(string Prepare, string Test, int? CouldNotRunExitCode, string[] Tags, int TimeoutMinutes, int? PrepareTimeoutMinutes = null, string? Results = null, string? TestWithFilter = null)
 {
+    /// <summary>
+    /// The test command a run with this filter runs: testWithFilter with the filter put in for
+    /// {filter}, or the test command with none. Only a filter TestsFile.FilterProblem passes.
+    /// </summary>
+    public string TestCommand(string? filter)
+    {
+        if (filter is null) return Test;
+        if (TestsFile.FilterProblem(filter) is { } problem) throw new ArgumentException(problem, nameof(filter));
+        return (TestWithFilter ?? throw new InvalidOperationException($"{TestsFile.RelativePath} has no testWithFilter.")).Replace(TestsFile.FilterPlaceholder, filter, StringComparison.Ordinal);
+    }
+
     /// <summary>What the time limits cover, in a few words, as the run's log and the Tests editor say it.</summary>
     public string LimitsText => PrepareTimeoutMinutes is { } prepare
         ? $"{TestsFile.Minutes(prepare)} for checking out and prepare, then {TestsFile.Minutes(TimeoutMinutes)} for the test command"
@@ -28,21 +39,37 @@ public sealed record TestSetup(string Prepare, string Test, int? CouldNotRunExit
 ///   "timeoutMinutes": 30,              // optional: from checking out to the last test, 1 to 1440, 30 if left out
 ///   "prepareTimeoutMinutes": 90,       // optional: a limit of its own for checking out and prepare, 1 to 1440;
 ///                                      //   with it, timeoutMinutes covers only the test command, from when it starts
-///   "results": "test-results"          // optional: a file or folder in the repo the test command writes how each
+///   "results": "test-results",         // optional: a file or folder in the repo the test command writes how each
 ///                                      //   check went to: JUnit XML, or lines of "passed name", "failed name" or
 ///                                      //   "skipped name"; a folder's .xml and .txt files are read (#105)
+///   "testWithFilter": "npm test -- -t {filter}"   // optional: the test command for a run asked to test only some
+///                                      //   checks, with {filter} where what was asked for goes
 /// }
 /// </code>
 ///
 /// Commands are run in the repo's folder, by the shell the test machine chose (PowerShell, cmd or
-/// Git Bash). Other properties are refused, so a typo doesn't pass silently.
+/// Git Bash). Other properties are refused, so a typo doesn't pass silently. A filter is the only
+/// thing a run puts in a command, and only letters, digits and . _ - : / = ~ + *, so it can't be
+/// read as anything else in any of those shells.
 /// </summary>
-public static class TestsFile
+public static partial class TestsFile
 {
     public const string RelativePath = ".agent-orange/tests.json";
     public const int DefaultTimeoutMinutes = 30;
+    public const string FilterPlaceholder = "{filter}";
+    public const string FilterCharacters = "letters, digits and . _ - : / = ~ + *";
     private const int MaxBytes = 64 * 1024;
-    private static readonly string[] Known = ["prepare", "test", "couldNotRunExitCode", "tags", "timeoutMinutes", "prepareTimeoutMinutes", "results"];
+    private static readonly string[] Known = ["prepare", "test", "couldNotRunExitCode", "tags", "timeoutMinutes", "prepareTimeoutMinutes", "results", "testWithFilter"];
+
+    // Nothing any of the shells reads as more than a word: no spaces, quotes, $, %, !, ^, `, ;, &,
+    // |, <, >, (, ), commas or line breaks, and it can't start as an option or a path to elsewhere.
+    [System.Text.RegularExpressions.GeneratedRegex(@"\A[A-Za-z0-9_*][A-Za-z0-9._:/=~+*-]{0,199}\z")]
+    private static partial System.Text.RegularExpressions.Regex SafeFilter();
+
+    /// <summary>Why a filter can't be put in a test command, or null when it can.</summary>
+    public static string? FilterProblem(string filter) => SafeFilter().IsMatch(filter) && !filter.Contains("..", StringComparison.Ordinal)
+        ? null
+        : $"A filter is one word of {FilterCharacters}, up to 200 of them, starting with a letter, digit, _ or *, so the shell can't read it as anything but a word.";
 
     /// <summary>Why a results path isn't one inside the repo, or null when it is.</summary>
     public static string? ResultsProblem(string path)
@@ -112,6 +139,13 @@ public static class TestsFile
         if (problem is not null) return (null, problem);
         if (results is { Length: 0 }) results = null;
         if (results is not null && ResultsProblem(results) is { } badResults) return (null, badResults);
+        var withFilter = Text("testWithFilter", out problem);
+        if (problem is not null) return (null, problem);
+        if (withFilter is { Length: 0 }) withFilter = null;
+        if (withFilter is not null && !withFilter.Contains(FilterPlaceholder, StringComparison.Ordinal))
+        {
+            return (null, $"In {RelativePath}, \"testWithFilter\" must have {FilterPlaceholder} where the filter goes, like \"npm test -- -t {FilterPlaceholder}\".");
+        }
 
         var tags = new List<string>();
         if (json["tags"] is JsonArray array)
@@ -129,7 +163,7 @@ public static class TestsFile
         {
             return (null, $"In {RelativePath}, \"tags\" must be a list, like [\"windows\", \"gpu\"].");
         }
-        return (new TestSetup(prepare, test, couldNotRun, [.. tags], timeout, prepareTimeout, results), null);
+        return (new TestSetup(prepare, test, couldNotRun, [.. tags], timeout, prepareTimeout, results, withFilter), null);
     }
 
     /// <summary>
@@ -161,6 +195,7 @@ public static class TestsFile
         json["timeoutMinutes"] = setup.TimeoutMinutes;
         if (setup.PrepareTimeoutMinutes is { } prepare) json["prepareTimeoutMinutes"] = prepare;
         if (setup.Results is { Length: > 0 } results) json["results"] = results;
+        if (setup.TestWithFilter is { Length: > 0 } withFilter) json["testWithFilter"] = withFilter;
         return json.ToJsonString(new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }) + "\n";
     }
 

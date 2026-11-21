@@ -51,6 +51,9 @@ public sealed record TestRunInfo(
     /// <summary>Started by an agent with run_tests, as the signed job says (#117), rather than by a person.</summary>
     public bool ByAgent => TestJob.StartedByIn(Job) == TestJob.ByAgent;
 
+    /// <summary>What the run was asked to test only, as the signed job says, or null for all of its tests.</summary>
+    public string? Filter => TestJob.Read(Job)?.Filter;
+
     public int Checks => ChecksPassed + ChecksFailed + ChecksSkipped;
 }
 
