@@ -197,6 +197,15 @@ public sealed partial class AgentConversation
     public int PartNumber { get; set; }
     public string? WorkFolder { get; set; }
 
+    /// <summary>
+    /// Started by another of the owner's PCs over a link of Agents access (#93): that PC's name and
+    /// the run it came as, whose log streams there. It works in this PC's own test clone.
+    /// </summary>
+    public string? FromPc { get; set; }
+    public string? FromRun { get; set; }
+
+    public const string TitleFromLink = "link";
+
     [JsonIgnore] public string? Folder { get; set; }
     [JsonIgnore] public bool IsWorking { get; private set; }
     [JsonIgnore] public DateTimeOffset WorkingSince { get; private set; }

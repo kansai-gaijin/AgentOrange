@@ -256,7 +256,7 @@ public partial class MainWindow
         var place = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         for (var at = 0; at < history.Count; at++) place.TryAdd(history[at], at);
         var latest = runs
-            .Where(run => run.Filter is null && run.Status is "passed" or "failed" or "timed_out" && place.ContainsKey(run.Commit))
+            .Where(run => run.Filter is null && !run.IsAgent && run.Status is "passed" or "failed" or "timed_out" && place.ContainsKey(run.Commit))
             .OrderBy(run => place[run.Commit])
             .ThenByDescending(run => run.CreatedAt)
             .FirstOrDefault();

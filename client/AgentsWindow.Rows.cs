@@ -164,7 +164,7 @@ public sealed partial class AgentsWindow
 
         // Line 2: the title, with the provider's icon when there's no third line. A part of a split
         // milestone works on a branch of its own, which its third line says, with how it stands.
-        var part = _main.PartLine(conversation);
+        var part = _main.PartLine(conversation) ?? MainWindow.FromPcLine(conversation);
         var hasThird = repo?.Branch is not null || part is not null;
         var second = new DockPanel { Margin = new Thickness(0, 4, 0, 0) };
         FrameworkElement Provider()

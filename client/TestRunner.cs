@@ -19,13 +19,24 @@ namespace AgentOrange;
 /// say which, signed with the rest. It changes nothing about what runs or who may run it. Filter,
 /// when set, asks for only some of the tests: the target checks it's one plain word and puts it
 /// in the repo's own testWithFilter at that commit, so it decides nothing else about what runs.
+///
+/// An agent job (Kind "agent", Access "agents") asks instead for an agent conversation on the
+/// target, for that project, starting from that commit: Task is what the PC linking asks of it,
+/// in its own words, and Title what to call it. The target only takes one over a link of Agents
+/// access, and runs it with its own login and settings, in its own clone of the project.
 /// </summary>
 public sealed record TestJob(string Kind, string RunId, long SentAt, string ProjectId, string ProjectName, string RepoUrl, string Commit, string Access, string[] Tags,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? StartedBy = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Filter = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Filter = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Task = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Title = null)
 {
     public const string TestsKind = "tests";
+    public const string AgentKind = "agent";
     public const string ByAgent = "agent";
+
+    /// <summary>The most an agent job's task may say, well within what the server keeps of a job.</summary>
+    public const int MostTaskLength = 20_000;
 
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -55,8 +66,26 @@ public sealed record TestMachineSettings(
     string Shell = TestMachineSettings.PowerShell,
     string Environment = "",
     int? TimeoutMinutes = null,
-    Dictionary<string, string>? BorrowFrom = null)
+    Dictionary<string, string>? BorrowFrom = null,
+    Dictionary<string, string>? Grants = null,
+    string AgentsMode = "auto")
 {
+    /// <summary>
+    /// The highest access the person here grants a PC that links to this one, by that PC's install:
+    /// Tests unless they chose more, in Authorized clients. A link is made with the lower of this
+    /// and what that PC asked for.
+    /// </summary>
+    public string GrantFor(string linker) =>
+        Grants is not null && Grants.TryGetValue(linker, out var granted) && MachineLinks.Offered.Contains(granted) ? granted : "tests";
+
+    /// <summary>
+    /// What an agent conversation another PC starts here may do without asking, as Claude Code's
+    /// permission modes say: auto by default, which asks only before something risky. Anything it
+    /// asks waits for someone at this PC. Never one that asks for nothing.
+    /// </summary>
+    public static readonly string[] AgentsModes = ["auto", "acceptEdits", "default"];
+
+    public string AgentsPermissionMode => AgentsModes.Contains(AgentsMode) ? AgentsMode : "auto";
     /// <summary>
     /// The clone on this PC a project's first test checkout copies from instead of downloading the
     /// whole repo, as the person chose it here, by project id (#112). Only ever read.
@@ -77,8 +106,12 @@ public sealed record TestMachineSettings(
             .Select(parts => (parts[0].Trim(), parts[1]));
 }
 
-/// <summary>A run this PC did, with exactly what it ran, kept on this PC so it can show them.</summary>
-public sealed record RunHere(string RunId, DateTimeOffset At, string From, string Project, string Commit, string Shell, string Folder, string Prepare, string Test, string Verdict, int? ExitCode, string? Note);
+/// <summary>
+/// A run this PC did, with exactly what it ran, kept on this PC so it can show them. Task is what an
+/// agent task asked, in the words of the PC that sent it, and Branch where its work was pushed.
+/// </summary>
+public sealed record RunHere(string RunId, DateTimeOffset At, string From, string Project, string Commit, string Shell, string Folder, string Prepare, string Test, string Verdict, int? ExitCode, string? Note,
+    string? Task = null, string? Branch = null);
 
 /// <summary>
 /// Runs one job on this PC, with nobody needing to be at it. It checks the job came over a link
@@ -221,7 +254,7 @@ public sealed partial class TestRunner(LocalDatabase database, IRunServer device
         if (key is null || !key.ThisPcIsMachine) return Refuse("this PC isn't linked to the PC that sent it, or the link was revoked.");
         if (run.LinkExpiresAt is null) return Refuse("the link it was sent over was revoked.");
         if (key.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return Refuse("the link it was sent over expired. Link the two PCs again.");
-        if (!MachineLinks.Allows(key.Access, "tests") || run.LinkAccess is null || !MachineLinks.Allows(run.LinkAccess, "tests")) return Refuse("the link doesn't allow running tests.");
+        if (!MachineLinks.Allows(key.Access, "tests") || run.LinkAccess is null || !MachineLinks.Allows(run.LinkAccess, "tests")) return Refuse("the link doesn't allow running anything.");
         if (!MachineLinks.JobMacMatches(key.Key, run)) return Refuse("its signature doesn't match the link's key, so the PC it says it's from didn't make it.");
 
         TestJob? job;
@@ -233,12 +266,21 @@ public sealed partial class TestRunner(LocalDatabase database, IRunServer device
         {
             job = null;
         }
-        if (job is null || job.Kind != TestJob.TestsKind || job.ProjectId != run.ProjectId || !string.Equals(job.Commit, run.Commit, StringComparison.OrdinalIgnoreCase) || job.RepoUrl.Trim().Length == 0)
+        if (job is null || job.Kind is not (TestJob.TestsKind or TestJob.AgentKind) || job.ProjectId != run.ProjectId || !string.Equals(job.Commit, run.Commit, StringComparison.OrdinalIgnoreCase) || job.RepoUrl.Trim().Length == 0)
         {
-            return Refuse("it isn't a test job this version can read.");
+            return Refuse("it isn't a job this version can read.");
         }
-        if (!MachineLinks.Allows(key.Access, job.Access)) return Refuse($"it needs {MachineLinks.AccessLabel(job.Access)} access, more than the link gives.");
+
+        // What it does decides the access it needs, which its signed job has to say, and this PC's
+        // own record of the link has to give, as must the link as the server has it now.
+        var needed = job.Kind == TestJob.AgentKind ? "agents" : "tests";
+        if (job.Access != needed) return Refuse($"it says it needs {MachineLinks.AccessLabel(job.Access)} access, which isn't what {(needed == "agents" ? "an agent task" : "a test run")} needs.");
+        if (!MachineLinks.Allows(key.Access, needed) || !MachineLinks.Allows(run.LinkAccess, needed))
+        {
+            return Refuse($"it needs {MachineLinks.AccessLabel(needed)} access, more than the link gives ({MachineLinks.AccessLabel(MachineLinks.Lower(key.Access, run.LinkAccess))}).");
+        }
         if (job.Filter is { } filter && TestsFile.FilterProblem(filter) is not null) return Refuse("its filter isn't one plain word, so it can't be put in a test command.");
+        if (job.Kind == TestJob.AgentKind && (job.Task is not { Length: > 0 and <= TestJob.MostTaskLength } || job.Filter is not null)) return Refuse("it's an agent task with no task to do, or one too long.");
 
         // Signed, but it could still be one sent before, sent again.
         if (!string.Equals(job.RunId, run.Id, StringComparison.OrdinalIgnoreCase)) return Refuse("its run id isn't the one it was signed with.");
@@ -248,13 +290,13 @@ public sealed partial class TestRunner(LocalDatabase database, IRunServer device
         if (!MachineLinks.TakeRunId(database, run.Id)) return Refuse("this PC has run it already.");
 
         if (settings.WorkFolder.Trim().Length == 0 || !Path.IsPathFullyQualified(settings.WorkFolder)) return Refuse("this PC has no work folder set.");
-        return await RunStepsAsync(job, record);
+        return job.Kind == TestJob.AgentKind ? await RunAgentAsync(job, record) : await RunStepsAsync(job, record);
     }
 
     private async Task<(string Verdict, int? ExitCode, RunHere Record)> RunJobAsync(RunHere record)
     {
 #if DEBUG
-        if (_jobForChecks is { } madeUp) return await RunStepsAsync(madeUp, record);
+        if (_jobForChecks is { } madeUp) return madeUp.Kind == TestJob.AgentKind ? await RunAgentAsync(madeUp, record) : await RunStepsAsync(madeUp, record);
 #endif
         return await CheckedJobAsync(record);
     }

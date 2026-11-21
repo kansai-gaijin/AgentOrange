@@ -186,6 +186,27 @@ public static partial class GitTools
     }
 
     /// <summary>
+    /// Pushes a branch an agent from another PC worked on, in a test clone, to origin as a new branch
+    /// of the same name (#93): never over one already there, as Git refuses it if origin has that
+    /// name already, and never anything else. With this PC's own Git login, as any push from here.
+    /// </summary>
+    public static async Task<GitResult> PushNewBranchAsync(string folder, string branch, string repoUrl, CancellationToken cancel)
+    {
+        var local = false;
+#if DEBUG
+        local = IsLocalRepoForChecks(repoUrl);
+#endif
+        Dictionary<string, string>? allowLocal = local ? new() { ["GIT_ALLOW_PROTOCOL"] = "https:ssh:file" } : null;
+        if (!branch.StartsWith("ao/", StringComparison.Ordinal) || !CommitName().IsMatch(branch)) return new GitResult(false, $"{branch} isn't a branch Agent Orange made.");
+        NoStepLimit.Value = true;
+        if (await RunAsync("git", folder, null, ["push", "--quiet", $"--force-with-lease=refs/heads/{branch}:", "origin", $"refs/heads/{branch}:refs/heads/{branch}"], cancel, allowLocal) is not { } pushed)
+        {
+            return new GitResult(false, "Git wasn't found on this PC.");
+        }
+        return pushed.ExitCode == 0 ? new GitResult(true, branch) : new GitResult(false, HideLogins(GitProblem($"Couldn't push {branch}", pushed.Errors.Length > 0 ? pushed.Errors : pushed.Output)));
+    }
+
+    /// <summary>
     /// Whether a folder can be borrowed from for a test checkout: a clone whose origin is the same
     /// repo, apart from the runner's own. Its Git folder (shared by its worktrees), or null, having
     /// said why not. Only reads it; nothing there is ever changed.

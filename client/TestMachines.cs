@@ -23,6 +23,9 @@ public sealed class Linking(TestMachineInfo machine, string access)
     /// <summary>Why it didn't link, once it didn't.</summary>
     public string? Problem { get; internal set; }
 
+    /// <summary>The access the target granted, once linked: what was asked, or less.</summary>
+    public string? Granted { get; internal set; }
+
     public bool Failed => Problem is not null;
 
     internal CancellationTokenSource Cancel { get; } = new();
@@ -54,12 +57,16 @@ public sealed class TestMachines
     private DateTimeOffset _askedForRequestsAt;
     private (string Label, string Tags, bool Accepting)? _published;
 
-    public TestMachines(LocalDatabase database, ServerConnection server, DeviceSession devices, Func<bool> hasSyncTurn)
+    private readonly IRemoteAgents? _agents;
+
+    /// <summary>Agents is what starts agent tasks other PCs send here: the app, with its conversations and logins.</summary>
+    public TestMachines(LocalDatabase database, ServerConnection server, DeviceSession devices, Func<bool> hasSyncTurn, IRemoteAgents? agents = null)
     {
         _database = database;
         _server = server;
         _devices = devices;
         _hasSyncTurn = hasSyncTurn;
+        _agents = agents;
         var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
         timer.Tick += async (_, _) => await TickAsync();
         timer.Start();
@@ -273,6 +280,15 @@ public sealed class TestMachines
                 MachineLinks.ForgetKey(_database, known);
             }
 
+            // A link lowered from either end has less access here too. Never more: what this PC
+            // keeps of a link only ever goes down, as only linking again gives more.
+            foreach (var link in latest.Links)
+            {
+                if (MachineLinks.ReadKey(_database, link.Id) is not { } key || MachineLinks.Allows(link.Access, key.Access)) continue;
+                MachineLinks.SaveKey(_database, key with { Access = MachineLinks.Lower(key.Access, link.Access) });
+                AppLog.Write($"The link {(key.ThisPcIsMachine ? $"from {link.LinkerLabel}" : $"to {link.MachineLabel}")} was lowered to {MachineLinks.AccessLabel(link.Access)} access.");
+            }
+
             // Renewals, unattended, in the window that does background work: as the target, each one
             // asked for is answered; as the PC linking, an answer is checked, and a link with under a
             // week left is renewed while the target is online.
@@ -301,9 +317,9 @@ public sealed class TestMachines
         _ => "The server couldn't answer. The log on the server has details.",
     };
 
-    // As the target, while it takes runs: each of the owner's PCs that asks is linked, for the one
-    // access level offered so far, with a key pair made for this one link and an expiry of this
-    // PC's own. Nobody needs to be here.
+    // As the target, while it takes runs: each of the owner's PCs that asks is linked, with the
+    // lower of what it asked for and what the person here grants it (Tests unless they chose more),
+    // with a key pair made for this one link and an expiry of this PC's own. Nobody needs to be here.
     private async Task AnswerLinkRequestsAsync()
     {
         if (DateTimeOffset.UtcNow - _askedForRequestsAt < TimeSpan.FromSeconds(2)) return;
@@ -311,23 +327,24 @@ public sealed class TestMachines
         var pending = await _devices.PendingLinkRequestsAsync();
         if (pending.Value is not { Count: > 0 } requests || Latest?.Me is not { } me) return;
 
+        var settings = Settings;
         foreach (var request in requests)
         {
-            if (request.Access != "tests")
+            if (MachineLinks.Grant(request.Access, settings.GrantFor(request.Linker)) is not { } granted)
             {
                 await _devices.RejectLinkAsync(request.Id, "access");
                 continue;
             }
-            if (MachineLinks.Accept(request, me) is not { } accepting)
+            if (MachineLinks.Accept(request, me, granted) is not { } accepting)
             {
                 await _devices.RejectLinkAsync(request.Id, "unreadable");
                 continue;
             }
-            var accepted = await _devices.AcceptLinkAsync(request.Id, accepting.LinkId, accepting.MachineKey, accepting.ExpiresAt, accepting.Confirm);
+            var accepted = await _devices.AcceptLinkAsync(request.Id, accepting.LinkId, accepting.MachineKey, accepting.ExpiresAt, accepting.Confirm, granted);
             if (accepted.Worked)
             {
-                MachineLinks.SaveKey(_database, new MachineLinkKey(accepting.LinkId, accepting.LinkKey, request.Access, accepting.ExpiresAt, ThisPcIsMachine: true));
-                AppLog.Write($"Linked {request.LinkerLabel} to run tests on this PC.");
+                MachineLinks.SaveKey(_database, new MachineLinkKey(accepting.LinkId, accepting.LinkKey, granted, accepting.ExpiresAt, ThisPcIsMachine: true));
+                AppLog.Write($"Linked {request.LinkerLabel} to this PC with {MachineLinks.AccessLabel(granted)} access{(granted != request.Access ? $", as it asked for {MachineLinks.AccessLabel(request.Access)} and this PC grants it {MachineLinks.AccessLabel(granted)} at most" : "")}.");
             }
             else
             {
@@ -352,7 +369,7 @@ public sealed class TestMachines
             return;
         }
 
-        var runner = new TestRunner(_database, _devices, settings, run);
+        var runner = new TestRunner(_database, _devices, settings, run) { Agents = _agents };
         Running = runner;
         Changed?.Invoke();
         AppLog.Write($"Started test run {run.Id} for {run.LinkerLabel}.");
@@ -438,7 +455,10 @@ public sealed class TestMachines
             if (problem is null)
             {
                 _linkings.Remove(linking);
-                JustLinked = $"Linked {linking.Machine.Label}";
+                var label = linking.Machine.Label;
+                JustLinked = linking.Granted is { } granted && granted != linking.Access
+                    ? $"Linked {label} with {MachineLinks.AccessLabel(granted)} access, as {label} grants this PC {MachineLinks.AccessLabel(granted)} at most. To have {MachineLinks.AccessLabel(linking.Access)}, raise it for this PC on {label}, in Settings › Test machines › Authorized clients, then link again."
+                    : $"Linked {label}";
             }
             else
             {
@@ -517,14 +537,15 @@ public sealed class TestMachines
             if (said != "accepted") return MachineLinks.RefusedText(got.Reason, machine.Label);
 
             Say(linking, $"Checking {machine.Label}'s answer…");
-            if (MachineLinks.TakeAnswer(ephemeral, me, machine.Install, access, nonce, got) is not { } linkKey)
+            if (MachineLinks.TakeAnswer(ephemeral, me, machine.Install, access, nonce, got) is not var (linkKey, granted))
             {
-                AppLog.Write($"A link to {machine.Label} was refused: its answer's confirmation didn't check out.");
+                AppLog.Write($"A link to {machine.Label} was refused: its answer's confirmation didn't check out, or it granted more than was asked.");
                 if (MachineLinks.IsId(got.LinkId)) await _devices.RemoveLinkAsync(got.LinkId!);
                 return $"The answer from {machine.Label} didn't check out, so the link wasn't kept. Link again.";
             }
-            MachineLinks.SaveKey(_database, new MachineLinkKey(got.LinkId!, linkKey, access, (long)got.ExpiresAt!, ThisPcIsMachine: false));
+            MachineLinks.SaveKey(_database, new MachineLinkKey(got.LinkId!, linkKey, granted, (long)got.ExpiresAt!, ThisPcIsMachine: false));
             CryptographicOperations.ZeroMemory(linkKey);
+            linking.Granted = granted;
             await RefreshAsync();
             return null;
         }
@@ -539,6 +560,30 @@ public sealed class TestMachines
         var withdrawn = await _devices.WithdrawLinkAsync(request);
         if (withdrawn.Status != HttpStatusCode.NotFound) return;
         if ((await _devices.LinkAnswerAsync(request)).Value is { Answer: "accepted", LinkId: { } linkId } && MachineLinks.IsId(linkId)) await _devices.RemoveLinkAsync(linkId);
+    }
+
+    /// <summary>
+    /// As the target: the highest access the person here grants the PC on the other end of a link.
+    /// Lower than the link has, the link is lowered at once, here first, as this PC's own copy is
+    /// what it checks jobs against, then on the server, which stops runs that need more. Higher, it's
+    /// what that PC gets when it links again, which it's told. Null once done, or what went wrong.
+    /// </summary>
+    public async Task<string?> GrantAsync(MachineLinkInfo link, string access)
+    {
+        if (!MachineLinks.Offered.Contains(access)) return $"{MachineLinks.AccessLabel(access)} isn't offered.";
+        var settings = Settings;
+        Save(settings with { Grants = new Dictionary<string, string>(settings.Grants ?? []) { [link.Linker] = access } });
+        if (MachineLinks.ReadKey(_database, link.Id) is { ThisPcIsMachine: true } key && !MachineLinks.Allows(access, key.Access))
+        {
+            MachineLinks.SaveKey(_database, key with { Access = access });
+            AppLog.Write($"Lowered the link from {link.LinkerLabel} to {MachineLinks.AccessLabel(access)} access.");
+        }
+        var told = await _devices.SetLinkAccessAsync(link.Id, access);
+        await RefreshAsync();
+        if (told.Worked || told.Status == HttpStatusCode.NotFound) return null;
+        return !MachineLinks.Allows(access, link.Access)
+            ? $"Lowered on this PC, which refuses anything more from {link.LinkerLabel} now, but the server couldn't be told: {DescribeProblem(told.Status) ?? "it didn't take it."}"
+            : DescribeProblem(told.Status) ?? "The server couldn't be told.";
     }
 
     /// <summary>Ends a link from either end. The server's copy is the only one, so it's final.</summary>
@@ -578,7 +623,7 @@ public sealed class TestMachines
     /// the same filter or none, which sending again would only repeat (#118).
     /// </summary>
     public TestRunInfo? SameRun(IEnumerable<TestRunInfo> runs, string linkId, string projectId, string? commit, string? filter = null) =>
-        commit is null ? null : runs.FirstOrDefault(run => !run.Finished && run.Linker == Latest?.Me && run.LinkId == linkId && run.ProjectId == projectId && string.Equals(run.Commit, commit, StringComparison.OrdinalIgnoreCase) && run.Filter == filter);
+        commit is null ? null : runs.FirstOrDefault(run => !run.Finished && !run.IsAgent && run.Linker == Latest?.Me && run.LinkId == linkId && run.ProjectId == projectId && string.Equals(run.Commit, commit, StringComparison.OrdinalIgnoreCase) && run.Filter == filter);
 
     /// <summary>
     /// Why a run of this setup can't be asked to test only what the filter names, or null when it can:
@@ -633,11 +678,72 @@ public sealed class TestMachines
         var runId = MachineLinks.NewId();
         var job = JsonSerializer.Serialize(new TestJob(TestJob.TestsKind, runId, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), project.Id, project.Name, repoUrl, commit.ToLowerInvariant(), "tests", setup.Tags, startedBy, filter), TestJob.Json);
         var mac = MachineLinks.JobMac(key.Key, runId, link.Id, project.Id, commit, job);
-        var sent = await _devices.EnqueueRunAsync(runId, link.Id, project.Id, commit.ToLowerInvariant(), job, mac);
+        var sent = await _devices.EnqueueRunAsync(runId, link.Id, project.Id, commit.ToLowerInvariant(), job, mac, "tests");
         if (sent.Value is { } run) return (run.Id, null, null);
-        return (null, sent.Status == HttpStatusCode.Conflict
-            ? $"{link.MachineLabel} couldn't take it: the link may have ended, or ten runs are already waiting there."
-            : DescribeProblem(sent.Status) ?? "The server couldn't take the run.", null);
+        return (null, NotSent(sent.Status, link), null);
+    }
+
+    private static string NotSent(HttpStatusCode? status, MachineLinkInfo link) => status switch
+    {
+        HttpStatusCode.Conflict => $"{link.MachineLabel} couldn't take it: the link may have ended, or ten runs are already waiting there.",
+        HttpStatusCode.Forbidden => $"The link to {link.MachineLabel} doesn't give that access now. It may have been lowered there.",
+        _ => DescribeProblem(status) ?? "The server couldn't take the run.",
+    };
+
+    /// <summary>
+    /// Why this PC can't start an agent on a linked machine, or null when it can: a key for the link,
+    /// unexpired, of Agents access both here and as the server has it.
+    /// </summary>
+    public string? AgentsProblem(MachineLinkInfo link)
+    {
+        if (MachineLinks.ReadKey(_database, link.Id) is not { ThisPcIsMachine: false } key) return $"This PC has no key for its link to {link.MachineLabel}. Link it again.";
+        if (link.Status == "expired" || key.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()) return $"The link to {link.MachineLabel} expired. Link it again in Settings › Test machines.";
+        if (!MachineLinks.Allows(key.Access, "agents") || !MachineLinks.Allows(link.Access, "agents"))
+        {
+            return link.Offered is { } offered && MachineLinks.Allows(offered, "agents")
+                ? $"The link to {link.MachineLabel} has {MachineLinks.AccessLabel(link.Access)} access. {link.MachineLabel} now grants this PC Agents: link it again in Settings › Test machines, choosing Agents, to have it."
+                : $"The link to {link.MachineLabel} has {MachineLinks.AccessLabel(link.Access)} access, and starting an agent there needs Agents. On {link.MachineLabel}, raise it for this PC in Settings › Test machines › Authorized clients, then link again here choosing Agents.";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Starts an agent conversation on a machine this PC links to with Agents access (#93): a job of
+    /// which commit of which repo it starts from (one pushed, from the folder's own origin), what to
+    /// do in this PC's words, and what to call it, signed with the link's key under a run id and time
+    /// made here. The machine runs it with its own login and settings, in its own clone of the
+    /// project, and streams its conversation back as the run's log. The run's id, or what went wrong.
+    /// </summary>
+    public async Task<(string? RunId, string? Problem)> StartAgentAsync(MachineLinkInfo link, Project project, string folder, string task, string? title = null, string? commit = null, string? startedBy = null)
+    {
+        task = task.Trim();
+        if (task.Length == 0) return (null, "Say what the agent there should do.");
+        if (task.Length > TestJob.MostTaskLength) return (null, $"The task is {task.Length} characters, and one sent to another PC can be {TestJob.MostTaskLength} at most. Shorten it, or point to a document or task in the project instead.");
+        if (AgentsProblem(link) is { } cant) return (null, cant);
+        var key = MachineLinks.ReadKey(_database, link.Id)!;
+
+        var (pushedCommit, _, pushed, problem) = await GitTools.PushedHeadAsync(folder, commit);
+        if (problem is not null) return (null, problem);
+        var (origin, originProblem) = await GitTools.OriginForTestsAsync(folder);
+        if (origin is null) return (null, originProblem);
+        if (!pushed) return (null, $"Push {(commit is null ? "the commit checked out here" : $"commit {pushedCommit[..Math.Min(12, pushedCommit.Length)]}")} first. The agent there starts from it, fetched from origin, and origin doesn't have it yet.");
+
+        var sending = $"{link.Id}|{project.Id}|agent";
+        if (!_sending.Add(sending)) return (null, $"An agent task is already being sent to {link.MachineLabel}.");
+        try
+        {
+            var runId = MachineLinks.NewId();
+            var named = (title ?? task.Split('\n')[0]).Trim();
+            if (named.Length > 80) named = named[..80].TrimEnd() + "…";
+            var job = JsonSerializer.Serialize(new TestJob(TestJob.AgentKind, runId, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), project.Id, project.Name, origin, pushedCommit.ToLowerInvariant(), "agents", [], startedBy, Task: task, Title: named), TestJob.Json);
+            var mac = MachineLinks.JobMac(key.Key, runId, link.Id, project.Id, pushedCommit, job);
+            var sent = await _devices.EnqueueRunAsync(runId, link.Id, project.Id, pushedCommit.ToLowerInvariant(), job, mac, "agents");
+            return sent.Value is { } run ? (run.Id, null) : (null, NotSent(sent.Status, link));
+        }
+        finally
+        {
+            _sending.Remove(sending);
+        }
     }
 
     // Renewing a link, by itself. Only a link that's still good can be renewed; an expired or

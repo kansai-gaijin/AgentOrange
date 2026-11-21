@@ -11,8 +11,10 @@ public sealed record TestMachineInfo(string Install, string Label, List<string> 
 /// <summary>
 /// A link from one PC (the linker) to another (the machine), seen from either end, with the
 /// machine's status, and the last renewal asked for and answered, each MACed with the link's key.
+/// Offered is the highest access the machine says it grants the linker now, which linking again
+/// gets; only words to show, as the machine decides when it's asked.
 /// </summary>
-public sealed record MachineLinkInfo(string Id, string Machine, string MachineLabel, List<string> MachineTags, string Linker, string LinkerLabel, string Access, double LinkedAt, double ExpiresAt, string Status, double LastSeenAt, LinkRenewal? Renewal = null, LinkRenewed? Renewed = null);
+public sealed record MachineLinkInfo(string Id, string Machine, string MachineLabel, List<string> MachineTags, string Linker, string LinkerLabel, string Access, double LinkedAt, double ExpiresAt, string Status, double LastSeenAt, LinkRenewal? Renewal = null, LinkRenewed? Renewed = null, string? Offered = null);
 
 public sealed record LinkRenewal(string Nonce, long SentAt, long ExpiresAt, string Mac);
 
@@ -31,10 +33,11 @@ public sealed record OtherPc(string Label, string Reason, double LastSeenAt);
 public sealed record PendingLinkRequest(string Id, string Linker, string LinkerLabel, string Access, string Nonce, string Key);
 
 /// <summary>
-/// Key, ExpiresAt and Confirm are the target's, which the PC linking checks before keeping the
-/// link. Reason is why the target turned it down, when it did.
+/// Key, ExpiresAt, Confirm and Access (what it granted, at most what was asked) are the target's,
+/// which the PC linking checks before keeping the link. Reason is why the target turned it down,
+/// when it did.
 /// </summary>
-public sealed record LinkAnswer(string? Answer, string? LinkId, double? ExpiresAt, string? Key, string? Confirm, string? Reason = null);
+public sealed record LinkAnswer(string? Answer, string? LinkId, double? ExpiresAt, string? Key, string? Confirm, string? Reason = null, string? Access = null);
 
 /// <summary>
 /// A test run as the server keeps it. Job is the text the linker signed, which only the PCs read.
@@ -64,6 +67,9 @@ public sealed record TestRunInfo(
 
     /// <summary>What the run was asked to test only, as the signed job says, or null for all of its tests.</summary>
     public string? Filter => TestJob.Read(Job)?.Filter;
+
+    /// <summary>An agent conversation on the machine rather than a test run, as the signed job says.</summary>
+    public bool IsAgent => TestJob.Read(Job)?.Kind == TestJob.AgentKind;
 
     public int Checks => ChecksPassed + ChecksFailed + ChecksSkipped;
 }
@@ -118,8 +124,15 @@ public sealed partial class DeviceSession
     public Task<ServerAnswer<LinkAnswer>> LinkAnswerAsync(string request) =>
         AskAsync<LinkAnswer>(HttpMethod.Get, $"/v1/link-requests/{Uri.EscapeDataString(request)}");
 
-    public Task<ServerAnswer<ExpiresAnswer>> AcceptLinkAsync(string request, string linkId, string key, long expiresAt, string confirm) =>
-        AskAsync<ExpiresAnswer>(HttpMethod.Post, $"/v1/link-requests/{Uri.EscapeDataString(request)}/accept", new { id = linkId, key, expiresAt, confirm });
+    public Task<ServerAnswer<ExpiresAnswer>> AcceptLinkAsync(string request, string linkId, string key, long expiresAt, string confirm, string access) =>
+        AskAsync<ExpiresAnswer>(HttpMethod.Post, $"/v1/link-requests/{Uri.EscapeDataString(request)}/accept", new { id = linkId, key, expiresAt, confirm, access });
+
+    /// <summary>
+    /// Lowers a link's access, never raising it; from the target, also what it now grants the PC
+    /// linking. The access the link has after.
+    /// </summary>
+    public Task<ServerAnswer<AccessAnswer>> SetLinkAccessAsync(string link, string access) =>
+        AskAsync<AccessAnswer>(HttpMethod.Post, $"/v1/links/{Uri.EscapeDataString(link)}/access", new { access });
 
     /// <summary>Reason is not_accepting, access or unreadable.</summary>
     public Task<ServerAnswer<bool>> RejectLinkAsync(string request, string reason) =>
@@ -134,8 +147,9 @@ public sealed partial class DeviceSession
     public Task<ServerAnswer<bool>> AnswerRenewalAsync(string link, string nonce, long expiresAt, string mac) =>
         AskAsync<bool>(HttpMethod.Post, $"/v1/links/{Uri.EscapeDataString(link)}/renewed", new { nonce, expiresAt, mac });
 
-    public Task<ServerAnswer<IdAnswer>> EnqueueRunAsync(string id, string linkId, string projectId, string commit, string job, string mac) =>
-        AskAsync<IdAnswer>(HttpMethod.Post, "/v1/runs", new { id, linkId, projectId, commit, job, mac });
+    /// <summary>Access is what the job needs, as the signed job says too; the server refuses it above the link's (403).</summary>
+    public Task<ServerAnswer<IdAnswer>> EnqueueRunAsync(string id, string linkId, string projectId, string commit, string job, string mac, string access) =>
+        AskAsync<IdAnswer>(HttpMethod.Post, "/v1/runs", new { id, linkId, projectId, commit, job, mac, access });
 
     /// <summary>The newest runs this PC sent or ran, of one project or all: 30, or up to 200 when asked.</summary>
     public Task<ServerAnswer<List<TestRunInfo>>> RunsAsync(string? projectId = null, int? limit = null)
@@ -181,6 +195,8 @@ public sealed partial class DeviceSession
     public sealed record IdAnswer(string Id);
 
     public sealed record ExpiresAnswer(double ExpiresAt);
+
+    public sealed record AccessAnswer(string Access);
 
     // Only the server's own answers count, not a proxy's on the way to it. A body is read only for a
     // success that has one; bool answers have none.

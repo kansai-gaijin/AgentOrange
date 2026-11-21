@@ -214,7 +214,7 @@ public partial class MainWindow : Window
         Settings.Sync = _sync;
 
         // Only the window that syncs takes test runs, so two windows never run the same one.
-        _testMachines = new TestMachines(_database, _server, _devices, () => _sync.HasTurn && _requiredVersion is null);
+        _testMachines = new TestMachines(_database, _server, _devices, () => _sync.HasTurn && _requiredVersion is null, this);
         Settings.TestMachines = _testMachines;
 
         // A run ending is when an update that waited for it is installed, rather than a minute later (#124).

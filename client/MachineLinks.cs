@@ -12,8 +12,8 @@ namespace AgentOrange;
 /// </summary>
 public sealed record MachineLinkKey(string LinkId, byte[] Key, string Access, double ExpiresAt, bool ThisPcIsMachine, double SavedAt = 0);
 
-/// <summary>What the target answers a link request with, and the key it keeps.</summary>
-public sealed record LinkAcceptance(string LinkId, string MachineKey, long ExpiresAt, string Confirm, byte[] LinkKey);
+/// <summary>What the target answers a link request with, the access it granted, and the key it keeps.</summary>
+public sealed record LinkAcceptance(string LinkId, string MachineKey, long ExpiresAt, string Confirm, byte[] LinkKey, string Access);
 
 /// <summary>
 /// How test machines are linked, as T3 Code links environments when it already has a session on
@@ -51,8 +51,16 @@ public static class MachineLinks
     /// <summary>A job sent longer ago than this is refused, so an old one can't be sent again later.</summary>
     public static readonly TimeSpan JobMaxAge = TimeSpan.FromHours(6);
 
-    /// <summary>The access levels a link can have, lowest first. Only Tests is used so far.</summary>
+    /// <summary>The access levels the design names, lowest first, as the server knows them.</summary>
     public static readonly string[] AccessLevels = ["tests", "agents", "full"];
+
+    /// <summary>
+    /// The ones a link can be made with. Full access isn't built: the design gives it as "any
+    /// command", which would let the PC linking, not the repo or the target's own settings, decide
+    /// what runs there, and an agent conversation already does everything the cases asked for.
+    /// A request for it is granted at most Agents.
+    /// </summary>
+    public static readonly string[] Offered = ["tests", "agents"];
 
     public static string AccessLabel(string access) => access switch
     {
@@ -65,12 +73,26 @@ public static class MachineLinks
     public static string AccessDescription(string access) => access switch
     {
         "tests" => "Run the tests the project's repo declares, in .agent-orange/tests.json, at a commit this PC sends. They run as that PC's user, with its files and logins.",
+        "agents" => "Tests, and also start an agent conversation there on a project both PCs have, with a task this PC writes. It works in that PC's own clone of the project, with that PC's own login and settings, as that PC's user, and pushes its work to a new branch. Its conversation and log show here.",
         _ => "",
     };
 
+    private static int Rank(string? access) => access is null ? -1 : Array.IndexOf(AccessLevels, access);
+
     /// <summary>Whether a link with this access may do what needs the other.</summary>
-    public static bool Allows(string access, string needed) =>
-        Array.IndexOf(AccessLevels, access) is var has and >= 0 && has >= Array.IndexOf(AccessLevels, needed) && Array.IndexOf(AccessLevels, needed) >= 0;
+    public static bool Allows(string? access, string needed) =>
+        Rank(access) is var has and >= 0 && Rank(needed) is var wanted and >= 0 && has >= wanted;
+
+    /// <summary>The lower of two access levels, or Tests when either isn't one.</summary>
+    public static string Lower(string? one, string? other) =>
+        Rank(one) < 0 || Rank(other) < 0 ? "tests" : Rank(one) <= Rank(other) ? one! : other!;
+
+    /// <summary>
+    /// As the target: what a request is granted, the lower of what was asked and what the person here
+    /// grants that PC, never above what's offered. Null when what was asked isn't an access level.
+    /// </summary>
+    public static string? Grant(string asked, string granted) =>
+        Rank(asked) < 0 ? null : Lower(Lower(asked, granted), Offered[^1]);
 
     public static string NewId() => Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
 
@@ -119,40 +141,43 @@ public static class MachineLinks
         FixedTimeEquals(Confirm(linkKey, transcript), given);
 
     /// <summary>
-    /// As the target: the answer to a request, with a key pair made for this one link and an expiry
-    /// of this PC's own. Null when the other PC's key isn't a P-256 key.
+    /// As the target: the answer to a request, granting that access (what was asked, or less), with
+    /// a key pair made for this one link and an expiry of this PC's own. The access granted is in
+    /// what the key and the confirmation cover. Null when the other PC's key isn't a P-256 key.
     /// </summary>
-    public static LinkAcceptance? Accept(PendingLinkRequest request, string me)
+    public static LinkAcceptance? Accept(PendingLinkRequest request, string me, string granted)
     {
         var linkId = NewId();
         using var ephemeral = NewEphemeral();
         var machineKey = PublicKey(ephemeral);
         var expiresAt = (DateTimeOffset.UtcNow + LinkLifetime).ToUnixTimeSeconds();
-        var transcript = Transcript(request.Linker, me, request.Access, request.Nonce, request.Key, machineKey, linkId, expiresAt);
+        var transcript = Transcript(request.Linker, me, granted, request.Nonce, request.Key, machineKey, linkId, expiresAt);
         return LinkKey(ephemeral, request.Key, transcript) is { } linkKey
-            ? new LinkAcceptance(linkId, machineKey, expiresAt, Confirm(linkKey, transcript), linkKey)
+            ? new LinkAcceptance(linkId, machineKey, expiresAt, Confirm(linkKey, transcript), linkKey, granted)
             : null;
     }
 
     /// <summary>
-    /// As the PC linking: the link's key from the target's answer to its request, once its
-    /// confirmation checks out and its expiry is one this PC could have been given. Null if not.
+    /// As the PC linking: the link's key and the access granted from the target's answer to its
+    /// request, once its confirmation checks out, its expiry is one this PC could have been given,
+    /// and the access is what was asked or less. Null if not.
     /// </summary>
-    public static byte[]? TakeAnswer(ECDiffieHellman mine, string me, string machine, string access, string nonce, LinkAnswer answer)
+    public static (byte[] Key, string Access)? TakeAnswer(ECDiffieHellman mine, string me, string machine, string asked, string nonce, LinkAnswer answer)
     {
-        if (answer is not { Answer: "accepted", LinkId: { } linkId, ExpiresAt: { } expires, Key: { } machineKey, Confirm: { } confirm } || !IsId(linkId)) return null;
+        if (answer is not { Answer: "accepted", LinkId: { } linkId, ExpiresAt: { } expires, Key: { } machineKey, Confirm: { } confirm, Access: { } granted } || !IsId(linkId)) return null;
+        if (!Allows(asked, granted)) return null;
         var expiresAt = (long)expires;
         var now = DateTimeOffset.UtcNow;
         if (expiresAt <= now.ToUnixTimeSeconds() || expiresAt > (now + LinkLifetime + TimeSpan.FromDays(1)).ToUnixTimeSeconds()) return null;
-        var transcript = Transcript(me, machine, access, nonce, PublicKey(mine), machineKey, linkId, expiresAt);
-        return LinkKey(mine, machineKey, transcript) is { } linkKey && ConfirmMatches(linkKey, transcript, confirm) ? linkKey : null;
+        var transcript = Transcript(me, machine, granted, nonce, PublicKey(mine), machineKey, linkId, expiresAt);
+        return LinkKey(mine, machineKey, transcript) is { } linkKey && ConfirmMatches(linkKey, transcript, confirm) ? (linkKey, granted) : null;
     }
 
     /// <summary>What the PC linking says when the target turned its request down.</summary>
     public static string RefusedText(string? reason, string machine) => reason switch
     {
         "not_accepting" => $"{machine} doesn't let other PCs run tests on it now. Turn on Settings › Test machines › Let other PCs run tests here on {machine}, then link again.",
-        "access" => $"{machine} doesn't offer that access.",
+        "access" => $"{machine} doesn't know that access.",
         "unreadable" => $"{machine} couldn't read this PC's key. Link again.",
         _ => $"{machine} didn't take the link.",
     };

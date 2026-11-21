@@ -61,10 +61,11 @@ public partial class MainWindow
         using var linker = MachineLinks.NewEphemeral();
         var nonce = MachineLinks.NewId();
         var request = new PendingLinkRequest(MachineLinks.NewId(), "laptop", "Laptop", "tests", nonce, MachineLinks.PublicKey(linker));
-        var accepted = MachineLinks.Accept(request, "office") ?? throw new InvalidOperationException("Linking: the target couldn't answer a good request.");
-        var answer = new LinkAnswer("accepted", accepted.LinkId, accepted.ExpiresAt, accepted.MachineKey, accepted.Confirm);
-        var key = MachineLinks.TakeAnswer(linker, "laptop", "office", "tests", nonce, answer);
-        Expect(key is not null, "the PC linking keeps the target's answer");
+        var accepted = MachineLinks.Accept(request, "office", "tests") ?? throw new InvalidOperationException("Linking: the target couldn't answer a good request.");
+        var answer = new LinkAnswer("accepted", accepted.LinkId, accepted.ExpiresAt, accepted.MachineKey, accepted.Confirm, Access: accepted.Access);
+        var taken = MachineLinks.TakeAnswer(linker, "laptop", "office", "tests", nonce, answer);
+        Expect(taken is not null, "the PC linking keeps the target's answer");
+        var key = taken?.Key;
         Expect(CryptographicOperations.FixedTimeEquals(key!, accepted.LinkKey), "both PCs have the same link key");
         Expect(accepted.ExpiresAt - DateTimeOffset.UtcNow.ToUnixTimeSeconds() is > 29 * 86400 and <= 30 * 86400, "the target sets 30 days");
 
@@ -91,10 +92,34 @@ public partial class MainWindow
         Expect(MachineLinks.TakeAnswer(linker, "laptop", "office", "tests", nonce, answer with { ExpiresAt = accepted.ExpiresAt + 86400 }) is null, "a changed expiry is refused");
         Expect(MachineLinks.TakeAnswer(linker, "laptop", "office", "tests", nonce, answer with { ExpiresAt = DateTimeOffset.UtcNow.AddDays(90).ToUnixTimeSeconds() }) is null, "an expiry past 30 days is refused");
         Expect(MachineLinks.TakeAnswer(linker, "laptop", "spare", "tests", nonce, answer) is null, "an answer from another PC than the one asked is refused");
-        Expect(MachineLinks.TakeAnswer(linker, "laptop", "office", "full", nonce, answer) is null, "an answer for other access is refused");
+        Expect(MachineLinks.TakeAnswer(linker, "laptop", "office", "tests", nonce, answer with { Access = "agents" }) is null, "an answer whose access was changed on the way is refused");
+        Expect(MachineLinks.TakeAnswer(linker, "laptop", "office", "tests", nonce, answer with { Access = null }) is null, "an answer that doesn't say its access is refused");
         Expect(MachineLinks.TakeAnswer(linker, "laptop", "office", "tests", MachineLinks.NewId(), answer) is null, "an answer to another request is refused");
         Expect(MachineLinks.TakeAnswer(linker, "laptop", "office", "tests", nonce, answer with { Answer = "rejected" }) is null, "a refusal isn't kept as a link");
-        Expect(MachineLinks.Accept(request with { Key = "bm90IGEga2V5IGF0IGFsbCwganVzdCB3b3JkcyB0aGF0IGxvb2sgbGlrZSBiYXNlNjQ=" }, "office") is null, "a request whose key isn't one is turned down");
+        Expect(MachineLinks.Accept(request with { Key = "bm90IGEga2V5IGF0IGFsbCwganVzdCB3b3JkcyB0aGF0IGxvb2sgbGlrZSBiYXNlNjQ=" }, "office", "tests") is null, "a request whose key isn't one is turned down");
+
+        // Access: what the target grants is the lower of what was asked and what the person there
+        // chose, never Full access, and the PC linking keeps it only when it's what was asked or less.
+        Expect(MachineLinks.Grant("agents", "tests") == "tests", "a PC asking for Agents is granted Tests where the target grants Tests");
+        Expect(MachineLinks.Grant("agents", "agents") == "agents", "a PC asking for Agents is granted Agents where the target grants it");
+        Expect(MachineLinks.Grant("tests", "agents") == "tests", "a PC asking for Tests is granted Tests where the target grants Agents");
+        Expect(MachineLinks.Grant("full", "agents") == "agents", "a PC asking for Full access is granted Agents at most");
+        Expect(MachineLinks.Grant("root", "agents") is null, "a request for access that isn't one is turned down");
+        Expect(new TestMachineSettings().GrantFor("laptop") == "tests", "a target grants Tests until the person there chooses more");
+        Expect(new TestMachineSettings(Grants: new() { ["laptop"] = "full" }).GrantFor("laptop") == "tests", "a grant of Full access, which isn't offered, counts as Tests");
+
+        using var asking = MachineLinks.NewEphemeral();
+        var wanting = new PendingLinkRequest(MachineLinks.NewId(), "laptop", "Laptop", "agents", nonce, MachineLinks.PublicKey(asking));
+        var lower = MachineLinks.Accept(wanting, "office", "tests")!;
+        var lowerAnswer = new LinkAnswer("accepted", lower.LinkId, lower.ExpiresAt, lower.MachineKey, lower.Confirm, Access: lower.Access);
+        Expect(MachineLinks.TakeAnswer(asking, "laptop", "office", "agents", nonce, lowerAnswer) is { Access: "tests" } got && CryptographicOperations.FixedTimeEquals(got.Key, lower.LinkKey), "a PC asking for Agents and granted Tests keeps a Tests link");
+        Expect(MachineLinks.TakeAnswer(asking, "laptop", "office", "agents", nonce, lowerAnswer with { Access = "agents" }) is null, "a Tests link passed off as Agents on the way is refused");
+        var more = MachineLinks.Accept(request, "office", "agents")!;
+        Expect(MachineLinks.TakeAnswer(linker, "laptop", "office", "tests", nonce, new LinkAnswer("accepted", more.LinkId, more.ExpiresAt, more.MachineKey, more.Confirm, Access: more.Access)) is null, "an answer granting more than was asked is refused");
+
+        // What each access allows, lowest first.
+        Expect(MachineLinks.Allows("agents", "tests") && MachineLinks.Allows("agents", "agents") && !MachineLinks.Allows("tests", "agents") && !MachineLinks.Allows("agents", "full"), "Agents allows tests and agents, and Tests allows only tests");
+        Expect(MachineLinks.Lower("agents", "tests") == "tests" && MachineLinks.Lower("tests", "agents") == "tests", "lowering keeps the lower");
         return said.ToString();
     }
 }
