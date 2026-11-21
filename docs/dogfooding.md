@@ -831,3 +831,37 @@ with room (#109).
   carried when it can be, or else with the handoff note Agent Orange wrote as it stopped. Only known room
   counts, so paid extra usage never does, and a login that goes on to extra usage mid-turn is stopped and
   moved instead.
+
+## Linking test machines: no typed code between your own PCs (2026-11-21)
+
+The person linked two PCs on the released build and called it terrible, far from T3 Code's linked
+environments, which they use every day (#95). The target had to show a one-time 12-character code that
+was typed on the other PC within 5 minutes, which needs someone at both PCs. That's the opposite of the
+real case: a laptop at home sending tests to a PC nobody is at. The code looked like the server's
+pairing key. And Link seemed to do nothing on the installed copy.
+
+T3 only asks for a code when it can't make one itself. When it already has a session on the other
+machine that may manage access, it mints the code ("T3 Code link") and hides the code field. In Agent
+Orange every one of the person's PCs is already paired with the same server, which plays that part. So
+now:
+
+- **No code.** Link offers the person's other PCs and the access (Tests). The target's "Let other PCs run
+  tests here" is its consent, and it answers by itself, unattended, in the window that syncs. Nobody has
+  to approve anything on either PC. Settings › Test machines no longer has pairing links, codes or
+  Renew. Linking again renews a link, as in T3, and links still renew themselves while both PCs are online.
+- **How the link key is agreed now.**
+  - The PCs still swap ephemeral P-256 keys through the server. Each request and answer comes from a paired login the server checked.
+  - The link key is still `HMAC(ECDH secret, "ao-link-key|" + transcript)`, over both PCs, the access, the nonce, both public keys, the link id and the expiry.
+  - The target's confirmation is now `HMAC(link_key, "ao-link-confirm|" + transcript)`. The PC linking checks it before keeping the link, so both are sure they hold the same key.
+  - Before, the code keyed the request and the confirmation, so the server couldn't put its own keys in the middle without the code.
+  - Now the server is trusted while a link is made, to pass the keys on as sent, as T3 trusts its own session there. It isn't trusted after that. The link key never reaches the server, so nothing it keeps can sign a job, and a server taken over later can't make one.
+  - Jobs are signed with the key as before, with replay and age checks. The commands still come only from `.agent-orange/tests.json` at the signed commit. Expiry is 30 days with renewal.
+  - Revoke works from either side. Every PC paired with the server is the person's, so a revoked PC can link again while the target takes runs. To keep one out, remove it from the server (Server › Other devices). The page says so.
+- **Link always does something visible.**
+  - The Link button is drawn once. Before, the list under it was drawn again as the server answered, which could take the button away between a press and its release.
+  - The dialog always opens. It says why there's nothing to pick when the list isn't loaded, or why a picked PC can't be linked: it doesn't take runs, it's on another release, or it paired before PCs said which they were. For that the server now lists the person's PCs that never said whether they take runs. It also tells a PC on another release from one that's away, as a PC on another release still syncs but can't use these routes.
+  - Link becomes Linking…, with what's happening under it ("Waiting for Office PC to answer. It answers by itself in a few seconds.").
+  - A PC that's away gets 10 minutes. The link carries on in Linked machines with the dialog closed, with Cancel. One that didn't link says why, with Try again.
+  - A PC that stops taking runs turns down the requests waiting for it, so the PC linking hears why at once.
+- **Checked:** `tools/checks/test-machine-linking.txt` runs both PCs' halves against each other. Both end up with the same key. A job and a renewal signed on one side are taken by the other. The PC linking refuses each of these: a swapped key, a wrong confirmation, a changed or too-long expiry, an answer from another PC, an answer for other access and an answer to another request. The check then goes through the page and the dialog with made-up machines.
+- **Still to try on two real PCs:** linking a PC that's online, one that's away and comes online within the 10 minutes, one on another release, and turning the switch off while a request waits.
