@@ -525,6 +525,20 @@ pub async fn publish(
         )
         .await
         .map_err(internal_error)?;
+
+    // No longer taking runs, so requests still waiting for it won't be answered: said now, so the
+    // PC linking needn't wait them out.
+    if !request.accepting {
+        state
+            .db
+            .execute(
+                "UPDATE machine_link_requests SET answer = 'rejected', reason = 'not_accepting'
+                 WHERE machine_install = $1 AND answer IS NULL",
+                &[&me],
+            )
+            .await
+            .map_err(internal_error)?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
