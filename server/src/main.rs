@@ -33,6 +33,8 @@ pub struct AppState {
     pub pairing_key: Option<String>,
     pub pairing_limit: Mutex<devices::PairingLimit>,
     pub link_limit: Mutex<machines::LinkLimit>,
+    /// The release this server ran before this one, whose test PCs may still be finishing runs.
+    pub previous_release: Option<String>,
 }
 
 #[tokio::main]
@@ -57,6 +59,9 @@ async fn main() {
     machines::create_tables(&db)
         .await
         .expect("could not set up the database");
+    let previous_release = machines::note_release(&db, VERSION)
+        .await
+        .expect("could not set up the database");
 
     let state = Arc::new(AppState {
         db,
@@ -66,6 +71,7 @@ async fn main() {
         pairing_key,
         pairing_limit: Mutex::new(devices::PairingLimit::default()),
         link_limit: Mutex::new(machines::LinkLimit::default()),
+        previous_release,
     });
 
     let app = |route: devices::Route| {

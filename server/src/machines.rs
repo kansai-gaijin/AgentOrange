@@ -175,9 +175,88 @@ pub async fn create_tables(db: &Client) -> Result<(), tokio_postgres::Error> {
          ALTER TABLE machine_link_requests ADD COLUMN IF NOT EXISTS reason TEXT;
          -- When the PC last used these routes, which only its own release can, so a PC that syncs
          -- but hasn't been here lately is on another release.
-         ALTER TABLE test_machines ADD COLUMN IF NOT EXISTS seen_at TIMESTAMPTZ;",
+         ALTER TABLE test_machines ADD COLUMN IF NOT EXISTS seen_at TIMESTAMPTZ;
+         -- The release this server was on when a run was taken, which its test PC may go on
+         -- reporting it from after this server updates, as it doesn't update mid-run (#124).
+         ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS started_release TEXT;
+         -- When this server last turned away a run's report for coming from another release, so
+         -- its window can say why it went quiet, and the report sent after updating is still taken.
+         ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS held_back_at TIMESTAMPTZ;
+         -- This server's release and the one it ran before.
+         CREATE TABLE IF NOT EXISTS server_release (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            current TEXT NOT NULL,
+            previous TEXT
+         );",
     )
     .await
+}
+
+/// Notes this server's release, and gives the one it ran before, whose test PCs may still be
+/// finishing runs (#124). None on a first start, or when there's no telling.
+pub async fn note_release(
+    db: &Client,
+    version: &str,
+) -> Result<Option<String>, tokio_postgres::Error> {
+    let row = db
+        .query_one(
+            "INSERT INTO server_release (id, current) VALUES (1, $1)
+             ON CONFLICT (id) DO UPDATE SET
+                previous = CASE WHEN server_release.current = EXCLUDED.current THEN server_release.previous ELSE server_release.current END,
+                current = EXCLUDED.current
+             RETURNING previous",
+            &[&version],
+        )
+        .await?;
+    Ok(row.get(0))
+}
+
+/// A run's test PC may go on reporting it from the release the run was taken on, or from this
+/// server's release before this one, as a test PC doesn't update while it runs (#124). Dev builds
+/// send no version, and never get this far.
+fn release_may_report(sent: Option<&str>, started: Option<&str>, previous: Option<&str>) -> bool {
+    sent.is_some_and(|sent| started == Some(sent) || previous == Some(sent))
+}
+
+/// A run's own routes as its test PC uses them: as `caller`, except that the PC may be on the
+/// release the run was taken on (or the one before this server's) until the run ends, so a run
+/// that straddles a release still gets its log and its end. Anything else from another release
+/// is turned away, and the run notes it, so its window can say its report was held back.
+async fn run_caller(state: &AppState, headers: &HeaderMap, id: &str) -> Result<String, StatusCode> {
+    let install = authenticate_install(state, headers).await?;
+    if !client_is_out_of_date(headers) {
+        return seen(state, install).await;
+    }
+    let started = state
+        .db
+        .query_opt(
+            "SELECT started_release FROM test_runs
+             WHERE id = $1 AND machine_install = $2 AND status IN ('running', 'lost')",
+            &[&id, &install],
+        )
+        .await
+        .map_err(internal_error)?;
+    let Some(started) = started else {
+        return Err(StatusCode::UPGRADE_REQUIRED);
+    };
+    let started: Option<String> = started.get(0);
+    let sent = headers
+        .get("x-agent-orange-version")
+        .and_then(|version| version.to_str().ok());
+    // Not noted as seen, as for everything else this PC is still on another release.
+    if release_may_report(sent, started.as_deref(), state.previous_release.as_deref()) {
+        return Ok(install);
+    }
+    state
+        .db
+        .execute(
+            "UPDATE test_runs SET held_back_at = now()
+             WHERE id = $1 AND machine_install = $2 AND status IN ('running', 'lost')",
+            &[&id, &install],
+        )
+        .await
+        .map_err(internal_error)?;
+    Err(StatusCode::UPGRADE_REQUIRED)
 }
 
 /// Every route here needs a login from a PC that said which PC it is, and this server's own
@@ -187,6 +266,11 @@ async fn caller(state: &AppState, headers: &HeaderMap) -> Result<String, StatusC
     if client_is_out_of_date(headers) {
         return Err(StatusCode::UPGRADE_REQUIRED);
     }
+    seen(state, install).await
+}
+
+// Only this server's own release counts as seen here.
+async fn seen(state: &AppState, install: String) -> Result<String, StatusCode> {
     state
         .db
         .execute(
@@ -996,6 +1080,9 @@ pub struct RunView {
     checks_passed: i64,
     checks_failed: i64,
     checks_skipped: i64,
+    /// Its report was turned away for coming from another release, and its test PC sends it once
+    /// it has updated (#124).
+    held_back: bool,
 }
 
 const RUN_COLUMNS: &str = "r.id, r.link_id, r.machine_install,
@@ -1009,7 +1096,8 @@ const RUN_COLUMNS: &str = "r.id, r.link_id, r.machine_install,
     (SELECT EXTRACT(EPOCH FROM l.expires_at)::float8 FROM machine_links l WHERE l.id = r.link_id),
     (SELECT count(*) FROM test_run_checks c WHERE c.run_id = r.id AND c.outcome = 'passed'),
     (SELECT count(*) FROM test_run_checks c WHERE c.run_id = r.id AND c.outcome = 'failed'),
-    (SELECT count(*) FROM test_run_checks c WHERE c.run_id = r.id AND c.outcome = 'skipped')";
+    (SELECT count(*) FROM test_run_checks c WHERE c.run_id = r.id AND c.outcome = 'skipped'),
+    r.held_back_at IS NOT NULL";
 
 // A machine's name as runs show it: the one it publishes, or else its PC's.
 const MACHINE_LABEL: &str =
@@ -1039,6 +1127,7 @@ fn run_view(row: &Row) -> RunView {
         checks_passed: row.get(18),
         checks_failed: row.get(19),
         checks_skipped: row.get(20),
+        held_back: row.get(21),
     }
 }
 
@@ -1129,7 +1218,9 @@ const MOST_RUNS_LISTED: i64 = 200;
 
 /// How many runs a list gives, from what was asked.
 fn runs_listed(asked: Option<i64>) -> i64 {
-    asked.unwrap_or(DEFAULT_RUNS_LISTED).clamp(1, MOST_RUNS_LISTED)
+    asked
+        .unwrap_or(DEFAULT_RUNS_LISTED)
+        .clamp(1, MOST_RUNS_LISTED)
 }
 
 /// The latest runs this PC sent or ran. The project page asks for more, to find the last verdict
@@ -1252,7 +1343,8 @@ pub async fn claim_next(
     let claimed = state
         .db
         .query_opt(
-            "UPDATE test_runs SET status = 'running', started_at = now(), lease_until = now() + interval '2 minutes'
+            "UPDATE test_runs SET status = 'running', started_at = now(), lease_until = now() + interval '2 minutes',
+                started_release = $2
              WHERE id = (
                 SELECT q.id FROM test_runs q JOIN machine_links l ON l.id = q.link_id
                 WHERE q.machine_install = $1 AND q.status = 'queued' AND l.expires_at > now()
@@ -1261,7 +1353,7 @@ pub async fn claim_next(
                 FOR UPDATE OF q SKIP LOCKED
              )
              RETURNING id",
-            &[&me],
+            &[&me, &crate::VERSION],
         )
         .await
         .map_err(internal_error)?;
@@ -1288,14 +1380,26 @@ pub struct KeepGoing {
     truncated: bool,
 }
 
-// A run of this PC's that it's still running, and whether it should stop.
-async fn running_run(db: &Client, id: &str, me: &str) -> Result<(bool, i64), StatusCode> {
+/// How long after a run was called lost its test PC may still send the report it held back.
+const HELD_BACK_KEPT: &str = "interval '24 hours'";
+
+// A run of this PC's that it's still running, and whether it should stop. Held back, a run lost
+// meanwhile counts too, as its test PC sends what it kept once it has updated (#124).
+async fn running_run(
+    db: &Client,
+    id: &str,
+    me: &str,
+    held_back: bool,
+) -> Result<(bool, i64), StatusCode> {
     let row = db
         .query_opt(
-            "SELECT r.cancel_requested OR NOT EXISTS (SELECT 1 FROM machine_links l WHERE l.id = r.link_id AND l.expires_at > now()),
-                r.log_bytes
-             FROM test_runs r WHERE r.id = $1 AND r.machine_install = $2 AND r.status = 'running'",
-            &[&id, &me],
+            &format!(
+                "SELECT r.status = 'running' AND (r.cancel_requested OR NOT EXISTS (SELECT 1 FROM machine_links l WHERE l.id = r.link_id AND l.expires_at > now())),
+                    r.log_bytes
+                 FROM test_runs r WHERE r.id = $1 AND r.machine_install = $2
+                    AND (r.status = 'running' OR ($3 AND r.status = 'lost' AND r.ended_at > now() - {HELD_BACK_KEPT}))"
+            ),
+            &[&id, &me, &held_back],
         )
         .await
         .map_err(internal_error)?
@@ -1309,9 +1413,9 @@ pub async fn heartbeat(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<KeepGoing>, StatusCode> {
-    let me = caller(&state, &headers).await?;
+    let me = run_caller(&state, &headers, &id).await?;
     settle_lost_runs(&state.db).await?;
-    let (cancel, log_bytes) = running_run(&state.db, &id, &me).await?;
+    let (cancel, log_bytes) = running_run(&state.db, &id, &me, false).await?;
     state
         .db
         .execute(
@@ -1327,9 +1431,13 @@ pub async fn heartbeat(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LogBody {
     seq: i32,
     text: String,
+    /// Kept on the test PC while this server turned it away, and sent once the PC had updated.
+    #[serde(default)]
+    held_back: bool,
 }
 
 /// Adds to a run's log. Sending a part again is harmless, as each is numbered.
@@ -1339,11 +1447,11 @@ pub async fn append_log(
     Path(id): Path<String>,
     Json(body): Json<LogBody>,
 ) -> Result<Json<KeepGoing>, StatusCode> {
-    let me = caller(&state, &headers).await?;
+    let me = run_caller(&state, &headers, &id).await?;
     if body.seq < 0 || body.text.len() > MAX_LOG_CHUNK_BYTES || body.text.contains('\0') {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let (cancel, log_bytes) = running_run(&state.db, &id, &me).await?;
+    let (cancel, log_bytes) = running_run(&state.db, &id, &me, body.held_back).await?;
     let size = body.text.len() as i64;
     if log_bytes + size > MAX_LOG_BYTES {
         return Ok(Json(KeepGoing {
@@ -1363,8 +1471,9 @@ pub async fn append_log(
         state
             .db
             .execute(
-                "UPDATE test_runs SET log_bytes = log_bytes + $2, lease_until = now() + interval '2 minutes'
-                 WHERE id = $1 AND status = 'running'",
+                "UPDATE test_runs SET log_bytes = log_bytes + $2,
+                    lease_until = CASE WHEN status = 'running' THEN now() + interval '2 minutes' END
+                 WHERE id = $1 AND status IN ('running', 'lost')",
                 &[&id, &size],
             )
             .await
@@ -1385,6 +1494,10 @@ pub struct EndBody {
     /// How each check went, when the repo names a results file. Each name once.
     #[serde(default)]
     checks: Vec<CheckBody>,
+    /// Kept on the test PC while this server turned it away, and sent once the PC had updated, so
+    /// a run called lost meanwhile still ends as it went (#124).
+    #[serde(default)]
+    held_back: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -1400,7 +1513,7 @@ pub async fn end_run(
     Path(id): Path<String>,
     Json(body): Json<EndBody>,
 ) -> Result<StatusCode, StatusCode> {
-    let me = caller(&state, &headers).await?;
+    let me = run_caller(&state, &headers, &id).await?;
     if !RUN_ENDINGS.contains(&body.status.as_str())
         || body.checks.len() > MAX_CHECKS
         || body.checks.iter().any(|check| {
@@ -1415,9 +1528,13 @@ pub async fn end_run(
     let ended = state
         .db
         .execute(
-            "UPDATE test_runs SET status = $3, exit_code = $4, ended_at = now(), lease_until = NULL
-             WHERE id = $1 AND machine_install = $2 AND status = 'running'",
-            &[&id, &me, &body.status, &body.exit_code],
+            &format!(
+                "UPDATE test_runs SET status = $3, exit_code = $4, ended_at = now(), lease_until = NULL,
+                    held_back_at = CASE WHEN $5 THEN COALESCE(held_back_at, now()) ELSE held_back_at END
+                 WHERE id = $1 AND machine_install = $2
+                    AND (status = 'running' OR ($5 AND status = 'lost' AND ended_at > now() - {HELD_BACK_KEPT}))"
+            ),
+            &[&id, &me, &body.status, &body.exit_code, &body.held_back],
         )
         .await
         .map_err(internal_error)?;
@@ -1560,5 +1677,29 @@ mod tests {
         assert_eq!(runs_listed(Some(5000)), 200);
         assert_eq!(runs_listed(Some(0)), 1);
         assert_eq!(runs_listed(Some(-3)), 1);
+    }
+
+    #[test]
+    fn a_run_is_reported_from_the_release_it_was_taken_on_or_the_one_before() {
+        // Taken on 1.4.0, with this server now on 1.6.0 after 1.5.0.
+        assert!(release_may_report(
+            Some("1.4.0"),
+            Some("1.4.0"),
+            Some("1.5.0")
+        ));
+        assert!(release_may_report(
+            Some("1.5.0"),
+            Some("1.4.0"),
+            Some("1.5.0")
+        ));
+        assert!(!release_may_report(
+            Some("1.3.0"),
+            Some("1.4.0"),
+            Some("1.5.0")
+        ));
+        // Taken before runs noted their release, or on a first start with nothing before.
+        assert!(release_may_report(Some("1.5.0"), None, Some("1.5.0")));
+        assert!(!release_may_report(Some("1.5.0"), None, None));
+        assert!(!release_may_report(None, Some("1.4.0"), Some("1.5.0")));
     }
 }
