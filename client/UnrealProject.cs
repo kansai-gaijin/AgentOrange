@@ -272,22 +272,14 @@ public static partial class UnrealProject
         return $"Unreal couldn't build {name}:\n{string.Join("\n", errors.Count > 0 ? errors : said.TakeLast(6))}";
     }
 
-    /// <summary>Opens the project in its engine, with Unreal's MCP server on Agent Orange's port.</summary>
-    public static string? Open(string uproject)
+    /// <summary>
+    /// Opens the project in its engine, with Unreal's MCP server on Agent Orange's port, on its own, so
+    /// the editor stays open when Agent Orange restarts (#101).
+    /// </summary>
+    public static async Task<string?> OpenAsync(string uproject)
     {
         if (EngineFor(uproject) is not { } engine) return $"The Unreal version {Path.GetFileName(uproject)} is for isn't installed on this PC.";
-        var start = new ProcessStartInfo(engine.Editor) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(uproject)! };
-        start.ArgumentList.Add(uproject);
-        start.ArgumentList.Add("-ModelContextProtocolStartServer");
-        start.ArgumentList.Add($"-ModelContextProtocolPort={McpPort}");
-        try
-        {
-            Process.Start(start);
-            return null;
-        }
-        catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
-        {
-            return $"Unreal didn't start: {error.Message}";
-        }
+        var (_, problem) = await DetachedProcess.StartAsync(engine.Editor, [uproject, "-ModelContextProtocolStartServer", $"-ModelContextProtocolPort={McpPort}"], Path.GetDirectoryName(uproject));
+        return problem is null ? null : $"Unreal didn't start: {problem}";
     }
 }

@@ -21,6 +21,19 @@ public static class Program
             return;
         }
 
+        // Started to start a program of its own, which then outlives the app: a tool, or a session's host.
+        if (args.Contains(DetachedProcess.Argument))
+        {
+            using var spec = new System.IO.StreamReader(Console.OpenStandardInput(), new System.Text.UTF8Encoding(false));
+            Environment.Exit(DetachedProcess.Run(spec));
+        }
+
+        // An agent session's host, which runs its agent program for as long as it runs (SessionHost).
+        if (Array.IndexOf(args, SessionHost.Argument) is var host and >= 0)
+        {
+            Environment.Exit(host + 1 < args.Length ? SessionHost.Run(args[host + 1]) : 2);
+        }
+
         // Started by Claude Code before an agent's shell command, to refuse patch scripts written into it.
         if (args.Contains(PatchScripts.HookArgument))
         {

@@ -1,0 +1,15 @@
+# The app started again partway through the turn: the session went on meanwhile, so the conversation
+# is picked back up from where the app had read to, says so, and its turn finishes as if nothing had
+# happened, with nothing it said read twice.
+sleep 1000
+agentpick "Do the long job."
+agentitems
+said "Working: True."
+said "Notice: Agent Orange restarted while it worked. It went on meanwhile, and is picked back up from where it was."
+sleep 14000
+agentitems
+said "Assistant: Started the long job.\nNotice: Agent Orange restarted while it worked."
+said "Assistant: Finished the long job."
+said "Working: False."
+notsaid "Problem"
+notsaid "cut off"

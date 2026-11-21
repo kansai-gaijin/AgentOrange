@@ -39,27 +39,13 @@ public sealed partial class AgentConversation
 
     private bool StartCodex(Setup setup)
     {
-        Process? process;
-        try
-        {
-            process = Process.Start(AgentProviders.SessionStartInfo(setup.Provider, "app-server -c thread_unload_delay_secs=0", Folder!, setup.ToolsFolder));
-        }
-        catch (Exception error) when (error is Win32Exception or IOException or UnauthorizedAccessException)
-        {
-            AppLog.Write($"Couldn't start {setup.Provider.Program}: {error.Message}");
-            process = null;
-        }
-        if (process is null)
-        {
-            Problem($"Couldn't start \"{setup.Provider.Program}\".");
-            return false;
-        }
-
+        if (StartSession(setup, "app-server -c thread_unload_delay_secs=0") is not { } process) return false;
         ProviderId = setup.Provider.Id;
         _skillFolders = setup.SkillFolders;
         _process = process;
         _stopping = false;
         _restarting = false;
+        _pickedUp = false;
         _startedWith = $"{Model}|{Effort}";
         _runningMode = PermissionMode;
         _controls.Clear();
@@ -69,7 +55,6 @@ public sealed partial class AgentConversation
         _codexThread = null;
         _codexTurn = null;
         _nextRpc = 1;
-        ChildProcesses.Track(process);
         _ = ReadAsync(process);
 
         var provider = setup.Provider.Id;
@@ -297,6 +282,7 @@ public sealed partial class AgentConversation
                 : new JsonObject { ["decision"] = decision };
             WriteCodex(new JsonObject { ["id"] = id.DeepClone(), ["result"] = result });
         }
+        request.RequestInput = null; // Answered, so it isn't kept.
         ItemChanged?.Invoke(request);
         StateChanged?.Invoke();
     }
@@ -316,6 +302,7 @@ public sealed partial class AgentConversation
             }
             WriteCodex(new JsonObject { ["id"] = id.DeepClone(), ["result"] = new JsonObject { ["answers"] = replies } });
         }
+        request.RequestInput = null;
         ItemChanged?.Invoke(request);
         StateChanged?.Invoke();
     }

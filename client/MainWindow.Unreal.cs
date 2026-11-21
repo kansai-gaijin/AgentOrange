@@ -20,9 +20,9 @@ public partial class MainWindow
             var open = ActionButton("Open in Unreal Engine");
             open.VerticalAlignment = VerticalAlignment.Center; // Not stretched to the git actions' height beside it.
             open.IsEnabled = !IsBusyWith(project.Id);
-            open.Click += (_, _) =>
+            open.Click += async (_, _) =>
             {
-                if (UnrealProject.Open(uproject) is { } problem) ShowPageProblem(project.Id, problem);
+                if (await UnrealProject.OpenAsync(uproject) is { } problem) ShowPageProblem(project.Id, problem);
             };
             row.Children.Add(open);
             return;

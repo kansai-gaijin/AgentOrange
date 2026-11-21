@@ -68,10 +68,11 @@ public sealed class AgentItem
 
     [JsonIgnore] public bool Streaming { get; set; }
 
-    // What a request needs to be answered while the agent is still waiting on it.
-    [JsonIgnore] public JsonNode? RequestInput { get; set; }
-    [JsonIgnore] public string? ToolUseId { get; set; }
-    [JsonIgnore] public JsonArray? Suggestions { get; set; } // Rules that would let it do the same again without asking.
+    // What a request needs to be answered while the agent is still waiting on it, kept until it's
+    // answered, so one asked before Agent Orange restarted can still be answered once it's back.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public JsonNode? RequestInput { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? ToolUseId { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public JsonArray? Suggestions { get; set; } // Rules that would let it do the same again without asking.
 }
 
 /// <summary>
@@ -170,7 +171,8 @@ public sealed partial class AgentConversation
     /// <summary>On the window's thread: it started or stopped working, or wants the person.</summary>
     public event Action? StateChanged;
 
-    private Process? _process;
+    private HostedSession? _process;
+    private bool _pickedUp; // Its program was taken back after Agent Orange restarted, rather than started by this copy.
     private bool _stopping;
     private bool _restarting; // Ended so the next message starts it with what's changed, which says nothing.
     private int _turns; // Messages sent that it hasn't finished with, as one sent while it works waits its turn.
@@ -212,14 +214,8 @@ public sealed partial class AgentConversation
             // Older versions could keep a reply twice, once as streamed and once whole.
             loaded.Items.RemoveAll(item => item.Kind == AgentItemKind.Assistant && loaded.Items.Any(other => !ReferenceEquals(other, item)
                 && other.Kind == AgentItemKind.Assistant && other.Text == item.Text && SameMessage(other.Id, item.Id) && loaded.Items.IndexOf(other) < loaded.Items.IndexOf(item)));
-            foreach (var item in loaded.Items)
-            {
-                loaded._byId[item.Id] = item;
-
-                // The program that was asking is gone, so nothing can answer it now.
-                if (item.RequestState == AgentRequestState.Waiting && item.Kind is AgentItemKind.Approval or AgentItemKind.Question or AgentItemKind.Plan) item.RequestState = AgentRequestState.Gone;
-                if (item.Kind == AgentItemKind.Tool && item.ToolState == AgentToolState.Running) item.ToolState = AgentToolState.Failed;
-            }
+            // What its program was asking stays asked only if the program is picked back up (PickUp).
+            foreach (var item in loaded.Items) loaded._byId[item.Id] = item;
             return loaded;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
@@ -244,8 +240,12 @@ public sealed partial class AgentConversation
         }
     }
 
-    /// <summary>Everything a session needs set up first, made fresh each time so it matches what's set up now.</summary>
-    public sealed record Setup(AgentProvider Provider, string McpConfig, IReadOnlyList<string> McpServers, string SkillsPlugin, string Briefing, string AttachmentsFolder, string ClaudeSettings, IReadOnlyList<string> SkillFolders, string? ToolsFolder = null);
+    /// <summary>
+    /// Everything a session needs set up first, made fresh each time so it matches what's set up now.
+    /// Sessions is the conversation's folder of hosted sessions, and HostProgram what hosts them (<see cref="SessionHost"/>).
+    /// </summary>
+    public sealed record Setup(AgentProvider Provider, string McpConfig, IReadOnlyList<string> McpServers, string SkillsPlugin, string Briefing, string AttachmentsFolder, string ClaudeSettings, IReadOnlyList<string> SkillFolders,
+        string Sessions, string HostProgram, string? ToolsFolder = null);
 
     /// <summary>
     /// Sends a message, starting the agent program if it isn't running. What the person is looking at
@@ -357,56 +357,45 @@ public sealed partial class AgentConversation
             + (Effort is { Length: > 0 } effort ? $" --effort {effort}" : "")
             + (SessionId is null ? "" : $" --resume {SessionId}");
 
-        Process? process;
-        try
-        {
-            process = Process.Start(AgentProviders.SessionStartInfo(setup.Provider, arguments, Folder!, setup.ToolsFolder));
-        }
-        catch (Exception error) when (error is Win32Exception or IOException or UnauthorizedAccessException)
-        {
-            AppLog.Write($"Couldn't start {setup.Provider.Program}: {error.Message}");
-            process = null;
-        }
-        if (process is null)
-        {
-            Problem($"Couldn't start \"{setup.Provider.Program}\".");
-            return false;
-        }
-
+        if (StartSession(setup, arguments) is not { } process) return false;
         ProviderId = setup.Provider.Id;
         _process = process;
         _stopping = false;
         _restarting = false;
+        _pickedUp = false;
         _extraUsageTold = false;
         _startedWith = $"{Model}|{Effort}";
         _runningMode = PermissionMode;
         _controls.Clear();
-        ChildProcesses.Track(process);
         _ = ReadAsync(process);
         return true;
     }
 
-    private async Task ReadAsync(Process process)
+    // Its agent program, in a session that outlives Agent Orange (SessionHost).
+    private HostedSession? StartSession(Setup setup, string arguments)
     {
-        var errors = process.StandardError.ReadToEndAsync();
         try
         {
-            while (await process.StandardOutput.ReadLineAsync() is { } line) Read(line);
-            await process.WaitForExitAsync();
+            return HostedSession.Start(AgentProviders.SessionStartInfo(setup.Provider, arguments, Folder!, setup.ToolsFolder), setup.Sessions, setup.HostProgram);
         }
-        catch (Exception error) when (error is IOException or InvalidOperationException)
+        catch (Exception error) when (error is Win32Exception or IOException or UnauthorizedAccessException)
         {
-            // Its pipes close under it when it's stopped partway.
+            AppLog.Write($"Couldn't start {setup.Provider.Program}: {error.Message}");
+            Problem($"Couldn't start \"{setup.Provider.Program}\".");
+            return null;
         }
+    }
 
-        if (_process != process)
+    private async Task ReadAsync(HostedSession process)
+    {
+        while (await process.ReadLineAsync() is { } line)
         {
-            process.Dispose();
-            return;
+            if (_process != process) break; // Ended to start again, which reads from a session of its own.
+            Read(line);
         }
+        if (_process != process) return;
         _process = null;
         EndAllWork(quietly: false); // It ends with it.
-        process.Dispose();
         foreach (var item in Items.Where(item => item.RequestState == AgentRequestState.Waiting && item.Kind is AgentItemKind.Approval or AgentItemKind.Question).ToList())
         {
             item.RequestState = AgentRequestState.Gone;
@@ -421,9 +410,18 @@ public sealed partial class AgentConversation
         {
             // Ended at its limit, as it didn't stop when asked.
         }
+        else if (IsWorking && !_stopping && _pickedUp)
+        {
+            // It ended while Agent Orange was away, before finishing its turn.
+            _pickedUp = false;
+            _turns = 0;
+            SetWorking(false);
+            TurnCutOff?.Invoke();
+            return;
+        }
         else if (IsWorking && !_stopping)
         {
-            var detail = (await errors).Trim();
+            var detail = process.Errors();
             Problem(detail.Length > 0 ? $"The agent stopped: {Shortened(detail, 600)}" : "The agent stopped without finishing.");
         }
         else if (_stopping)
@@ -454,14 +452,7 @@ public sealed partial class AgentConversation
     {
         if (_process is not { } process) return;
         _stopping = true;
-        try
-        {
-            process.Kill(entireProcessTree: true);
-        }
-        catch (Exception error) when (error is InvalidOperationException or Win32Exception)
-        {
-            // Already gone.
-        }
+        process.Kill();
     }
 
     // Ended without a word, so the message about to be sent starts it the new way, picking the conversation back up.
@@ -471,14 +462,7 @@ public sealed partial class AgentConversation
         _restarting = true;
         _process = null;
         EndAllWork(quietly: true);
-        try
-        {
-            process.Kill(entireProcessTree: true);
-        }
-        catch (Exception error) when (error is InvalidOperationException or Win32Exception)
-        {
-            // Already gone.
-        }
+        process.Kill();
     }
 
     /// <summary>The next message carries what was said so far, as the agent program starting with it has none of it.</summary>
@@ -679,6 +663,8 @@ public sealed partial class AgentConversation
             ["type"] = "control_response",
             ["response"] = new JsonObject { ["subtype"] = "success", ["request_id"] = request.Id, ["response"] = response },
         });
+        request.RequestInput = null; // Answered, so it isn't kept.
+        request.Suggestions = null;
         ItemChanged?.Invoke(request);
         StateChanged?.Invoke();
     }
@@ -798,16 +784,7 @@ public sealed partial class AgentConversation
 #if DEBUG
         if (_process is null && Headless.Active) WrittenForChecks.Add(message.ToJsonString());
 #endif
-        if (_process is not { } process) return;
-        try
-        {
-            process.StandardInput.WriteLine(message.ToJsonString());
-            process.StandardInput.Flush();
-        }
-        catch (Exception error) when (error is IOException or InvalidOperationException or ObjectDisposedException)
-        {
-            // It's ending, which ReadAsync deals with.
-        }
+        _process?.WriteLine(message.ToJsonString()); // One that's ending drops it, which ReadAsync deals with.
     }
 
     // What comes back
