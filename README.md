@@ -40,6 +40,8 @@ A release that doesn't come up healthy is put back to the one before and tried a
 
 Each release carries the updater, so after the first install, `sudo ./install.sh` on its own is only needed to change the service files.
 
+A test run that's going on as the server updates still finishes: the server takes the run's log and its end from the release the run started on, or the one before, until it ends, and a test PC doesn't update until its run has ended. If the server does turn them away, the test PC keeps them and sends them once it has updated, and the run's window says the report was held back by a version change.
+
 ## Credits
 
 Agent Orange is built on other people's work. Thank you to everyone below.

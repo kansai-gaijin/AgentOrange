@@ -916,3 +916,51 @@ What was left of #93 after agents got their own test runs, and one thing from th
 - **Checked:** `tools/checks/agent-test-machines.txt`, `test-run-filter.txt`, `test-run-branch.txt`,
   `test-clones.txt`, `agents-git-lfs.txt`, and `agent-test-runs.txt` for cancel, with made-up machines
   and runs where a server would be. Still to try on two real PCs: each of these against a real run.
+
+## Test runs: a release partway through a run lost it (2026-11-21)
+
+Releases shipped four times in one morning, so a run over an hour long was likely to straddle one
+(#124). The server updated itself while a test PC, still on the release before, was partway through a
+run; from then on it refused the run's log with 426, the run's end never arrived, and the person saw
+"Lost", with no log after that point.
+
+- **The server lets a run finish on its own release.** A run notes the release the server was on when
+  it was taken, and the server notes the release it ran before. A run's heartbeat, log and end are
+  taken from either until the run ends. Nothing else about test machines is, so a PC on the release
+  before still can't take a new run or link.
+- **What's turned away is kept, not lost.** When the server does refuse (a server from before this,
+  or a release skipped), the test PC keeps the rest of the log and the verdict in its own database,
+  says so in the log, and once it has updated sends them marked held back. The server takes those for
+  a run it called lost meanwhile, for a day, and the run ends as it went.
+- **No update mid-run.** A test PC already waited for a run to end before updating by itself; it now
+  updates as soon as the run ends rather than a minute later, the update screen says it's waiting for
+  the run, and a person choosing Download update mid-run is asked first, as that run would be lost.
+- **The run's window says why it went quiet.** "Held back by a version change" while the report waits
+  for the test PC to update, and once it has come, that it was held back and sent after updating.
+  `read_test_run` and `list_test_runs` say the same.
+- **Checked:** `tools/checks/release-skew.txt` (and `-again`, as the update starts the app again) runs
+  a real run against a made-up server that updates after the log's first part, and the run's window
+  with a made-up run. The server's own rules have a unit test. Still to try on two real PCs: a run
+  straddling a real release.
+
+## Agents: a dozen conversations with the same title (2026-11-21)
+
+A conversation's title was the start of its first message, and a project's build conversations open
+the same way ("Please continue <milestone> in <project> with slices …"), so the list showed a dozen
+rows with the same cut-off title, and a message meant for the newest went to an older one (#125).
+
+- **Titled from what it's about.** Once a conversation's first turn has ended, its own login names it
+  from its first message and first reply, in a few words, with T3 Code's title prompt adapted: its
+  milestone and slices when it works on them, never the project's name. A login that can't answer
+  leaves the first words, and it's asked again after a restart.
+- **Renamable.** Rename in a row's menu, F2 or a double-click edits the title in its row, as in T3;
+  Enter or leaving the box keeps it, Escape doesn't, and nothing renames it after. Blank goes back to
+  the first words. Parts of a split milestone keep their part names.
+- **Clashes say what tells them apart.** Rows whose titles are the same show the start of the
+  conversation's id and when it was last active, beside the project.
+- **Nothing picks one by a title several have.** A click on a conversation's row by such a title (the
+  headless scripts and the drive tool) is refused, naming each row by its whole name; the checks'
+  `agentpick` and `mcpas` refuse it too, and take the start of an id. A milestone named by a name or a
+  start more than one has is refused, naming them, so `message_part` can't steer the wrong part.
+- **Checked:** `tools/checks/conversation-titles.txt`, with what a login answers made up. Still to
+  see with a real login: the titles it writes.
