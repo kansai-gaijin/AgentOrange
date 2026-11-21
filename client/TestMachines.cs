@@ -84,6 +84,35 @@ public sealed class TestMachines
 
     public TestRunner? Running { get; private set; }
 
+    /// <summary>The test clone being removed, if one is. No run is taken meanwhile.</summary>
+    public string? RemovingClone { get; private set; }
+
+    private bool _claiming;
+
+    /// <summary>
+    /// Removes one of this PC's test clones (#93), never while a run is going on here or being
+    /// taken, and takes no run until it's done. Null once it's gone, or why it isn't.
+    /// </summary>
+    public async Task<string?> RemoveCloneAsync(string folder)
+    {
+        if (Running is not null || _claiming) return "A test run is going on here. Remove it once that's done.";
+        if (RemovingClone is not null) return "Another test clone is being removed. Remove this one once that's done.";
+        RemovingClone = folder;
+        Changed?.Invoke();
+        try
+        {
+            var workFolder = Settings.WorkFolder;
+            var problem = await Task.Run(() => TestClones.Remove(folder, workFolder));
+            AppLog.Write(problem is null ? $"Removed the test clone {folder}." : $"The test clone {folder} wasn't all removed: {problem}");
+            return problem;
+        }
+        finally
+        {
+            RemovingClone = null;
+            Changed?.Invoke();
+        }
+    }
+
     // Runs keep their awaits on the window's thread, but the UI only ever hears from it there.
     private void OnWindow(Action action)
     {
@@ -183,10 +212,19 @@ public sealed class TestMachines
             // Answered by itself while this PC takes runs, in the window that does background work.
             if (settings.Accepting && _hasSyncTurn()) await AnswerLinkRequestsAsync();
 
-            if (settings.Accepting && Running is null && _hasSyncTurn() && DateTimeOffset.UtcNow - _claimedAt >= ClaimEvery)
+            // Not while a clone is being removed, which a run would then be checking out into.
+            if (settings.Accepting && Running is null && RemovingClone is null && _hasSyncTurn() && DateTimeOffset.UtcNow - _claimedAt >= ClaimEvery)
             {
                 _claimedAt = DateTimeOffset.UtcNow;
-                await ClaimAsync(settings);
+                _claiming = true;
+                try
+                {
+                    await ClaimAsync(settings);
+                }
+                finally
+                {
+                    _claiming = false;
+                }
             }
         }
         catch (Microsoft.Data.Sqlite.SqliteException error)

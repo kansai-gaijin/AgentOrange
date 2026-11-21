@@ -53,6 +53,7 @@ namespace AgentOrange;
 ///   testrun "folder" "Passed" "text"   (a test run's steps here, from the folder committed as a repo; the verdict and log say that)
 ///   runfilter "Input.Jump"   (what later testruns are asked to test only; "" for all)
 ///   testrunadd "Project" failed ["filter"] ["HEAD~1"]   (a made-up run, the newest, at the folder's HEAD or that commit; the default branch's verdict read again)
+///   testworkfolder "test-runs"   junction "link" "target"   gone "path"   (this PC takes runs into that folder; a junction; nothing's at the path, all in the data folder)
 ///   testmachines "Office PC|busy|windows,gpu" "Laptop|reachable|"   (as if linked to those machines, in that state with those tags, with no runs)
 ///   mcp "Project" update_asset card "Asset 1" status "Needs review"   (an agent's MCP tool; mcprefused expects a refusal)
 ///   mcpjson "Project" add_cards "{\qcards\q:[...]}"   (the same with its arguments as JSON, for lists; mcpjsonrefused too)
@@ -640,6 +641,27 @@ internal static partial class Headless
             // A made-up run, the newest, at the folder's HEAD or a commit named: testrunadd "Project" failed ["filter"] ["HEAD~1"].
             case "testrunadd" when Active:
                 await Main().AddTestRunForChecks(parts[1], parts[2], parts.Length > 3 && parts[3].Length > 0 ? parts[3] : null, parts.Length > 4 ? parts[4] : null);
+                break;
+            // This PC takes runs, into a folder in the data folder, as testrun uses: testworkfolder "test-runs".
+            case "testworkfolder" when Active:
+                Main().SetTestWorkFolderForChecks(Path.Combine(DataFolder, parts[1]));
+                break;
+            // A junction in the data folder to another folder there, as a link inside a clone could be: junction "link" "target".
+            case "junction" when Active:
+                var junction = Path.GetFullPath(Path.Combine(DataFolder, parts[1]));
+                var junctionTarget = Path.GetFullPath(Path.Combine(DataFolder, parts[2]));
+                if (!junction.StartsWith(DataFolder, StringComparison.OrdinalIgnoreCase) || !junctionTarget.StartsWith(DataFolder, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Both have to be in the data folder.");
+                using (var linking = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"), ["/d", "/c", "mklink", "/J", junction, junctionTarget]) { CreateNoWindow = true, UseShellExecute = false }))
+                {
+                    await linking!.WaitForExitAsync();
+                    if (linking.ExitCode != 0 || !Directory.Exists(junction)) throw new InvalidOperationException($"The junction {parts[1]} couldn't be made.");
+                }
+                break;
+            // Fails unless nothing is at that path in the data folder.
+            case "gone":
+                var goneAt = Path.Combine(DataFolder, parts[1]);
+                say($"{parts[1]}: {(File.Exists(goneAt) || Directory.Exists(goneAt) ? "there" : "gone")}");
+                if (File.Exists(goneAt) || Directory.Exists(goneAt)) throw new InvalidOperationException($"{parts[1]} is still there.");
                 break;
             // As if linked to these machines, with no runs: testmachines "Office PC|busy|windows,gpu" "Laptop|reachable|".
             case "testmachines" when Active:

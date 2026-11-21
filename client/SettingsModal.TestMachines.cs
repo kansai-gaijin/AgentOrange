@@ -46,6 +46,7 @@ public partial class SettingsModal
     {
         var settings = TestMachines.Settings;
         var problem = ProblemText();
+        _cloneSizes = null; // Measured again each time the page opens, as runs change them.
 
         void Save(Func<TestMachineSettings, TestMachineSettings> change) => TestMachines.Save(change(TestMachines.Settings));
 
@@ -266,6 +267,7 @@ public partial class SettingsModal
         }
 
         if (settings.Accepting) parts.AddRange(BorrowParts(settings));
+        parts.AddRange(ClonesParts(settings));
 
         // Exactly what ran here, as any PC can change a project's synced commands.
         var runsHere = TestMachines.RunsHere();
@@ -361,6 +363,110 @@ public partial class SettingsModal
             Margin = new Thickness(16, 8, 16, 0),
         });
         return parts;
+    }
+
+    // Each test clone's size, measured a clone at a time in the background once the page opens, as a
+    // big one takes a while. -1 when it couldn't be read.
+    private Dictionary<string, long>? _cloneSizes;
+    private bool _measuringClones;
+
+    private async Task MeasureClonesAsync(Dictionary<string, long> sizes, List<TestClones.Clone> clones)
+    {
+        _measuringClones = true;
+        try
+        {
+            foreach (var clone in clones.Where(clone => !sizes.ContainsKey(clone.Folder)))
+            {
+                try
+                {
+                    sizes[clone.Folder] = await Task.Run(() => TestClones.SizeOf(clone.Folder));
+                }
+                catch (Exception error) when (error is System.IO.IOException or UnauthorizedAccessException)
+                {
+                    sizes[clone.Folder] = -1;
+                }
+                if (ReferenceEquals(sizes, _cloneSizes)) _refreshTestMachines?.Invoke();
+            }
+        }
+        finally
+        {
+            _measuringClones = false;
+        }
+    }
+
+    // The clones in this PC's work folder, a project each, with the disk each uses and Remove (#93).
+    private List<UIElement> ClonesParts(TestMachineSettings settings)
+    {
+        var parts = new List<UIElement>();
+        var clones = TestClones.In(settings.WorkFolder);
+        if (clones.Count == 0) return parts;
+        var sizes = _cloneSizes ??= [];
+        if (!_measuringClones && clones.Any(clone => !sizes.ContainsKey(clone.Folder))) _ = MeasureClonesAsync(sizes, clones);
+
+        var measured = clones.Where(clone => sizes.GetValueOrDefault(clone.Folder, -1) >= 0).Sum(clone => sizes[clone.Folder]);
+        var allMeasured = clones.All(clone => sizes.ContainsKey(clone.Folder));
+        parts.Add(SectionWithActions("Test clones here", $"{clones.Count} clone{(clones.Count == 1 ? "" : "s")} · {TestClones.SizeText(measured)}{(allMeasured ? "" : " so far")}"));
+
+        var runsHere = TestMachines.RunsHere();
+        var rows = new List<FrameworkElement>();
+        foreach (var clone in clones)
+        {
+            var lastRun = runsHere.FirstOrDefault(run => string.Equals(System.IO.Path.TrimEndingDirectorySeparator(run.Folder), clone.Folder, StringComparison.OrdinalIgnoreCase));
+            var title = lastRun is { Project.Length: > 0 } ? lastRun.Project : clone.Name;
+            var size = sizes.TryGetValue(clone.Folder, out var bytes) ? bytes >= 0 ? TestClones.SizeText(bytes) : "Its size couldn't be read" : "Measuring…";
+            var when = lastRun is not null ? $"Last run here {When(lastRun.At)}." : $"Last changed {When(clone.ChangedAt)}.";
+            var removing = TestMachines.RemovingClone is { } gone && string.Equals(gone, clone.Folder, StringComparison.OrdinalIgnoreCase);
+            var remove = new Button { Style = (Style)FindResource("DangerButton"), Content = removing ? "Removing…" : "Remove" };
+            AutomationProperties.SetName(remove, $"Remove {clone.Name}");
+            remove.IsEnabled = TestMachines.Running is null && TestMachines.RemovingClone is null;
+            remove.Click += (_, _) => ConfirmRemoveClone(clone, title, size);
+            rows.Add(Row(title, $"{size}. {when}\n{clone.Folder}", remove));
+        }
+        parts.Add(Card([.. rows]));
+        parts.Add(new TextBlock
+        {
+            Text = TestMachines.Running is not null
+                ? "A test run is going on here, so no clone can be removed until it's done."
+                : "Each project's runs here check out in its clone again, so removing one frees its disk until the project's next run here, which clones it again, borrowing from a clone chosen above if there is one.",
+            FontSize = 12.5,
+            Foreground = (Brush)FindResource("TextMuted"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(16, 8, 16, 0),
+        });
+        return parts;
+    }
+
+    private void ConfirmRemoveClone(TestClones.Clone clone, string title, string size)
+    {
+        var problem = ProblemText();
+        var body = new StackPanel { Margin = new Thickness(8, 0, 8, 12), Children = { problem } };
+        Button confirm = null!;
+        confirm = Clickable("DangerButton", "Remove it", async () =>
+        {
+            if (!confirm.IsEnabled) return;
+            confirm.IsEnabled = false;
+            confirm.Content = "Removing…";
+            var failed = await TestMachines.RemoveCloneAsync(clone.Folder);
+            _cloneSizes?.Remove(clone.Folder); // Measured again, as some of it may be left.
+            if (failed is not null)
+            {
+                confirm.IsEnabled = true;
+                confirm.Content = "Remove it";
+                ShowProblem(problem, failed);
+                return;
+            }
+            CloseWizard();
+            _refreshTestMachines?.Invoke();
+        });
+        ShowWizard();
+        WizardCard.Child = WizardShell(
+            CloseWizard,
+            $"Remove {title}'s test clone?",
+            $"This deletes {clone.Folder} and everything in it ({size.TrimEnd('…')}) from this PC. Nothing outside it is touched: a link in it is removed, never what it points at. The project's next run here clones it again.",
+            null,
+            body,
+            TextButton("Cancel", CloseWizard),
+            confirm);
     }
 
     private static string ShortCommit(string commit) => commit.Length > 12 ? commit[..12] : commit;

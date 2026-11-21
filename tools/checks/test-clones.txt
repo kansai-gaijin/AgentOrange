@@ -1,0 +1,29 @@
+# Settings › Test machines shows how much disk each test clone on this PC uses, and removes one the
+# person no longer wants (#93): only folders the runner made, never anything else in the work folder,
+# and a link inside a clone is removed as a link, never followed. The run here uses PowerShell and a
+# folder committed as a repo, with the work folder in the data folder.
+file "cloned/.agent-orange/tests.json" {"test":"Write-Output('all')"}
+testrun "cloned" "Passed"
+file "outside/keep.txt" "kept"
+junction "test-runs/Check-project-1455d685/linked" "outside"
+file "test-runs/not-a-clone/readme.txt" "someone else's"
+testworkfolder "test-runs"
+click "Settings"
+click "Test machines"
+wait "Test clones here"
+wait "Check-project-1455d685"
+waitgone "Measuring…"
+wait " KB. Last changed"
+wait "1 clone · "
+waitgone "not-a-clone"
+scroll end
+shot test-clones
+click "Remove Check-project-1455d685"
+wait "Remove Check-project-1455d685's test clone?"
+wait "a link in it is removed, never what it points at"
+shot remove-clone
+click "Remove it"
+waitgone "Test clones here"
+gone "test-runs/Check-project-1455d685"
+fileis "outside/keep.txt" "kept"
+fileis "test-runs/not-a-clone/readme.txt" "someone else's"

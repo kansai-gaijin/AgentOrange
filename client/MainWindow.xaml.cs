@@ -478,7 +478,7 @@ public partial class MainWindow : Window
     private void UpdateByItselfIfUnattended()
     {
         if (_downloading || _requiredVersion is null || !_testMachines.Settings.Accepting) return;
-        if (_testMachines.Running is not null || CloningProjectName() is not null || ProjectWizard.IsCreatingRepo) return;
+        if (_testMachines.Running is not null || _testMachines.RemovingClone is not null || CloningProjectName() is not null || ProjectWizard.IsCreatingRepo) return;
         AppLog.Write($"Installing v{_requiredVersion} by itself, as this PC takes test runs.");
         DownloadUpdate_Click(this, new RoutedEventArgs());
     }

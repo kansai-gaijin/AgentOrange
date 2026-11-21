@@ -401,6 +401,9 @@ public partial class MainWindow
         await ReadBranchVerdictAsync(project.Id);
     }
 
+    /// <summary>Headless checks only: this PC takes runs, into a work folder in the data folder.</summary>
+    internal void SetTestWorkFolderForChecks(string folder) => _testMachines.Save(_testMachines.Settings with { Accepting = true, WorkFolder = folder });
+
     /// <summary>Headless checks only: how many run windows are open.</summary>
     internal int TestRunWindowsForChecks => _testRunWindows.Count;
 #endif
