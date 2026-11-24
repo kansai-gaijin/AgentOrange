@@ -481,8 +481,11 @@ public partial class MainWindow
             release.Handled = true; // Or letting go would count as a click, and open it.
             view.List.ReleaseMouseCapture();
         };
-        view.List.LostMouseCapture += (_, _) =>
+        view.List.LostMouseCapture += (_, lost) =>
         {
+            // The card that was pressed held the mouse until the list took it, and its losing it
+            // passes up through the list too. Only the list letting go ends the drag.
+            if (!ReferenceEquals(lost.OriginalSource, view.List)) return;
             if (_draggedBoardCard is null || !ReferenceEquals(_dragView, view)) return;
             _draggedBoardCard = null;
             _dragView = null;
