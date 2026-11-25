@@ -42,7 +42,7 @@ namespace AgentOrange;
 ///   timed 500 click "X" (any command, then how long until the page settles, failing past 500 ms)
 ///   expect "text"       expectnot "text"   (fails unless something shown says exactly that, or nothing does)
 ///   inview "text"       (fails unless it's in sight, not scrolled away)
-///   migrate             (gives assets without a status the one they have in effect, as starting does)
+///   firstsync "text"    (everything forgotten and arriving from the server again, as on a new PC; fails unless what came out says that)
 ///   testsfile "folder" "text"   (its .agent-orange/tests.json's time limits, or why it isn't valid, say that)
 ///   testmenu "Project" running   testrunstate passed   runwindows 1   (Run tests on…, as if linked to Office PC with a run in that state)
 ///   linkprotocol        (both PCs' halves of linking test machines, run against each other)
@@ -661,9 +661,11 @@ internal static partial class Headless
                 var later = parts[2..];
                 _ = Task.Delay(int.Parse(parts[1])).ContinueWith(_ => window.Dispatcher.InvokeAsync(() => RunOneAsync(window, later, say, output)), TaskScheduler.Default);
                 break;
-            // Gives assets without a status the one they have in effect, as starting the app does.
-            case "migrate":
-                say($"Gave {Main().GiveAssetsAStatusForChecks()} assets a status");
+            // Everything forgotten and arriving from the server again, as on a new PC: fails unless what came out says this.
+            case "firstsync":
+                var arrivedSaid = await Main().FirstSyncForChecksAsync();
+                say(arrivedSaid);
+                if (!arrivedSaid.Contains(parts[1])) throw new InvalidOperationException($"After a first sync: {arrivedSaid}");
                 break;
             // What a folder's .agent-orange/tests.json gives, its time limits or why it isn't valid: fails unless that says this.
             case "testsfile":

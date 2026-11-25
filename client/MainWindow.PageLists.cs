@@ -103,17 +103,13 @@ public partial class MainWindow
     // Room under the last line, as the page has below it.
     private static ListLine EndLine() => new("end", "", () => new Border { Height = 30 });
 
-    // Run away from the window. A database that can't be reached just means it's done next time.
-    private void GiveAssetsAStatus()
+    // Records come from the server in batches, so what's here may be half of something, such as an
+    // asset without its details, until the rest arrives. Nothing may be filled in here, as it would
+    // be newer than the real one that follows, and win on every PC (#129).
+    private async Task RecordsArrivedAsync(IReadOnlyList<SyncChange> arrived)
     {
-        try
-        {
-            if (_database.GiveAssetsAStatus() is var given and > 0) AppLog.Write($"Gave {given} assets the status they had in effect.");
-        }
-        catch (SqliteException error)
-        {
-            AppLog.Write($"Couldn't give assets a status yet: {error.Message}");
-        }
+        await Task.Run(() => _database.CleanUpDeletedProjects(arrived));
+        RefreshProjects();
     }
 
     private static IEnumerable<Button> Buttons(DependencyObject root)

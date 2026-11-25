@@ -1,6 +1,5 @@
 # After asset-status.txt, with the same data folder: the Assets page's status filter is kept
-# across a restart, and every asset already has its status, so starting gave none.
-migrate
+# across a restart.
 open "Status project"
 expect "5"
 click "Assets"

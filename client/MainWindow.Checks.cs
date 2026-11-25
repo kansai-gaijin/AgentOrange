@@ -271,11 +271,26 @@ public partial class MainWindow
     /// <summary>Agent Orange's MCP tools as a session lists them.</summary>
     internal async Task<string> McpToolsForChecks() => (await McpAnswerAsync("", "tools/list", null))?.ToJsonString() ?? "";
 
-    internal int GiveAssetsAStatusForChecks()
+    /// <summary>
+    /// Everything here as the server has it, forgotten and then arriving again as it does on a new
+    /// PC, with assets' cards before their details and deliverables. Says what came out different,
+    /// and what this PC would send the server, which is nothing as nobody has edited anything.
+    /// </summary>
+    internal async Task<string> FirstSyncForChecksAsync()
     {
-        var given = _database.GiveAssetsAStatus();
-        if (_openProject is { } open) RenderProject(open);
-        return given;
+        var atServer = _database.ReadOutbox(int.MaxValue, int.MaxValue);
+        _database.RemoveFromOutbox(atServer);
+        _database.ForgetWhatCameFromServer("first_sync_check_cursor");
+
+        static bool Later(SyncChange change) => change.Collection is "asset_details" or "asset_deliverables";
+        foreach (var batch in new[] { atServer.Where(change => !Later(change)).ToList(), atServer.Where(Later).ToList() })
+        {
+            _database.ApplyFromServer(batch);
+            await RecordsArrivedAsync(batch);
+        }
+
+        var different = atServer.Count(change => !change.Deleted && _database.GetRecord(change.Collection, change.Id) != change.Data);
+        return $"{atServer.Count(change => change.Collection == "asset_details")} assets' details arrived, {different} records different, {_database.CountOutbox()} waiting to send";
     }
 
     private AgentConversation? _checkConversation;

@@ -964,3 +964,17 @@ rows with the same cut-off title, and a message meant for the newest went to an 
   start more than one has is refused, naming them, so `message_part` can't steer the wrong part.
 - **Checked:** `tools/checks/conversation-titles.txt`, with what a login answers made up. Still to
   see with a real login: the titles it writes.
+
+## Sync: a new PC's first sync wiped assets everywhere (2026-11-26)
+
+A PC installed and paired for the first time wiped the type, owner and tags of 562 of 700 assets, and
+sent that to the server (#129). Assets' cards arrived before their details, and the app filled in a
+status for assets without one as records arrived, which made an almost empty record newer than the
+real one that followed.
+
+- **Nothing is filled in any more.** Everything that shows a status already works out the one an old
+  asset has in effect, so saving it was never needed. It's gone, both as records arrive and at startup.
+- **The assets were put back** from another copy on the same PC that had them whole, as new edits,
+  after a dry run that left alone anything not exactly as the damage left it.
+- **Checked:** `tools/checks/first-sync.txt` has everything arrive again as on a new PC, details last,
+  and expects no record different and nothing to send. It failed before the fix, on every asset.

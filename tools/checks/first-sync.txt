@@ -1,0 +1,13 @@
+# A new PC's first sync changes nothing: records arrive in batches, assets' cards before their
+# details, and what the server had is what's here, with nothing sent back over it (#129). Asset 7, 8,
+# 15 and 16 have no status of their own, and read as the one they have in effect.
+seed "First sync project" 10 2 16
+firstsync "16 assets' details arrived, 0 records different, 0 waiting to send"
+open "First sync project"
+expect "4"
+expect "Assets delivered"
+click "Assets"
+choose 0 "To do"
+expect "6 of 16"
+choose 0 "Delivered"
+expect "4 of 16"

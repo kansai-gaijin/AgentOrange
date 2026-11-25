@@ -40,7 +40,11 @@ public static class AssetStatus
 
     public static string NameOf(string id) => All.FirstOrDefault(each => each.Id == id).Name ?? "To do";
 
-    /// <summary>The status an asset has, from its details and whether it has its deliverable.</summary>
+    /// <summary>
+    /// The status an asset has, from its details and whether it has its deliverable. One saved before
+    /// assets had a status is delivered once it has its deliverable, and to do until then. That's
+    /// only ever worked out, never saved for it (#129).
+    /// </summary>
     public static string Of(AssetDetails details, bool hasDeliverable) =>
         details.Status is { } status && All.Any(each => each.Id == status) ? status : hasDeliverable ? Delivered : ToDo;
 }
@@ -583,32 +587,6 @@ public sealed class LocalDatabase
         command.Parameters.AddWithValue("$collection", CardImagesCollection);
         command.Parameters.AddWithValue("$id", cardId);
         return command.ExecuteScalar() is long version ? version : null;
-    }
-
-    /// <summary>
-    /// Gives every asset that has no status yet the one it has in effect: delivered once it has its
-    /// deliverable, and to do until then. Assets were made before they had a status, and other PCs
-    /// get the status this way too. Returns how many it gave one.
-    /// </summary>
-    public int GiveAssetsAStatus()
-    {
-        var given = 0;
-        foreach (var project in ListProjects())
-        {
-            var details = ListAssetDetails(project.Id);
-            foreach (var (id, saved) in ReadAll<CardData>(CardsCollection, project.Id))
-            {
-                if (saved.Board?.EndsWith("/assets", StringComparison.Ordinal) != true) continue;
-                if (details.GetValueOrDefault(id)?.Status is not null) continue;
-
-                // Read again just before, so a change made meanwhile, such as in its form, isn't undone.
-                var now = GetAssetDetails(id);
-                if (now.Status is not null) continue;
-                SetAssetDetails(id, now with { Status = AssetStatus.Of(now, GetAssetDeliverable(id) is not null) });
-                given++;
-            }
-        }
-        return given;
     }
 
     public GameSettings GetGameSettings(string projectId)

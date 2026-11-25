@@ -1,11 +1,10 @@
 # Each asset has a status, a person can set it, the Assets page filters by it, and the project's
-# Assets delivered count goes by it (#115). Assets saved before there were statuses get the one
-# they had in effect: delivered once they have their deliverable, to do until then.
+# Assets delivered count goes by it (#115). Assets saved before there were statuses read as the one
+# they have in effect: delivered once they have their deliverable, to do until then.
 # Run asset-status-again.txt after it, with the same data folder, to see the filter kept.
 seed "Status project" 0 0 16
 open "Status project"
 # Assets 4, 8, 12 and 16 have their deliverable, and 7, 8, 15 and 16 have no status yet.
-migrate
 expect "4"
 expect "Assets delivered"
 shot overview
