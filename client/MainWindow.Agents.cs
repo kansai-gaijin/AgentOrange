@@ -279,6 +279,10 @@ public partial class MainWindow
         {
             ["permissions"] = new JsonObject { ["allow"] = rules },
             ["hooks"] = hooks,
+
+            // Claude Code lists skills in 1% of a model's context and leaves out descriptions past that, so
+            // with 70 skills some were only names (#130). This is the most the list may take; it takes what it needs.
+            ["skillListingBudgetFraction"] = 0.1,
         };
         File.WriteAllText(path, settings.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         return path;
