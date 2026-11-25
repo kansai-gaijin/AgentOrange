@@ -32,6 +32,7 @@ and saves nothing, and measures the rest pose whatever the rig is doing. `--stri
 | a small part moved rigidly (warning) | an ear, horn or finger with no bone of its own | fine if it should be stiff; add a bone if it should move |
 | joints outside the mesh | it will swing instead of bend | move the joint to the middle of the limb in edit mode, then weight again |
 | bones with no partner | one side has a joint the other doesn't have at the mirrored place | `armature.symmetrize` from the good side, then weight again |
+| a bone isn't attached to another, though its skin is | a foot or hand left hanging from the root, often where IK was lost in export | parent it to the bone it names, keeping its place |
 | vertices follow no bone | they stay behind when the rig moves | `bind_mesh.py` in `blender-character-rigging` |
 | sides weren't compared (warning) | the mesh itself isn't symmetric | judge the sides by eye |
 
@@ -42,8 +43,12 @@ The numbers that decide are arguments: `--limb` (0.15 of the height, from which 
 differently on purpose.
 
 ## Choosing between several rigs
-When a rigger gives several tries, run it on each and keep the one with no errors. With errors in all, fix the one
-whose errors are fewest and nearest the body's ends (a tail tip is an easier repair than a hip).
+```
+blender -b --factory-startup -P <skills_dir>/blender-rig-fit/scripts/rig_fit.py -- --files try1.glb try2.glb try3.glb
+```
+When a rigger gives several tries of one model, this checks each on its own and lists the best first: fewest errors,
+then the smallest. It never takes a file's name into account. With errors in all, fix the one whose errors are fewest
+and nearest the body's ends (a tail tip is an easier repair than a hip).
 
 ## What it can't tell
 A pass says the bones are in the right places. It doesn't say the weights bend well or the joints turn the right
@@ -54,4 +59,4 @@ A bone in the right place with the wrong parent also passes, so look at the hier
 - `blender-character-rigging`: builds and weights rigs; its `rig_check.py` checks names, rolls, weights and engine
   profiles. Run both: they share almost nothing.
 - `blender-motion-verify`: clashes, limits, foot slip and the export, once it moves.
-- `blender-animation`: `retarget.py` maps bones by name, so a creature needs its own JSON map.
+- `blender-any-body-motion`: puts motion on a body of any shape, once its rig fits.

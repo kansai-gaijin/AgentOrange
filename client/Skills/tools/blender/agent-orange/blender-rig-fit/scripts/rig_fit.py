@@ -8,11 +8,15 @@ Everything is measured at rest, in world space, with lengths given as a share of
            warning, as that's often wanted).
   inside   joints of bones that move the mesh, outside it. The skeleton's top bone and bones with no weight don't count.
   mirror   off-centre bones with no partner at the mirrored place. Only when the mesh itself is symmetric, side to side.
+  loose    bones whose skin joins another bone's, though nothing in the skeleton joins the two nearby: a foot left
+           hanging from the root when a rig's IK was lost in export. The part stays behind when its limb moves.
   idle     deform bones that no vertex follows (a warning).
 Usage:
   blender -b character.blend -P rig_fit.py -- --armature Rig [--meshes Body] [--report //rig_fit.json] [--strict]
+  blender -b --factory-startup -P rig_fit.py -- --files try1.glb try2.glb try3.glb [--report rigs.json]
   MCP: import rig_fit; print(rig_fit.run(armature="Rig"))
-Nothing is changed or saved: a pose or action in use is ignored for the measuring and put back.
+--files checks rigs of one model against each other, headless, and says which fits best. Otherwise nothing is changed
+or saved: a pose or action in use is ignored for the measuring and put back.
 """
 import os
 import sys
@@ -190,6 +194,34 @@ def check_inside(arm, body, weighted, slack):
     return sorted(out, key=lambda each: -each["outside"])
 
 
+def check_loose(arm, body):
+    """Bones the skin joins to others the skeleton only joins a long way round."""
+    parents = {b.name: [b.name, *(p.name for p in b.parent_recursive)] for b in arm.data.bones}
+
+    def steps(a, b):
+        """Bones along the way between two, up to what they share and down again; none when they share nothing."""
+        up, down = parents[a], parents[b]
+        return next((i + down.index(n) for i, n in enumerate(up) if n in down), 99)
+
+    strongest = [max(held, key=lambda w: w[1])[0] if held else None for held in body.weights]
+    touching = {}
+    for a, b in body.edges:
+        one, other = strongest[a], strongest[b]
+        if one and other and one != other:
+            touching.setdefault(one, {}).setdefault(other, 0)
+            touching.setdefault(other, {}).setdefault(one, 0)
+            touching[one][other] += 1
+            touching[other][one] += 1
+    out = []
+    for name, others in touching.items():
+        # The limb's end is the loose one, not the many it might belong to, so only bones nothing nearer joins.
+        if min(steps(name, other) for other in others) > 2 and len(others) == 1:
+            other = max(others, key=others.get)
+            if len(parents[name]) <= len(parents[other]):
+                out.append({"bone": name, "joins": other, "steps": min(steps(name, other), 99)})
+    return out
+
+
 def check_mirror(arm, body, weighted, slack):
     """Off-centre bones without a partner, and how symmetric the mesh is, side to side."""
     h, centre = body.height, body.centre
@@ -213,7 +245,42 @@ def check_mirror(arm, body, weighted, slack):
     return sorted(lonely, key=lambda each: -each["gap"]), ax.r(1 - off, 3)
 
 
-def run(armature=None, meshes=None, report=None, limb=0.15, joint_slack=0.01, mirror_slack=0.03, sample=20000, **_):
+def compare(files, report=None, **given):
+    """Each file on its own in an empty scene, the best first: fewest errors, then the smallest."""
+    ax.headless_only("--files")
+    found = []
+    for file in files:
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        path = ax.path(file)
+        try:
+            if path.lower().endswith((".glb", ".gltf")):
+                bpy.ops.import_scene.gltf(filepath=path)
+            elif path.lower().endswith(".fbx"):
+                bpy.ops.import_scene.fbx(filepath=path)
+            elif path.lower().endswith(".blend"):
+                bpy.ops.wm.open_mainfile(filepath=path)
+            else:
+                raise ValueError("give a .glb, .gltf, .fbx or .blend")
+            arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
+            if not arms:
+                raise ValueError("no armature in it")
+            result = run(armature=max(arms, key=lambda o: len(o.data.bones)).name, **given)
+            size = (sum(each["length"] for each in result["reach"] if each["limb"]) + sum(each["outside"] for each in result["inside"])
+                    + sum(each["gap"] for each in result["mirror"] or []) + len(result["loose"]))
+            found.append({"file": file, "pass": result["pass"], "errors": result["errors"], "warnings": result["warnings"],
+                          "size_of_errors": ax.r(float(size), 3)})
+        except Exception as error:  # one unreadable try shouldn't lose the others
+            found.append({"file": file, "pass": False, "errors": [f"{type(error).__name__}: {error}"], "warnings": [], "size_of_errors": 999.0})
+    found.sort(key=lambda each: (each["size_of_errors"] == 999.0, len(each["errors"]), each["size_of_errors"]))
+    result = {"ok": True, "pass": found[0]["pass"], "best": found[0]["file"], "rigs": found}
+    if report:
+        result["report"] = ax.write_json(report, result)
+    return result
+
+
+def run(armature=None, meshes=None, report=None, limb=0.15, joint_slack=0.01, mirror_slack=0.03, sample=20000, files=None, **_):
+    if files:
+        return compare(files, report, limb=limb, joint_slack=joint_slack, mirror_slack=mirror_slack, sample=sample)
     arm = bpy.data.objects[armature] if armature else next(o for o in bpy.context.scene.objects if o.type == "ARMATURE")
     bodies = ax.objects(meshes) if meshes else [
         o for o in bpy.context.scene.objects if o.type == "MESH" and (
@@ -230,6 +297,7 @@ def run(armature=None, meshes=None, report=None, limb=0.15, joint_slack=0.01, mi
         regions, far, tested = check_reach(body, segments(arm, weighted), limb, sample)
         outside = check_inside(arm, body, weighted, joint_slack)
         lonely, symmetry = check_mirror(arm, body, weighted, mirror_slack)
+        loose_bones = check_loose(arm, body)
     finally:
         arm.data.pose_position = was
         bpy.context.view_layer.update()
@@ -245,6 +313,8 @@ def run(armature=None, meshes=None, report=None, limb=0.15, joint_slack=0.01, mi
         errors.append(f"joints outside the mesh: {[each['bone'] for each in outside][:10]}")
     if lonely:
         errors.append(f"bones with no partner on the other side: {[each['bone'] for each in lonely][:10]}")
+    for each in loose_bones:
+        errors.append(f"{each['bone']} isn't attached to {each['joins']}, though its skin is: parent it to {each['joins']} or it stays behind")
     if loose:
         errors.append(f"{loose} vertices follow no bone")
     if lonely is None:
@@ -254,7 +324,7 @@ def run(armature=None, meshes=None, report=None, limb=0.15, joint_slack=0.01, mi
     result = {"ok": True, "pass": not errors, "errors": errors, "warnings": warnings,
               "height": ax.r(body.height), "bones_weighted": len(weighted), "reach": regions[:20],
               "reach_vertices": [far, tested], "inside": outside[:20], "mirror": lonely[:20] if lonely else lonely,
-              "symmetry": symmetry, "idle": idle[:20]}
+              "symmetry": symmetry, "loose": loose_bones, "idle": idle[:20]}
     if report:
         result["report"] = ax.write_json(report, result)
     return result
@@ -264,6 +334,7 @@ if __name__ == "__main__":
     p = ax.parser(__doc__)
     p.add_argument("--armature", default=None)
     p.add_argument("--meshes", nargs="*", default=None)
+    p.add_argument("--files", nargs="*", default=None)
     p.add_argument("--report", default=None)
     p.add_argument("--limb", type=float, default=0.15, help="share of the height from which a region counts as a limb")
     p.add_argument("--joint-slack", type=float, default=0.01)

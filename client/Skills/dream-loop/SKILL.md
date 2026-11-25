@@ -34,10 +34,14 @@ content, ignored by Git, and note on the card which picture is the target.
 3. Take a screenshot from the same camera, framing and size as the target, at the same quality settings
    every round. Never turn quality down between rounds to save time: the score would move for a reason
    that has nothing to do with the work.
+   Then measure it with agent-orange's `compare_pictures` (picture, and the target as reference): which
+   parts are darker, greyer, warmer, softer or emptier than the target, and by how much. `region` looks
+   at one part. Keep the numbers with the round: they show what moved when a judge's score wobbles. For
+   a scene that should be alive, two frames some seconds apart with `moved` show what's frozen.
 4. Have a judge with a fresh context compare them: a subagent if you can start one, given only the
    rubric below, the target, the latest screenshot, and the previous screenshot and verdict. Not the
-   code, what you changed, or how you think it went. You never score your own work: if no fresh judge
-   can be had, say the round wasn't judged.
+   numbers, so it judges what it sees, and not the code, what you changed, or how you think it went.
+   You never score your own work: if no fresh judge can be had, say the round wasn't judged.
 5. Check the judge's list before acting on it: look at each place it names. Drop what isn't there, and
    what's a matter of taste rather than a difference from the target, saying so in the verdict's file.
 6. Fix the rest, the person's own comments first and then by how much each shows at normal size, and go

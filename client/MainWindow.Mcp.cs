@@ -39,6 +39,7 @@ public partial class MainWindow
         + "For many at once, use add_cards, add_tasks, update_tasks and remove_cards rather than a call each. "
         + "When a tool isn't as you expected, add a lesson with add_lesson; before you stop with work left over, write a handoff note with write_handoff. "
         + "When a milestone or task is ready for the person to judge, put its pictures, clips, decisions and what you didn't check on its review page with write_review, and read_review for their answer. "
+        + "To match a look, measure your screenshot beside its reference with compare_pictures. "
         + "To wait for a file, a log line, a port or a process, use wait_for rather than sleep. "
         + "To test a pushed commit on a linked test machine, use run_tests, then read_test_run with seconds for its verdict; check_history before adding a retry to a check. "
         + "To have several agents work on a milestone at once, give its tasks their uses, then split_milestone; merge_parts once they're done.";
@@ -164,6 +165,9 @@ public partial class MainWindow
             new JsonObject { ["text"] = Text("What to find. Not case-sensitive.") }, ["text"], (project, given) => Search(project, Required(given, "text"))),
         new("read_picture", "A picture to look at: one from a document, given as ![](picture:id) in its Markdown, or a card's own picture, such as its concept art, given by read_card as picture:card-id.",
             new JsonObject { ["id"] = Text("What follows picture: in the document or in read_card.") }, ["id"], (project, given) => ReadPicture(project, Required(given, "id"))),
+
+        // What a picture measures, beside its reference or an earlier frame.
+        .. PictureTools(),
 
         // The creative tools, such as Blender, Aseprite, ArmorPaint and Material Maker.
         new("list_tools", "The creative tools set up on this PC, such as Blender, Aseprite, ArmorPaint and Material Maker, and the game's engine, such as Unreal Engine, and whether each is open and its MCP answers.",
