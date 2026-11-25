@@ -31,10 +31,20 @@ content, ignored by Git, and note on the card which picture is the target.
 1. Build or change the thing toward the target, in the engine or the tools, through Agent Orange.
 2. Check that it works and looks as you meant (the `play-and-review` skill): fix bugs, broken loading
    and models facing the wrong way (`model-facing`) before judging looks.
-3. Take a screenshot from the same camera, framing and size as the target.
+3. Take a screenshot from the same camera, framing and size as the target, at the same quality settings
+   every round. Never turn quality down between rounds to save time: the score would move for a reason
+   that has nothing to do with the work.
 4. Have a judge with a fresh context compare them: a subagent if you can start one, given only the
-   rubric below, the target, the latest screenshot, and the previous screenshot and verdict.
-5. Fix everything the judge lists, then go back to 2.
+   rubric below, the target, the latest screenshot, and the previous screenshot and verdict. Not the
+   code, what you changed, or how you think it went. You never score your own work: if no fresh judge
+   can be had, say the round wasn't judged.
+5. Check the judge's list before acting on it: look at each place it names. Drop what isn't there, and
+   what's a matter of taste rather than a difference from the target, saying so in the verdict's file.
+6. Fix the rest, the person's own comments first and then by how much each shows at normal size, and go
+   back to 2. Leave alone what the person has praised, whatever a judge says about it.
+
+A difference that's still there after one real fix needs a different method, not the same one harder:
+find out how that look is usually made before trying again.
 
 If the person gave a time limit, note the time once the target is fixed and check it between rounds.
 Don't trade looks for time: beautiful partial progress beats something complete and ugly. With no
@@ -49,15 +59,19 @@ limit, say that a long loop uses a lot of tokens.
 > - **Materials (0–3):** every surface's texture, roughness, translucency and wetness. Nothing blocky, plasticky or fake unless the target is.
 > - **Details (0–1):** every small detail matches.
 >
-> Fractional scores are fine. Be precise and complete: list every gap and what would fix it, concretely
-> enough that someone else could fix it all and score better. Not "this tree looks fake", but what makes
+> Fractional scores are fine. Be precise and complete: list every gap, where in the picture it is, and
+> what would fix it, concretely enough that someone else could fix it all and score better. Not "this tree looks fake", but what makes
 > it look fake and how to fix it. If something needs redoing from scratch, say so. Give a total out of 10.
 > If you're given a previous verdict, stay consistent with it, and score lower if it got worse.
 
 ## 4. When to stop
 
-- **8 or more, and it runs fast enough:** done. Show the person the screenshot beside the target. They
-  decide whether it's right, and whether to go on.
+- **8 or more, and it runs fast enough:** have a second fresh judge score it without seeing the first's
+  verdict. One judge's score moves by itself from round to round, so go by the lower of the two. If it
+  holds, it's done: show the person the screenshot beside the target. They decide whether it's right,
+  and whether to go on.
+- **The person thinks less of it than the judge did:** the judge is too kind. Give every later judge the
+  person's words and what they scored it, and judge by those.
 - **8 or more, but too slow:** optimise, lossless changes first, then ones with the least visual cost.
   Judge again afterwards to make sure it didn't get worse.
 - **Stalling:** the best score hasn't risen by a whole point in two rounds, or the judge named the same
@@ -85,4 +99,5 @@ maps.
 
 Adapted for Agent Orange from dream-loop (github.com/achimala/dream-loop), MIT licence: its Pro
 workflow, judge and exit rules kept; the target taken from the game's own cards first; paid generation
-and the final say left to the person; its subscription tiers and fal.ai scripts left out.
+and the final say left to the person; its subscription tiers and fal.ai scripts left out. Checking the judge's
+list, the second judge, steady quality settings and going by the person's own score were added later.

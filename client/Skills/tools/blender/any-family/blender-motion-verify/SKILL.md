@@ -75,6 +75,7 @@ states then need no engine-side rig logic. `verify_reimport.py` checks such clip
 ## Related skills
 - `blender-character-rigging`: `rig_check.py` checks names, rolls and weights at rest, and `stress_poses.py` poses
   the rig for a person to judge; this skill judges clashes by machine through motion.
+- `blender-rig-fit`: whether the bones are in the right places in the mesh, before anything is animated.
 - `blender-animation`: `loop_check.py` checks loop pops and hitches, `bake_action.py` bakes; this skill adds clashes,
   limits and slip.
 - `blender-export-pipelines`: `export_asset.py` exports and summarises the file; this skill compares the export back
