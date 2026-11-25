@@ -4,7 +4,51 @@ Paste everything below the line into a new Claude Code session opened in this re
 
 ---
 
-You're picking up Agent Orange work from a session on another PC. Read this whole file before doing anything. Memory from the other PC doesn't come with it, so the rules below are the ones that matter.
+You're picking up Agent Orange work from a session on another PC. Read this whole file before doing anything. Memory from the other PC doesn't come with it, so the rules below are the ones that matter. Where an older section disagrees with "Where things stand", that section wins.
+
+## Where things stand (2026-11-25)
+
+**Which PC does what** (the user, 2026-11-25: coding moves to the office PC, "coding for ao AND for the game", and testing to the laptop):
+- **Office PC = development.** This session, the AO dev build, AO's agents, Unreal, Blender and every commit, for both repos. Never run the regression suite here.
+- **Laptop = testing.** It takes AO test runs (Settings › Test machines), and playtest builds are made there. That playtest builds move too is how the last session read "testing"; the user hasn't confirmed it. No coding there: its game folder only fast-forwards to what's pushed.
+- The office PC's game clone (the one in its Documents folder) was only a place to package, and was once force-reset. **It's the development folder now: never `reset --hard` or `clean` it.** Its `Packaged` folder holds the user's own playtest save, screenshots and logs from 2026-11-21: copy them out before packaging there, as they're evidence for the user's bugs. Nobody has read those logs yet.
+- Agent conversations, AO logins, keys and folder approvals stay on each PC, so conversations on the laptop can't be continued on the office PC. Start new ones; the design, tasks, handoff notes and review pages sync.
+
+**The user's playtest of Priority 10** (2026-11-25): "its so buggy and so many things need to be changed we are not ready for the art pass at all... but im thinking we should do the art pass and fixes at the same time". So:
+- **Bugs and changes come first from the user.** They go in the AO milestone "Bug fixes #1" (alpha), one task each. It was empty in the laptop's copy on 2026-11-25. If the user tells you them in chat, file them there through the app. A bug is a fix task. A change to how the game works goes onto its GDD page first, then becomes a task.
+- **Fixes and art run side by side.** Only one Unreal editor at a time: the fixes conversation (Claude Opus High) has Unreal, and art works outside it (Blender, textures, concept pictures) in a conversation of its own, taking turns with Unreal to import. Don't make final art for something the bug list is about to change.
+- **The look comes before any other art.** The look-dev scene is done and pushed (game commit c849cd8) and waits for the user on its review page (Priority 11, "Look-dev scene"). Pictures and numbers: `docs/evidence/art/look-dev/` in the game repo. It isn't accepted yet.
+
+**Tests and builds:**
+- One full regression run per priority, at its end, on the laptop, then fix. During a priority only compile and run the validator per slice; new scenarios are written but not run. Agents' end-to-end tests come second to the user's own play.
+- Never click "Run tests on…" twice for a commit.
+- Every priority ends with a Windows build the user can play by double-clicking, plus `docs/playtest-guide.md` up to date. No scripts, no setup.
+- **Last full run:** 2026-11-21 at game commit 85f7a10, on the office PC, 94 minutes: 2085 of 2087 checks passed, so it failed. Both failures are in `end-p7` (`Tools/Regression/suite.py:362` and `:366`): W1 gets a care warning and unhappiness after the update. **The cause isn't known.** An earlier note blamed the fixture's fixed date; nobody confirmed which clock the check compares with, so a game bug isn't ruled out. Find the cause before changing the check. c849cd8 hasn't had a full run.
+- **Saving on a custom port:** started with `-ApLocalPort=8810`, the game once logged "Not saving" and had no save service. The cause isn't known either (one look found another program on the port, a later one found nothing listening). On the normal port it worked: the service answered. Quitting normally and starting from the shortcut itself weren't tried by an agent. Wanted whatever the cause: say it on screen, and write why to `save-service.log`.
+
+**Still open in Priority 10** (11 tasks): three already covered by later work, to check and tick (resident dialogue tooling, habitat modules, creature definitions); small fixes (four Japanese HUD lines, the test kit's arrival message, the validator's story-site planet and species-letter checks, two flaky checks); the adoption pacing decision (the user's, after playing); the playtest build task; the milestone check.
+
+**Agent Orange itself:**
+- Open issues: #127 (menus opened through automation pile up), #93 (last step), #9 and #21 (both cost money or need keys, so they wait for the user).
+- #93's last step (access levels beyond Tests) is on branch `t3/link-access-levels`, pushed and not merged. Its SQL has never run against a real Postgres. The user was told it waits for a passing Priority 10 run. Merge only when no AO agent is working, then check the live server.
+- AO changes are made in worktrees and merged while no AO agent is working. Everything stays generic: for any project and stack, never about Unreal or this game.
+
+**More of the user's rules since 2026-11-16:**
+- Never edit files with heredocs, sed or here-strings; use the edit tools. Agents too.
+- Don't ask the user what the GDD already decides. If an agent's work contradicts the GDD, send it back.
+- Content is data: new animals, crops, residents and building pieces are entries the systems read, never code per item.
+- Pressing Play, or starting a built game, must just work. The admin menu is for editor and development builds only.
+- One asset card is exactly one deliverable file: no sets or packs. The player is modular, with male and female bodies.
+- Animal Planet's art direction: Ni no Kuni's rendering style at Deiland's density. Style only, never their designs.
+- Don't open the Usage window to see limits; run `tools/drive.ps1 usage`.
+- Ask for login codes and keys with a secret prompt, never in chat. Never read provider login folders or credential files. Nothing paid without asking.
+- Public issues and this file stay generic: no machine names, addresses, emails or user paths.
+
+**Driving AO, learned the hard way:**
+- No double quotes inside a message typed with `set 1 "..."`: the message is cut off there. Check the end of the sent bubble.
+- Pick the model and effort in the model picker before the first message, and read the composer's label back.
+- Don't open a menu again and again to read it (#127): read a run's own window instead.
+- An agent that stops may be waiting for approval, limited, failed or only waiting on background work. Read the end of the conversation before deciding it's finished.
 
 ## What Agent Orange is
 
@@ -61,9 +105,9 @@ dotnet watch --project client --non-interactive
 - **The log says how each run ended** (`client/AppLog.cs`): `Started … (process N)` and `Ended (process N)`, and in between every close, hide to the tray (and whether the person chose it), restart, update and Windows signing out. A run with no end line was ended from outside (Task Manager, a dotnet watch restart, Windows) or crashed past writing it down, and the next start notes it as "Ended with no word on why". `tools/checks/run-log.txt` checks it.
 - **A reply's blocks are cached** (`AgentMarkdown` keeps blocks it has drawn), so a hot-reloaded change to how replies draw only shows after the agents window is closed and opened again.
 
-## Where we left off (2026-11-15)
+## What's built
 
-Everything is merged and pushed. Nothing is waiting on any branch.
+Only `t3/link-access-levels` (#93) isn't merged.
 
 **Built so far:**
 - **Tray:** closes to the tray, with an Open/Close menu and a badge count. The icon was generated by Codex.
@@ -228,8 +272,8 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 - **Multiplayer from the start:** always build with Unreal replication in mind (server-authoritative movement with prediction, every check run as 2-player Listen Server in Play In Editor).
 - **Controller from the start:** the user playtests with a **PS4 DualShock 4** on Windows. Enhanced Input with keyboard/mouse and gamepad in one mapping context. Unreal's free Game Input (Windows) plugin plus Microsoft's Game Input runtime is the candidate; installing the runtime waits for the user's yes.
 - **You are the game designer.** The GDD on AO's pages is the bible and what's in it is already decided; everything else is your call. You may research (web), but never develop the game yourself.
-- **Builds:** no web or packaged builds per task (this PC is slow; the first web build took 35 minutes). Test in the editor (Play In Editor, 2 players, simulated gamepad). Build for the web and measure in the browser only when a milestone is finished (`Tools/Build/build_web.ps1 -Measure` in the game repo).
-- **No art until the art pass:** the art pass is its own phase, after a working prototype of everything is done. Until then, only prototype stand-ins (whitebox shapes, or a quick Blender placeholder such as a prototype crop). Don't ask the user about final looks yet; decide placeholders yourself.
+- **Builds:** no web or packaged builds per task. Test in the editor (Play In Editor, 2 players, simulated gamepad). Build for the web and measure in the browser only when a milestone is finished (`Tools/Build/build_web.ps1 -Measure` in the game repo; its header says what it needs, including emscripten 6.0.10 exactly). Frame-rate numbers so far were measured on the laptop's integrated graphics, so measure there to compare.
+- **Art:** the art pass now runs alongside the fixes (see "Where things stand"). Anything not yet arted keeps its prototype stand-in.
 - **Priority 8 is cleared** (2026-11-17). The user's concern was building interiors, now settled in the GDD: outside shells on the planet, flat rooms behind doors loaded only for the players inside, under the planet surface, never visible from space. Flight limits (star glare zone, system edge, no entering planets) went into the Priority 9 orbits task.
 - **Settle conversations** in the agents window as soon as their work is done (drive: `hover` the row, then `click "Settle thread"`).
 - **Always push:** game commits go straight to `main`, no pull requests.
@@ -250,7 +294,6 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 5. **The user owns the game's design and its look:** bring them decisions about those, and anything that costs money. Never mark an asset delivered: only the user fills a deliverable.
 
 **Known rough edges to expect:**
-- **Agents can't add cards** (#92). Until that's built, an agent can only ask the person to add one, so build it when the game needs it.
 - **dotnet watch restarts no longer cut agents short** (#101). The tools AO opens (Unreal included) and agent sessions are started on their own and outlive the app, and the restarted app picks each conversation back up. A request to AO's own tools in flight at that moment is told it may or may not have been done.
 - **No two-hour cap:** a background command started by Claude Code stops after two hours, which closes the app (and Unreal). So start `dotnet watch` in its own console window instead: `Start-Process powershell.exe -ArgumentList '-NoExit','-Command','Set-Location <repo>; dotnet watch --project client --non-interactive' -WindowStyle Minimized`. Run only one `dotnet watch`.
 - **"New conversation" asks which project first.** The drive tool needs the project picked before typing, or the message goes into the open conversation.
@@ -267,4 +310,4 @@ Everything is merged and pushed. Nothing is waiting on any branch.
 
 Still to copy from T3 when it matters: subagents and Lineage, the list row's right-click menu and pinning, and the diff panel's split layout, file tree, commit scopes and ref picker.
 
-**Open issues:** #9 (Third Party keys not yet tried with real ones), #20 (wider check of a folder's Git settings before agents run Git there: built, see above; files outside the folder that settings name aren't covered), #21 (releases aren't signed), #89 (Codex providers for agents: built, waiting on a real Codex conversation to confirm only AO's MCP servers and skills load), #92 (agents can't add cards), #93 (test machines: step 6, other access levels, left for #94, see above), #94 (parallel work across agents).
+**Open issues:** see "Where things stand".
