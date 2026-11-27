@@ -24,6 +24,10 @@ extra = ["--resume", session, "--mcp-config", os.path.join(HERE, "mcp_none.json"
 prompt = ("You were stopped partway by the test harness's own time limit, not because of anything you did; there is "
           "still no time limit for you. Carry on from where you were and finish the task: the strands, the renders and "
           "sheets, the close-ups, the .blend and the exported groom in the out folder, then the short honest summary.")
+steer = os.environ.get("STEER_FILE")
+if steer and os.path.exists(steer):  # a reviewer stopped you to correct course: their note comes first
+    prompt = (open(steer, encoding="utf-8").read().strip() + "\n\nThere's still no time limit. Carry on from where you "
+              "were with that in mind, and finish the task as asked.")
 start = time.time()
 done = runner.claude(prompt, cwd, log, extra, 720, effort)
 first = runner.read(os.path.join(runner.RUN, name + ".jsonl"))
