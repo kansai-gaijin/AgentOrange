@@ -29,6 +29,12 @@ cam = hs.ref_camera(r"refs/hair_front.png", head, az=0, out="fit_front.png")   #
 cam45 = hs.ref_camera(r"refs/hair_left_45.png", head, az=45, search=10)        # "45" views are often 40-50
 print(hs.measure(cam))
 ```
+- Horns, or anything else modelled apart from the head that shows in the references, go in with
+  `extras=[horns]`. They count as part of the bare head when the camera is fitted.
+- Generated references drift: the head comes out a little moved or reshaped from view to view.
+  - Each view gets its own camera fit, so that's allowed for.
+  - A misfit of 10–20% means the picture's head isn't quite this head. Trust the 3D head over
+    the picture, and the picture for the hair.
 - `ref_camera` finds the framing from the bare head, so the hair is left to compare. Check its
   printed misfit (a few % is good) and its `out` picture: the head's outline in green should sit on the
   reference's face and shoulders.

@@ -243,16 +243,18 @@ def _fit(head, skin, bg):
     return best, warp(*best[1:])
 
 
-def ref_camera(ref, head, az=0.0, elev=0.0, search=0.0, name=None, hair_colors=None, out=None):
+def ref_camera(ref, head, az=0.0, elev=0.0, search=0.0, name=None, hair_colors=None, out=None, extras=()):
     """An orthographic camera that sees `head` the way the reference picture `ref` does, for
     references drawn or rendered on this same head. az is the camera's angle round the head in
     degrees, for a face looking down -Y: 0 the front, 90 her left side (+X), 180 the back, -90 her
     right. Pictures called "45" are often nearer 50: give search=10 to try az +-10 and keep the best.
     The framing is fitted from the bare head: skin in the reference must fall inside it, and none of
     it may cover the background. Hair is left out, so the hair can be measured against it after.
+    `extras`: other objects that are part of the bare head in the picture (horns, ears modelled apart).
     The camera keeps the reference with it, for compare(). `out`: a picture of the fit, the head's
     outline in green over the reference. Prints how good the fit is; a few % is good."""
     head = bpy.data.objects[head] if isinstance(head, str) else head
+    bare_extras = [bpy.data.objects[o] if isinstance(o, str) else o for o in extras]  # horns...: part of the bare head
     a = _load(ref)
     H, W = a.shape[:2]
     bg = _background(a)
@@ -277,7 +279,7 @@ def ref_camera(ref, head, az=0.0, elev=0.0, search=0.0, name=None, hair_colors=N
         if angle not in tried:
             _aim(cam, angle, elev, target, size * 5)
             cam.data.ortho_scale = scale0
-            m = _mask(cam, [head], (fw, fh), alone=True) > 0.5
+            m = _mask(cam, [head, *bare_extras], (fw, fh), alone=True) > 0.5
             tried[angle] = _fit(m, skin_s, bg_s)
         return tried[angle][0][0]
 
@@ -296,6 +298,7 @@ def ref_camera(ref, head, az=0.0, elev=0.0, search=0.0, name=None, hair_colors=N
     cam.data.ortho_scale = scale0 / k
     cam["hs_ref"], cam["hs_res"], cam["hs_target"] = os.path.abspath(ref), (W, H), tuple(target + off)
     cam["hs_az"], cam["hs_fit"], cam["hs_head"] = best, round(e, 4), head.name
+    cam["hs_extras"] = ",".join(o.name for o in bare_extras)
     print(f"REF CAMERA {name}: az {best:.1f}, {cam.data.ortho_scale * 1000 / max(W, H):.2f} mm a pixel, "
           f"misfit {e * 100:.1f}% (skin outside the head + head over the background; a few % is good)")
     if out:
@@ -320,7 +323,8 @@ def _reference(cam, ref=None, hair_colors=None):
     theirs = _hair(a, bg, hair_colors)
     head = bpy.data.objects.get(cam.get("hs_head", ""))
     if head is not None:  # whatever isn't background outside the bare head is hair, whatever its colour
-        bare = _grow(_mask(cam, [head], (W, H), alone=True) > 0.5, 1)
+        extra = [bpy.data.objects[n] for n in cam.get("hs_extras", "").split(",") if n in bpy.data.objects]
+        bare = _grow(_mask(cam, [head, *extra], (W, H), alone=True) > 0.5, 1)
         theirs |= _grow(_thin(~bg & ~bare, 1), 1)
     if not theirs.any():
         raise ValueError(f"no hair found in {ref}: give hair_colors= picked from it")
