@@ -154,6 +154,16 @@ From the references, list the sections and the big shapes each one needs:
 A whole head is typically 15–40 tubes, not hundreds. Fix the part line, the bang cut line and the
 gather points first; they read most.
 
+**Detail comes from the modifiers, not from more tubes.** Don't model each clump, gap, flyaway or
+stray as its own tube or strand. Clump, trim, frizz, noise, curl, `strays()` and `baby_hair()` make
+them, inside and around your big shapes, and you tune them on the modifiers.
+
+Give a detail its own tube only when it's an odd shape those can't make and the reference clearly
+shows it:
+- a single lock flicking away from the rest;
+- a curl that leaves its section;
+- a loop over a tie.
+
 Then put the sections in layers, from the scalp out. Hair lies like shingles: hair from higher on
 the head lies over hair from lower down.
 - The nape is under the back.
