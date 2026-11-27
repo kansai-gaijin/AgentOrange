@@ -1,0 +1,20 @@
+Use the skill in `skill\blender-hair-shapes` for this, and only that skill for the hair. Read its SKILL.md first and follow it, and use its `scripts\hair_shapes.py`. Don't use any other hair skill or method.
+
+From scratch, create the hairstyle in the hair reference images on the provided head. Everything is in your refs folder:
+- `hair\`: the hair reference images. They show the front, both 45s, both sides, the back and a braid close-up, all drawn on this same head. The braids are low pigtails gathered at the back of the head.
+- `hair_reference.jpg`: the original photo they were made from.
+- `Hime_Head.obj`: the head, with `Hime_Head.mtl` and its texture `T_Hime_Head_BaseColor.png`.
+
+What matters most to the person:
+- Visible stragglers and baby hair.
+- Real clumping, not one smooth sheet.
+- Natural braid tips.
+
+Follow the skill's order. Plan the sections, block the style out as shapes, and check the blockout against every reference view before converting it to hair.
+
+In your out folder, include for every reference view:
+- the blockout beside the reference ("before");
+- the finished hair beside the reference ("after");
+- a before-and-after sheet for each view.
+
+Also include close-ups of the hairline, a clump and a braid tip, and the .blend.

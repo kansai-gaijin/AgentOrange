@@ -1,0 +1,27 @@
+Use the skill agent-orange:blender-hair-shapes for this, and only that skill for the hair. Don't use blender-hair-grooming.
+
+From scratch, create the hairstyle shown by the hair mesh and the reference images on the provided head, as a groom for a game that runs in Unreal Engine. Everything is in your refs folder:
+- `mesh\hair_mesh_guide.blend`: a 3D model of the hairstyle (one large mesh, not a groom), with the head and horns. It's the best evidence for how the hair is built. It was made for a different head, so its proportions don't fit this one: it's only been scaled and moved roughly into place. `mesh\mesh_*.png` are renders of it from the reference views, plus close-ups of the crown from above, where the back braid leaves the crown, the bangs and side hair, and a front braid.
+- `hair\`: reference images drawn on this same head with its horns, from every side, with close-ups of the crown and a front braid. `notes.md` says what was inferred. These come from an image generator and drift from view to view, so trust them for the bang length, the outline and the colour, and the mesh for the construction.
+- `style\`: where the style came from: the same hairstyle as a grey wig from the front, left and back, and four portraits of the character. Ignore the ornaments in the portraits (hairpins, flowers, tassels); they aren't hair.
+- `Hime_HeadHorns.obj`: the head and its horns, two objects (`Hime_Head` and `Hime_Horns`), with `Hime_HeadHorns.mtl` and the textures `T_Hime_Head_BaseColor.png` and `T_Hime_Horns_BaseColor.png`.
+
+The way to work: build lock tubes that line up with the hair mesh's own geometry, tracing its bangs, side hair, crown braids, back braid and front braids, so your blockout matches the mesh. Then reposition them to work on this head: each lock keeps its path, its height over the scalp and its length, laid onto this head's scalp instead of the mesh's. The mesh itself isn't the hair; your locks are.
+
+The style: blunt hime bangs; long face-framing side locks with thin purple streaks; a braided crown that is one round wrap round the head with no part, woven round the horns; one thin braid down the back that comes out of the centre of the crown, where its braids meet, not from the top of the head; two braids hanging in front of the shoulders; and long straight black hair down the back.
+
+What matters most to the person:
+- The braided crown and the braids: built as in the mesh, woven round the horns.
+- The bangs and side hair: as in the mesh.
+- No hair through the head or the horns, and every strand growing from the scalp.
+- Real clumping, not one smooth sheet, and natural braid tips.
+- It's for the game: within a game's strand budget, exported as an Unreal groom.
+
+Follow the skill's order: measure the references, make the hair cap, plan the sections in layers, block the style out as shapes, and check the blockout against the mesh and every reference view before converting it to hair.
+
+In your out folder, include for every reference view:
+- the blockout beside the reference and the mesh ("before");
+- the finished hair beside the reference and the mesh ("after");
+- a before-and-after sheet for each view.
+
+Also include close-ups of the crown braids, where the back braid leaves the crown, round a horn, the bangs and side hair, a front braid's tip and the hairline; the .blend; and the exported groom (.abc).

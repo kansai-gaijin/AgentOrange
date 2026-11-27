@@ -1,0 +1,6 @@
+Use the grooming skill to create the hairstyle in the hair reference images onto the provided head.
+
+Everything is in your refs folder:
+- `hair\`: the hair reference images. They show front, both 45s, both sides, back and a braid close-up, all drawn on this same head. The braids are low pigtails gathered at the back of the head.
+- `hair_reference.jpg`: the original photo the references were made from.
+- `Hime_Head.obj`: the head, with `Hime_Head.mtl` and its texture `T_Hime_Head_BaseColor.png`.

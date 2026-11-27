@@ -1,0 +1,21 @@
+Use the grooming skill to iterate on the hair groom in your refs\previous folder. Keep working on this same groom: open `previous\Hime_Hair.blend` and build on it, together with its scripts and renders. Don't start over. The references are the same as last time:
+- `hair\`: the hair reference images;
+- `hair_reference.jpg`: the original photo;
+- the head, as `Hime_Head.obj`, `Hime_Head.mtl` and `T_Hime_Head_BaseColor.png`.
+
+The person's own critique of the last pass, which matters most:
+1. **"It lacks any form of stragglers and baby hair."** Add stray hairs that leave the main flow across the whole groom: on the crown, along the part, at the bangs' edge, on the side locks and the braids. Add short, fine baby hairs along the hairline at the forehead, the temples, around the ears and at the nape. They should be visible in the renders, but stay believable rather than a fuzzy halo.
+2. **"It lacks any form of clumping."** Real hair gathers into clumps of different sizes, with gaps and tapered clump tips. Do that everywhere: the top and back, the bangs, the side locks and the braids' loose tails. Right now it reads as one smooth, even sheet.
+3. **"The braids' tips look unnatural."** The loose tails below the elastics need to look like real hair: a little splay, clumps and a natural taper. No stiff, straight, cut-off bundle.
+
+Other feedback from looking at the renders. Fix these too, after the three above:
+- The bangs are wider and heavier than in `hair\hair_front.png`. Keep the blunt cut line, but narrow them.
+- The side locks are flat blades; make them rounder and tapered.
+- About 140 hairs from the part line run into the opposite braid; send each half to its own braid.
+- Compare the braids' thickness with `hair\hair_braid_detail.png`.
+
+The structure is right, so keep the part, the pigtail ties, the three-strand braids and the black-to-purple change.
+
+Renders: keep the same views and framing as last time. For each view, make a side-by-side of last pass, this pass and the reference. Add close-ups that show the stragglers and baby hairs at the hairline, the clumping, and a braid tip. Don't export an Alembic unless one is needed.
+
+Put the new files in your out folder. In the summary, say what changed and what still falls short.

@@ -33,6 +33,24 @@ You're picking up Agent Orange work from a session on another PC. Read this whol
 - #93's last step (access levels beyond Tests) is on branch `t3/link-access-levels`, pushed and not merged. Its SQL has never run against a real Postgres. The user was told it waits for a passing Priority 10 run. Merge only when no AO agent is working, then check the live server.
 - AO changes are made in worktrees and merged while no AO agent is working. Everything stays generic: for any project and stack, never about Unreal or this game.
 
+**Skill tests (2026-11-28):** the user found the art skills too weak for Animal Planet's art pass and is
+testing and fixing them first, skill by skill, on whichever PC they're at.
+- **The harness:** `tools/skilltests` (read its README). The code is in the repo. The runs, reference sets
+  and the agent-folder copy the runs load skills from live in a data folder outside it
+  (`SKILLTESTS_DATA`, default `D:\blenderskills`). The reference sets are the user's art and aren't in
+  the repo: copy them from the last machine.
+- **How it works:** each retest runs a fresh agent from scratch with the user's own prompt, and the
+  user grades it. An outputs page (a claude.ai Artifact) shows every run; the user has its link.
+  `outputs.py` builds its data.
+- **Ownership:** the hair skill (`blender-hair-shapes`) has its own owner session. Other skills are free
+  to take. The user's remaining list included blender-clothing, blender-retopology-uv and prop-artist.
+- **What the hair tests taught, and what applies to every art skill:**
+  - Agents read references loosely and stop at "good enough". Skills should make them write down
+    what they read, and give a per-item matched-or-not verdict before finishing.
+  - Agents fill gaps with guesses. A 3D reference mesh beat generated pictures by far.
+  - Generated multi-view references drift from view to view.
+  - Run long art tests detached. Each takes hours and hundreds of MB, so keep them off a full C:.
+
 **More of the user's rules since 2026-11-16:**
 - Never edit files with heredocs, sed or here-strings; use the edit tools. Agents too.
 - Don't ask the user what the GDD already decides. If an agent's work contradicts the GDD, send it back.

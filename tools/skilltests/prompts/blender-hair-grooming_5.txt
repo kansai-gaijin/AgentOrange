@@ -1,0 +1,23 @@
+Use the skill agent-orange:blender-hair-shapes for this, and only that skill for the hair. Don't use blender-hair-grooming.
+
+From scratch, create the hairstyle in the hair reference images on the provided head, as a groom for a game that runs in Unreal Engine. Everything is in your refs folder:
+- `hair\`: the hair reference images, drawn on this same head with its horns: `hair_front.png`, both 45s, both sides, `hair_back_45_left.png`, `hair_back.png`, a close-up of the braided crown (`hair_crown_detail.png`) and one of a front braid (`hair_braid_detail.png`). `notes.md` says what was inferred. The bald head renders they were drawn on are there too (`head_*.png`).
+- `style\`: where the style came from: the same hairstyle as a grey wig from the front, left and back, and four portraits of the character. Ignore the ornaments in the portraits (hairpins, flowers, tassels); they aren't hair.
+- `Hime_HeadHorns.obj`: the head and its horns, two objects (`Hime_Head` and `Hime_Horns`), with `Hime_HeadHorns.mtl` and the textures `T_Hime_Head_BaseColor.png` and `T_Hime_Horns_BaseColor.png`.
+
+The style: blunt hime bangs, long face-framing side locks with thin purple streaks, a braided crown woven round the horns, one thin braid down the middle of the back, two braids hanging in front of the shoulders, and long straight black hair down the back.
+
+What matters most to the person:
+- The braided crown: real braids following the references, woven round the horns.
+- No hair through the head or the horns, and every strand growing from the scalp.
+- Real clumping, not one smooth sheet, and natural braid tips.
+- It's for the game: within a game's strand budget, exported as an Unreal groom.
+
+Follow the skill's order. Measure the references, make the hair cap, plan the sections in layers, block the style out as shapes, and check the blockout against every reference view before converting it to hair.
+
+In your out folder, include for every reference view:
+- the blockout beside the reference ("before");
+- the finished hair beside the reference ("after");
+- a before-and-after sheet for each view.
+
+Also include close-ups of the crown braids, round a horn, a front braid's tip and the hairline; the .blend; and the exported groom (.abc).
