@@ -159,6 +159,11 @@ From the references, list the sections and the big shapes each one needs:
   - Size and space the braid rings from the references, so that together they cover the scalp.
   - Close any gap by moving or widening the braids. Don't fill it with base shapes under them: those
     show between the plaits as a bald dome.
+  - A crown that wraps round is one piece: each ring goes all the way round its centre, not a left
+    half and a right half meeting in the middle. Build the paths with `hs.scalp_ring` (one per ring,
+    the same centre, radii one braid width apart) or `hs.scalp_spiral` (one braid wound outwards),
+    and they lie edge to edge on the scalp with nothing between them.
+  - A braid that comes out of the crown's centre lies over the rings. It doesn't split them.
 - **A bun:** a few thick tubes wound round it.
 
 A whole head is typically 15–40 tubes, not hundreds. Fix the part line, the bang cut line and the
@@ -186,6 +191,10 @@ the head lies over hair from lower down.
 - A braid is solid, like a horn. Don't let it pass through another section. Decide from the views
   which one lies on top where they meet, and route the braid over or under with clearance. `stack`
   leaves braids out, so check each braid yourself, in renders from the front, the side and above.
+- A hanging braid is heavy. It falls close to the body from its root and never swings wide to
+  dodge other hair. Clear what it meets by a few millimetres, passing under or over it.
+- Hair parts round anything that comes up through it (a horn, an ornament's pin) only by its own
+  radius, as a small local parting. The hair keeps its path past the obstacle; no shape curls round it.
 
 Where two sections meet, they share the border:
 - Their edge locks overlap by 30–50% and run the same way there.
@@ -217,6 +226,12 @@ Build all of this in one collection, `HairShapes`.
     and `tail_locks` adds thin locks of their own length and lean, so the tip is uneven, not cut.
   - It returns the three strands, then the tail locks. Move the tail locks to their own
     collection when the tail gets its own material or settings.
+- `hs.scalp_ring(cap, centre, radius, lift, start, sweep)` and `hs.scalp_spiral(cap, centre, r0, r1,
+  turns, lift)`: paths over the scalp round a centre, with distances measured along the scalp. Use
+  them for a braid that wraps a crown, a bun's base or a halo.
+  - Pass the hair cap, not the head, so a path can't climb a horn or an ear.
+  - Give `lift` as about 0.55 × the braid's width, so the plaits lie on the scalp.
+  - Space rings one braid width apart, or set a spiral's (r1 − r0) / turns to the width.
 - `hs.tie(name, center, axis, radius)`: an elastic, a small torus.
 - `hs.strip(name, root_points, tip_points, rows)`: a mesh sheet with its root edge creased.
   - It suits flat sections that lie on the head, where a round tube would stand too far off it; you
@@ -253,6 +268,22 @@ hs.stack(["Nape", "Around ears", "Back", "Sides", "Crown", "Bangs"], head)   # n
 - Run it again whenever you change a section.
 
 ## 5. Check the blockout before any strands
+**Judge the hair, not the tubes.** Coloured tubes can't tell you what the hair will look like. A
+groove between two tubes, a ring of scalp, or a crown in two halves all look fine as tubes, and
+only show once they're strands. So after every change to the blockout, look at it as hair:
+```python
+r = hs.look(["CamFront", "CamLeft", "CamBack", "CamTopBack"], "look", cap=cap, head=head, children=30)
+```
+- `look` converts the blockout to strands for a moment, renders them from each reference camera
+  beside its picture (`look/look_<camera>.png`), measures bare scalp with `coverage`, then removes
+  the strands again.
+- Look at every picture closely, against the reference: gaps, grooves, the parting, how sections
+  meet, the silhouette. Fix the tubes, then look again.
+- `hs.coverage(cap)` alone measures the tubes: how much of the scalp no hair covers, each bare patch
+  over 1 cm² and where it is on the head. It colours the cap red where bare (render it with
+  Workbench's Attribute colour). Inside the hairline, no scalp may show: get it to no patches.
+
+Then check it in detail:
 1. Turn the tubes on with `hs.preview("HairShapes", on=True, material=grey)`.
 2. Check the layers: `hs.sections(cam, ["Nape", ..., "Bangs"], "sections_left.png")` draws each
    section in its own colour, beside the reference.

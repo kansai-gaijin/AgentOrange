@@ -4,6 +4,7 @@ with a creased root edge), check the blockout, then turn it into strand hair wit
 Blockout (all in one collection, HairShapes by default):
   lock(name, points, radii)          a lock: a curve from root to tip, thick where the radius is
   braid(name, points, width, ...)    three locks woven along a path, plus an optional loose tail
+  scalp_ring / scalp_spiral(cap, centre, ...)   paths round a centre over the scalp, for crown braids
   on_surface(points, surface, lift)  pulls points onto a surface (a scalp) and lifts them off it
   tie(name, center, axis, radius)    an elastic: a small torus
   strip(name, ...)                   a mesh strip with its root edge creased, for mesh-made hair
@@ -21,6 +22,8 @@ Match the references (hair_match.py):
   sections(cam, groups, out)         each section in its own colour beside the reference: which lies over which
   compare(cam, hair, out, render)    measures the hair or blockout against that reference, in millimetres
 Check:
+  look(cams, out, cap=cap)           the blockout as hair beside each reference: judge this, not the tubes
+  coverage(cap, hair)                bare scalp: its share, each patch and where; the cap coloured red there
   report(hair_objects, surface)      guide and strand counts, root gaps, roots-first, length range
 Hand it over:
   bake_guides(hair, head)            guides as real curves to comb; children, clumps and frizz stay live
@@ -52,9 +55,11 @@ from mathutils.bvhtree import BVHTree
 
 try:  # inside the add-on (a package)
     from .hair_match import compare, measure, ref_camera, sections  # noqa: F401  (hs.ref_camera, hs.measure, ...)
+    from .hair_match import _flat, _load, _save
 except ImportError:  # imported or run as a plain script
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from hair_match import compare, measure, ref_camera, sections  # noqa: E402,F401
+    from hair_match import _flat, _load, _save  # noqa: E402
 
 SHAPES = "HairShapes"
 CORE = "AO Shapes to Hair"
@@ -318,6 +323,87 @@ def on_surface(points, surface, lift=0.002):
         loc, nor, _i, _d = bvh.find_nearest(mi @ Vector(p))
         n = (mw.to_3x3() @ nor).normalized()
         out.append(mw @ loc + n * lift)
+    return out
+
+
+def _surface(ob):
+    ob = _ob(ob)
+    bvh = BVHTree.FromObject(ob, bpy.context.evaluated_depsgraph_get())
+    mw = ob.matrix_world
+    return bvh, mw, mw.inverted(), mw.inverted().transposed().to_3x3()
+
+
+def _onto(srf, p):
+    bvh, mw, mi, nm = srf
+    loc, nor, _i, _d = bvh.find_nearest(mi @ Vector(p))
+    return mw @ loc, (nm @ nor).normalized()
+
+
+def _walk(srf, start, heading, dist, step=0.002):
+    """From start, `dist` metres over the surface, setting off along heading: each step goes along the
+    tangent plane and back onto the surface, so the distance follows the scalp's curve."""
+    p, n = _onto(srf, start)
+    d = Vector(heading)
+    d = d - n * d.dot(n)
+    left = dist
+    while left > 1e-7 and d.length > 1e-9:
+        d.normalize()
+        s = min(step, left)
+        q, n2 = _onto(srf, p + d * s)
+        if (q - p).length < s * 0.2:  # stuck at the surface's edge
+            break
+        d = (q - p) - n2 * (q - p).dot(n2)
+        p, n = q, n2
+        left -= s
+    return p, n
+
+
+def _polar(surface, centre, zero):
+    srf = _surface(surface)
+    c, n = _onto(srf, centre)
+    u = Vector(zero) - n * Vector(zero).dot(n)
+    if u.length < 1e-6:
+        u = n.orthogonal()
+    u.normalize()
+    return srf, c, u, n.cross(u).normalized()
+
+
+def scalp_ring(surface, centre, radius, lift=0.0, start=0.0, sweep=360.0, points=48, zero=(0.0, -1.0, 1.0)):
+    """Points round `centre` on the scalp, each `radius` m from it measured over the scalp, lifted `lift`
+    m off it: a path for a braid that wraps round a crown, a bun's base or a halo.
+    - surface: the hair cap (best: the scalp alone, so the path can't climb a horn or an ear), or the head.
+    - Angles in degrees round the centre. 0 points towards `zero` (default up and to the face, so from
+      a crown at the back of the head 0 is towards the top); 90 is a quarter turn towards the head's
+      +X side. sweep 360 closes the ring (its last point is its first); less gives an arc.
+    - For a braid, lift about 0.55 x its width, so its plaits lie on the scalp, not in it.
+    - Rings of one crown: give them the same centre and radii one braid width apart, and they lie edge
+      to edge with no scalp between them. Start each where something covers its ends (under the back
+      braid, under the next ring)."""
+    srf, c, u, v = _polar(surface, centre, zero)
+    out = []
+    for k in range(points):
+        a = math.radians(start + sweep * k / (points - 1))
+        p, n = _walk(srf, c, u * math.cos(a) + v * math.sin(a), radius)
+        out.append(p + n * lift)
+    return out
+
+
+def scalp_spiral(surface, centre, r0, r1, turns, lift=0.0, start=0.0, points_per_turn=48, zero=(0.0, -1.0, 1.0),
+                 clockwise=False):
+    """A spiral over the scalp round `centre`, from `r0` to `r1` m out (measured over the scalp) in
+    `turns` turns, lifted `lift` m: one braid wound round and round, as in a crown braid or a rosette.
+    Set (r1 - r0) / turns to the braid's width and the turns lie edge to edge with no scalp between them.
+    Angles and `zero` as in scalp_ring; `clockwise` as seen from outside the head."""
+    srf, c, u, v = _polar(surface, centre, zero)
+    if clockwise:
+        v = -v
+    count = max(2, int(points_per_turn * turns) + 1)
+    out = []
+    for k in range(count):
+        t = k / (count - 1)
+        a = math.radians(start) + 2 * math.pi * turns * t
+        p, n = _walk(srf, c, u * math.cos(a) + v * math.sin(a), r0 + (r1 - r0) * t)
+        out.append(p + n * lift)
     return out
 
 
@@ -1455,6 +1541,204 @@ def report(hair_objects, surface=None, shapes=SHAPES, cap=None, avoid=None):
 
 
 # ---------------------------------------------------------------- bake, brush, follow, export
+
+def _expand(items):
+    """Objects from collections, their names, object names or objects (one or a list)."""
+    out = []
+    for it in (items if isinstance(items, (list, tuple, set)) else [items]):
+        if isinstance(it, str):
+            it = bpy.data.collections.get(it) or bpy.data.objects[it]
+        out += list(it.all_objects) if isinstance(it, bpy.types.Collection) else [it]
+    return out
+
+
+def _where(p, lo, hi):
+    """Where p is on the head, in words (the face looks down -Y, up is +Z, her left is +X)."""
+    c, h = (lo + hi) / 2, (hi - lo) / 2
+    d = [(p[i] - c[i]) / max(h[i], 1e-6) for i in range(3)]
+    words = ["top" if d[2] > 0.35 else "low" if d[2] < -0.35 else "middle height"]
+    words.append("front" if d[1] < -0.3 else "back" if d[1] > 0.3 else "over the ear line")
+    words.append("her left" if d[0] > 0.25 else "her right" if d[0] < -0.25 else "centre")
+    return ", ".join(words)
+
+
+def coverage(cap, hair=SHAPES, reach=0.03, gap=0.0015, name="hs_bare"):
+    """How much of the hair cap no hair covers, seen from outside: from each point of the cap a line
+    runs out along the scalp's normal for `reach` m, and the point is covered when that line passes
+    through hair: a lock's or a braid's tube (centre line and radius), a mesh strip, or strands within
+    `gap` m. Use it on the blockout, and again on the strands (thin hair counts low there).
+    hair: collections or their names, or objects (hair objects count their evaluated strands).
+    Writes a colour attribute `name` on the cap (red: bare) and makes it the active one, so a
+    Workbench render coloured by Attribute shows where. Prints each bare patch over 1 cm2 and where it
+    is on the head. Returns {"bare": share of the cap's area, "patches": [(cm2, centre, where)]}.
+    Inside the hairline no scalp may show: aim for no patches at all."""
+    from mathutils.kdtree import KDTree
+    cap = _ob(cap)
+    dg = bpy.context.evaluated_depsgraph_get()
+    tubes, trad, strands, meshes = [], [], [], []
+    for ob in _expand(hair):
+        if ob == cap:
+            continue
+        mw = ob.matrix_world
+        if ob.type == "CURVE":
+            for sp in ob.data.splines:
+                pts = ([(mw @ Vector(p.co[:3]), p.radius) for p in sp.points] if sp.type == "POLY" else
+                       [(mw @ p.co, p.radius) for p in sp.bezier_points])
+                for (a, ra), (b, rb) in zip(pts, pts[1:]):
+                    n = max(1, int((b - a).length / 0.002))
+                    for i in range(n):
+                        t = i / n
+                        tubes.append(a.lerp(b, t))
+                        trad.append(ra + (rb - ra) * t)
+                if pts:
+                    tubes.append(pts[-1][0])
+                    trad.append(pts[-1][1])
+        elif ob.type == "CURVES":
+            ev = ob.evaluated_get(dg).data
+            pos = ev.attributes.get("position")
+            if pos is None or not len(pos.data):
+                continue
+            a = np.empty(len(pos.data) * 3, np.float32)
+            pos.data.foreach_get("vector", a)
+            a = a.reshape(-1, 3) @ np.array(mw.to_3x3()).T + np.array(mw.translation)
+            strands.append(a)
+        elif ob.type == "MESH":
+            meshes.append((BVHTree.FromObject(ob, dg), mw, mw.inverted()))
+    kt = None
+    if tubes:
+        kt = KDTree(len(tubes))
+        for i, p in enumerate(tubes):
+            kt.insert(p, i)
+        kt.balance()
+    ks = None
+    if strands:
+        allp = np.concatenate(strands)
+        ks = KDTree(len(allp))
+        for i, p in enumerate(allp):
+            ks.insert(p, i)
+        ks.balance()
+    ce = cap.evaluated_get(dg)
+    me = ce.to_mesh()
+    try:
+        mw = cap.matrix_world
+        nm = mw.inverted().transposed().to_3x3()
+        vs = [mw @ v.co for v in me.vertices]
+        ns = [(nm @ v.normal).normalized() for v in me.vertices]
+        area = [0.0] * len(vs)
+        for poly in me.polygons:
+            ids = list(poly.vertices)
+            ar = sum(((vs[ids[k]] - vs[ids[0]]).cross(vs[ids[k + 1]] - vs[ids[0]])).length / 2
+                     for k in range(1, len(ids) - 1))
+            for i in ids:
+                area[i] += ar / len(ids)
+        steps = [0.0005 + reach * k / 20 for k in range(21)]
+        bare = []
+        for p, n in zip(vs, ns):
+            hit = False
+            for s in steps:
+                q = p + n * s
+                if kt is not None and any(d <= trad[j] for _c, j, d in kt.find_n(q, 6)):
+                    hit = True
+                elif ks is not None and ks.find(q)[2] <= gap:
+                    hit = True
+                if hit:
+                    break
+            for bvh, bw, bi in meshes:
+                if hit:
+                    break
+                o, e = bi @ (p + n * 0.0005), bi @ (p + n * reach)
+                hit = bvh.ray_cast(o, (e - o).normalized(), (e - o).length)[0] is not None
+            bare.append(not hit)
+        # bare patches: bare points joined by edges
+        parent = list(range(len(vs)))
+
+        def root(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+        for e in me.edges:
+            a, b = e.vertices
+            if bare[a] and bare[b]:
+                parent[root(a)] = root(b)
+        groups = {}
+        for i, b in enumerate(bare):
+            if b:
+                groups.setdefault(root(i), []).append(i)
+        lo = Vector([min(v[k] for v in vs) for k in range(3)])
+        hi = Vector([max(v[k] for v in vs) for k in range(3)])
+        patches = []
+        for ids in groups.values():
+            ar = sum(area[i] for i in ids)
+            if ar < 1e-4:
+                continue
+            c = sum((vs[i] * area[i] for i in ids), Vector()) / max(ar, 1e-12)
+            patches.append((round(ar * 1e4, 1), tuple(round(x, 4) for x in c), _where(c, lo, hi)))
+        patches.sort(key=lambda t: -t[0])
+        total = sum(area) or 1.0
+        share = sum(a for a, b in zip(area, bare) if b) / total
+        if len(cap.data.vertices) == len(vs):  # colour the cap: red where bare
+            ca = cap.data.color_attributes.get(name) or cap.data.color_attributes.new(name, "FLOAT_COLOR", "POINT")
+            cols = np.array([(0.9, 0.08, 0.04, 1.0) if b else (0.18, 0.18, 0.2, 1.0) for b in bare], np.float32)
+            ca.data.foreach_set("color", cols.ravel())
+            cap.data.color_attributes.active_color = ca
+    finally:
+        ce.to_mesh_clear()
+    print(f"COVERAGE {cap.name}: {share:.1%} of the scalp is bare, {len(patches)} patch(es) over 1 cm2")
+    for ar, c, w in patches[:12]:
+        print(f"  {ar:6.1f} cm2 at {c}: {w}")
+    return {"bare": round(share, 4), "patches": patches}
+
+
+def look(cams, out, collection=SHAPES, hair_objects=None, cap=None, head=None, color=(0.16, 0.12, 0.1), **hair_args):
+    """What the blockout will look like as hair, beside the references. Tubes don't show it: a groove
+    between two tubes, a ring of scalp, a crown in two halves all look fine as tubes and only show once
+    they're strands. So look at this after every change to the blockout, and judge it, not the tubes.
+    - Converts `collection` to strands with hair() (pass its settings as keywords, e.g. children=30),
+      or takes `hair_objects` you've already converted.
+    - Renders them from each ref_camera() camera in `cams` beside its reference picture: writes
+      out/look_<camera>.png (reference | hair).
+    - Runs coverage() on `cap`, if given, and adds it to the result.
+    The temporary hair is removed again, and the tubes' preview is left as it was.
+    Returns {"pictures": {camera: path}, "coverage": ...}."""
+    os.makedirs(out, exist_ok=True)
+    shown = [o for o in bpy.data.collections[collection].all_objects if o.type == "CURVE" and o.data.bevel_depth > 0]
+    tmp = None
+    if hair_objects is None:
+        if shown:
+            preview(collection, on=False)
+        hair_args.setdefault("viewport", 1.0)
+        tmp = hair("_hs_look", collection, cap=cap, parent=head, **hair_args)
+        objs = [tmp]
+    else:
+        objs = _expand(hair_objects)
+    pics = {}
+    try:
+        for cam in (cams if isinstance(cams, (list, tuple)) else [cams]):
+            cam = _ob(cam)
+            res = tuple(cam["hs_res"]) if "hs_res" in cam else (900, 900)
+            shot = _flat(cam, {o.name: color for o in objs}, res, light="STUDIO", rest=(0.72, 0.7, 0.68))
+            pic = shot[..., :3] * shot[..., 3:4] + (1.0 - shot[..., 3:4])
+            panels = [pic]
+            if "hs_ref" in cam and os.path.exists(cam["hs_ref"]):
+                r = _load(cam["hs_ref"])[..., :3]
+                if r.shape[:2] == pic.shape[:2]:
+                    panels = [r, np.ones((pic.shape[0], 8, 3), np.float32), pic]
+            s = max(1, math.ceil(pic.shape[0] / 900))
+            path = os.path.join(out, f"look_{cam.name}.png")
+            _save(np.concatenate([p[::s, ::s] for p in panels], 1), path)
+            pics[cam.name] = path
+        cov = coverage(cap, objs) if cap is not None else None
+    finally:
+        if tmp is not None:
+            data = tmp.data
+            bpy.data.objects.remove(tmp)
+            bpy.data.hair_curves.remove(data)
+        if shown:
+            preview(collection, on=True)
+    print("LOOK: " + ", ".join(pics.values()))
+    return {"pictures": pics, "coverage": cov}
+
 
 def _ob(x):
     return bpy.data.objects[x] if isinstance(x, str) else x
