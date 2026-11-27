@@ -28,7 +28,10 @@ Hand it over:
   unbake(baked)                      back to the source, to edit and bake again
   attach(curves, head) / follow(curves)   root UVs on the head; follow it as it deforms (cut-scenes)
   game_budget(objects, strands)      fewer, wider strands for a game (50,000: MetaHuman LOD0), still live
-  export_groom(objects, path)        an Alembic groom for Unreal: points thinned, a group per material, in cm
+  hairline(head)                     a human hairline found from the head (its ears), for the cap
+  hair_cap(head, hairline)           the scalp all hair grows from; make it first
+  to_cap(cap, locks)                 every lock rooted on the cap (strays routed back along their lock)
+  export_groom(objects, path)        an Alembic groom to Epic's schema: group ids, root UVs, guides, in cm
   (this folder is also the "Hair from Shapes" Blender extension: the same, as sidebar buttons)
 Render:
   gpu(scene)                         Cycles on one GPU backend (OptiX first), so heavy hair fits in memory
@@ -139,8 +142,15 @@ def _frame(path, i, up):
     return tan, side, side.cross(tan).normalized()
 
 
+def _nearest_on(ob, p):
+    """The nearest point on a mesh object to p, in world space."""
+    mw = ob.matrix_world
+    ok, loc, _n, _i = ob.closest_point_on_mesh(mw.inverted() @ Vector(p))
+    return mw @ loc if ok else Vector(p)
+
+
 def braid(name, points, width=0.012, turns=4.0, strand_radius=0.32, tail=None, tail_flare=1.6, tail_stagger=0.12,
-          tail_locks=0, resolution=96, collection=SHAPES, up=(0, 0, 1), seed=0):
+          tail_locks=0, resolution=96, collection=SHAPES, up=(0, 0, 1), seed=0, root=None):
     """A three-strand braid along `points` (start at the tie or root, end at the bottom elastic).
     - width: across the weave. One number, or (top, bottom) for a braid that narrows towards the
       end as real ones do. The plaits shrink with it: the weave runs faster where it's narrower.
@@ -151,8 +161,13 @@ def braid(name, points, width=0.012, turns=4.0, strand_radius=0.32, tail=None, t
       tail_flare x the bottom width, then closing to a tapered brush. tail_stagger: each strand's
       share ends at its own length (0..1 of the tail), so the tip isn't one cut. tail_locks: extra
       thin locks in the tail, each its own length and lean, for an uneven, natural tip.
+    - root: the hair cap. Hair only grows from the scalp, so each strand then starts on the cap, under
+      the hair gathered into the tie, and runs to the tie; the tail locks start there too and run down
+      inside the braid to the elastic.
     Returns the strand objects (the three strands, then any tail locks)."""
     rnd = random.Random(seed)
+    cap = _ob(root) if root is not None else None
+    start = _nearest_on(cap, points[0]) if cap is not None else None
     w0, w1 = (width, width) if isinstance(width, (int, float)) else (float(width[0]), float(width[-1]))
     wid = lambda t: w0 + (w1 - w0) * t ** 0.85
     path = _smooth(points, resolution)
@@ -188,6 +203,12 @@ def braid(name, points, width=0.012, turns=4.0, strand_radius=0.32, tail=None, t
                 spread = w1 * 0.5 * tail_flare * math.sin(math.pi * min(1.0, v * 2.2) * 0.5) * (1 - 0.7 * v * v)
                 pts.append(tpath[j] + (side * math.cos(a) + depth * math.sin(a)) * spread * 0.6)
                 rad.append((sr * 0.75 + sr * 0.9 * math.sin(math.pi * min(v * 2.4, 1.0) * 0.5)) * (1 - v) ** 0.8 + 0.0006)
+        if start is not None:  # from the scalp, under the gathered hair, to the tie
+            _tan, side, _d = _frame(path, 0, up)
+            r0 = strand_radius * w0 * 0.75
+            pts = [start - (start - path[0]).normalized() * 0.0015 + side * (w0 * 0.25 * (k - 1)),
+                   start.lerp(path[0], 0.5)] + pts
+            rad = [r0 * 0.8, r0] + rad
         obs.append(lock(f"{name}_strand{k}", pts, rad, resolution=len(pts), collection=collection))
     for m in range(tail_locks if tpath else 0):  # thin extra locks from inside the elastic
         ln = rnd.uniform(0.5, 1.05)
@@ -202,9 +223,73 @@ def braid(name, points, width=0.012, turns=4.0, strand_radius=0.32, tail=None, t
             pts.append(tpath[j] + (side * math.cos(a) + depth * math.sin(a)) * lean * math.sin(math.pi * min(1.0, u * 1.5) * 0.5))
         if len(pts) < 2:
             continue
-        obs.append(lock(f"{name}_tail{m}", pts, (w1 * 0.17, w1 * 0.3 * rnd.uniform(0.7, 1.1), 0.0005), resolution=24,
+        tip = (w1 * 0.17, w1 * 0.3 * rnd.uniform(0.7, 1.1), 0.0005)
+        if start is None:
+            obs.append(lock(f"{name}_tail{m}", pts, tip, resolution=24, collection=collection))
+            continue
+        # from the scalp, thin, down the middle of the braid (hidden in it), out through the elastic
+        inside = [start - (start - path[0]).normalized() * 0.0015] + path[::max(1, resolution // 12)] + [path[-1]]
+        r_in = [0.0008] * len(inside)
+        r_out = _radii(tip, len(pts))
+        obs.append(lock(f"{name}_tail{m}", inside + pts[1:], r_in + r_out[1:], resolution=len(inside) + len(pts) + 8,
                         collection=collection))
     return obs
+
+
+def to_cap(cap, locks, tol=0.002, along=SHAPES, far=0.02):
+    """Hair only grows from the scalp: every lock whose root is more than `tol` m off the hair cap gets
+    a root on the cap.
+    - Near the cap (under `far` m): joined straight to the nearest point on it, under the hair.
+    - Further out (a stray leaving a braid or a lock part-way down): routed back along the lock it
+      leaves, the nearest one in `along` that is rooted on the cap, thin and inside it, so it shows only
+      where it leaves. Run it on the main sections first, so they're rooted when strays follow them.
+    - Prints any it could only join straight from further than `far` (route those by hand).
+    locks: a collection's name, a collection, or lock objects. Returns how many got a new root."""
+    c = _ob(cap)
+    hosts = []  # (points world, radii) of locks rooted on the cap, to route far roots along
+    for h in (_section(along) if along in bpy.data.collections or not isinstance(along, str) else []):
+        if h.type != "CURVE":
+            continue
+        for sp in h.data.splines:
+            if sp.type == "POLY" and len(sp.points) > 1:
+                pts = [h.matrix_world @ Vector(p.co[:3]) for p in sp.points]
+                if (_nearest_on(c, pts[0]) - pts[0]).length <= tol:
+                    hosts.append((h.name, pts))
+    moved = 0
+    for ob in _section(locks):
+        if ob.type != "CURVE":
+            continue
+        m, mi = ob.matrix_world, ob.matrix_world.inverted()
+        for sp in ob.data.splines:
+            if sp.type != "POLY" or not sp.points:
+                continue
+            root = m @ Vector(sp.points[0].co[:3])
+            on = _nearest_on(c, root)
+            gap = (on - root).length
+            if gap <= tol:
+                continue
+            old = [(m @ Vector(p.co[:3]), p.radius) for p in sp.points]  # world space from here on
+            new = [(on - (on - root).normalized() * 0.0015, old[0][1])]
+            if gap > far:
+                best = None
+                for name, pts in hosts:
+                    if name == ob.name:
+                        continue
+                    j = min(range(len(pts)), key=lambda i: (pts[i] - root).length)
+                    d = (pts[j] - root).length
+                    if best is None or d < best[0]:
+                        best = (d, pts, j)
+                if best is not None and best[0] < gap and best[2] > 0:
+                    _d, pts, j = best
+                    thin = min(0.0006, old[0][1])
+                    new = [(p, thin) for p in pts[:j]]
+                else:
+                    print(f"TO CAP {ob.name}: root {gap * 1000:.0f} mm off the cap, joined straight; route it by hand")
+            sp.points.add(len(new))
+            for p, (co, r) in zip(sp.points, new + old):
+                p.co, p.radius = (*(mi @ co), 1.0), r
+            moved += 1
+    return moved
 
 
 def tie(name, center, axis, radius=0.007, thickness=0.0016, material=None):
@@ -260,6 +345,251 @@ def strip(name, root_points, tip_points, rows=20, collection=SHAPES):
     ob = bpy.data.objects.new(name, me)
     _collection(collection).objects.link(ob)
     return ob
+
+
+def hairline(head, front=0.45, nape=0.012, sideburn=0.5, show=True):
+    """A human hairline for `head` (face looking down -Y, up +Z), found from the head itself, to start
+    the hair cap from instead of guessing. It finds the ears (thin flaps sticking out of the sides: a
+    ray into the head from their surface comes out again within a centimetre) and builds the line
+    round them the way hair grows:
+      - the forehead at `front` of the way from the ears' tops to the top of the head;
+      - the temples a little higher and further back;
+      - a sideburn down in front of each ear to `sideburn` of the way down it;
+      - over each ear just above where it joins the head;
+      - behind each ear down to its lobe;
+      - the nape `nape` m below the lobes.
+    Adjust it against the references (the forehead line especially, which shows). Returns the
+    points, a closed loop, for hair_cap() and baby_hair(); with `show`, prints the ears it found."""
+    h = _ob(head)
+    me, mw = h.data, h.matrix_world
+    nm = mw.to_3x3().inverted().transposed()
+    co = [mw @ v.co for v in me.vertices]
+    no = [(nm @ v.normal).normalized() for v in me.vertices]
+    bvh = BVHTree.FromPolygons(co, [p.vertices[:] for p in me.polygons])
+    zt = max(v.z for v in co)
+    band = [i for i, v in enumerate(co) if v.z > zt - 0.25]
+    cx = sum(co[i].x for i in band) / len(band)
+    ears = {}
+    for s in (1, -1):
+        found = []
+        wide = max(s * (co[i].x - cx) for i in band)
+        for i in band:
+            v, n = co[i], no[i]
+            if s * n.x < 0.35 or s * (v.x - cx) < 0.55 * wide:
+                continue
+            hit, _n, _f, d = bvh.ray_cast(v - n * 0.0004, -n, 0.02)
+            if hit is not None and d < 0.012:
+                found.append(i)
+        if len(found) < 8:
+            raise ValueError(f"no ear found on the {'left' if s > 0 else 'right'}: give hair_cap() your own hairline")
+        zs = sorted(co[i].z for i in found)
+        ys = sorted(co[i].y for i in found)
+        q = lambda a, f: a[min(len(a) - 1, max(0, int(f * (len(a) - 1))))]
+        ears[s] = dict(top=q(zs, 0.97), bottom=q(zs, 0.03), front=q(ys, 0.05), back=q(ys, 0.95), verts=set(found))
+    ear_top = max(e["top"] for e in ears.values())
+    ear_bot = min(e["bottom"] for e in ears.values())
+    sk = [co[i] for i in band if abs(co[i].z - ear_top) < 0.01]
+    cy = (min(v.y for v in sk) + max(v.y for v in sk)) / 2
+    all_ears = set().union(*(e["verts"] for e in ears.values()))
+    face_of = {}
+    for f in me.polygons:
+        face_of[f.index] = f.vertices[:]
+
+    def onto(angle, z):
+        """Where a ray from outside, at height z and `angle` degrees round from the front, meets the
+        scalp (passing through an ear in the way)."""
+        a = math.radians(angle)
+        d = Vector((math.sin(a), -math.cos(a), 0.0))
+        o = Vector((cx, cy, z)) + d * 0.5
+        for _ in range(6):
+            hit, _n, fi, _dd = bvh.ray_cast(o, -d, 1.0)
+            if hit is None:
+                return None
+            if not any(v in all_ears for v in face_of[fi]):
+                return hit
+            o = hit - d * 0.0005
+        return hit
+
+    zf = ear_top + front * (zt - ear_top)
+    side = []
+    for s in (1,):
+        e = ears[s]
+        angs = sorted(math.degrees(math.atan2(s * (co[i].x - cx), -(co[i].y - cy))) for i in e["verts"])
+        af, ab = angs[int(0.05 * (len(angs) - 1))], angs[int(0.95 * (len(angs) - 1))]  # round from the front
+        mid = e["bottom"] + (1 - sideburn) * (e["top"] - e["bottom"])
+        side = [(0, zf), (28, zf - 0.002), (52, zf + 0.002), (af - 14, e["top"] + 0.01), (af - 9, mid), (af - 3, mid + 0.004),
+                (af + 2, e["top"] + 0.004), ((af + ab) / 2, e["top"] + 0.006), (ab - 2, e["top"] + 0.002),
+                (ab + 5, (e["top"] + e["bottom"]) / 2), (ab + 9, e["bottom"]), (150, e["bottom"] - nape * 0.6),
+                (180, ear_bot - nape)]
+    loop = []
+    for a, z in side:  # her left, front to back
+        p = onto(a, z)
+        if p is not None:
+            loop.append(p)
+    for a, z in reversed(side[1:-1]):  # her right, back to front, mirrored
+        p = onto(-a, z)
+        if p is not None:
+            loop.append(p)
+    if show:
+        for s, e in ears.items():
+            print(f"HAIRLINE ear {'left' if s > 0 else 'right'}: z {e['bottom']:.3f}..{e['top']:.3f}, "
+                  f"y {e['front']:.3f}..{e['back']:.3f}; forehead line at z {zf:.3f}, nape at {ear_bot - nape:.3f}")
+    return loop
+
+
+def hair_cap(head, hairline_points, color=(0.012, 0.010, 0.010), apex=None, offset=0.0003, fade=0.006, name="HairCap",
+             material=None):
+    """The hair cap: the scalp, inside the hairline, as its own mesh just over the head. Make it
+    first: all hair grows from it, and between strands it shows hair-coloured scalp, not skin, as a
+    game groom's cap does.
+    - hairline_points: the hairline all round (forehead, temples, round the ears, the nape), as for
+      baby_hair(). The cap is everything on the head's crown side of it, reached from the top of the
+      head (`apex`, the highest point by default) without crossing it, so an ear tip above the
+      hairline stays bare.
+    - The cap's edge fades out over `fade` m across the hairline (a soft hairline, its `hair_cover`
+      attribute, 0..1, drives the material's alpha); it sits `offset` m over the head and keeps its UVs.
+    - color: the hair's root colour (linear RGB), with a faint variation. Or give your own material.
+    It stays in Blender: only the curves go to the engine, and their root UVs come from it (it keeps
+    the head's UVs). Returns the cap object."""
+    import bmesh
+    from mathutils.kdtree import KDTree
+    h = _ob(head)
+    me, mw = h.data, h.matrix_world
+    nm = mw.to_3x3().inverted().transposed()
+    co = [mw @ v.co for v in me.vertices]
+    no = [(nm @ v.normal).normalized() for v in me.vertices]
+    hl = [Vector(p) for p in hairline_points]
+    on_head = BVHTree.FromPolygons(co, [p.vertices[:] for p in me.polygons])
+    dense = []
+    for a, b in zip(hl, hl[1:] + hl[:1]):  # a closed loop, every 2 mm, laid on the head (a straight
+        steps = max(1, int((b - a).length / 0.002))  # chord between far points cuts under the skin)
+        for s in range(steps):
+            p = on_head.find_nearest(a.lerp(b, s / steps))[0]
+            dense.append(p if p is not None else a.lerp(b, s / steps))
+    kd = KDTree(len(dense))
+    for i, p in enumerate(dense):
+        kd.insert(p, i)
+    kd.balance()
+    top = Vector(apex) if apex is not None else max(co, key=lambda v: v.z)
+    top_i = min(range(len(co)), key=lambda i: (co[i] - top).length)
+    # the hairline cuts the mesh: every edge of a face it runs across is cut, and a flood from the top of
+    # the head over the uncut edges is the crown side, however the line winds (down in front of the ear,
+    # back up over it)
+    cut = set()
+    for p in dense:
+        for _loc, _n, fi, _d in on_head.find_nearest_range(p, 0.0025):
+            cut.update(me.polygons[fi].edge_keys)
+    nbr = [[] for _ in co]
+    for e in me.edges:
+        if e.key in cut:
+            continue
+        a, b = e.vertices
+        nbr[a].append(b)
+        nbr[b].append(a)
+    inside = [False] * len(co)
+    inside[top_i] = True
+    todo = [top_i]
+    while todo:
+        i = todo.pop()
+        for j in nbr[i]:
+            if not inside[j]:
+                inside[j] = True
+                todo.append(j)
+    if sum(inside) > 0.9 * len(co):
+        print("HAIR CAP: the hairline doesn't close (the flood got round it); check its points")
+    near = [kd.find(v)[2] for v in co]
+    side = [d if inside[i] else -d for i, d in enumerate(near)]  # distance from the hairline, + on the crown side
+    keep = [s > -fade * 0.5 for s in side]
+    bm = bmesh.new()
+    vmap = {}
+    uvl = bm.loops.layers.uv.new("UVMap")
+    cover = bm.verts.layers.float.new("hair_cover")
+    src_uv = me.uv_layers.active.data if me.uv_layers else None
+    for poly in me.polygons:
+        if not any(keep[v] for v in poly.vertices):  # every face touching the region; the fade trims it
+            continue
+        vs = []
+        for v in poly.vertices:
+            if v not in vmap:
+                bv = bm.verts.new(co[v] + no[v] * offset)
+                s = (side[v] + fade * 0.5) / fade
+                s = max(0.0, min(1.0, s))
+                bv[cover] = s * s * (3 - 2 * s)
+                vmap[v] = bv
+            vs.append(vmap[v])
+        try:
+            f = bm.faces.new(vs)
+        except ValueError:
+            continue
+        f.smooth = True
+        if src_uv:
+            for loop, li in zip(f.loops, poly.loop_indices):
+                loop[uvl].uv = src_uv[li].uv
+    # finer than the head's faces, so the hairline is a smooth fade, not a staircase: subdivide, put the
+    # new vertices back on the head, work out their cover again, and drop the faces wholly past the fade
+    bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=2, use_grid_fill=True)
+    from mathutils.interpolate import poly_3d_calc
+    polys = [p.vertices[:] for p in me.polygons]
+    bvh = BVHTree.FromPolygons(co, polys)
+    for bv in bm.verts:
+        loc, nrm, fi, _d = bvh.find_nearest(bv.co)
+        if loc is None:
+            continue
+        w = poly_3d_calc([co[v] for v in polys[fi]], loc)  # the side across the face, smoothly
+        s = (sum(side[v] * k for v, k in zip(polys[fi], w)) + fade * 0.5) / fade
+        s = max(0.0, min(1.0, s))
+        bv.co = loc + nrm.normalized() * offset
+        bv[cover] = s * s * (3 - 2 * s)
+    bmesh.ops.delete(bm, geom=[f for f in bm.faces if all(v[cover] <= 0.0 for v in f.verts)], context="FACES")
+    cap_me = bpy.data.meshes.new(name)
+    bm.to_mesh(cap_me)
+    bm.free()
+    cap = bpy.data.objects.new(name, cap_me)
+    for col in h.users_collection:
+        col.objects.link(cap)
+    cap.parent = h
+    cap.matrix_parent_inverse = h.matrix_world.inverted()
+    if material is None:
+        material = _cap_material(name + " Scalp", color)
+    cap_me.materials.append(material)
+    # it moves with the head however the head is deformed (armature, shape keys), and baked hair
+    # attached to it with follow() comes along
+    md = cap.modifiers.new("Follow Head", "SURFACE_DEFORM")
+    md.target = h
+    try:
+        with bpy.context.temp_override(object=cap, active_object=cap, selected_objects=[cap]):
+            bpy.ops.object.surfacedeform_bind(modifier=md.name)
+    except RuntimeError as e:
+        print(f"HAIR CAP: couldn't bind it to {h.name} ({e}); it moves with the head only by its parent")
+    print(f"HAIR CAP {name}: {len(cap_me.polygons)} faces of {len(me.polygons)} on {h.name}")
+    return cap
+
+
+def _cap_material(name, color):
+    """The cap's colour: the hair's root colour, a faint variation, its edge fading out by `hair_cover`."""
+    mat = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+    mat.diffuse_color = (*(c * 4 + 0.03 for c in color), 1.0)  # how it shows in the solid viewport
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    bs = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    at = nt.nodes.new("ShaderNodeAttribute")
+    at.attribute_name = "hair_cover"
+    nz = nt.nodes.new("ShaderNodeTexNoise")
+    nz.inputs["Scale"].default_value = 180.0
+    nz.inputs["Detail"].default_value = 4.0
+    mix = nt.nodes.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+    mix.inputs["A"].default_value = (*color, 1.0)
+    mix.inputs["B"].default_value = (*(c * 1.8 + 0.004 for c in color), 1.0)
+    nt.links.new(nz.outputs["Fac"], mix.inputs["Factor"])
+    nt.links.new(mix.outputs["Result"], bs.inputs["Base Color"])
+    bs.inputs["Roughness"].default_value = 0.85
+    nt.links.new(at.outputs["Fac"], bs.inputs["Alpha"])
+    nt.links.new(bs.outputs[0], out.inputs["Surface"])
+    if hasattr(mat, "surface_render_method"):
+        mat.surface_render_method = "DITHERED"
+    return mat
 
 
 def _section(item):
@@ -640,9 +970,163 @@ def _curves_object(name, parent=None):
     return ob
 
 
+KEEP_OUT = "AO Keep Out Of Head"
+
+
+def keep_out_group():
+    """Geometry Nodes: every strand's root onto the cap (or the head), and every other point that
+    has gone into the head (by up to Reach) back out to Margin over it. Hair grows only from the cap,
+    and none of it goes through the model."""
+    ng = bpy.data.node_groups.get(KEEP_OUT)
+    if ng is not None:
+        return ng
+    ng = bpy.data.node_groups.new(KEEP_OUT, "GeometryNodeTree")
+    ng.is_modifier = True
+    io = ng.interface
+    io.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    io.new_socket("Head", in_out="INPUT", socket_type="NodeSocketObject")
+    io.new_socket("Cap", in_out="INPUT", socket_type="NodeSocketObject")
+    s = io.new_socket("Margin", in_out="INPUT", socket_type="NodeSocketFloat")
+    s.default_value, s.subtype = 0.0005, "DISTANCE"
+    s = io.new_socket("Reach", in_out="INPUT", socket_type="NodeSocketFloat")
+    s.default_value, s.subtype = 0.03, "DISTANCE"
+    io.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    N, L = ng.nodes, ng.links
+    gi, go = N.new("NodeGroupInput"), N.new("NodeGroupOutput")
+
+    def surface(sock_name):
+        info = N.new("GeometryNodeObjectInfo")
+        info.transform_space = "RELATIVE"
+        L.new(gi.outputs[sock_name], info.inputs["Object"])
+        return info.outputs["Geometry"]
+
+    def nearest(geo):
+        """(nearest position, its normal, signed height of the point above it) on a mesh."""
+        pos = N.new("GeometryNodeInputPosition").outputs[0]
+        prox = N.new("GeometryNodeProximity")
+        prox.target_element = "FACES"
+        L.new(geo, prox.inputs["Geometry"])
+        L.new(pos, prox.inputs["Sample Position"])
+        sn = N.new("GeometryNodeSampleNearestSurface")
+        sn.data_type = "FLOAT_VECTOR"
+        L.new(geo, sn.inputs["Mesh"])
+        L.new(N.new("GeometryNodeInputNormal").outputs["Normal"], sn.inputs["Value"])
+        L.new(pos, sn.inputs["Sample Position"])
+        d = N.new("ShaderNodeVectorMath")
+        d.operation = "SUBTRACT"
+        L.new(pos, d.inputs[0])
+        L.new(prox.outputs["Position"], d.inputs[1])
+        dot = N.new("ShaderNodeVectorMath")
+        dot.operation = "DOT_PRODUCT"
+        L.new(d.outputs["Vector"], dot.inputs[0])
+        L.new(sn.outputs["Value"], dot.inputs[1])
+        return prox.outputs["Position"], sn.outputs["Value"], dot.outputs["Value"]
+
+    def lifted(near, nor):
+        sc = N.new("ShaderNodeVectorMath")
+        sc.operation = "SCALE"
+        L.new(nor, sc.inputs[0])
+        L.new(gi.outputs["Margin"], sc.inputs["Scale"])
+        add = N.new("ShaderNodeVectorMath")
+        add.operation = "ADD"
+        L.new(near, add.inputs[0])
+        L.new(sc.outputs["Vector"], add.inputs[1])
+        return add.outputs["Vector"]
+
+    head = surface("Head")
+    near, nor, height = nearest(head)
+    under = N.new("FunctionNodeCompare")
+    under.data_type, under.operation = "FLOAT", "LESS_THAN"
+    L.new(height, under.inputs["A"])
+    L.new(gi.outputs["Margin"], under.inputs["B"])
+    neg = N.new("ShaderNodeMath")
+    neg.operation = "MULTIPLY"
+    L.new(gi.outputs["Reach"], neg.inputs[0])
+    neg.inputs[1].default_value = -1.0
+    near_enough = N.new("FunctionNodeCompare")
+    near_enough.data_type, near_enough.operation = "FLOAT", "GREATER_THAN"
+    L.new(height, near_enough.inputs["A"])
+    L.new(neg.outputs[0], near_enough.inputs["B"])
+    both = N.new("FunctionNodeBooleanMath")
+    both.operation = "AND"
+    L.new(under.outputs[0], both.inputs[0])
+    L.new(near_enough.outputs[0], both.inputs[1])
+    # not by an open edge (a bust's cut-off rim, an eye hole): there "under the surface" means nothing,
+    # and a braid hanging past the rim would be pulled onto it
+    en = N.new("GeometryNodeInputMeshEdgeNeighbors")
+    one = N.new("FunctionNodeCompare")
+    one.data_type, one.operation = "INT", "EQUAL"
+    L.new(en.outputs["Face Count"], one.inputs["A"])
+    one.inputs["B"].default_value = 1
+    on_edge = N.new("GeometryNodeFieldOnDomain")
+    on_edge.domain, on_edge.data_type = "EDGE", "BOOLEAN"
+    L.new(one.outputs[0], next(s for s in on_edge.inputs if s.enabled))
+    rim = N.new("GeometryNodeSampleNearestSurface")
+    rim.data_type = "FLOAT"
+    L.new(head, rim.inputs["Mesh"])
+    L.new(next(s for s in on_edge.outputs if s.enabled), rim.inputs["Value"])
+    L.new(N.new("GeometryNodeInputPosition").outputs[0], rim.inputs["Sample Position"])
+    inner = N.new("FunctionNodeCompare")
+    inner.data_type, inner.operation = "FLOAT", "LESS_THAN"
+    L.new(rim.outputs["Value"], inner.inputs["A"])
+    inner.inputs["B"].default_value = 0.001
+    sel = N.new("FunctionNodeBooleanMath")
+    sel.operation = "AND"
+    L.new(both.outputs[0], sel.inputs[0])
+    L.new(inner.outputs[0], sel.inputs[1])
+    out = N.new("GeometryNodeSetPosition")
+    L.new(gi.outputs["Geometry"], out.inputs["Geometry"])
+    L.new(sel.outputs[0], out.inputs["Selection"])
+    L.new(lifted(near, nor), out.inputs["Position"])
+    # roots: onto the cap when there is one (else the head), whatever their height
+    cap = surface("Cap")
+    size = N.new("GeometryNodeAttributeDomainSize")
+    size.component = "MESH"
+    L.new(cap, size.inputs[0])
+    has_cap = N.new("FunctionNodeCompare")
+    has_cap.data_type, has_cap.operation = "INT", "GREATER_THAN"
+    L.new(size.outputs["Face Count"], has_cap.inputs["A"])
+    has_cap.inputs["B"].default_value = 0
+    pick = N.new("GeometryNodeSwitch")
+    pick.input_type = "GEOMETRY"
+    L.new(has_cap.outputs[0], pick.inputs["Switch"])
+    L.new(head, pick.inputs["False"])
+    L.new(cap, pick.inputs["True"])
+    rnear, rnor, rh = nearest(pick.outputs[0])
+    ends = N.new("GeometryNodeCurveEndpointSelection")
+    ends.inputs["Start Size"].default_value = 1
+    ends.inputs["End Size"].default_value = 0
+    absh = N.new("ShaderNodeMath")  # only roots near it: one far off (a braid started at its tie) is a blockout to fix
+    absh.operation = "ABSOLUTE"
+    L.new(rh, absh.inputs[0])
+    close = N.new("FunctionNodeCompare")
+    close.data_type, close.operation = "FLOAT", "LESS_THAN"
+    L.new(absh.outputs[0], close.inputs["A"])
+    L.new(gi.outputs["Reach"], close.inputs["B"])
+    root_sel = N.new("FunctionNodeBooleanMath")
+    root_sel.operation = "AND"
+    L.new(ends.outputs[0], root_sel.inputs[0])
+    L.new(close.outputs[0], root_sel.inputs[1])
+    roots = N.new("GeometryNodeSetPosition")
+    L.new(out.outputs[0], roots.inputs["Geometry"])
+    L.new(root_sel.outputs[0], roots.inputs["Selection"])
+    L.new(lifted(rnear, rnor), roots.inputs["Position"])
+    L.new(roots.outputs[0], go.inputs[0])
+    return ng
+
+
+def _keep_out(ob, head, cap=None):
+    if head is None:
+        return None
+    vals = {"Head": _ob(head), "Margin": 0.0005, "Reach": 0.03}
+    if cap is not None:
+        vals["Cap"] = _ob(cap)
+    return _modifier(ob, keep_out_group(), vals, name="Keep Out Of Head")
+
+
 def hair(name, collection=SHAPES, guides=10, points=24, fill=0.55, children=60, spread=0.0025, clump=0.55, clump_shape=0.3,
          tip_spread=0.0, trim=0.02, frizz=0.0006, noise=0.0012, noise_scale=40.0, curl=0.0, strand_radius=0.00006,
-         material=None, parent=None, viewport=0.1, seed=0, cumulative=False):
+         material=None, parent=None, viewport=0.1, seed=0, cumulative=False, cap=None):
     """Strand hair from every lock in `collection`. Guides: `guides` per lock round its edge, two inner
     rings (at `fill` and fill x 0.4 of its radius) and the centre line, each `points` long. Then live
     modifiers, top to bottom:
@@ -653,7 +1137,9 @@ def hair(name, collection=SHAPES, guides=10, points=24, fill=0.55, children=60, 
       Frizz (m) -> Noise (m, scale) -> Curl (m radius, 0 = none) -> Profile (strand radius, thin tip).
     Frizz and noise are plain offsets in metres (`cumulative` False), the same on a short bang and a
     long braid; True gives the bundled groups' default, where offsets add up along the strand.
-    Tune them on the modifiers afterwards. Returns the hair object."""
+    Last before the profile, Keep Out Of Head (with `parent`, the head): each strand's root onto the
+    hair cap (`cap`, from hair_cap()), and any point that frizz, noise or clumping pushed into the head
+    back out of it. Tune them on the modifiers afterwards. Returns the hair object."""
     g = _assets()
     ob = _curves_object(name, parent)
     vals = {"Guides per Lock": guides, "Points per Guide": points, "Fill": fill}
@@ -683,6 +1169,8 @@ def hair(name, collection=SHAPES, guides=10, points=24, fill=0.55, children=60, 
     if curl > 0:
         _modifier(ob, g["Curl Hair Curves"], {"Factor": 1.0, "Radius": curl, "Frequency": 4.0, "Guide Distance": spread * 2.5,
                                               "Seed": seed})
+    head = ob.parent if ob.parent is not None and ob.parent.type == "MESH" else None
+    _keep_out(ob, head, cap)
     _modifier(ob, g["Set Hair Curve Profile"], {"Radius": strand_radius, "Shape": 0.5})
     if material:
         ob.data.materials.append(material)
@@ -690,16 +1178,16 @@ def hair(name, collection=SHAPES, guides=10, points=24, fill=0.55, children=60, 
 
 
 def strays(name, collection=SHAPES, amount=2, spread=0.006, frizz=0.004, noise=0.006, curl=0.004, trim=0.06, guides=6,
-           points=24, strand_radius=0.000035, material=None, parent=None, seed=7):
+           points=24, strand_radius=0.000035, material=None, parent=None, seed=7, cap=None):
     """Loose hairs over the whole style: a sparse copy of the guides, pushed off the flow by strong
     frizz, noise and curl and cut to random lengths, so some strands leave their lock and end early."""
     return hair(name, collection, guides=guides, points=points, fill=0.9, children=amount, spread=spread, clump=0.0, trim=trim,
                 frizz=frizz, noise=noise, noise_scale=12.0, curl=curl, strand_radius=strand_radius, material=material,
-                parent=parent, seed=seed)
+                parent=parent, seed=seed, cap=cap)
 
 
 def baby_hair(name, surface, hairline_points, band=0.008, length=0.012, density=300000.0, flow=(0.0, 0.0, -1.0),
-              fan=35.0, rise=0.25, frizz=None, curl=0.0, strand_radius=0.00003, material=None, seed=3):
+              fan=35.0, rise=0.25, frizz=None, curl=0.0, strand_radius=0.00003, material=None, seed=3, cap=None):
     """Short fine hairs along a hairline, lying along the skin, not standing out of it like stubble.
     Roots are scattered over `surface` near the hairline points (all within band/2 of the line, fewer
     out to band), `density` hairs per m². Each hair leaves the skin at a low angle, then lies down
@@ -730,6 +1218,7 @@ def baby_hair(name, surface, hairline_points, band=0.008, length=0.012, density=
     vno = [(nm @ v.normal).normalized() for v in me.vertices]
     rnd = random.Random(seed)
     down = Vector(flow).normalized()
+    on_cap = _ob(cap) if cap is not None else None
     curves = []
     for tri in me.loop_triangles:
         a, b, c = (vco[i] for i in tri.vertices)
@@ -746,6 +1235,8 @@ def baby_hair(name, surface, hairline_points, band=0.008, length=0.012, density=
             if u + v > 1:
                 u, v = 1 - u, 1 - v
             root = a + (b - a) * u + (c - a) * v
+            if on_cap is not None and (_nearest_on(on_cap, root) - root).length > 0.001:
+                continue  # hair grows only from the cap: none on the bare skin past the hairline
             n = (na * (1 - u - v) + nb * u + nc * v).normalized()
             t = down - n * down.dot(n)
             if t.length < 1e-4:  # the flow runs straight into the skin here: any tangent
@@ -765,13 +1256,14 @@ def baby_hair(name, surface, hairline_points, band=0.008, length=0.012, density=
         ob.data.add_curves([6] * len(curves))
         ob.data.attributes["position"].data.foreach_set("vector", [x for cv in curves for p in cv for x in p])
     g = _assets()
-    cap = 0.1 * length
-    frizz = 0.06 * length if frizz is None else min(frizz, cap)
+    most = 0.1 * length
+    frizz = 0.06 * length if frizz is None else min(frizz, most)
     if frizz > 0:
         _modifier(ob, g["Frizz Hair Curves"], {"Factor": 1.0, "Distance": frizz, "Shape": 0.8, "Cumulative Offset": False, "Seed": seed})
     if curl > 0:  # each hair curls on its own: a shared guide winds every hair nearby round one point (starbursts)
-        _modifier(ob, g["Curl Hair Curves"], {"Factor": 1.0, "Radius": min(curl, cap), "Frequency": 1.0, "Guide Distance": 0.0002,
+        _modifier(ob, g["Curl Hair Curves"], {"Factor": 1.0, "Radius": min(curl, most), "Frequency": 1.0, "Guide Distance": 0.0002,
                                               "Seed": seed})
+    _keep_out(ob, surf, cap)
     _modifier(ob, g["Set Hair Curve Profile"], {"Radius": strand_radius, "Shape": 0.5})
     if material:
         ob.data.materials.append(material)
@@ -810,16 +1302,36 @@ def hair_material(name, stops=((0.0, (0.012, 0.010, 0.010)),), roughness=0.3, ra
 
 # ---------------------------------------------------------------- checks
 
-def report(hair_objects, surface=None, shapes=SHAPES):
+def report(hair_objects, surface=None, shapes=SHAPES, cap=None):
     """Counts and checks on the evaluated hair: strands, length range, how far roots are from the
-    surface (braids and tails start at a tie, so a few are far by design), and `backwards`: strands
-    whose tip is nearer a lock's start than their root is (should be about 0)."""
+    surface, and `backwards`: strands whose tip is nearer a lock's start than their root is (should
+    be about 0). With the head as `surface`, `inside`: strands that go into it by more than 0.5 mm
+    (must be 0: no hair through the model). With `cap`, `off_cap`: strands whose root is more than
+    1 mm off the hair cap (must be 0: hair grows only from the cap)."""
     dg = bpy.context.evaluated_depsgraph_get()
-    bvh = mi = None
+    bvh = mi = cap_bvh = cap_mi = None
+    rim = None
     if surface:
         surf = bpy.data.objects[surface] if isinstance(surface, str) else surface
         bvh, mw = BVHTree.FromObject(surf, dg), surf.matrix_world
         mi = mw.inverted()
+        from mathutils.kdtree import KDTree as _KD
+        import collections
+        use = collections.Counter(k for p in surf.data.polygons for k in p.edge_keys)
+        dots = []  # along the open edges (a cut-off bust, eye holes): "inside" means nothing there
+        for (a, b), k in use.items():
+            if k == 1:
+                pa, pb = surf.data.vertices[a].co, surf.data.vertices[b].co
+                steps = max(1, int((pb - pa).length / 0.001))
+                dots += [pa.lerp(pb, s / steps) for s in range(steps + 1)]
+        if dots:
+            rim = _KD(len(dots))
+            for i, p in enumerate(dots):
+                rim.insert(p, i)
+            rim.balance()
+    if cap is not None:
+        c = _ob(cap)
+        cap_bvh, cap_mi = BVHTree.FromObject(c, dg), c.matrix_world.inverted()
     from mathutils.kdtree import KDTree
     starts = []
     if shapes in bpy.data.collections:
@@ -844,7 +1356,7 @@ def report(hair_objects, surface=None, shapes=SHAPES):
         n = len(ev.curves)
         info = {"strands": n}
         if n:
-            lengths, gaps, backwards, checked = [], [], 0, 0
+            lengths, gaps, backwards, checked, inside, deepest, off_cap = [], [], 0, 0, 0, 0.0, 0
             step = max(1, n // 4000)
             for c in range(0, n, step):
                 a, b = offs[c], offs[c + 1]
@@ -853,8 +1365,23 @@ def report(hair_objects, surface=None, shapes=SHAPES):
                 checked += 1
                 if bvh:
                     gaps.append(bvh.find_nearest(mi @ pts[0])[3])
+                    deep = 0.0
+                    for p in pts[1:]:
+                        loc, nor, _i, _d = bvh.find_nearest(mi @ p)
+                        s = (mi @ p - loc).dot(nor)
+                        if s < -0.0005 and not (rim and rim.find(loc)[2] < 0.002):
+                            deep = max(deep, -s)
+                    if deep:
+                        inside += 1
+                        deepest = max(deepest, deep)
+                if cap_bvh is not None and cap_bvh.find_nearest(cap_mi @ pts[0])[3] > 0.001:
+                    off_cap += 1
                 if kd:
                     backwards += kd.find(pts[-1])[2] < kd.find(pts[0])[2]
+            if bvh:
+                info.update(inside=inside, inside_deepest_mm=round(deepest * 1000, 1))
+            if cap_bvh is not None:
+                info["off_cap"] = off_cap
             lengths.sort()
             info.update(length_min_m=round(lengths[0], 4), length_median_m=round(lengths[len(lengths) // 2], 4),
                         length_max_m=round(lengths[-1], 4), checked=checked)
@@ -897,36 +1424,41 @@ def attach(curves, surface):
     its UV map, and gives each curve its root's place on it (surface_uv_coordinate). The surface
     needs a UV map. bake() and bake_guides() call it when given a surface."""
     ob, surf = _ob(curves), _ob(surface)
-    me = surf.data
-    if not me.uv_layers:
+    if not surf.data.uv_layers:
         raise ValueError(f"{surf.name} needs a UV map")
-    from mathutils.interpolate import poly_3d_calc
     cv = ob.data
     cv.surface = surf
-    cv.surface_uv_map = me.uv_layers.active.name
-    me.calc_loop_triangles()
-    uv = me.uv_layers.active.data
-    sw = surf.matrix_world
-    verts = [sw @ v.co for v in me.vertices]
-    tris = list(me.loop_triangles)
-    bvh = BVHTree.FromPolygons(verts, [t.vertices[:] for t in tris])
+    cv.surface_uv_map = surf.data.uv_layers.active.name
     n = len(cv.curves)
     offs = [0] * (n + 1)
     cv.curve_offset_data.foreach_get("value", offs)
     pos = [0.0] * (len(cv.points) * 3)
     cv.attributes["position"].data.foreach_get("vector", pos)
     m = ob.matrix_world
-    out = [0.0] * (n * 2)
-    for c in range(n):
-        i = offs[c] * 3
-        loc, _nor, t, _d = bvh.find_nearest(m @ Vector(pos[i:i + 3]))
+    out = _root_uvs([m @ Vector(pos[offs[c] * 3:offs[c] * 3 + 3]) for c in range(n)], surf)
+    attr = cv.attributes.get("surface_uv_coordinate") or cv.attributes.new("surface_uv_coordinate", "FLOAT2", "CURVE")
+    attr.data.foreach_set("vector", [x for u in out for x in u])
+    return ob
+
+
+def _root_uvs(roots, surface):
+    """Each world-space root's UV on the surface, from the nearest point on it."""
+    from mathutils.interpolate import poly_3d_calc
+    me = surface.data
+    me.calc_loop_triangles()
+    uv = me.uv_layers.active.data
+    sw = surface.matrix_world
+    verts = [sw @ v.co for v in me.vertices]
+    tris = list(me.loop_triangles)
+    bvh = BVHTree.FromPolygons(verts, [t.vertices[:] for t in tris])
+    out = []
+    for p in roots:
+        loc, _nor, t, _d = bvh.find_nearest(p)
         tri = tris[t]
         w = poly_3d_calc([verts[v] for v in tri.vertices], loc)
         u = sum((uv[l].uv * k for l, k in zip(tri.loops, w)), Vector((0, 0)))
-        out[c * 2], out[c * 2 + 1] = u.x, u.y
-    attr = cv.attributes.get("surface_uv_coordinate") or cv.attributes.new("surface_uv_coordinate", "FLOAT2", "CURVE")
-    attr.data.foreach_set("vector", out)
-    return ob
+        out.append((u.x, u.y))
+    return out
 
 
 def bake_guides(hair, surface=None):
@@ -1020,11 +1552,14 @@ def _render_strands(ob):
     if not dup:
         return len(ob.evaluated_get(dg).data.curves)
     md, ids = dup[0]
-    va = getattr(md.properties.inputs, ids["Viewport Amount"]).value
-    shown = len(ob.evaluated_get(dg).data.curves)
-    amount = getattr(md.properties.inputs, ids["Amount"]).value
-    guides = shown / max(1e-6, 1 + amount * va)
-    return int(round(guides * (1 + amount)))
+    sock = getattr(md.properties.inputs, ids["Viewport Amount"])
+    va = sock.value
+    sock.value = 1.0  # counted at render density, then put back
+    ob.update_tag()
+    n = len(ob.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.curves)
+    sock.value = va
+    ob.update_tag()
+    return n
 
 
 def game_budget(objects, strands=GAME_STRANDS, widen=True):
@@ -1090,26 +1625,75 @@ def _simplify(p, tol):
     return np.nonzero(keep)[0]
 
 
-def export_groom(objects, path, scale=100.0, frame=None, tolerance=0.0002, max_points=64, merge=True):
-    """Exports hair as an Alembic groom for Unreal, made light enough for a game:
-      - each strand keeps only the points it needs to stay within `tolerance` m of its shape (0.2 mm:
-        a straight strand drops to a few points, a braid keeps its weave), at most `max_points`
-        (Unreal cuts curves past 255);
-      - with `merge`, objects that share a material become one group (one material slot each in
-        Unreal; every group costs its own passes), named after the first object in it;
-      - roots first, widths from each point's radius, all in centimetres (`scale` 100 from metres) with
-        the transforms baked in.
-    Takes baked objects or live ones (their evaluated hair is written, at render density). Prints
-    strands and points per group and in all, against Epic's MetaHuman budget. Unreal: import the .abc
-    as a Groom with its default conversion settings (rotate X 90, scale Y -1), then bind it to the
-    head's skeletal mesh, and set up its LODs there."""
+def _curves_of(ob, dg, scale, tolerance, max_points, surface):
+    """One object's evaluated curves for export: world positions x scale, thinned points, radii x
+    scale, and each curve's root UV on `surface` (or from its own surface_uv_coordinate)."""
+    cv = ob.evaluated_get(dg).data
+    n, npts = len(cv.curves), len(cv.points)
+    if not n:
+        return [], [], [], []
+    offs = np.zeros(n + 1, np.int32)
+    cv.curve_offset_data.foreach_get("value", offs)
+    pos = np.zeros(npts * 3, np.float32)
+    cv.attributes["position"].data.foreach_get("vector", pos)
+    pos = pos.reshape(-1, 3).astype(np.float64)
+    m = np.array(ob.matrix_world, np.float64)
+    world = pos @ m[:3, :3].T + m[:3, 3]
+    pos = world * scale
+    rad = np.zeros(npts, np.float32)
+    if "radius" in cv.attributes:
+        cv.attributes["radius"].data.foreach_get("value", rad)
+    if "surface_uv_coordinate" in cv.attributes:
+        uv = np.zeros(n * 2, np.float32)
+        cv.attributes["surface_uv_coordinate"].data.foreach_get("vector", uv)
+        uvs = uv.reshape(-1, 2).tolist()
+    elif surface is not None and surface.data.uv_layers:
+        uvs = _root_uvs([Vector(world[offs[c]]) for c in range(n)], surface)
+    else:
+        uvs = [(0.0, 0.0)] * n
+    sizes, flat, rads = [], [], []
+    for c in range(n):
+        a, b = offs[c], offs[c + 1]
+        k = _simplify(pos[a:b], tolerance * scale)
+        if len(k) > max_points:  # evenly along it, ends kept
+            k = np.asarray(k)[np.round(np.linspace(0, len(k) - 1, max_points)).astype(int)]
+        sizes.append(len(k))
+        flat.append(pos[a:b][k])
+        rads.append(rad[a:b][k] * scale)
+    return sizes, flat, rads, uvs
+
+
+def export_groom(objects, path, scale=100.0, frame=None, tolerance=0.0002, max_points=64, merge=True, guides=True,
+                 surface=None, max_guides=2000):
+    """Exports hair as an Alembic groom for Unreal, to Epic's "Alembic for Grooms" schema:
+      - one curves object, every strand tagged with `groom_group_id` (int, per curve): a group per
+        material with `merge` (Unreal gives each group its own material slot, at most 15, and every
+        group costs its own passes), else per object;
+      - `groom_root_uv` (float2, per curve): each root's UV on the head, from the hair's
+        surface_uv_coordinate (after attach or bake) or else from `surface`, its parent head or its
+        own surface. Without it Unreal invents a spherical projection, and materials that fade root to
+        tip or vary across the scalp come out wrong;
+      - `groom_width` (per point, the diameter) besides the native widths, and `groom_version_major`/
+        `groom_version_minor` 1/5 and `groom_tool` on the object;
+      - with `guides`, the live objects' guides (one per lock edge, ring and centre line) go in too,
+        thinned evenly to `max_guides` in all, tagged `groom_guide` = 1, for Unreal's hair simulation;
+        without them it picks some itself;
+      - each strand keeps only the points it needs to stay within `tolerance` m of its shape (0.2 mm: a
+        straight strand drops to a few points, a braid keeps its weave), at most `max_points` (Unreal cuts
+        curves past 255). Roots first, all in centimetres (`scale` 100 from metres), transforms baked in,
+        so the character needn't be at the origin.
+    Takes baked objects or live ones (their evaluated hair, at render density; nothing unapplied reaches
+    the file). Only curves are exported: the hair cap stays in Blender. Unreal: import the .abc as a
+    Groom with its default conversion settings, then bind it to the head's skeletal mesh and set up
+    LODs and physics there. Prints what it wrote, per group, against Epic's MetaHuman budget."""
     obs = [_ob(o) for o in (objects if isinstance(objects, (list, tuple)) else [objects])]
-    temp, old = [], [ob.name for ob in obs]
     clean = [ob.name.replace(" (baked)", "").replace(" (guides)", "") for ob in obs]
     groups = {}
     for ob, name in zip(obs, clean):
         key = (ob.data.materials[0].name if ob.data.materials and ob.data.materials[0] else name) if merge else name
         groups.setdefault(key, []).append((ob, name))
+    if len(groups) > 15:
+        print(f"GROOM: {len(groups)} groups; Unreal takes at most 15 per groom. Merge sections that share a look.")
     vl = bpy.context.view_layer
     picked, active = [o for o in vl.objects if o.select_get()], vl.objects.active
     renders = {}
@@ -1118,62 +1702,81 @@ def export_groom(objects, path, scale=100.0, frame=None, tolerance=0.0002, max_p
             sock = getattr(md.properties.inputs, ids["Viewport Amount"])
             renders[(ob.name, md.name)] = sock.value
             sock.value = 1.0
-    stats = []
+    stats, temp = [], None
+
+    def surf_of(ob):
+        s = surface or getattr(ob.data, "surface", None) or (ob.parent if ob.parent and ob.parent.type == "MESH" else None)
+        return _ob(s) if s is not None else None
+
     try:
-        for ob in obs:  # the copies take the sections' own names: the engine shows them as group names
-            ob.name = ob.name + " ~export"
         dg = bpy.context.evaluated_depsgraph_get()
-        for _key, members in groups.items():
-            sizes, flat, rads, mats = [], [], [], []
+        sizes, flat, rads, uvs, gid, guide, mats, guide_parts = [], [], [], [], [], [], [], []
+        for g, (key, members) in enumerate(groups.items()):
+            n0, p0 = len(sizes), sum(sizes)
             for ob, _name in members:
-                cv = ob.evaluated_get(dg).data
-                n, npts = len(cv.curves), len(cv.points)
-                offs = np.zeros(n + 1, np.int32)
-                cv.curve_offset_data.foreach_get("value", offs)
-                pos = np.zeros(npts * 3, np.float32)
-                cv.attributes["position"].data.foreach_get("vector", pos)
-                pos = pos.reshape(-1, 3).astype(np.float64)
-                m = np.array(ob.matrix_world, np.float64)
-                pos = (pos @ m[:3, :3].T + m[:3, 3]) * scale
-                rad = np.zeros(npts, np.float32)
-                if "radius" in cv.attributes:
-                    cv.attributes["radius"].data.foreach_get("value", rad)
-                for c in range(n):
-                    a, b = offs[c], offs[c + 1]
-                    k = _simplify(pos[a:b], tolerance * scale)
-                    if len(k) > max_points:  # evenly along it, ends kept
-                        k = np.asarray(k)[np.round(np.linspace(0, len(k) - 1, max_points)).astype(int)]
-                    sizes.append(len(k))
-                    flat.append(pos[a:b][k])
-                    rads.append(rad[a:b][k] * scale)
+                s, f, r, u = _curves_of(ob, dg, scale, tolerance, max_points, surf_of(ob))
+                sizes += s
+                flat += f
+                rads += r
+                uvs += u
+                gid += [g] * len(s)
+                guide += [0] * len(s)
+                if guides and ob.modifiers and ob.modifiers[0].name == "Shapes to Hair" and _duplicates(ob):
+                    # the guides alone: everything after the conversion switched off for a moment
+                    shown = [(m, m.show_viewport) for m in ob.modifiers[1:]]
+                    for m, _v in shown:
+                        if m.name != "Keep Out Of Head":
+                            m.show_viewport = False
+                    dg.update()
+                    s, f, _r, u = _curves_of(ob, dg, scale, tolerance, max_points, surf_of(ob))
+                    for m, v in shown:
+                        m.show_viewport = v
+                    dg.update()
+                    guide_parts.append((g, s, f, u))
                 for mat in ob.data.materials:
                     if mat and mat not in mats:
                         mats.append(mat)
-            name = members[0][1]
-            data = bpy.data.hair_curves.new(name)
-            data.add_curves(sizes)
-            data.attributes["position"].data.foreach_set("vector", np.concatenate(flat).astype(np.float32).ravel())
-            ra = data.attributes.get("radius") or data.attributes.new("radius", "FLOAT", "POINT")
-            ra.data.foreach_set("value", np.concatenate(rads).astype(np.float32))
-            for mat in mats:
-                data.materials.append(mat)
-            t = bpy.data.objects.new(name, data)
-            bpy.context.scene.collection.objects.link(t)
-            temp.append(t)
-            stats.append((name, len(sizes), int(sum(sizes)), max(sizes) if sizes else 0, [o.name for o, _n in members]))
-        for o in bpy.context.view_layer.objects:
-            o.select_set(o in temp)
-        bpy.context.view_layer.objects.active = temp[0]
+            stats.append([g, key, len(sizes) - n0, 0, sum(sizes) - p0, max(sizes[n0:]) if len(sizes) > n0 else 0,
+                          [o.name for o, _n in members]])
+        # the guides, thinned evenly to at most max_guides in all: they only drive the simulation
+        total = sum(len(s) for _g, s, _f, _u in guide_parts)
+        step = max(1, -(-total // max_guides))
+        for g, s, f, u in guide_parts:
+            keep = range(0, len(s), step)
+            sizes += [s[i] for i in keep]
+            flat += [f[i] for i in keep]
+            rads += [np.full(len(f[i]), 0.00006 * scale, np.float32) for i in keep]
+            uvs += [u[i] for i in keep]
+            gid += [g] * len(keep)
+            guide += [1] * len(keep)
+            stats[g][3] += len(keep)
+        data = bpy.data.hair_curves.new("Groom")
+        data.add_curves(sizes)
+        data.attributes["position"].data.foreach_set("vector", np.concatenate(flat).astype(np.float32).ravel())
+        radius = np.concatenate(rads).astype(np.float32)
+        (data.attributes.get("radius") or data.attributes.new("radius", "FLOAT", "POINT")).data.foreach_set("value", radius)
+        data.attributes.new("groom_width", "FLOAT", "POINT").data.foreach_set("value", radius * 2)
+        data.attributes.new("groom_group_id", "INT", "CURVE").data.foreach_set("value", gid)
+        data.attributes.new("groom_guide", "INT", "CURVE").data.foreach_set("value", guide)
+        data.attributes.new("groom_root_uv", "FLOAT2", "CURVE").data.foreach_set("vector", [x for u in uvs for x in u])
+        for mat in mats:
+            data.materials.append(mat)
+        temp = bpy.data.objects.new("Groom", data)
+        temp["groom_version_major"], temp["groom_version_minor"] = 1, 5
+        temp["groom_tool"] = "Agent Orange hair_shapes"
+        bpy.context.scene.collection.objects.link(temp)
+        for o in vl.objects:
+            o.select_set(o == temp)
+        vl.objects.active = temp
         f = bpy.context.scene.frame_current if frame is None else frame
         bpy.ops.wm.alembic_export(filepath=os.path.abspath(path), selected=True, global_scale=1.0, start=f, end=f,
-                                  uvs=False, normals=False, export_hair=False, export_particles=False)
+                                  uvs=False, normals=False, export_hair=False, export_particles=False,
+                                  export_custom_properties=True)
     finally:
-        for t in temp:
-            data = t.data
-            bpy.data.objects.remove(t)
+        if temp is not None:
+            data = temp.data
+            bpy.data.objects.remove(temp)
             bpy.data.hair_curves.remove(data)
-        for ob, name in zip(obs, old):
-            ob.name = name
         for ob in obs:
             for md, ids in _duplicates(ob):
                 if (ob.name, md.name) in renders:
@@ -1181,13 +1784,16 @@ def export_groom(objects, path, scale=100.0, frame=None, tolerance=0.0002, max_p
         for o in picked:
             o.select_set(True)
         vl.objects.active = active
-    strands, points = sum(s[1] for s in stats), sum(s[2] for s in stats)
-    print(f"GROOM {path}: {len(stats)} groups, {strands} strands, {points} points ({points / max(1, strands):.1f} a strand)")
-    for name, n, p, most, members in stats:
-        print(f"  {name}: {n} strands, {p} points, at most {most} on one ({len(members)} objects)")
+    strands = sum(s[2] for s in stats)
+    points = sum(s[4] for s in stats)
+    print(f"GROOM {path}: {len(stats)} groups, {strands} strands (+{sum(s[3] for s in stats)} guides), "
+          f"{points} points ({points / max(1, strands):.1f} a strand)")
+    for g, key, n, ng, p, most, members in stats:
+        print(f"  group {g} ({key}): {n} strands, {ng} guides, {p} points, at most {most} on one; {', '.join(members)}")
     if strands > GAME_STRANDS * 1.2:
         print(f"  Over a game budget: Epic's MetaHuman head hair is {GAME_STRANDS} strands at LOD0. game_budget() cuts it.")
-    return {"path": path, "groups": len(stats), "strands": strands, "points": points}
+    return {"path": path, "groups": len(stats), "strands": strands, "points": points,
+            "group_names": {g: key for g, key, *_r in stats}}
 
 
 # ---------------------------------------------------------------- self test
@@ -1203,6 +1809,9 @@ def _selftest(out_dir):
     bpy.ops.object.shade_smooth()
     R = 0.1
     sph = lambda th, ph, r=R: Vector((r * math.sin(th) * math.cos(ph), r * math.sin(th) * math.sin(ph), r * math.cos(th)))
+    # the hair cap first: a hairline all round, high over the face (-Y), low at the back (+Y)
+    ring = [sph(0.45 + 1.45 * (0.5 + 0.5 * math.sin(a)), a, R) for a in [k * 2 * math.pi / 48 for k in range(48)]]
+    cap = hair_cap(head, ring, color=(0.01, 0.008, 0.008))
     # bangs: roots on the front of the crown, falling over the forehead (face looks down -Y)
     for i in range(7):
         ph = -math.pi / 2 + (i - 3) * 0.16
@@ -1223,27 +1832,27 @@ def _selftest(out_dir):
         root = sph(0.2, ph, R * 0.985)
         lock(f"Pig{i}", [root] + on_surface([sph(0.9, ph), sph(1.5, ph * 0.9 + 0.06)], head, 0.0075) + [tie_pt],
              (0.006, 0.007, 0.006))
-    down = tie_pt + Vector((0.0, -0.04, -0.03))
+    down = tie_pt + Vector((0.0, -0.01, -0.05))  # down past the head, not into it
     end = tie_pt + Vector((0.0, -0.06, -0.15))
     braid("Braid", [tie_pt, down, end], width=(0.022, 0.013), turns=4, tail_locks=6,
-          tail=[end, end + Vector((0, -0.005, -0.03)), end + Vector((0, -0.006, -0.06))])
+          tail=[end, end + Vector((0, -0.005, -0.03)), end + Vector((0, -0.006, -0.06))], root=cap)
     tie("Tie2", end, (0, -0.15, -1), radius=0.006)
     tie("Tie", tie_pt, (0, -0.4, -1), radius=0.008)
     # a mesh strip with its root creased, behind the other ear
     strip("Strip", [sph(0.5, -0.4 + k * 0.08, R * 0.985) for k in range(5)],
           [sph(1.5, -0.4 + k * 0.08, R * 1.05) + Vector((0, 0, -0.03)) for k in range(5)], rows=20)
 
+    print("TO CAP", to_cap(cap, SHAPES))
     preview(on=True, material=hair_material("M_Blockout", ((0.0, (0.2, 0.2, 0.25)),)))
     _render(out_dir, "blockout")
     preview(on=False)
     bpy.data.collections[SHAPES].hide_render = True
 
     mat = hair_material("M_Hair", ((0.0, (0.01, 0.008, 0.008)), (0.55, (0.012, 0.009, 0.010)), (1.0, (0.18, 0.03, 0.30))))
-    main = hair("Hair", material=mat, parent=head)
-    loose = strays("Strays", material=mat, parent=head)
-    hairline = [sph(0.42, -math.pi / 2 + a, R) for a in [x * 0.1 for x in range(-8, 9)]]
-    baby = baby_hair("BabyHair", head, hairline, material=mat)
-    rep = report([main, loose, baby], head)
+    main = hair("Hair", material=mat, parent=head, cap=cap)
+    loose = strays("Strays", material=mat, parent=head, cap=cap)
+    baby = baby_hair("BabyHair", head, ring[:25], material=mat, cap=cap)
+    rep = report([main, loose, baby], head, cap=cap)
     for k, v in rep.items():
         print("REPORT", k, v)
     _render(out_dir, "hair")

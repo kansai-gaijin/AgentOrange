@@ -17,6 +17,11 @@ def _shapes(context):
     return context.scene.hs_shapes or bpy.data.collections.get(hs.SHAPES)
 
 
+def _grow_on(context, ob=None):
+    """What hair is attached to when baked: the hair cap when there is one, else the head."""
+    return context.scene.hs_cap or _surface(context, ob)
+
+
 def _surface(context, ob=None):
     if context.scene.hs_surface:
         return context.scene.hs_surface
@@ -104,9 +109,10 @@ class HS_OT_convert(bpy.types.Operator):
         mat = context.scene.hs_material
         ob = hs.hair(f"Hair {coll.name}", coll.name, guides=self.guides, children=self.children, spread=self.spread,
                      clump=self.clump, trim=self.trim, frizz=self.frizz, noise=self.noise, curl=self.curl,
-                     strand_radius=self.strand_radius, material=mat, parent=surf, viewport=context.scene.hs_viewport)
+                     strand_radius=self.strand_radius, material=mat, parent=surf, viewport=context.scene.hs_viewport,
+                     cap=context.scene.hs_cap)
         if self.strays:
-            hs.strays(f"Strays {coll.name}", coll.name, material=mat, parent=surf)
+            hs.strays(f"Strays {coll.name}", coll.name, material=mat, parent=surf, cap=context.scene.hs_cap)
         coll.hide_render = True
         context.view_layer.objects.active = ob
         return {"FINISHED"}
@@ -130,7 +136,7 @@ class HS_OT_bake_guides(_Bake, bpy.types.Operator):
         done = []
         for ob in _hair_selected(context):
             if ob.modifiers and ob.modifiers[0].name == "Shapes to Hair":
-                done.append(hs.bake_guides(ob, _surface(context, ob)))
+                done.append(hs.bake_guides(ob, _grow_on(context, ob)))
         if not done:
             self.report({"ERROR"}, "Select live hair (made by Convert Section)")
             return {"CANCELLED"}
@@ -149,7 +155,7 @@ class HS_OT_bake(_Bake, bpy.types.Operator):
     bl_label = "Bake Strands"
 
     def execute(self, context):
-        done = [hs.bake(ob, _surface(context, ob)) for ob in _hair_selected(context) if ob.modifiers]
+        done = [hs.bake(ob, _grow_on(context, ob)) for ob in _hair_selected(context) if ob.modifiers]
         for o in context.selected_objects:
             o.select_set(False)
         for o in done:
@@ -180,7 +186,7 @@ class HS_OT_follow(_Bake, bpy.types.Operator):
     def execute(self, context):
         for ob in _hair_selected(context):
             if "surface_uv_coordinate" not in ob.data.attributes:
-                surf = _surface(context, ob)
+                surf = _grow_on(context, ob)
                 if surf is None:
                     self.report({"ERROR"}, f"{ob.name}: set the head (surface) first")
                     return {"CANCELLED"}
@@ -227,6 +233,7 @@ class HS_PT_panel(bpy.types.Panel):
         col = lay.column(align=True)
         col.prop(sc, "hs_shapes", text="Shapes")
         col.prop(sc, "hs_surface", text="Head")
+        col.prop(sc, "hs_cap", text="Hair cap")
         col.prop(sc, "hs_material", text="Material")
         col.prop(sc, "hs_viewport", text="Viewport", slider=True)
         box = lay.box()
@@ -258,6 +265,9 @@ CLASSES = (HS_OT_tubes, HS_OT_stack, HS_OT_convert, HS_OT_bake_guides, HS_OT_bak
 def register():
     bpy.types.Scene.hs_shapes = PointerProperty(type=bpy.types.Collection, name="Shapes",
                                                 description="The collection holding the locks; its children are the sections")
+    bpy.types.Scene.hs_cap = PointerProperty(type=bpy.types.Object, name="Hair cap", poll=lambda _s, o: o.type == "MESH",
+                                             description="The scalp the hair grows from (hair_cap()); roots go on it, "
+                                                         "and bakes attach to it")
     bpy.types.Scene.hs_surface = PointerProperty(type=bpy.types.Object, name="Head",
                                                  poll=lambda _s, o: o.type == "MESH",
                                                  description="The head the hair grows from (needs a UV map for baking)")
@@ -274,3 +284,4 @@ def unregister():
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
     del bpy.types.Scene.hs_shapes, bpy.types.Scene.hs_surface, bpy.types.Scene.hs_material, bpy.types.Scene.hs_viewport
+    del bpy.types.Scene.hs_cap

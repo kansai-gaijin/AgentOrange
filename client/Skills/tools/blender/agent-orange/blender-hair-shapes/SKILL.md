@@ -1,6 +1,6 @@
 ---
 name: blender-hair-shapes
-description: Realistic strand hair in Blender 5.3 built from shapes. Measure the references with cameras fitted to them, block the hairstyle out as locks (curves with a radius, or creased mesh strips), match the blockout to the references in millimetres, then convert it to strand hair with Geometry Nodes. It stays editable by hand, and bakes to brushable curves and Alembic grooms for game engines. The locks become the clumps; tapered tips, stray hairs and baby hair are added on top. Use for any styled hair from references: bangs, parts, pigtails, braids, buns, ponytails.
+description: Realistic strand hair in Blender 5.3 built from shapes. Measure the references with cameras fitted to them, make a hair cap that all hair grows from, block the hairstyle out as locks (curves with a radius, or creased mesh strips), match the blockout to the references in millimetres, then convert it to strand hair with Geometry Nodes. It stays editable by hand, and bakes to brushable curves and Alembic grooms for game engines. The locks become the clumps; tapered tips, stray hairs and baby hair are added on top. Use for any styled hair from references: bangs, parts, pigtails, braids, buns, ponytails.
 license: MIT
 ---
 
@@ -40,7 +40,50 @@ print(hs.measure(cam))
 - Without references on this head, set the cameras up by hand and compare side by side, but still
   measure what you can: bang line against the eyes or brows, length against the chin and shoulders.
 
-## 2. Plan the style in sections
+## 2. Make the hair cap first
+Three rules hold for every hairstyle:
+1. **There's always a hair cap.** It's the scalp inside the hairline, as its own mesh in the hair's
+   root colour.
+2. **Hair grows only from the cap.** Every strand's root is on it.
+3. **No hair goes through the model.**
+
+```python
+hairline = hs.hairline(head)        # found from the head: the ears, then a human hairline round them
+cap = hs.hair_cap(head, hairline, color=root_rgb)
+```
+- **The hairline, found:** `hs.hairline(head)` finds the ears, as thin flaps sticking out of the sides,
+  and builds the line the way hair grows:
+  - the forehead;
+  - temples a little higher;
+  - a sideburn down in front of each ear;
+  - over each ear just above where it joins the head;
+  - down behind it to the lobe;
+  - the nape below.
+- **Adjusting it:** use `front`, `sideburn` and `nape` against the references, or edit the points.
+  Too high around the ears leaves roots with nowhere to grow.
+- **Where the cap comes from:** it's the head's surface on the crown side of the hairline, reached
+  from the top of the head, so ear tips stay bare. It sits 0.3 mm over the head, keeps the head's UVs,
+  and its edge fades out over 6 mm for a soft hairline.
+- **Why it matters:** between strands it shows hair-coloured scalp, not skin, as a game groom's cap
+  does.
+- **Getting the hairline right:** take it from the references: where `measure` puts the hairline,
+  and the temples and nape in the side and back views. Render the head with the cap and compare it
+  with the reference before any lock.
+- **It stays in Blender:** only the curves go to the engine. The cap is where they grow from, what
+  the brushes and `follow` attach to, and where the roots' UVs come from: it keeps the head's UVs.
+
+Then the rules carry through every step:
+- `hs.braid(..., root=cap)`: each braid strand starts on the cap, under the gathered hair, and the tail
+  locks run inside the braid from there.
+- `hs.to_cap(cap, "Section")` after the blockout: any lock whose root is off the cap gets a root on it.
+  It prints the ones it had to join from far away; route those by hand, under other hair.
+- `hs.hair(..., parent=head, cap=cap)` and `hs.strays(..., cap=cap)`: a live "Keep Out Of Head" modifier
+  puts every root on the cap. It also pushes back out any point that frizz, noise or clumping took
+  into the head. `hs.baby_hair(..., cap=cap)` grows only on the cap.
+- `hs.report(hair, head, cap=cap)`: `inside` (strands that go into the head) and `off_cap` (roots off the
+  cap) must both be 0.
+
+## 3. Plan the style in sections
 From the references, list the sections and how many locks each one needs:
 - **Bangs:** 10–16 locks side by side, ending on the measured bang line. How thick they look comes
   from how far back they're rooted: heavy, blunt bangs take a triangle of scalp reaching 6–9 cm back
@@ -71,7 +114,7 @@ Where two sections meet, they share the border:
 Give each section its own collection inside `HairShapes`, so it can be layered, checked and
 converted on its own.
 
-## 3. Block it out
+## 4. Block it out
 Build all of this in one collection, `HairShapes`.
 - `hs.lock(name, points, radii)`: points run root to tip and are smoothed. radii is one value,
   (root, tip), (root, mid, tip) or one per point. The radius is half the clump's width.
@@ -114,7 +157,7 @@ hs.stack(["Nape", "Around ears", "Back", "Sides", "Crown", "Bangs"], head)   # n
 - Leave braids and tails out of the list; they hang free.
 - Run it again whenever you change a section.
 
-## 4. Check the blockout before any strands
+## 5. Check the blockout before any strands
 1. Turn the tubes on with `hs.preview("HairShapes", on=True, material=grey)`.
 2. Check the layers: `hs.sections(cam, ["Nape", ..., "Bangs"], "sections_left.png")` draws each
    section in its own colour, beside the reference.
@@ -137,15 +180,16 @@ hs.stack(["Nape", "Around ears", "Back", "Sides", "Crown", "Bangs"], head)   # n
 5. Also render every view from its camera, side by side with the reference. Keep these renders. The
    person reviews them, and they are the "before" in your report.
 
-## 5. Convert
+## 6. Convert
 ```python
+hs.to_cap(cap, "HairShapes")                  # every lock rooted on the cap
 hs.preview("HairShapes", on=False)            # always: the conversion reads bare curves
 bpy.data.collections["HairShapes"].hide_render = True
 mat = hs.hair_material("M_Hair", ((0.0, root_rgb), (0.6, mid_rgb), (1.0, tip_rgb)))   # root 0 -> tip 1
-main = hs.hair("Hair", material=mat, parent=head)
-loose = hs.strays("Strays", material=mat, parent=head)
-baby = hs.baby_hair("BabyHair", head, hairline_points, material=mat)
-print(hs.report([main, loose, baby], head))
+main = hs.hair("Hair", material=mat, parent=head, cap=cap)
+loose = hs.strays("Strays", material=mat, parent=head, cap=cap)
+baby = hs.baby_hair("BabyHair", head, hairline, material=mat, cap=cap)
+print(hs.report([main, loose, baby], head, cap=cap))   # inside and off_cap must be 0
 ```
 - **How a lock becomes strands:** each lock gives `guides` strands round its edge, two inner rings
   of guides, and its centre line. Each guide then gets `children` copies around it, so a lock is
@@ -180,11 +224,11 @@ The hairline points follow the edge of the scalp: forehead, temples, round the e
   low density. Where it must read further away, add short hand-placed locks (a creased `strip` along
   the hairline with one column per hair) on top.
 
-## 6. Check the strands
-- **`hs.report(...)`:**
+## 7. Check the strands
+- **`hs.report(hair, head, cap=cap)`:**
+  - `inside` must be 0: no strand goes into the head.
+  - `off_cap` must be 0: every root is on the cap.
   - `backwards` should be about 0.
-  - `root_gap_median_m` should be under a lock radius.
-  - Strands that start at a tie are far from the scalp by design.
 - **Render the same views again** from the reference cameras, at the references' size, with at
   least 64 samples. Show before and after side by side, plus close-ups of the hairline, a clump and
   a braid tip.
@@ -204,15 +248,18 @@ The hairline points follow the edge of the scalp: forehead, temples, round the e
   - fuzz everywhere (less frizz, fewer strays).
 - **If it's wrong, fix the shapes and convert again.** The modifiers only refine what the shapes say.
 
-## 7. Hand it over: hand edits, bake, export
+## 8. Hand it over: hand edits, bake, export
 The hair is for a game engine, and sometimes for cut-scenes rendered in Blender. A person may finish
 it by hand, so leave every stage editable, and bake only at the end.
 
 | Stage | What can be edited | How |
 |---|---|---|
 | Live (after `hair()`) | the locks | Edit mode on a lock: move points, Alt+S for radius. The hair follows at once |
-| Guides | the guides, by brush | `g = hs.bake_guides(hair, head)`. Comb them in Curves Sculpt mode; the children, clumps and frizz stay live on top |
-| Baked | every strand, by brush | `b = hs.bake(g or hair, head)`. Plain hair curves on the head, with its surface and UVs set for the sculpt brushes |
+| Guides | the guides, by brush | `g = hs.bake_guides(hair, cap)`. Comb them in Curves Sculpt mode; the children, clumps and frizz stay live on top |
+| Baked | every strand, by brush | `b = hs.bake(g or hair, cap)`. Plain hair curves on the cap, with its surface and UVs set for the sculpt brushes |
+
+Bake onto the cap, not the head: the roots are on it, and the sculpt brushes then add and move hair only
+where hair grows. After brushing, run `report` again: a brush can push strands into the head.
 
 - **Nothing is lost:** each bake keeps its source, hidden. `hs.unbake(b)` removes the bake and shows the
   source again, so you can change the locks or the guides and bake again.
@@ -226,18 +273,30 @@ it by hand, so leave every stage editable, and bake only at the end.
   - Then measure with `compare` against the full hair. On Hime, 266,000 strands cut to 51,000 lost 1.5%
     of "solid" (93.4% to 91.9%) and kept the bangs' detail. The braids, at a tenth of their strands, read
     slimmer.
-- **Game engine:** `hs.export_groom([b, ...], "hair.abc")` writes an Alembic groom for Unreal.
-  - Each strand keeps only the points it needs to stay within 0.2 mm of its shape, at most 64 (Unreal
-    cuts curves past 255). Hime went from 22 points a strand to 19, and 9.5 million viewport points to
-    975,000 exported.
-  - Objects that share a material become one group: every group costs its own passes in Unreal.
-  - Roots first, widths from the strand radius, all in centimetres, with transforms baked in.
-  - It prints strands and points per group, and warns when over the budget.
-  - It's slow on a full head (about 7 minutes for 266,000 strands, about 1 minute at the budget).
-  - In Unreal, set up the groom's LODs (Auto LOD, curve decimation) and its simulation guides there.
-  - In Unreal, import it as a Groom with the default conversion settings, then bind it to the head's
-    skeletal mesh. (Not yet tried in Unreal.)
-  - It works on live objects too, so a person's edits don't need baking just to export.
+- **Game engine:** `hs.export_groom(hair_objects, "hair.abc", surface=cap)` writes an Alembic groom to
+  Epic's "Alembic for Grooms" schema. Blender's own Alembic export writes none of the groom attributes,
+  so it builds them on the curves first. Blender then writes them as the file's arbitrary geometry
+  parameters.
+  - **One curves object:** every strand carries `groom_group_id`, one group per material. Unreal gives
+    each group its own material slot, takes at most 15, and runs its passes per group.
+  - **`groom_root_uv`:** each root's UV on the cap (the head's UVs). Without it, Unreal invents a
+    spherical projection, and root-to-tip or scalp-wide material effects come out wrong.
+  - **Guides:** the locks' guides go in too, thinned to 2,000 and tagged `groom_guide`, to drive
+    Unreal's hair simulation.
+  - **Width and version:** `groom_width` per point (the diameter) besides the native widths, and
+    `groom_version_major`/`minor` 1/5 on the object.
+  - **Points:** each strand keeps only the points it needs to stay within 0.2 mm of its shape, at
+    most 64 (Unreal cuts curves past 255). Don't thin harder: Unreal draws straight segments between
+    points, and too few read as angular.
+  - **Units and placement:** all in centimetres, roots first, transforms baked in, so the character
+    needn't stand at the origin.
+  - **Nothing unapplied:** only the evaluated hair is written, so no live modifier reaches the file.
+    People report unapplied interpolation crashing Unreal.
+  - **What it prints:** strands, guides and points per group, with a warning when over the budget.
+    About 2 minutes for a 50,000-strand head.
+  - **In Unreal:** import the .abc as a Groom with the default conversion settings, then bind it to
+    the head's skeletal mesh. Set up LODs and physics there. Not yet tried in Unreal.
+  - **Live objects:** it works on them too, so a person's edits don't need baking just to export.
 - **For a person, the add-on:** `scripts/` is also a Blender extension, "Hair from Shapes".
   - Build it with `blender --command extension build --source-dir <this skill>/scripts --output-dir <dir>`.
   - Install the .zip from Preferences > Get Extensions > Install from Disk.

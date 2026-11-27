@@ -37,6 +37,14 @@ All were run headless on Blender 5.3, on made bodies:
   to the same 13,160 curves. Followed a head lifted 1 cm by exactly 1 cm. Exported with two braids as a three-group
   Alembic groom, which read back at the right size in centimetres with its widths. The add-on's buttons ran the same
   chain headless, and it builds as an extension. Not yet tried: brushing by hand, and importing into Unreal.
+- **Hair cap, roots and no hair through the head:** one agent's whole Hime, rebuilt from its blockout. Without them,
+  13,084 strands went into the head (the bangs rooted 2–3 cm down the forehead, strays up to 1 cm deep). With a cap,
+  every lock rooted on it and the keep-out modifier, `report` counts 0 strands inside and 0 roots off the cap, on the
+  head and on the self-test sphere. `hairline` found Hime's ears (z 1.463–1.514) and gave a cap that comes down round
+  them to the nape.
+- **Unreal groom export:** that Hime at the game budget written as one groom: 49,863 strands in 4 groups by material,
+  1,788 simulation guides, root UVs, widths and the schema version, all present in the file as Alembic geometry
+  parameters. Not yet imported into Unreal.
 - **Game budget:** a whole Hime, 266,128 strands, cut to 51,038 (Epic's MetaHuman LOD0 is 50,000) and exported as four
   groups, one per material, with 975,019 points (19 a strand). Measured against the reference, it covers 91.9% of the
   solid hair against 93.4% at full, and its bangs keep their detail.
