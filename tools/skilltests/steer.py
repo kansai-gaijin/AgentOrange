@@ -11,7 +11,9 @@ from paths import WORK  # noqa: E402
 name, note = sys.argv[1], sys.argv[2]
 effort = sys.argv[3] if len(sys.argv) > 3 else "max"
 run = os.path.join(WORK, "run")
-logs = [os.path.join(run, name + ".jsonl"), os.path.join(run, name + ".resume.jsonl")]
+parts = sorted((f for f in os.listdir(run) if f.startswith(name + ".resume") and f.endswith(".jsonl")),
+               key=lambda f: os.path.getmtime(os.path.join(run, f)))
+logs = [os.path.join(run, name + ".jsonl")] + [os.path.join(run, f) for f in parts]
 session, first = None, None
 for lg in logs:
     if os.path.exists(lg):
@@ -37,6 +39,13 @@ ps = ("Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Objec
       "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
 subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True)
 time.sleep(3)
+# the resumed part writes run/<name>.resume.jsonl from scratch: keep the last part's log as resume<k>
+current = os.path.join(run, name + ".resume.jsonl")
+if os.path.exists(current):
+    k = 1
+    while os.path.exists(os.path.join(run, f"{name}.resume{k}.jsonl")):
+        k += 1
+    os.replace(current, os.path.join(run, f"{name}.resume{k}.jsonl"))
 text = open(note, encoding="utf-8").read().strip()
 with open(os.path.join(run, name + ".police.md"), "a", encoding="utf-8") as f:
     f.write(f"\n## {datetime.datetime.now():%Y-%m-%d %H:%M}\n\n{text}\n")

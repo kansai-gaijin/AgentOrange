@@ -30,10 +30,20 @@ if steer and os.path.exists(steer):  # a reviewer stopped you to correct course:
               "were with that in mind, and finish the task as asked.")
 start = time.time()
 done = runner.claude(prompt, cwd, log, extra, 720, effort)
-first = runner.read(os.path.join(runner.RUN, name + ".jsonl"))
+# earlier parts: the first run, then any resumed parts a steer set aside as .resume<k>.jsonl
+earlier = [os.path.join(runner.RUN, name + ".jsonl")]
+k = 1
+while os.path.exists(os.path.join(runner.RUN, f"{name}.resume{k}.jsonl")):
+    earlier.append(os.path.join(runner.RUN, f"{name}.resume{k}.jsonl"))
+    k += 1
 r = runner.read(log)
-r["calls"] = first.get("calls", []) + r.get("calls", [])
-r["skills"] = sorted(set(first.get("skills", [])) | set(r.get("skills", [])))
+calls, skills = [], set(r.get("skills", []))
+for part in earlier:
+    p = runner.read(part)
+    calls += p.get("calls", [])
+    skills |= set(p.get("skills", []))
+r["calls"] = calls + r.get("calls", [])
+r["skills"] = sorted(skills)
 meta_path = os.path.join(runner.RUN, name + ".json")
 asked = open(os.path.join(HERE, "prompts", prompt_file), encoding="utf-8").read().strip()
 json.dump({"skill": "blender-hair-grooming", "name": name, "model": "Claude Fable 5.2", "effort": effort, "asked": asked,
