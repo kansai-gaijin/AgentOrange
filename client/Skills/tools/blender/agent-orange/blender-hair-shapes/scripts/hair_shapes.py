@@ -986,6 +986,7 @@ def keep_out_group():
     io.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
     io.new_socket("Head", in_out="INPUT", socket_type="NodeSocketObject")
     io.new_socket("Cap", in_out="INPUT", socket_type="NodeSocketObject")
+    io.new_socket("Avoid", in_out="INPUT", socket_type="NodeSocketCollection")
     s = io.new_socket("Margin", in_out="INPUT", socket_type="NodeSocketFloat")
     s.default_value, s.subtype = 0.0005, "DISTANCE"
     s = io.new_socket("Reach", in_out="INPUT", socket_type="NodeSocketFloat")
@@ -1033,51 +1034,81 @@ def keep_out_group():
         L.new(sc.outputs["Vector"], add.inputs[1])
         return add.outputs["Vector"]
 
-    head = surface("Head")
-    near, nor, height = nearest(head)
-    under = N.new("FunctionNodeCompare")
-    under.data_type, under.operation = "FLOAT", "LESS_THAN"
-    L.new(height, under.inputs["A"])
-    L.new(gi.outputs["Margin"], under.inputs["B"])
-    neg = N.new("ShaderNodeMath")
-    neg.operation = "MULTIPLY"
-    L.new(gi.outputs["Reach"], neg.inputs[0])
-    neg.inputs[1].default_value = -1.0
-    near_enough = N.new("FunctionNodeCompare")
-    near_enough.data_type, near_enough.operation = "FLOAT", "GREATER_THAN"
-    L.new(height, near_enough.inputs["A"])
-    L.new(neg.outputs[0], near_enough.inputs["B"])
-    both = N.new("FunctionNodeBooleanMath")
-    both.operation = "AND"
-    L.new(under.outputs[0], both.inputs[0])
-    L.new(near_enough.outputs[0], both.inputs[1])
-    # not by an open edge (a bust's cut-off rim, an eye hole): there "under the surface" means nothing,
-    # and a braid hanging past the rim would be pulled onto it
-    en = N.new("GeometryNodeInputMeshEdgeNeighbors")
-    one = N.new("FunctionNodeCompare")
-    one.data_type, one.operation = "INT", "EQUAL"
-    L.new(en.outputs["Face Count"], one.inputs["A"])
-    one.inputs["B"].default_value = 1
-    on_edge = N.new("GeometryNodeFieldOnDomain")
-    on_edge.domain, on_edge.data_type = "EDGE", "BOOLEAN"
-    L.new(one.outputs[0], next(s for s in on_edge.inputs if s.enabled))
-    rim = N.new("GeometryNodeSampleNearestSurface")
-    rim.data_type = "FLOAT"
-    L.new(head, rim.inputs["Mesh"])
-    L.new(next(s for s in on_edge.outputs if s.enabled), rim.inputs["Value"])
-    L.new(N.new("GeometryNodeInputPosition").outputs[0], rim.inputs["Sample Position"])
-    inner = N.new("FunctionNodeCompare")
-    inner.data_type, inner.operation = "FLOAT", "LESS_THAN"
-    L.new(rim.outputs["Value"], inner.inputs["A"])
-    inner.inputs["B"].default_value = 0.001
-    sel = N.new("FunctionNodeBooleanMath")
-    sel.operation = "AND"
-    L.new(both.outputs[0], sel.inputs[0])
-    L.new(inner.outputs[0], sel.inputs[1])
-    out = N.new("GeometryNodeSetPosition")
-    L.new(gi.outputs["Geometry"], out.inputs["Geometry"])
-    L.new(sel.outputs[0], out.inputs["Selection"])
-    L.new(lifted(near, nor), out.inputs["Position"])
+    def push(geo_in, solid):
+        """Points of geo_in inside `solid` (by up to Reach) set back out to Margin over it."""
+        near, nor, height = nearest(solid)
+        under = N.new("FunctionNodeCompare")
+        under.data_type, under.operation = "FLOAT", "LESS_THAN"
+        L.new(height, under.inputs["A"])
+        L.new(gi.outputs["Margin"], under.inputs["B"])
+        neg = N.new("ShaderNodeMath")
+        neg.operation = "MULTIPLY"
+        L.new(gi.outputs["Reach"], neg.inputs[0])
+        neg.inputs[1].default_value = -1.0
+        near_enough = N.new("FunctionNodeCompare")
+        near_enough.data_type, near_enough.operation = "FLOAT", "GREATER_THAN"
+        L.new(height, near_enough.inputs["A"])
+        L.new(neg.outputs[0], near_enough.inputs["B"])
+        both = N.new("FunctionNodeBooleanMath")
+        both.operation = "AND"
+        L.new(under.outputs[0], both.inputs[0])
+        L.new(near_enough.outputs[0], both.inputs[1])
+        # not by an open edge (a bust's cut-off rim, an eye hole, a horn's buried base): there "under
+        # the surface" means nothing, and a braid hanging past the rim would be pulled onto it
+        en = N.new("GeometryNodeInputMeshEdgeNeighbors")
+        one = N.new("FunctionNodeCompare")
+        one.data_type, one.operation = "INT", "EQUAL"
+        L.new(en.outputs["Face Count"], one.inputs["A"])
+        one.inputs["B"].default_value = 1
+        on_edge = N.new("GeometryNodeFieldOnDomain")
+        on_edge.domain, on_edge.data_type = "EDGE", "BOOLEAN"
+        L.new(one.outputs[0], next(s for s in on_edge.inputs if s.enabled))
+        rim = N.new("GeometryNodeSampleNearestSurface")
+        rim.data_type = "FLOAT"
+        L.new(solid, rim.inputs["Mesh"])
+        L.new(next(s for s in on_edge.outputs if s.enabled), rim.inputs["Value"])
+        L.new(N.new("GeometryNodeInputPosition").outputs[0], rim.inputs["Sample Position"])
+        inner = N.new("FunctionNodeCompare")
+        inner.data_type, inner.operation = "FLOAT", "LESS_THAN"
+        L.new(rim.outputs["Value"], inner.inputs["A"])
+        inner.inputs["B"].default_value = 0.001
+        sel = N.new("FunctionNodeBooleanMath")
+        sel.operation = "AND"
+        L.new(both.outputs[0], sel.inputs[0])
+        L.new(inner.outputs[0], sel.inputs[1])
+        sp = N.new("GeometryNodeSetPosition")
+        L.new(geo_in, sp.inputs["Geometry"])
+        L.new(sel.outputs[0], sp.inputs["Selection"])
+        L.new(lifted(near, nor), sp.inputs["Position"])
+        return sp.outputs[0]
+
+    head_only = surface("Head")
+    # what else hair stays out of (horns, a helmet), in Avoid: its own pass, as where it sinks into the
+    # head the nearest surface is the head's, and one test over both would miss the inside of a horn
+    ci = N.new("GeometryNodeCollectionInfo")
+    ci.transform_space = "RELATIVE"
+    L.new(gi.outputs["Avoid"], ci.inputs["Collection"])
+    real = N.new("GeometryNodeRealizeInstances")
+    L.new(ci.outputs[0], real.inputs[0])
+    has_avoid = N.new("GeometryNodeAttributeDomainSize")
+    has_avoid.component = "MESH"
+    L.new(real.outputs[0], has_avoid.inputs[0])
+    any_avoid = N.new("FunctionNodeCompare")
+    any_avoid.data_type, any_avoid.operation = "INT", "GREATER_THAN"
+    L.new(has_avoid.outputs["Face Count"], any_avoid.inputs["A"])
+    any_avoid.inputs["B"].default_value = 0
+    first = push(gi.outputs["Geometry"], head_only)
+    second = push(first, real.outputs[0])
+    third = push(second, head_only)  # pushed out of a horn into the head: back out again
+    skip = N.new("GeometryNodeSwitch")
+    skip.input_type = "GEOMETRY"
+    L.new(any_avoid.outputs[0], skip.inputs["Switch"])
+    L.new(first, skip.inputs["False"])
+    L.new(third, skip.inputs["True"])
+
+    class _Out:  # the rest of the group takes its geometry from out.outputs[0]
+        outputs = [skip.outputs[0]]
+    out = _Out()
     # roots: onto the cap when there is one (else the head), whatever their height
     cap = surface("Cap")
     size = N.new("GeometryNodeAttributeDomainSize")
@@ -1090,7 +1121,7 @@ def keep_out_group():
     pick = N.new("GeometryNodeSwitch")
     pick.input_type = "GEOMETRY"
     L.new(has_cap.outputs[0], pick.inputs["Switch"])
-    L.new(head, pick.inputs["False"])
+    L.new(head_only, pick.inputs["False"])
     L.new(cap, pick.inputs["True"])
     rnear, rnor, rh = nearest(pick.outputs[0])
     ends = N.new("GeometryNodeCurveEndpointSelection")
@@ -1115,18 +1146,31 @@ def keep_out_group():
     return ng
 
 
-def _keep_out(ob, head, cap=None):
+def avoid_collection(objects, name="HairAvoid"):
+    """A collection of the meshes hair must stay out of besides the head (horns, a helmet), for
+    `avoid=`. Takes objects or names; returns the collection (not rendered, only referenced)."""
+    coll = bpy.data.collections.get(name) or bpy.data.collections.new(name)
+    for o in objects:
+        o = _ob(o)
+        if o.name not in coll.objects:
+            coll.objects.link(o)
+    return coll
+
+
+def _keep_out(ob, head, cap=None, avoid=None):
     if head is None:
         return None
     vals = {"Head": _ob(head), "Margin": 0.0005, "Reach": 0.03}
     if cap is not None:
         vals["Cap"] = _ob(cap)
+    if avoid is not None:
+        vals["Avoid"] = bpy.data.collections[avoid] if isinstance(avoid, str) else avoid
     return _modifier(ob, keep_out_group(), vals, name="Keep Out Of Head")
 
 
 def hair(name, collection=SHAPES, guides=10, points=24, fill=0.55, children=60, spread=0.0025, clump=0.55, clump_shape=0.3,
          tip_spread=0.0, trim=0.02, frizz=0.0006, noise=0.0012, noise_scale=40.0, curl=0.0, strand_radius=0.00006,
-         material=None, parent=None, viewport=0.1, seed=0, cumulative=False, cap=None):
+         material=None, parent=None, viewport=0.1, seed=0, cumulative=False, cap=None, avoid=None):
     """Strand hair from every lock in `collection`. Guides: `guides` per lock round its edge, two inner
     rings (at `fill` and fill x 0.4 of its radius) and the centre line, each `points` long. Then live
     modifiers, top to bottom:
@@ -1170,7 +1214,7 @@ def hair(name, collection=SHAPES, guides=10, points=24, fill=0.55, children=60, 
         _modifier(ob, g["Curl Hair Curves"], {"Factor": 1.0, "Radius": curl, "Frequency": 4.0, "Guide Distance": spread * 2.5,
                                               "Seed": seed})
     head = ob.parent if ob.parent is not None and ob.parent.type == "MESH" else None
-    _keep_out(ob, head, cap)
+    _keep_out(ob, head, cap, avoid)
     _modifier(ob, g["Set Hair Curve Profile"], {"Radius": strand_radius, "Shape": 0.5})
     if material:
         ob.data.materials.append(material)
@@ -1178,16 +1222,17 @@ def hair(name, collection=SHAPES, guides=10, points=24, fill=0.55, children=60, 
 
 
 def strays(name, collection=SHAPES, amount=2, spread=0.006, frizz=0.004, noise=0.006, curl=0.004, trim=0.06, guides=6,
-           points=24, strand_radius=0.000035, material=None, parent=None, seed=7, cap=None):
+           points=24, strand_radius=0.000035, material=None, parent=None, seed=7, cap=None, avoid=None):
     """Loose hairs over the whole style: a sparse copy of the guides, pushed off the flow by strong
     frizz, noise and curl and cut to random lengths, so some strands leave their lock and end early."""
     return hair(name, collection, guides=guides, points=points, fill=0.9, children=amount, spread=spread, clump=0.0, trim=trim,
                 frizz=frizz, noise=noise, noise_scale=12.0, curl=curl, strand_radius=strand_radius, material=material,
-                parent=parent, seed=seed, cap=cap)
+                parent=parent, seed=seed, cap=cap, avoid=avoid)
 
 
 def baby_hair(name, surface, hairline_points, band=0.008, length=0.012, density=300000.0, flow=(0.0, 0.0, -1.0),
-              fan=35.0, rise=0.25, frizz=None, curl=0.0, strand_radius=0.00003, material=None, seed=3, cap=None):
+              fan=35.0, rise=0.25, frizz=None, curl=0.0, strand_radius=0.00003, material=None, seed=3, cap=None,
+              avoid=None):
     """Short fine hairs along a hairline, lying along the skin, not standing out of it like stubble.
     Roots are scattered over `surface` near the hairline points (all within band/2 of the line, fewer
     out to band), `density` hairs per m². Each hair leaves the skin at a low angle, then lies down
@@ -1263,7 +1308,7 @@ def baby_hair(name, surface, hairline_points, band=0.008, length=0.012, density=
     if curl > 0:  # each hair curls on its own: a shared guide winds every hair nearby round one point (starbursts)
         _modifier(ob, g["Curl Hair Curves"], {"Factor": 1.0, "Radius": min(curl, most), "Frequency": 1.0, "Guide Distance": 0.0002,
                                               "Seed": seed})
-    _keep_out(ob, surf, cap)
+    _keep_out(ob, surf, cap, avoid)
     _modifier(ob, g["Set Hair Curve Profile"], {"Radius": strand_radius, "Shape": 0.5})
     if material:
         ob.data.materials.append(material)
@@ -1302,33 +1347,46 @@ def hair_material(name, stops=((0.0, (0.012, 0.010, 0.010)),), roughness=0.3, ra
 
 # ---------------------------------------------------------------- checks
 
-def report(hair_objects, surface=None, shapes=SHAPES, cap=None):
+def _solid(ob, dg):
+    """(BVH in the object's space, world-to-object matrix, open-edge KD or None) for an inside test."""
+    from mathutils.kdtree import KDTree as _KD
+    import collections
+    bvh = BVHTree.FromObject(ob, dg)
+    use = collections.Counter(k for p in ob.data.polygons for k in p.edge_keys)
+    dots = []  # along the open edges (a cut-off bust, eye holes, a horn's base): "inside" means nothing there
+    for (a, b), k in use.items():
+        if k == 1:
+            pa, pb = ob.data.vertices[a].co, ob.data.vertices[b].co
+            steps = max(1, int((pb - pa).length / 0.001))
+            dots += [pa.lerp(pb, s / steps) for s in range(steps + 1)]
+    rim = None
+    if dots:
+        rim = _KD(len(dots))
+        for i, p in enumerate(dots):
+            rim.insert(p, i)
+        rim.balance()
+    return bvh, ob.matrix_world.inverted(), rim
+
+
+def report(hair_objects, surface=None, shapes=SHAPES, cap=None, avoid=None):
     """Counts and checks on the evaluated hair: strands, length range, how far roots are from the
     surface, and `backwards`: strands whose tip is nearer a lock's start than their root is (should
-    be about 0). With the head as `surface`, `inside`: strands that go into it by more than 0.5 mm
-    (must be 0: no hair through the model). With `cap`, `off_cap`: strands whose root is more than
-    1 mm off the hair cap (must be 0: hair grows only from the cap)."""
+    be about 0). With the head as `surface`, `inside`: strands that go into it, or into anything in
+    `avoid` (horns...), by more than 0.5 mm (must be 0: no hair through the model). With `cap`,
+    `off_cap`: strands whose root is more than 1 mm off the hair cap (must be 0: hair grows only
+    from the cap)."""
     dg = bpy.context.evaluated_depsgraph_get()
     bvh = mi = cap_bvh = cap_mi = None
     rim = None
+    solids = []
     if surface:
         surf = bpy.data.objects[surface] if isinstance(surface, str) else surface
-        bvh, mw = BVHTree.FromObject(surf, dg), surf.matrix_world
-        mi = mw.inverted()
-        from mathutils.kdtree import KDTree as _KD
-        import collections
-        use = collections.Counter(k for p in surf.data.polygons for k in p.edge_keys)
-        dots = []  # along the open edges (a cut-off bust, eye holes): "inside" means nothing there
-        for (a, b), k in use.items():
-            if k == 1:
-                pa, pb = surf.data.vertices[a].co, surf.data.vertices[b].co
-                steps = max(1, int((pb - pa).length / 0.001))
-                dots += [pa.lerp(pb, s / steps) for s in range(steps + 1)]
-        if dots:
-            rim = _KD(len(dots))
-            for i, p in enumerate(dots):
-                rim.insert(p, i)
-            rim.balance()
+        bvh, mi, rim = _solid(surf, dg)
+        solids.append((bvh, mi, rim))
+    if avoid is not None:
+        coll = bpy.data.collections[avoid] if isinstance(avoid, str) else avoid
+        objs = coll.all_objects if isinstance(coll, bpy.types.Collection) else [_ob(o) for o in coll]
+        solids += [_solid(o, dg) for o in objs if o.type == "MESH"]
     if cap is not None:
         c = _ob(cap)
         cap_bvh, cap_mi = BVHTree.FromObject(c, dg), c.matrix_world.inverted()
@@ -1365,12 +1423,14 @@ def report(hair_objects, surface=None, shapes=SHAPES, cap=None):
                 checked += 1
                 if bvh:
                     gaps.append(bvh.find_nearest(mi @ pts[0])[3])
+                if solids:
                     deep = 0.0
                     for p in pts[1:]:
-                        loc, nor, _i, _d = bvh.find_nearest(mi @ p)
-                        s = (mi @ p - loc).dot(nor)
-                        if s < -0.0005 and not (rim and rim.find(loc)[2] < 0.002):
-                            deep = max(deep, -s)
+                        for sb, smi, srim in solids:
+                            loc, nor, _i, _d = sb.find_nearest(smi @ p)
+                            s = (smi @ p - loc).dot(nor)
+                            if s < -0.0005 and not (srim and srim.find(loc)[2] < 0.002):
+                                deep = max(deep, -s)
                     if deep:
                         inside += 1
                         deepest = max(deepest, deep)
@@ -1378,7 +1438,7 @@ def report(hair_objects, surface=None, shapes=SHAPES, cap=None):
                     off_cap += 1
                 if kd:
                     backwards += kd.find(pts[-1])[2] < kd.find(pts[0])[2]
-            if bvh:
+            if solids:
                 info.update(inside=inside, inside_deepest_mm=round(deepest * 1000, 1))
             if cap_bvh is not None:
                 info["off_cap"] = off_cap

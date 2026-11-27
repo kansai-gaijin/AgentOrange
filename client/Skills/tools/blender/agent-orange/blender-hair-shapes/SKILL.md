@@ -82,6 +82,12 @@ Then the rules carry through every step:
   into the head. `hs.baby_hair(..., cap=cap)` grows only on the cap.
 - `hs.report(hair, head, cap=cap)`: `inside` (strands that go into the head) and `off_cap` (roots off the
   cap) must both be 0.
+- **Anything else on the head** (horns, a crown, a helmet) is an obstacle too:
+  - Put it in a collection with `avoid = hs.avoid_collection([horns])`.
+  - Pass `avoid=avoid` to `hair`, `strays`, `baby_hair` and `report`.
+  - The keep-out step then keeps hair out of it, and `inside` counts it.
+  - Part the locks round it in the blockout: hair that has to be pushed out of a horn flattens
+    against it.
 
 ## 3. Plan the style in sections
 From the references, list the sections and how many locks each one needs:
