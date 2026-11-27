@@ -139,6 +139,13 @@ def _mask(cam, white, res, alone=False):
     """How much of each pixel the `white` objects cover from `cam`, 0..1. Every other object that
     renders stays in, in black, so it hides what's behind it (the head hides the hair at the back),
     unless `alone`."""
+    a = _flat(cam, {o.name: (1.0, 1.0, 1.0) for o in white}, res, alone)
+    return a[..., 0] * a[..., 3]
+
+
+def _flat(cam, colors, res, alone=False, light="FLAT", rest=(0.0, 0.0, 0.0)):
+    """A Workbench render from `cam`, each object named in `colors` in its colour, every other object
+    in `rest` (or hidden if `alone`). RGBA, top row first."""
     sc = bpy.context.scene
     r, sh, vs, im = sc.render, sc.display.shading, sc.view_settings, sc.render.image_settings
     keep = [(r, "engine"), (r, "resolution_x"), (r, "resolution_y"), (r, "resolution_percentage"), (r, "filepath"),
@@ -147,10 +154,12 @@ def _mask(cam, white, res, alone=False):
             (vs, "view_transform"), (vs, "look"), (vs, "exposure"), (vs, "gamma"), (im, "file_format"),
             (im, "color_mode"), (im, "color_depth"), (sc.display, "render_aa")]
     saved = [(o, k, getattr(o, k)) for o, k in keep]
-    names = {o.name for o in white}
+    names = set(colors)
     objs = {o.name: (o.hide_render, tuple(o.color)) for o in sc.objects}
     cols = {}
-    for o in white:
+    for o in sc.objects:
+        if o.name not in names:
+            continue
         for c in o.users_collection:
             if c.name in bpy.data.collections:  # not the scene's own collection
                 cols.setdefault(c.name, c.hide_render)
@@ -162,9 +171,9 @@ def _mask(cam, white, res, alone=False):
                 o.hide_render = False
             elif alone:
                 o.hide_render = True
-            o.color = (1, 1, 1, 1) if o.name in names else (0, 0, 0, 1)
+            o.color = (*colors[o.name], 1) if o.name in names else (*rest, 1)
         r.engine = "BLENDER_WORKBENCH"
-        sh.light, sh.color_type = "FLAT", "OBJECT"
+        sh.light, sh.color_type = light, "OBJECT"
         sh.show_shadows = sh.show_cavity = sh.show_object_outline = sh.show_specular_highlight = sh.show_xray = False
         vs.view_transform, vs.look, vs.exposure, vs.gamma = "Standard", "None", 0.0, 1.0
         r.film_transparent = True
@@ -184,7 +193,7 @@ def _mask(cam, white, res, alone=False):
             bpy.data.collections[n].hide_render = v
         if os.path.exists(path):
             os.remove(path)
-    return a[..., 0] * a[..., 3]
+    return a
 
 
 # ---------------------------------------------------------------- fitting a camera to a reference
@@ -383,6 +392,57 @@ def measure(cam, ref=None, hair_colors=None):
         if sel.any():
             i = np.argmax(np.where(sel, yy, -1))
             said.append(f"Lowest hair on the picture's {side}: {world(xx[i], yy[i])}")
+    print("\n".join(said))
+    return said
+
+
+# ---------------------------------------------------------------- which section shows where
+
+PALETTE = (("orange", (1.0, 0.45, 0.05)), ("blue", (0.1, 0.35, 1.0)), ("green", (0.15, 0.75, 0.2)),
+           ("magenta", (0.9, 0.1, 0.75)), ("yellow", (1.0, 0.85, 0.05)), ("cyan", (0.05, 0.8, 0.9)),
+           ("red", (0.9, 0.08, 0.08)), ("purple", (0.45, 0.15, 0.9)), ("brown", (0.5, 0.3, 0.1)),
+           ("pink", (1.0, 0.6, 0.7)), ("teal", (0.0, 0.45, 0.4)), ("lime", (0.6, 1.0, 0.2)))
+
+
+def sections(cam, groups, out, res=None):
+    """Each section in its own colour from `cam`, beside its reference when the camera has one, to
+    see which section shows where and which lies over which. groups: collections or their names (the
+    blockout's sections, with preview on), or {label: objects} (hair objects after converting).
+    Prints each section's colour and how much of the visible hair it is. Where the reference shows
+    one section's hair, say the crown sweeping over the ears, its colour should be the one there."""
+    cam = bpy.data.objects[cam] if isinstance(cam, str) else cam
+    if isinstance(groups, dict):
+        items = list(groups.items())
+    else:
+        items = [(g if isinstance(g, str) else g.name, g) for g in groups]
+    if res is None:
+        res = tuple(cam["hs_res"]) if "hs_res" in cam else (1000, 1000)
+    colors, legend = {}, []
+    for (label, g), (cname, rgb) in zip(items, PALETTE * 4):
+        for o in _objects(g):
+            colors[o.name] = rgb
+        legend.append((label, cname, rgb))
+    flat = _flat(cam, colors, res, rest=(0.75, 0.75, 0.75))
+    shaded = _flat(cam, colors, res, light="STUDIO", rest=(0.75, 0.75, 0.75))
+    seen = flat[..., 3] > 0.5
+    total = 0
+    counts = []
+    for label, cname, rgb in legend:
+        lin = np.array(rgb, np.float32)  # object colours are linear; the picture is in sRGB
+        shown = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * lin ** (1 / 2.4) - 0.055)
+        n = int((seen & (np.abs(flat[..., :3] - shown).max(-1) < 0.08)).sum())
+        counts.append(n)
+        total += n
+    said = [f"Sections from {cam.name} (share of the visible hair):"]
+    said += [f"  {cname}: {label}, {n / max(1, total):.0%}" for (label, cname, _), n in zip(legend, counts)]
+    pic = np.where(seen[..., None], shaded[..., :3], 1.0)
+    panels = [pic]
+    if "hs_ref" in cam and os.path.exists(cam["hs_ref"]):
+        r = _load(cam["hs_ref"])[..., :3]
+        if r.shape[:2] == pic.shape[:2]:
+            panels = [r, np.ones((pic.shape[0], 8, 3), np.float32), pic]
+    s = max(1, math.ceil(pic.shape[0] / 900))
+    _save(np.concatenate([p[::s, ::s] for p in panels], 1), out)
     print("\n".join(said))
     return said
 

@@ -7,6 +7,7 @@ Blockout (all in one collection, HairShapes by default):
   on_surface(points, surface, lift)  pulls points onto a surface (a scalp) and lifts them off it
   tie(name, center, axis, radius)    an elastic: a small torus
   strip(name, ...)                   a mesh strip with its root edge creased, for mesh-made hair
+  stack(order, surface)              layers the sections, each lifted clear of those under it
   preview(collection, on)            shows the locks as tubes for blockout renders; off before hair()
 Hair:
   hair(name, collection, ...)        the strands: guides from every lock, then children, clumps,
@@ -17,6 +18,7 @@ Hair:
 Match the references (hair_match.py):
   ref_camera(ref, head, az)          a camera fitted to a reference picture of this head, from the bare head
   measure(cam)                       the reference's hair in metres: edges, bang line, hairline, lowest points
+  sections(cam, groups, out)         each section in its own colour beside the reference: which lies over which
   compare(cam, hair, out, render)    measures the hair or blockout against that reference, in millimetres
 Check:
   report(hair_objects, surface)      guide and strand counts, root gaps, roots-first, length range
@@ -37,7 +39,7 @@ from mathutils import noise as mnoise
 from mathutils.bvhtree import BVHTree
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from hair_match import compare, measure, ref_camera  # noqa: E402,F401  (hs.ref_camera, hs.measure, hs.compare)
+from hair_match import compare, measure, ref_camera, sections  # noqa: E402,F401  (hs.ref_camera, hs.measure, ...)
 
 SHAPES = "HairShapes"
 CORE = "AO Shapes to Hair"
@@ -246,6 +248,149 @@ def strip(name, root_points, tip_points, rows=20, collection=SHAPES):
     ob = bpy.data.objects.new(name, me)
     _collection(collection).objects.link(ob)
     return ob
+
+
+def _section(item):
+    if isinstance(item, str):
+        return list(bpy.data.collections[item].all_objects) if item in bpy.data.collections else [bpy.data.objects[item]]
+    if isinstance(item, bpy.types.Collection):
+        return list(item.all_objects)
+    return list(item) if isinstance(item, (list, tuple)) else [item]
+
+
+def stack(order, surface, gap=0.001, ramp=0.015, reach=0.003, cap=0.008, spread=0.02):
+    """Layers the sections like shingles, so no two sections' strands cross through each other.
+    order: the sections (collections, or lists of locks) from the one nearest the scalp to the top
+    one, e.g. ["Nape", "Around ears", "Sides", "Crown", "Bangs"]. Wherever a lock of a later section
+    passes into an earlier one, the later section is lifted along the scalp's normal until its
+    underside clears the earlier one's top by `gap`. The lift is one smooth blanket over the section,
+    falling off over `spread` m, so neighbouring locks rise together, and it comes in over `ramp` m
+    from each root, so roots stay put. Locks in the same section aren't moved against each other:
+    they're meant to overlap. `reach`: how far to the side (beyond both radii) a lock below counts.
+    Crossings deeper than `cap` aren't lifted, as that would puff the hair out: they're printed with
+    where they are, to fix in the blockout (usually two sections rooted on the same patch of scalp).
+    Curves (lock, braid) and strips both work. Run it after the blockout, before preview and hair().
+    Returns, per section, the points lifted and the largest lift in metres."""
+    from mathutils.kdtree import KDTree
+    surf = bpy.data.objects[surface] if isinstance(surface, str) else surface
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = surf.evaluated_get(dg)
+    me = ev.to_mesh()
+    mw = surf.matrix_world
+    bvh = BVHTree.FromPolygons([mw @ v.co for v in me.vertices], [p.vertices[:] for p in me.polygons])
+    ev.to_mesh_clear()
+
+    def height(p):  # (foot on the scalp, its normal, signed height above it)
+        loc, nor, _i, _d = bvh.find_nearest(p)
+        return loc, nor, (p - loc).dot(nor)
+
+    def strands(ob):
+        """Each lock as (points world, radii, root weights, writer)."""
+        m = ob.matrix_world
+        if ob.type == "CURVE":
+            out = []
+            for sp in ob.data.splines:
+                pts = [m @ Vector(p.co[:3]) for p in sp.points] if sp.type != "BEZIER" else [m @ p.co for p in sp.bezier_points]
+                rad = [p.radius for p in (sp.points if sp.type != "BEZIER" else sp.bezier_points)]
+                s, w = 0.0, [0.0]
+                for a, b in zip(pts, pts[1:]):
+                    s += (b - a).length
+                    w.append(min(1.0, s / ramp))
+
+                def write(new, sp=sp, mi=m.inverted()):
+                    for p, q in zip(sp.points if sp.type != "BEZIER" else sp.bezier_points, new):
+                        if sp.type == "BEZIER":
+                            d = mi @ q - p.co
+                            p.co += d
+                            p.handle_left += d
+                            p.handle_right += d
+                        else:
+                            p.co = (*(mi @ q), 1.0)
+                out.append((pts, rad, w, write))
+            return out
+        if ob.type == "MESH":
+            pts = [m @ v.co for v in ob.data.vertices]
+            roots = set()
+            cr = ob.data.attributes.get("crease_edge")
+            if cr:
+                for e in ob.data.edges:
+                    if cr.data[e.index].value > 0.5:
+                        roots.update(e.vertices)
+            root_pts = [pts[i] for i in roots] or [pts[0]]
+            w = [min(1.0, min((p - r).length for r in root_pts) / ramp) for p in pts]
+
+            def write(new, ob=ob, mi=m.inverted()):
+                for v, q in zip(ob.data.vertices, new):
+                    v.co = mi @ q
+                ob.data.update()
+            return [(pts, [0.0] * len(pts), w, write)]
+        return []
+
+    feet, shell, below, result = [], [], None, {}
+    for item in order:
+        obs = _section(item)
+        locks = [s for ob in obs for s in strands(ob)]
+        moved, most, clash = 0, 0.0, []
+        if below is not None:
+            # what each point needs, then one smooth blanket over the whole section (the largest need
+            # nearby, falling off over `spread`), so neighbouring locks rise together: no lumps
+            need_at, needs = [], []
+            for li, (pts, rad, w, _write) in enumerate(locks):
+                for k, (p, r) in enumerate(zip(pts, rad)):
+                    foot, _nor, h = height(p)
+                    need = 0.0
+                    for _co, i, d in below.find_range(foot, r + reach + 0.01):
+                        top, rr = shell[i]
+                        if d < r + rr + reach:
+                            need = max(need, top + gap + r - h)
+                    if need > cap:  # not a small crossing: a blockout to fix, not a lift to make
+                        clash.append((need, p))
+                    elif need > 0:
+                        need_at.append(foot)
+                        needs.append(need)
+            if needs:
+                kd = KDTree(len(need_at))
+                for i, f in enumerate(need_at):
+                    kd.insert(f, i)
+                kd.balance()
+                for pts, rad, w, write in locks:
+                    lift = []
+                    for p, wt in zip(pts, w):
+                        foot = height(p)[0]
+                        env = max((needs[i] * math.exp(-(d / spread) ** 2) for _c, i, d in kd.find_range(foot, spread * 2)),
+                                  default=0.0)
+                        lift.append(env * wt)
+                    if not any(v > 1e-5 for v in lift):
+                        continue
+                    new = [p + height(p)[1] * v for p, v in zip(pts, lift)]
+                    moved += sum(v > 1e-5 for v in lift)
+                    most = max(most, max(lift))
+                    write(new)
+                    pts[:] = new
+        name = item if isinstance(item, str) else getattr(item, "name", str(item))
+        result[name] = (moved, round(most, 4))
+        clash.sort(key=lambda c: -c[0])
+        if clash:
+            print(f"STACK {name}: {len(clash)} points go through a section under it by more than {cap * 1000:.0f} mm. The deepest:")
+        for need, p in clash[:5]:
+            print(f"STACK {name} goes {need * 1000:.0f} mm through a section under it at ({p.x:.3f}, {p.y:.3f}, {p.z:.3f}): "
+                  f"too much to lift; move it in the blockout")
+        # this section joins the layers below: its tops, every ~2 mm along each lock
+        for pts, rad, _w, _write in locks:
+            for (a, ra), (b, rb) in zip(zip(pts, rad), zip(pts[1:], rad[1:])):
+                steps = max(1, int((b - a).length / 0.002))
+                for k in range(steps):
+                    p, r = a.lerp(b, k / steps), ra + (rb - ra) * k / steps
+                    foot, _n, h = height(p)
+                    feet.append(foot)
+                    shell.append((h + r, r))
+        if feet:
+            below = KDTree(len(feet))
+            for i, foot in enumerate(feet):
+                below.insert(foot, i)
+            below.balance()
+        print(f"STACK {name}: {result[name][0]} points lifted, at most {result[name][1] * 1000:.1f} mm")
+    return result
 
 
 def preview(collection=SHAPES, on=True, material=None):

@@ -54,6 +54,23 @@ From the references, list the sections and how many locks each one needs:
 Write down where each section starts (its root line), where it goes, and where it ends. Fix the
 part line, the bang cut line and the gather points first; they read most.
 
+Then put the sections in layers, from the scalp out. Hair lies like shingles: hair from higher on
+the head lies over hair from lower down.
+- The nape is under the back.
+- The hair around the ears is under the hair coming down from the crown.
+- The sides are under the bangs' outer corners.
+
+Where two sections meet, they share the border:
+- Their edge locks overlap by 30–50% and run the same way there.
+- The upper one covers the seam.
+- The bangs' outer locks start where the side hair starts and turn the way it goes, so the bangs and
+  the sides read as one mass of hair, not a block set in front of it.
+- Sections built side by side at the same height, instead of one over the other, cross through each
+  other. Their strands then interleave at an angle and read as a scribbled seam.
+
+Give each section its own collection inside `HairShapes`, so it can be layered, checked and
+converted on its own.
+
 ## 3. Block it out
 Build all of this in one collection, `HairShapes`.
 - `hs.lock(name, points, radii)`: points run root to tip and are smoothed. radii is one value,
@@ -88,19 +105,36 @@ Rules that make it look like hair:
   of scalp. A creased `strip` per side, rooted along the part line, gives the cleanest line.
 - **Gathered locks** (into a tie or a braid) all end at the tie point. Put a tie there.
 
+When the blockout is built, layer it:
+```python
+hs.stack(["Nape", "Around ears", "Back", "Sides", "Crown", "Bangs"], head)   # nearest the scalp first
+```
+- Wherever a lock of a later section passes over an earlier one, `stack` lifts it along the scalp's
+  normal until it clears the earlier one. Roots stay put, and the lift is smoothed along the lock.
+- Leave braids and tails out of the list; they hang free.
+- Run it again whenever you change a section.
+
 ## 4. Check the blockout before any strands
 1. Turn the tubes on with `hs.preview("HairShapes", on=True, material=grey)`.
-2. Measure every view: `hs.compare(cam, "HairShapes", "cmp_front.png")`. It prints, in millimetres
+2. Check the layers: `hs.sections(cam, ["Nape", ..., "Bangs"], "sections_left.png")` draws each
+   section in its own colour, beside the reference.
+   - It prints each section's share of the visible hair.
+   - Where the reference shows the crown's hair sweeping over the ears, the crown's colour should be
+     the one there.
+   - Where the bangs meet the sides, the bangs' colour should lie over the sides' edge, with no
+     skin between them unless the reference shows it.
+   Repeat after converting, with the hair objects: `{"Crown": [hair, strays], ...}`.
+3. Measure every view: `hs.compare(cam, "HairShapes", "cmp_front.png")`. It prints, in millimetres
    and as positions you can move points to:
    - how much of the reference's hair is missing and how much yours adds, in each part of it;
    - the outer edge every 1 cm of height (+ is yours further out);
    - the bang line and hairline (+ is yours lower);
    - and writes the reference, yours, and a picture of the differences (red missing, blue extra).
-3. Fix the blockout until, in every view, the outer edges are within about 5 mm at most heights,
+4. Fix the blockout until, in every view, the outer edges are within about 5 mm at most heights,
    the bang line within 3 mm at the median, and no part has more than about 10% missing or extra.
    Fix the silhouette, the bang line, the part, the gather points and the braid length here.
    Strands never fix a wrong blockout.
-4. Also render every view from its camera, side by side with the reference. Keep these renders. The
+5. Also render every view from its camera, side by side with the reference. Keep these renders. The
    person reviews them, and they are the "before" in your report.
 
 ## 5. Convert
@@ -162,6 +196,8 @@ The hairline points follow the edge of the scalp: forehead, temples, round the e
     sheet; aim for 0.8–1.2;
   - **colour:** lightness top, middle and bottom. Get it within about 0.05 of the reference.
 - **Look for:**
+  - a scribbled seam where two sections meet: they cross instead of lying one over the other
+    (`stack` them, and check with `sections`);
   - scalp showing through (more or wider locks, more overlap);
   - one even sheet (vary the locks, more clump);
   - stiff tips (more trim);

@@ -29,3 +29,6 @@ All were run headless on Blender 5.3, on made bodies:
 - **`hair_match.py`:** two agents' finished hairstyles on a real head, against front, 45, side and back references
   drawn on it. Cameras fitted to within 2–3.4% misfit. The detail measure tells the smooth, sheet-like hair (0.4–0.8 of
   the reference's) from the clumpier one (0.8–1.3), and both came out lighter than the reference, as they looked.
+- **`stack` and `sections`:** one agent's Hime blockout, whose back locks poked through the top layer all over (42%
+  and 48% of the back view). Stacked, the top layer lies over them (89%). The crossings too deep to lift were listed
+  with their places: the bangs and sides rooted on the same patch as the top layer.
