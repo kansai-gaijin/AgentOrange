@@ -129,6 +129,12 @@ ornaments):
 - Find each shape's roots by following it to where it meets the scalp.
 - If its proportions don't fit your head, build the tubes on the mesh first, then move them onto your
   head, keeping each one's path, its height over the scalp and its length.
+- Trace its big shapes, not its cards. A hair mesh is built from many thin cards. They're how it was
+  modelled, not the shapes you want: ten cards side by side in a fringe are one or two of your tubes.
+- It may have been made for another head, often without the horns, ears or ornaments of yours. Then
+  it tells you nothing about how the hair meets those. Read every relation to an obstacle from the
+  pictures of this head, and move the traced shapes to match them. Don't bend the hair round an
+  obstacle just because the mesh's hair passes where the obstacle is.
 
 **Write the reading as a table, one row per section:**
 
@@ -149,6 +155,10 @@ From the references, list the sections and the big shapes each one needs:
 - **The top and back:** for a centre part, 4–8 tubes per side, 2–5 cm wide, fanned from the part line
   to where they're gathered.
 - **Ties, braids and loose tails:** a braid is three strand tubes, each as wide as one real plait.
+- **A crown of braids:** it's braids and nothing else.
+  - Size and space the braid rings from the references, so that together they cover the scalp.
+  - Close any gap by moving or widening the braids. Don't fill it with base shapes under them: those
+    show between the plaits as a bald dome.
 - **A bun:** a few thick tubes wound round it.
 
 A whole head is typically 15–40 tubes, not hundreds. Fix the part line, the bang cut line and the
@@ -169,6 +179,13 @@ the head lies over hair from lower down.
 - The nape is under the back.
 - The hair around the ears is under the hair coming down from the crown.
 - The sides are under the bangs' outer corners.
+- Face-framing side locks are the outermost layer beside the face. Hair swept back from the temples
+  runs behind them, never over them.
+- What the references show uncovered stays uncovered: ears, the neck, the forehead under a gap in
+  the bangs. Hair passes above and behind a visible ear, not over it.
+- A braid is solid, like a horn. Don't let it pass through another section. Decide from the views
+  which one lies on top where they meet, and route the braid over or under with clearance. `stack`
+  leaves braids out, so check each braid yourself, in renders from the front, the side and above.
 
 Where two sections meet, they share the border:
 - Their edge locks overlap by 30–50% and run the same way there.
@@ -210,6 +227,13 @@ Build all of this in one collection, `HairShapes`.
 Rules that make it look like hair:
 - **Fill the volume:** the tubes together are the hair's whole volume as the reference shows it.
   Overlap neighbours by about 30% of their width, so no scalp and no gaps show between them.
+  - Each tube grows strands only around itself, so every V-groove between two round tubes becomes
+    a gap in the hair. Tubes side by side in one sheet, like bangs or a curtain, get flat, wide
+    cross-sections that overlap with no groove at all.
+  - Before going on, convert such a sheet on its own as a test, and look at it straight on and from
+    below for gaps.
+- **Smooth shapes:** each shape is a smooth, round-ended chunk. Flat slabs, torn or jagged edges,
+  and plates with scalp between them don't become hair.
 - **Vary them:** widths, lengths and slight angles all differ, as no two shapes are alike. Even
   spacing reads as a helmet.
 - **Parting:** the roots on both sides sit 1–3 mm apart along it, each side's locks leaving it in
