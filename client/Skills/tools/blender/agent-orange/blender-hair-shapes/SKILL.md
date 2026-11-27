@@ -1,6 +1,6 @@
 ---
 name: blender-hair-shapes
-description: Realistic strand hair in Blender 5.3 built from shapes. Measure the references with cameras fitted to them, block the hairstyle out as locks (curves with a radius, or creased mesh strips), match the blockout to the references in millimetres, then convert it to strand hair with Geometry Nodes. The locks become the clumps; tapered tips, stray hairs and baby hair are added on top. Use for any styled hair from references: bangs, parts, pigtails, braids, buns, ponytails.
+description: Realistic strand hair in Blender 5.3 built from shapes. Measure the references with cameras fitted to them, block the hairstyle out as locks (curves with a radius, or creased mesh strips), match the blockout to the references in millimetres, then convert it to strand hair with Geometry Nodes. It stays editable by hand, and bakes to brushable curves and Alembic grooms for game engines. The locks become the clumps; tapered tips, stray hairs and baby hair are added on top. Use for any styled hair from references: bangs, parts, pigtails, braids, buns, ponytails.
 license: MIT
 ---
 
@@ -204,13 +204,42 @@ The hairline points follow the edge of the scalp: forehead, temples, round the e
   - fuzz everywhere (less frizz, fewer strays).
 - **If it's wrong, fix the shapes and convert again.** The modifiers only refine what the shapes say.
 
+## 7. Hand it over: hand edits, bake, export
+The hair is for a game engine, and sometimes for cut-scenes rendered in Blender. A person may finish
+it by hand, so leave every stage editable, and bake only at the end.
+
+| Stage | What can be edited | How |
+|---|---|---|
+| Live (after `hair()`) | the locks | Edit mode on a lock: move points, Alt+S for radius. The hair follows at once |
+| Guides | the guides, by brush | `g = hs.bake_guides(hair, head)`. Comb them in Curves Sculpt mode; the children, clumps and frizz stay live on top |
+| Baked | every strand, by brush | `b = hs.bake(g or hair, head)`. Plain hair curves on the head, with its surface and UVs set for the sculpt brushes |
+
+- **Nothing is lost:** each bake keeps its source, hidden. `hs.unbake(b)` removes the bake and shows the
+  source again, so you can change the locks or the guides and bake again.
+- **Cut-scenes in Blender:** `hs.follow(b)` makes baked hair follow the head as it deforms (armature, shape
+  keys). Tested: a 1 cm lift of the head moved the roots by exactly 1 cm.
+- **Game engine:** `hs.export_groom([b, ...], "hair.abc")` writes an Alembic groom.
+  - One group per object, so keep one object per section and material.
+  - Roots first, widths from the strand radius, all in centimetres, with transforms baked in.
+  - In Unreal, import it as a Groom with the default conversion settings, then bind it to the head's
+    skeletal mesh. (Not yet tried in Unreal.)
+  - It works on live objects too, so a person's edits don't need baking just to export.
+- **For a person, the add-on:** `scripts/` is also a Blender extension, "Hair from Shapes".
+  - Build it with `blender --command extension build --source-dir <this skill>/scripts --output-dir <dir>`.
+  - Install the .zip from Preferences > Get Extensions > Install from Disk.
+  - The sidebar (N) gets a Hair tab with tubes on and off, Stack Sections, Convert Section (with its
+    settings in the redo panel), Bake Guides, Bake Strands, Unbake, Follow Head and Export Groom.
+  - Sections stack in their collection order, the first nearest the scalp.
+- **Heavy hair:** a whole baked head is hundreds of thousands of curves. Bake and brush a section at a
+  time, and brush guides rather than strands where you can.
+
 ## Gotchas
 - **Transforms:** apply the head's and every lock's. Lengths are metres.
 - **Preview off before converting.** A bevel on the curves, or their preview material, gets into the hair.
 - **Bundled Trim:** it defaults to Replace Length, which makes every strand 1 m. `hair()` turns that
   off. If you add Trim yourself, do the same.
-- **Not attached:** the hair from shapes is parented to the head, not attached to its surface. For an
-  animated head, parent it to the head bone.
+- **Not attached until baked:** live hair is parented to the head, not attached to its surface. For an
+  animated head, parent it to the head bone, or bake and `follow` it.
 - **Bundled Frizz and Noise:** their Cumulative Offset defaults on, which adds the offsets up along a
   strand, so a long braid drifts centimetres off its lock. `hair()` turns it off. If you add them
   yourself, do the same.

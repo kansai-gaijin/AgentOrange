@@ -22,6 +22,13 @@ Match the references (hair_match.py):
   compare(cam, hair, out, render)    measures the hair or blockout against that reference, in millimetres
 Check:
   report(hair_objects, surface)      guide and strand counts, root gaps, roots-first, length range
+Hand it over:
+  bake_guides(hair, head)            guides as real curves to comb; children, clumps and frizz stay live
+  bake(hair, head)                   plain brushable strands; the source is kept, hidden
+  unbake(baked)                      back to the source, to edit and bake again
+  attach(curves, head) / follow(curves)   root UVs on the head; follow it as it deforms (cut-scenes)
+  export_groom(objects, path)        an Alembic groom for a game engine, one group per object, in cm
+  (this folder is also the "Hair from Shapes" Blender extension: the same, as sidebar buttons)
 Render:
   gpu(scene)                         Cycles on one GPU backend (OptiX first), so heavy hair fits in memory
 
@@ -38,8 +45,11 @@ from mathutils import Quaternion, Vector
 from mathutils import noise as mnoise
 from mathutils.bvhtree import BVHTree
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from hair_match import compare, measure, ref_camera, sections  # noqa: E402,F401  (hs.ref_camera, hs.measure, ...)
+try:  # inside the add-on (a package)
+    from .hair_match import compare, measure, ref_camera, sections  # noqa: F401  (hs.ref_camera, hs.measure, ...)
+except ImportError:  # imported or run as a plain script
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from hair_match import compare, measure, ref_camera, sections  # noqa: E402,F401
 
 SHAPES = "HairShapes"
 CORE = "AO Shapes to Hair"
@@ -852,6 +862,200 @@ def report(hair_objects, surface=None, shapes=SHAPES):
                 info["backwards"] = backwards
         out[ob.name] = info
     return out
+
+
+# ---------------------------------------------------------------- bake, brush, follow, export
+
+def _ob(x):
+    return bpy.data.objects[x] if isinstance(x, str) else x
+
+
+def _copy(ob, name):
+    c = ob.copy()
+    c.data = ob.data.copy()
+    c.name = c.data.name = name
+    for col in ob.users_collection:
+        col.objects.link(c)
+    return c
+
+
+def _apply(ob, names):
+    for n in names:
+        with bpy.context.temp_override(object=ob, active_object=ob, selected_objects=[ob], selected_editable_objects=[ob]):
+            bpy.ops.object.modifier_apply(modifier=n)
+
+
+def _hide(ob, hidden):
+    ob.hide_viewport = ob.hide_render = hidden
+
+
+def attach(curves, surface):
+    """Ties hair curves to a surface for Blender's hair tools and for follow(): sets the surface and
+    its UV map, and gives each curve its root's place on it (surface_uv_coordinate). The surface
+    needs a UV map. bake() and bake_guides() call it when given a surface."""
+    ob, surf = _ob(curves), _ob(surface)
+    me = surf.data
+    if not me.uv_layers:
+        raise ValueError(f"{surf.name} needs a UV map")
+    from mathutils.interpolate import poly_3d_calc
+    cv = ob.data
+    cv.surface = surf
+    cv.surface_uv_map = me.uv_layers.active.name
+    me.calc_loop_triangles()
+    uv = me.uv_layers.active.data
+    sw = surf.matrix_world
+    verts = [sw @ v.co for v in me.vertices]
+    tris = list(me.loop_triangles)
+    bvh = BVHTree.FromPolygons(verts, [t.vertices[:] for t in tris])
+    n = len(cv.curves)
+    offs = [0] * (n + 1)
+    cv.curve_offset_data.foreach_get("value", offs)
+    pos = [0.0] * (len(cv.points) * 3)
+    cv.attributes["position"].data.foreach_get("vector", pos)
+    m = ob.matrix_world
+    out = [0.0] * (n * 2)
+    for c in range(n):
+        i = offs[c] * 3
+        loc, _nor, t, _d = bvh.find_nearest(m @ Vector(pos[i:i + 3]))
+        tri = tris[t]
+        w = poly_3d_calc([verts[v] for v in tri.vertices], loc)
+        u = sum((uv[l].uv * k for l, k in zip(tri.loops, w)), Vector((0, 0)))
+        out[c * 2], out[c * 2 + 1] = u.x, u.y
+    attr = cv.attributes.get("surface_uv_coordinate") or cv.attributes.new("surface_uv_coordinate", "FLOAT2", "CURVE")
+    attr.data.foreach_set("vector", out)
+    return ob
+
+
+def bake_guides(hair, surface=None):
+    """The first step of baking, for brushing: a copy of the hair object whose guides (one per lock
+    edge, ring and centre line) are real curves you can comb, grow and smooth with Blender's hair
+    sculpt brushes, while the children, clumps, trim, frizz, noise and profile stay live modifiers on
+    top of them. The live object is hidden, not removed: unbake() brings it back. Returns the copy."""
+    src = _ob(hair)
+    if not src.modifiers or src.modifiers[0].name != "Shapes to Hair":
+        raise ValueError(f"{src.name} isn't a live hair() object")
+    g = _copy(src, src.name + " (guides)")
+    _apply(g, [g.modifiers[0].name])
+    g["hs_source"], g["hs_stage"] = src.name, "guides"
+    if surface is not None:
+        attach(g, surface)
+    _hide(src, True)
+    return g
+
+
+def bake(hair, surface=None):
+    """Bakes hair to plain strands: a copy with every modifier applied, real curves throughout, to
+    brush by hand, export or render without the shapes. Works on a live hair() object or on its
+    bake_guides() copy (after brushing the guides). The source is hidden, not removed: unbake()
+    brings it back, so you can change the shapes or the guides and bake again. Returns the copy."""
+    src = _ob(hair)
+    b = _copy(src, src.get("hs_source", src.name).replace(" (guides)", "") + " (baked)")
+    _apply(b, [m.name for m in b.modifiers])
+    b["hs_source"], b["hs_stage"] = src.name, "strands"
+    if surface is not None:
+        attach(b, surface)
+    _hide(src, True)
+    return b
+
+
+def unbake(baked):
+    """Removes a bake and shows what it was baked from again. Returns that object."""
+    b = _ob(baked)
+    src = bpy.data.objects.get(b.get("hs_source", ""))
+    if src is None:
+        raise ValueError(f"{b.name} wasn't made by bake() or bake_guides(), or its source is gone")
+    data = b.data
+    bpy.data.objects.remove(b)
+    if data.users == 0:
+        bpy.data.hair_curves.remove(data)
+    _hide(src, False)
+    return src
+
+
+def follow(curves, surface=None):
+    """Makes baked hair (or brushed guides) follow its surface as it deforms: an armature, shape keys
+    or any modifier on the head, for cut-scenes rendered in Blender. Adds a Deform Curves on Surface
+    modifier, last, and turns on the surface's rest position. The curves need attach() first."""
+    ob = _ob(curves)
+    surf = _ob(surface) if surface is not None else ob.data.surface
+    if surf is None or "surface_uv_coordinate" not in ob.data.attributes:
+        raise ValueError(f"attach({ob.name}, head) first")
+    surf.add_rest_position_attribute = True
+    name = "AO Follow Surface"
+    ng = bpy.data.node_groups.get(name)
+    if ng is None:
+        ng = bpy.data.node_groups.new(name, "GeometryNodeTree")
+        ng.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+        ng.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+        gi, go = ng.nodes.new("NodeGroupInput"), ng.nodes.new("NodeGroupOutput")
+        de = ng.nodes.new("GeometryNodeDeformCurvesOnSurface")
+        ng.links.new(gi.outputs[0], de.inputs[0])
+        ng.links.new(de.outputs[0], go.inputs[0])
+        ng.is_modifier = True
+    md = ob.modifiers.get("Follow Surface") or ob.modifiers.new("Follow Surface", "NODES")
+    md.node_group = ng
+    return md
+
+
+def export_groom(objects, path, scale=100.0, frame=None):
+    """Exports hair as an Alembic groom for a game engine: one curves object per section (Unreal makes
+    each a group with its own material slot), roots first, width from each point's radius. Positions
+    and widths are written in centimetres (`scale` 100 from metres) with the objects' transforms baked
+    in, so nothing depends on the engine reading a transform. Takes baked objects or live ones (their
+    evaluated hair is written). Unreal: import the .abc as a Groom with its default conversion
+    settings (rotate X 90, scale Y -1), then bind it to the head's skeletal mesh."""
+    obs = [_ob(o) for o in (objects if isinstance(objects, (list, tuple)) else [objects])]
+    dg = bpy.context.evaluated_depsgraph_get()
+    temp, names = [], [ob.name.replace(" (baked)", "").replace(" (guides)", "") for ob in obs]
+    old = [ob.name for ob in obs]
+    vl = bpy.context.view_layer
+    picked, active = [o for o in vl.objects if o.select_get()], vl.objects.active
+    try:
+        for ob in obs:  # the copies take the sections' own names: the engine shows them as group names
+            ob.name = ob.name + " ~export"
+        for ob, name in zip(obs, names):
+            ev = ob.evaluated_get(dg)
+            cv = ev.data
+            n, npts = len(cv.curves), len(cv.points)
+            offs = [0] * (n + 1)
+            cv.curve_offset_data.foreach_get("value", offs)
+            pos = [0.0] * (npts * 3)
+            cv.attributes["position"].data.foreach_get("vector", pos)
+            rad = [0.0] * npts
+            if "radius" in cv.attributes:
+                cv.attributes["radius"].data.foreach_get("value", rad)
+            m = ob.matrix_world
+            flat = []
+            for i in range(npts):
+                flat.extend(m @ Vector(pos[i * 3:i * 3 + 3]) * scale)
+            data = bpy.data.hair_curves.new(name)
+            data.add_curves([offs[i + 1] - offs[i] for i in range(n)])
+            data.attributes["position"].data.foreach_set("vector", flat)
+            ra = data.attributes.get("radius") or data.attributes.new("radius", "FLOAT", "POINT")
+            ra.data.foreach_set("value", [r * scale for r in rad])
+            for mat in ob.data.materials:
+                data.materials.append(mat)
+            t = bpy.data.objects.new(name, data)
+            bpy.context.scene.collection.objects.link(t)
+            temp.append(t)
+        for o in bpy.context.view_layer.objects:
+            o.select_set(o in temp)
+        bpy.context.view_layer.objects.active = temp[0]
+        f = bpy.context.scene.frame_current if frame is None else frame
+        bpy.ops.wm.alembic_export(filepath=os.path.abspath(path), selected=True, global_scale=1.0, start=f, end=f,
+                                  uvs=False, normals=False, export_hair=False, export_particles=False)
+    finally:
+        for t in temp:
+            data = t.data
+            bpy.data.objects.remove(t)
+            bpy.data.hair_curves.remove(data)
+        for ob, name in zip(obs, old):
+            ob.name = name
+        for o in picked:
+            o.select_set(True)
+        vl.objects.active = active
+    print(f"GROOM {path}: {len(obs)} groups, " + ", ".join(names))
+    return path
 
 
 # ---------------------------------------------------------------- self test

@@ -1,0 +1,16 @@
+schema_version = "1.0.0"
+
+id = "hair_from_shapes"
+version = "1.0.0"
+name = "Hair from Shapes"
+tagline = "Shape hair as locks, convert to strands, brush, bake and export"
+maintainer = "Agent Orange"
+type = "add-on"
+blender_version_min = "5.3.0"
+license = ["SPDX:MIT"]
+
+[permissions]
+files = "Export grooms and write check pictures"
+
+[build]
+paths_exclude_pattern = ["__pycache__/", "/.git/", "*.pyc"]

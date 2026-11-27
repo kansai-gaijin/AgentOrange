@@ -7,7 +7,7 @@ Blender is set up (`client/ToolSkills.cs`). In them, `<skills_dir>` means this f
 |---|---|
 | `blender-rig-fit` | The other packs check a rig by its names, weights and motion. Nothing measured the skeleton against the mesh, which is what goes wrong on creatures. |
 | `blender-any-body-motion` | The other packs' retargeting maps bones by name and copies turns, which needs matching rest poses. Nothing put motion on a creature, and slip was measured but not fixed. |
-| `blender-hair-shapes` | `blender-hair-grooming` combs guide curves, which by script gave even, helmet-like hair with no clumps and blunt tips. This blocks the style out as shaped locks and converts them to strands with Geometry Nodes, so the locks are the clumps. Agents also eyeballed the references, so it fits a camera to each reference and measures the hair against it in millimetres. |
+| `blender-hair-shapes` | `blender-hair-grooming` combs guide curves, which by script gave even, helmet-like hair with no clumps and blunt tips. This blocks the style out as shaped locks and converts them to strands with Geometry Nodes, so the locks are the clumps. Agents also eyeballed the references, so it fits a camera to each reference and measures the hair against it in millimetres. The hair stays editable by hand, bakes to brushable curves and exports Alembic grooms for game engines; its scripts folder is also a Blender add-on. |
 
 The scripts follow the contract the other packs use: `run(**kwargs)` live through `execute_blender_code`, and
 `blender -b f.blend -P script.py -- --args` headless. Each skill's `_anyx.py` is the any-family pack's helper
@@ -32,3 +32,8 @@ All were run headless on Blender 5.3, on made bodies:
 - **`stack` and `sections`:** one agent's Hime blockout, whose back locks poked through the top layer all over (42%
   and 48% of the back view). Stacked, the top layer lies over them (89%). The crossings too deep to lift were listed
   with their places: the bangs and sides rooted on the same patch as the top layer.
+- **Baking and export:** one section of a finished Hime. Its guides baked to 1,880 real curves with the 13,160 strands still
+  live on them, and moving half of each guide 5 mm moved the strands 2.5 mm on average. Baked, unbaked and baked again
+  to the same 13,160 curves. Followed a head lifted 1 cm by exactly 1 cm. Exported with two braids as a three-group
+  Alembic groom, which read back at the right size in centimetres with its widths. The add-on's buttons ran the same
+  chain headless, and it builds as an extension. Not yet tried: brushing by hand, and importing into Unreal.
