@@ -218,9 +218,23 @@ it by hand, so leave every stage editable, and bake only at the end.
   source again, so you can change the locks or the guides and bake again.
 - **Cut-scenes in Blender:** `hs.follow(b)` makes baked hair follow the head as it deforms (armature, shape
   keys). Tested: a 1 cm lift of the head moved the roots by exactly 1 cm.
-- **Game engine:** `hs.export_groom([b, ...], "hair.abc")` writes an Alembic groom.
-  - One group per object, so keep one object per section and material.
+- **Fit the game budget first:** `hs.game_budget(hair_objects, 50000)`.
+  - It cuts every object's children together, keeping their proportions, to about 50,000 strands
+    rendered: Epic's MetaHuman head hair at LOD0 (25,000 at LOD1).
+  - It widens the strands a little so the hair keeps its cover.
+  - It's only modifier values, so it stays editable, and it's what you brush and bake.
+  - Then measure with `compare` against the full hair. On Hime, 266,000 strands cut to 51,000 lost 1.5%
+    of "solid" (93.4% to 91.9%) and kept the bangs' detail. The braids, at a tenth of their strands, read
+    slimmer.
+- **Game engine:** `hs.export_groom([b, ...], "hair.abc")` writes an Alembic groom for Unreal.
+  - Each strand keeps only the points it needs to stay within 0.2 mm of its shape, at most 64 (Unreal
+    cuts curves past 255). Hime went from 22 points a strand to 19, and 9.5 million viewport points to
+    975,000 exported.
+  - Objects that share a material become one group: every group costs its own passes in Unreal.
   - Roots first, widths from the strand radius, all in centimetres, with transforms baked in.
+  - It prints strands and points per group, and warns when over the budget.
+  - It's slow on a full head (about 7 minutes for 266,000 strands, about 1 minute at the budget).
+  - In Unreal, set up the groom's LODs (Auto LOD, curve decimation) and its simulation guides there.
   - In Unreal, import it as a Groom with the default conversion settings, then bind it to the head's
     skeletal mesh. (Not yet tried in Unreal.)
   - It works on live objects too, so a person's edits don't need baking just to export.

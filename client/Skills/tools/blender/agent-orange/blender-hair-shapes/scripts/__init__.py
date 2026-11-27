@@ -189,6 +189,20 @@ class HS_OT_follow(_Bake, bpy.types.Operator):
         return {"FINISHED"}
 
 
+class HS_OT_game_budget(_Bake, bpy.types.Operator):
+    """Fit the selected live hair to a game's strand budget: fewer, slightly wider strands, still editable"""
+    bl_idname = "hair_shapes.game_budget"
+    bl_label = "Game Budget"
+    strands: IntProperty(name="Strands", default=hs.GAME_STRANDS, min=1000, max=1000000,
+                         description="All the selected hair together. Epic's MetaHuman head hair: 50,000 at LOD0, 25,000 at LOD1")
+    widen: BoolProperty(name="Widen strands", default=True, description="Keep the hair's cover with fewer strands")
+
+    def execute(self, context):
+        before, after = hs.game_budget(_hair_selected(context), self.strands, self.widen)
+        self.report({"INFO"}, f"{before} strands -> {after}")
+        return {"FINISHED"}
+
+
 class HS_OT_export_groom(_Bake, bpy.types.Operator, ExportHelper):
     """Export the selected hair as an Alembic groom for a game engine: one group per object, in centimetres"""
     bl_idname = "hair_shapes.export_groom"
@@ -197,7 +211,8 @@ class HS_OT_export_groom(_Bake, bpy.types.Operator, ExportHelper):
     filter_glob: StringProperty(default="*.abc", options={"HIDDEN"})
 
     def execute(self, context):
-        hs.export_groom(_hair_selected(context), self.filepath)
+        r = hs.export_groom(_hair_selected(context), self.filepath)
+        self.report({"INFO"}, f"{r['groups']} groups, {r['strands']} strands, {r['points']} points")
         return {"FINISHED"}
 
 
@@ -232,11 +247,12 @@ class HS_PT_panel(bpy.types.Panel):
         box = lay.box()
         box.label(text="Use")
         box.operator("hair_shapes.follow")
+        box.operator("hair_shapes.game_budget")
         box.operator("hair_shapes.export_groom")
 
 
 CLASSES = (HS_OT_tubes, HS_OT_stack, HS_OT_convert, HS_OT_bake_guides, HS_OT_bake, HS_OT_unbake, HS_OT_follow,
-           HS_OT_export_groom, HS_PT_panel)
+           HS_OT_game_budget, HS_OT_export_groom, HS_PT_panel)
 
 
 def register():

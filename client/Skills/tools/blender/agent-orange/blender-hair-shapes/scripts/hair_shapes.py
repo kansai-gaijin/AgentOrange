@@ -27,7 +27,8 @@ Hand it over:
   bake(hair, head)                   plain brushable strands; the source is kept, hidden
   unbake(baked)                      back to the source, to edit and bake again
   attach(curves, head) / follow(curves)   root UVs on the head; follow it as it deforms (cut-scenes)
-  export_groom(objects, path)        an Alembic groom for a game engine, one group per object, in cm
+  game_budget(objects, strands)      fewer, wider strands for a game (50,000: MetaHuman LOD0), still live
+  export_groom(objects, path)        an Alembic groom for Unreal: points thinned, a group per material, in cm
   (this folder is also the "Hair from Shapes" Blender extension: the same, as sidebar buttons)
 Render:
   gpu(scene)                         Cycles on one GPU backend (OptiX first), so heavy hair fits in memory
@@ -41,6 +42,7 @@ import random
 import sys
 
 import bpy
+import numpy as np
 from mathutils import Quaternion, Vector
 from mathutils import noise as mnoise
 from mathutils.bvhtree import BVHTree
@@ -998,47 +1000,167 @@ def follow(curves, surface=None):
     return md
 
 
-def export_groom(objects, path, scale=100.0, frame=None):
-    """Exports hair as an Alembic groom for a game engine: one curves object per section (Unreal makes
-    each a group with its own material slot), roots first, width from each point's radius. Positions
-    and widths are written in centimetres (`scale` 100 from metres) with the objects' transforms baked
-    in, so nothing depends on the engine reading a transform. Takes baked objects or live ones (their
-    evaluated hair is written). Unreal: import the .abc as a Groom with its default conversion
-    settings (rotate X 90, scale Y -1), then bind it to the head's skeletal mesh."""
-    obs = [_ob(o) for o in (objects if isinstance(objects, (list, tuple)) else [objects])]
+GAME_STRANDS = 50000  # Epic's MetaHuman head hair at LOD0 (25,000 at LOD1); Unreal cuts curves past 255 points
+
+
+def _duplicates(ob):
+    """The Duplicate Hair Curves modifiers on a live hair object, with their input identifiers."""
+    out = []
+    for md in ob.modifiers:
+        if md.type == "NODES" and md.node_group and md.node_group.name.startswith("Duplicate Hair Curves"):
+            ids = {i.name: i.identifier for i in md.node_group.interface.items_tree if getattr(i, "in_out", "") == "INPUT"}
+            out.append((md, ids))
+    return out
+
+
+def _render_strands(ob):
+    """Strands the object renders: guides x (1 + children), from the guides and its Duplicate modifier."""
     dg = bpy.context.evaluated_depsgraph_get()
-    temp, names = [], [ob.name.replace(" (baked)", "").replace(" (guides)", "") for ob in obs]
-    old = [ob.name for ob in obs]
+    dup = _duplicates(ob)
+    if not dup:
+        return len(ob.evaluated_get(dg).data.curves)
+    md, ids = dup[0]
+    va = getattr(md.properties.inputs, ids["Viewport Amount"]).value
+    shown = len(ob.evaluated_get(dg).data.curves)
+    amount = getattr(md.properties.inputs, ids["Amount"]).value
+    guides = shown / max(1e-6, 1 + amount * va)
+    return int(round(guides * (1 + amount)))
+
+
+def game_budget(objects, strands=GAME_STRANDS, widen=True):
+    """Fits live hair to a game's strand budget, non-destructively: each object's children (its
+    Duplicate modifier's Amount) are scaled down together so all of them render about `strands`
+    strands, keeping their proportions. With `widen`, each strand gets wider by the square root of
+    the cut (at most 2x) so the hair keeps its cover. Edit, bake and export as before. Measure the
+    result with compare() (solid and detail) against the full hair: fewer strands, if too few, read
+    as see-through or stringy. Returns (strands before, after)."""
+    obs = [_ob(o) for o in (objects if isinstance(objects, (list, tuple)) else [objects])]
+    live = [o for o in obs if _duplicates(o)]
+    fixed = sum(_render_strands(o) for o in obs if o not in live)
+    before = fixed + sum(_render_strands(o) for o in live)
+    room = max(1, strands - fixed)
+    now = sum(_render_strands(o) for o in live)
+    ratio = min(1.0, room / max(1, now))
+    for ob in live:
+        md, ids = _duplicates(ob)[0]
+        amount = getattr(md.properties.inputs, ids["Amount"]).value
+        total = _render_strands(ob)
+        guides = total / (1 + amount)
+        new_amount = max(0, int(round((total * ratio) / max(1e-6, guides) - 1)))
+        getattr(md.properties.inputs, ids["Amount"]).value = new_amount
+        if widen and ratio < 1:
+            for m in ob.modifiers:
+                if m.type == "NODES" and m.node_group and m.node_group.name.startswith("Set Hair Curve Profile"):
+                    pid = {i.name: i.identifier for i in m.node_group.interface.items_tree if getattr(i, "in_out", "") == "INPUT"}
+                    sock = getattr(m.properties.inputs, pid["Radius"])
+                    base = ob.get("hs_radius", sock.value)
+                    ob["hs_radius"] = base
+                    sock.value = base * min(2.0, (1 / ratio) ** 0.5)
+        ob.update_tag()
+    bpy.context.view_layer.update()
+    after = fixed + sum(_render_strands(o) for o in live)
+    print(f"GAME BUDGET {before} -> {after} strands (target {strands})")
+    return before, after
+
+
+def _simplify(p, tol):
+    """Indices of the points to keep on one polyline (n x 3 array) so it stays within tol of itself."""
+    n = len(p)
+    if n <= 2:
+        return list(range(n))
+    keep = np.zeros(n, bool)
+    keep[0] = keep[-1] = True
+    todo = [(0, n - 1)]
+    while todo:
+        a, b = todo.pop()
+        if b - a < 2:
+            continue
+        seg = p[b] - p[a]
+        ln = np.linalg.norm(seg)
+        mid = p[a + 1:b] - p[a]
+        if ln < 1e-12:
+            d = np.linalg.norm(mid, axis=1)
+        else:
+            d = np.linalg.norm(np.cross(mid, seg / ln), axis=1)
+        i = int(np.argmax(d))
+        if d[i] > tol:
+            k = a + 1 + i
+            keep[k] = True
+            todo += [(a, k), (k, b)]
+    return np.nonzero(keep)[0]
+
+
+def export_groom(objects, path, scale=100.0, frame=None, tolerance=0.0002, max_points=64, merge=True):
+    """Exports hair as an Alembic groom for Unreal, made light enough for a game:
+      - each strand keeps only the points it needs to stay within `tolerance` m of its shape (0.2 mm:
+        a straight strand drops to a few points, a braid keeps its weave), at most `max_points`
+        (Unreal cuts curves past 255);
+      - with `merge`, objects that share a material become one group (one material slot each in
+        Unreal; every group costs its own passes), named after the first object in it;
+      - roots first, widths from each point's radius, all in centimetres (`scale` 100 from metres) with
+        the transforms baked in.
+    Takes baked objects or live ones (their evaluated hair is written, at render density). Prints
+    strands and points per group and in all, against Epic's MetaHuman budget. Unreal: import the .abc
+    as a Groom with its default conversion settings (rotate X 90, scale Y -1), then bind it to the
+    head's skeletal mesh, and set up its LODs there."""
+    obs = [_ob(o) for o in (objects if isinstance(objects, (list, tuple)) else [objects])]
+    temp, old = [], [ob.name for ob in obs]
+    clean = [ob.name.replace(" (baked)", "").replace(" (guides)", "") for ob in obs]
+    groups = {}
+    for ob, name in zip(obs, clean):
+        key = (ob.data.materials[0].name if ob.data.materials and ob.data.materials[0] else name) if merge else name
+        groups.setdefault(key, []).append((ob, name))
     vl = bpy.context.view_layer
     picked, active = [o for o in vl.objects if o.select_get()], vl.objects.active
+    renders = {}
+    for ob in obs:  # export at render density: lift the viewport share for the evaluation
+        for md, ids in _duplicates(ob):
+            sock = getattr(md.properties.inputs, ids["Viewport Amount"])
+            renders[(ob.name, md.name)] = sock.value
+            sock.value = 1.0
+    stats = []
     try:
         for ob in obs:  # the copies take the sections' own names: the engine shows them as group names
             ob.name = ob.name + " ~export"
-        for ob, name in zip(obs, names):
-            ev = ob.evaluated_get(dg)
-            cv = ev.data
-            n, npts = len(cv.curves), len(cv.points)
-            offs = [0] * (n + 1)
-            cv.curve_offset_data.foreach_get("value", offs)
-            pos = [0.0] * (npts * 3)
-            cv.attributes["position"].data.foreach_get("vector", pos)
-            rad = [0.0] * npts
-            if "radius" in cv.attributes:
-                cv.attributes["radius"].data.foreach_get("value", rad)
-            m = ob.matrix_world
-            flat = []
-            for i in range(npts):
-                flat.extend(m @ Vector(pos[i * 3:i * 3 + 3]) * scale)
+        dg = bpy.context.evaluated_depsgraph_get()
+        for _key, members in groups.items():
+            sizes, flat, rads, mats = [], [], [], []
+            for ob, _name in members:
+                cv = ob.evaluated_get(dg).data
+                n, npts = len(cv.curves), len(cv.points)
+                offs = np.zeros(n + 1, np.int32)
+                cv.curve_offset_data.foreach_get("value", offs)
+                pos = np.zeros(npts * 3, np.float32)
+                cv.attributes["position"].data.foreach_get("vector", pos)
+                pos = pos.reshape(-1, 3).astype(np.float64)
+                m = np.array(ob.matrix_world, np.float64)
+                pos = (pos @ m[:3, :3].T + m[:3, 3]) * scale
+                rad = np.zeros(npts, np.float32)
+                if "radius" in cv.attributes:
+                    cv.attributes["radius"].data.foreach_get("value", rad)
+                for c in range(n):
+                    a, b = offs[c], offs[c + 1]
+                    k = _simplify(pos[a:b], tolerance * scale)
+                    if len(k) > max_points:  # evenly along it, ends kept
+                        k = np.asarray(k)[np.round(np.linspace(0, len(k) - 1, max_points)).astype(int)]
+                    sizes.append(len(k))
+                    flat.append(pos[a:b][k])
+                    rads.append(rad[a:b][k] * scale)
+                for mat in ob.data.materials:
+                    if mat and mat not in mats:
+                        mats.append(mat)
+            name = members[0][1]
             data = bpy.data.hair_curves.new(name)
-            data.add_curves([offs[i + 1] - offs[i] for i in range(n)])
-            data.attributes["position"].data.foreach_set("vector", flat)
+            data.add_curves(sizes)
+            data.attributes["position"].data.foreach_set("vector", np.concatenate(flat).astype(np.float32).ravel())
             ra = data.attributes.get("radius") or data.attributes.new("radius", "FLOAT", "POINT")
-            ra.data.foreach_set("value", [r * scale for r in rad])
-            for mat in ob.data.materials:
+            ra.data.foreach_set("value", np.concatenate(rads).astype(np.float32))
+            for mat in mats:
                 data.materials.append(mat)
             t = bpy.data.objects.new(name, data)
             bpy.context.scene.collection.objects.link(t)
             temp.append(t)
+            stats.append((name, len(sizes), int(sum(sizes)), max(sizes) if sizes else 0, [o.name for o, _n in members]))
         for o in bpy.context.view_layer.objects:
             o.select_set(o in temp)
         bpy.context.view_layer.objects.active = temp[0]
@@ -1052,11 +1174,20 @@ def export_groom(objects, path, scale=100.0, frame=None):
             bpy.data.hair_curves.remove(data)
         for ob, name in zip(obs, old):
             ob.name = name
+        for ob in obs:
+            for md, ids in _duplicates(ob):
+                if (ob.name, md.name) in renders:
+                    getattr(md.properties.inputs, ids["Viewport Amount"]).value = renders[(ob.name, md.name)]
         for o in picked:
             o.select_set(True)
         vl.objects.active = active
-    print(f"GROOM {path}: {len(obs)} groups, " + ", ".join(names))
-    return path
+    strands, points = sum(s[1] for s in stats), sum(s[2] for s in stats)
+    print(f"GROOM {path}: {len(stats)} groups, {strands} strands, {points} points ({points / max(1, strands):.1f} a strand)")
+    for name, n, p, most, members in stats:
+        print(f"  {name}: {n} strands, {p} points, at most {most} on one ({len(members)} objects)")
+    if strands > GAME_STRANDS * 1.2:
+        print(f"  Over a game budget: Epic's MetaHuman head hair is {GAME_STRANDS} strands at LOD0. game_budget() cuts it.")
+    return {"path": path, "groups": len(stats), "strands": strands, "points": points}
 
 
 # ---------------------------------------------------------------- self test
