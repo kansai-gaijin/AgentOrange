@@ -7,9 +7,19 @@ license: MIT
 # Hair from shapes
 
 Combing guide hairs by script makes helmets: one even sheet, no clumps, cut-off tips. Here you
-shape the hair instead. Every lock you can see in the reference becomes a tube: a curve from root
-to tip, with a radius at each point. Geometry Nodes turns each tube into a bundle of strands that
-fills it. So the clumps, the parting and the silhouette are exactly what you modelled.
+shape the hair instead, the way stylised hair is modelled. Every big shape of the hairstyle becomes a
+fat tube:
+- a chunk of the bangs;
+- a section of the side hair;
+- a piece of the crown;
+- a plait of a braid.
+
+Each tube is a curve from root to tip, with a radius at each point. Together the tubes are the
+hairstyle's volume and silhouette.
+
+Geometry Nodes then lays guide hairs along each tube's surface and fills it with strands, and
+clumping breaks each big shape into the small clumps inside it. Thin tubes, one per little clump,
+are the commonest mistake: they leave gaps, cross through each other and read as spaghetti.
 
 `scripts/hair_shapes.py` does the conversion and the detail. Import it into your own Blender script:
 ```python
@@ -95,19 +105,54 @@ Then the rules carry through every step:
   - Part the locks round it in the blockout: hair that has to be pushed out of a horn flattens
     against it.
 
-## 3. Plan the style in sections
-From the references, list the sections and how many locks each one needs:
-- **Bangs:** 10–16 locks side by side, ending on the measured bang line. How thick they look comes
-  from how far back they're rooted: heavy, blunt bangs take a triangle of scalp reaching 6–9 cm back
-  from the hairline; wispy ones only 2–3 cm. Look at their ends in the reference: a blunt cut, points,
-  or gaps between clumps, and how long the corners are next to the face.
-- **Side locks.**
-- **The top and back:** for a centre part, 10–20 locks per side, fanned from the part line to where they're gathered.
-- **Ties, braids and loose tails.**
-- **A bun:** locks wound round it.
+## 3. Read the references, then plan the sections
+Agents read references badly. They place hair where it looks about right, then call it good enough.
+Read them as a hairdresser would, and write down what you read before building anything.
 
-Write down where each section starts (its root line), where it goes, and where it ends. Fix the
-part line, the bang cut line and the gather points first; they read most.
+**Where a section starts is where its hair leaves the scalp, not where it comes into view.**
+- Roots are hidden under the hair. A face-framing lock that you first see at eye level doesn't start
+  there: follow it up along its flow to where it parts from the scalp.
+  - Side locks usually start at the front hairline, at or behind the bangs' outer corners, high on
+    the head, and fall past the eyes.
+- Follow every section up to its roots in the views that show the top of the head: the back, the
+  45s, any view from above, a 3D reference.
+
+**Read where each section sits relative to everything on the head** (ears, horns, a crown, a hat,
+ornaments):
+- Ask in every view: does it pass in front of the thing, behind it, beside it, over it, round it?
+  And do its roots start before or after it along the part?
+- Build only what the views show. If the hair separates behind a horn, it starts behind the horn.
+  Don't route hair round an obstacle unless a view shows the hair going round it.
+
+**With a 3D hair reference** (a mesh of the hairstyle), it's the authority on construction:
+- Trace its shapes with your tubes.
+- Find each shape's roots by following it to where it meets the scalp.
+- If its proportions don't fit your head, build the tubes on the mesh first, then move them onto your
+  head, keeping each one's path, its height over the scalp and its length.
+
+**Write the reading as a table, one row per section:**
+
+| Section | Roots (in head landmarks) | Path | End | Relation to obstacles | Read from |
+|---|---|---|---|---|---|
+| e.g. side lock, left | front hairline, 3–4 cm left of the part, behind the bangs' corner | down past the temple, in front of the ear | collarbone | in front of the ear; starts in front of the horn | front, left 45, left |
+
+Check every row against every view before blocking out. A row you can't confirm in some view is a
+guess: say so, and take the most direct reading.
+
+From the references, list the sections and the big shapes each one needs:
+- **Bangs:** 3–6 tubes side by side, each 1.5–3 cm wide, ending on the measured bang line.
+  - How thick they look comes from how far back they're rooted. Heavy, blunt bangs take a triangle of
+    scalp reaching 6–9 cm back from the hairline; wispy ones only 2–3 cm.
+  - Look at their ends in the reference: a blunt cut, points, or gaps between clumps, and how long
+    the corners are next to the face.
+- **Side locks:** one or two tubes each side, rooted with the bangs (see above).
+- **The top and back:** for a centre part, 4–8 tubes per side, 2–5 cm wide, fanned from the part line
+  to where they're gathered.
+- **Ties, braids and loose tails:** a braid is three strand tubes, each as wide as one real plait.
+- **A bun:** a few thick tubes wound round it.
+
+A whole head is typically 15–40 tubes, not hundreds. Fix the part line, the bang cut line and the
+gather points first; they read most.
 
 Then put the sections in layers, from the scalp out. Hair lies like shingles: hair from higher on
 the head lies over hair from lower down.
@@ -129,8 +174,10 @@ converted on its own.
 ## 4. Block it out
 Build all of this in one collection, `HairShapes`.
 - `hs.lock(name, points, radii)`: points run root to tip and are smoothed. radii is one value,
-  (root, tip), (root, mid, tip) or one per point. The radius is half the clump's width.
-  - Taper to about 1 mm at the tip.
+  (root, tip), (root, mid, tip) or one per point.
+  - The radius is half the width of the big shape it stands for: usually 8–25 mm, not a few mm.
+  - Taper gently, to about a third of the width at the tip. The ragged ends come from `trim`, not
+    from pinching the tube to a point.
   - The root point sits 1–2 mm inside the scalp.
 - `hs.on_surface(points, head, lift)`: for the stretch of a lock that lies on the head.
   - `lift` must be at least the lock's radius there, or the tube, and so its hair, sinks into the head.
@@ -145,13 +192,15 @@ Build all of this in one collection, `HairShapes`.
     collection when the tail gets its own material or settings.
 - `hs.tie(name, center, axis, radius)`: an elastic, a small torus.
 - `hs.strip(name, root_points, tip_points, rows)`: a mesh sheet with its root edge creased.
-  - It suits flat sections; you can also sculpt it further.
+  - It suits flat sections that lie on the head, where a round tube would stand too far off it; you
+    can also sculpt it further.
   - Guides follow its columns, so give it as many columns as you want guides.
   - Keep its loops running across the hair, and its root edge creased (`crease_edge` = 1).
 
 Rules that make it look like hair:
-- **Overlap neighbouring locks** by about 30% of their width, so no scalp shows between them.
-- **Vary them:** widths, lengths and slight angles all differ, as no two clumps are alike. Even
+- **Fill the volume:** the tubes together are the hair's whole volume as the reference shows it.
+  Overlap neighbours by about 30% of their width, so no scalp and no gaps show between them.
+- **Vary them:** widths, lengths and slight angles all differ, as no two shapes are alike. Even
   spacing reads as a helmet.
 - **Parting:** the roots on both sides sit 1–3 mm apart along it, each side's locks leaving it in
   opposite directions. Near the part, keep the hair flat on the scalp: lift each lock only its
@@ -189,7 +238,14 @@ hs.stack(["Nape", "Around ears", "Back", "Sides", "Crown", "Bangs"], head)   # n
    the bang line within 3 mm at the median, and no part has more than about 10% missing or extra.
    Fix the silhouette, the bang line, the part, the gather points and the braid length here.
    Strands never fix a wrong blockout.
-5. Also render every view from its camera, side by side with the reference. Keep these renders. The
+5. **Check every row of your reading table** against the sections picture and the reference, in each
+   view that shows it.
+   - Write a verdict per row: where its roots are, its path, its end, and which side of each obstacle
+     it passes. Each one matches or it doesn't, with what you saw.
+   - Fix every "doesn't" and look again. Numbers that pass don't excuse a section that starts in
+     the wrong place or goes the wrong side of a horn.
+   - Put the table and the verdicts in your report.
+6. Also render every view from its camera, side by side with the reference. Keep these renders. The
    person reviews them, and they are the "before" in your report.
 
 ## 6. Convert
@@ -217,8 +273,9 @@ print(hs.report([main, loose, baby], head, cap=cap))   # inside and off_cap must
 
 | Look | Knob (hair()) | Typical |
 |---|---|---|
+| Gaps between guides on a fat tube | `guides` (round its surface) ↑ | 16–32 for a 2–5 cm tube, so guides sit 5–10 mm apart |
 | Too thin or see-through | `children` ↑, `strand_radius` ↑ | 40–100 per guide; 0.05–0.08 mm |
-| Lock too tight or too loose | `spread` (m around each guide), `clump` | spread ≈ lock radius / 2; clump 0.4–0.7 |
+| Shape too tight or too loose | `spread` (m around each guide), `clump` | spread ≈ the gap between guides; clump 0.4–0.7 |
 | One smooth sheet (low detail in `compare`) | `clump` ↑, fewer and more varied locks | bangs and lengths 0.6–0.8 |
 | Blunt, cut-off tips | `trim` (m, random per strand) | 10–20% of the shortest lock |
 | Too clean, plastic | `frizz`, `noise` (real offsets, whatever the strand's length) | 0.3–1 mm, 0.5–2 mm |
