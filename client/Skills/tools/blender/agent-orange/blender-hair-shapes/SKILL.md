@@ -251,6 +251,10 @@ it by hand, so leave every stage editable, and bake only at the end.
 - **GPU memory:** call `hs.gpu(scene)` before rendering. It picks one backend (OptiX first). With
   several backends or the CPU ticked in the saved preferences, a full head (250,000+ strands) runs a
   6 GB card out of memory.
-- **Viewport:** `children` × guides × locks gets heavy, so use `viewport` < 1 for the viewport.
+- **Viewport:** a full head is around 250,000 strands and 10 million points. Switching the viewport to
+  Material Preview with all of them shown crashed Blender 5.3 (in EEVEE) on a 6 GB card. `hair()`
+  shows a tenth of the children in the viewport (`viewport=0.1`); renders always get all of them. Keep
+  the viewport under about 1–2 million points. The add-on's Viewport slider sets it on every hair object.
+  Baked strands are all real, so bake and brush big sections one at a time.
 - **Where the method comes from:** the mesh-to-hair technique shared by Xeofrios (80 Level, 2023)
   and others. This script is Agent Orange's own build of it.

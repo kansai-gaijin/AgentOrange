@@ -640,11 +640,12 @@ def _curves_object(name, parent=None):
 
 def hair(name, collection=SHAPES, guides=10, points=24, fill=0.55, children=60, spread=0.0025, clump=0.55, clump_shape=0.3,
          tip_spread=0.0, trim=0.02, frizz=0.0006, noise=0.0012, noise_scale=40.0, curl=0.0, strand_radius=0.00006,
-         material=None, parent=None, viewport=1.0, seed=0, cumulative=False):
+         material=None, parent=None, viewport=0.1, seed=0, cumulative=False):
     """Strand hair from every lock in `collection`. Guides: `guides` per lock round its edge, two inner
     rings (at `fill` and fill x 0.4 of its radius) and the centre line, each `points` long. Then live
     modifiers, top to bottom:
-      Duplicate (children per guide, spread m around it; viewport share) -> Clump (factor, shape,
+      Duplicate (children per guide, spread m around it; `viewport`: the share of them shown in the
+      viewport, 0.1 by default, as a full head in Material Preview can crash Blender; renders get all) -> Clump (factor, shape,
       tip spread) -> Trim (each strand shortened by a random 0..`trim` metres: tapered clump tips, no
       blunt ends; keep it under the shortest lock's length) ->
       Frizz (m) -> Noise (m, scale) -> Curl (m radius, 0 = none) -> Profile (strand radius, thin tip).

@@ -25,6 +25,18 @@ def _surface(context, ob=None):
     return None
 
 
+def _viewport_share(scene, _context=None):
+    """Sets how many of the children every live hair object shows in the viewport (renders get all)."""
+    for ob in bpy.data.objects:
+        for md in ob.modifiers:
+            if md.type == "NODES" and md.node_group and md.node_group.name.startswith("Duplicate Hair Curves"):
+                for i in md.node_group.interface.items_tree:
+                    if getattr(i, "in_out", "") == "INPUT" and i.name == "Viewport Amount":
+                        getattr(md.properties.inputs, i.identifier).value = scene.hs_viewport
+        if ob.type == "CURVES" and ob.modifiers:
+            ob.update_tag()
+
+
 def _hair_selected(context):
     return [o for o in context.selected_objects if o.type == "CURVES"]
 
@@ -92,7 +104,7 @@ class HS_OT_convert(bpy.types.Operator):
         mat = context.scene.hs_material
         ob = hs.hair(f"Hair {coll.name}", coll.name, guides=self.guides, children=self.children, spread=self.spread,
                      clump=self.clump, trim=self.trim, frizz=self.frizz, noise=self.noise, curl=self.curl,
-                     strand_radius=self.strand_radius, material=mat, parent=surf, viewport=0.25)
+                     strand_radius=self.strand_radius, material=mat, parent=surf, viewport=context.scene.hs_viewport)
         if self.strays:
             hs.strays(f"Strays {coll.name}", coll.name, material=mat, parent=surf)
         coll.hide_render = True
@@ -201,6 +213,7 @@ class HS_PT_panel(bpy.types.Panel):
         col.prop(sc, "hs_shapes", text="Shapes")
         col.prop(sc, "hs_surface", text="Head")
         col.prop(sc, "hs_material", text="Material")
+        col.prop(sc, "hs_viewport", text="Viewport", slider=True)
         box = lay.box()
         box.label(text="Shapes")
         row = box.row(align=True)
@@ -234,6 +247,9 @@ def register():
                                                  description="The head the hair grows from (needs a UV map for baking)")
     bpy.types.Scene.hs_material = PointerProperty(type=bpy.types.Material, name="Material",
                                                   description="The material new hair gets")
+    bpy.types.Scene.hs_viewport = FloatProperty(name="Viewport", default=0.1, min=0.0, max=1.0, update=_viewport_share,
+                                                description="Share of the hair shown in the viewport (renders get all). "
+                                                            "A full head at 1 can crash Material Preview")
     for c in CLASSES:
         bpy.utils.register_class(c)
 
@@ -241,4 +257,4 @@ def register():
 def unregister():
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
-    del bpy.types.Scene.hs_shapes, bpy.types.Scene.hs_surface, bpy.types.Scene.hs_material
+    del bpy.types.Scene.hs_shapes, bpy.types.Scene.hs_surface, bpy.types.Scene.hs_material, bpy.types.Scene.hs_viewport
