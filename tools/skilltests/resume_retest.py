@@ -25,7 +25,12 @@ prompt = ("You were stopped partway by the test harness's own time limit, not be
           "still no time limit for you. Carry on from where you were and finish the task: the strands, the renders and "
           "sheets, the close-ups, the .blend and the exported groom in the out folder, then the short honest summary.")
 steer = os.environ.get("STEER_FILE")
-if steer and os.path.exists(steer):  # a reviewer stopped you to correct course: their note comes first
+if steer and os.path.exists(steer) and os.environ.get("STEER_KIND") == "fix":  # the art director's fix to finished work
+    prompt = (open(steer, encoding="utf-8").read().strip() + "\n\nThere's no time limit. Make this one fix in the same "
+              "project and keep everything else as it is. Then re-render the sheets and close-ups it changes, re-export "
+              "the groom if the hair changed, add the fix to the report, and end with a short honest summary of what you "
+              "changed and how it now compares with the references.")
+elif steer and os.path.exists(steer):  # a reviewer stopped you to correct course: their note comes first
     prompt = (open(steer, encoding="utf-8").read().strip() + "\n\nThere's still no time limit. Carry on from where you "
               "were with that in mind, and finish the task as asked.")
 start = time.time()
