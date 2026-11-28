@@ -189,7 +189,10 @@ the head lies over hair from lower down.
 - The hair around the ears is under the hair coming down from the crown.
 - The sides are under the bangs' outer corners.
 - Face-framing side locks are the outermost layer beside the face. Hair swept back from the temples
-  runs behind them, never over them.
+  runs behind them, never over them. Where they pass the bangs' outer edge at the temples, they lie
+  on it and on the scalp in one even curve: the same small distance off the skin and the same
+  thickness all the way, with no kink or step outward. A kink there leaves a dark gap that shows in
+  the strands as a split between the side hair and the bangs.
 - What the references show uncovered stays uncovered: ears, the neck, the forehead under a gap in
   the bangs. Hair passes above and behind a visible ear, not over it.
 - A braid is solid, like a horn. Don't let it pass through another section. Decide from the views
