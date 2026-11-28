@@ -1057,16 +1057,23 @@ def _curves_object(name, parent=None):
 
 
 KEEP_OUT = "AO Keep Out Of Head"
+KEEP_OUT_VERSION = 2
 
 
 def keep_out_group():
     """Geometry Nodes: every strand's root onto the cap (or the head), and every other point that
     has gone into the head (by up to Reach) back out to Margin over it. Hair grows only from the cap,
-    and none of it goes through the model."""
+    and none of it goes through the model.
+    A point counts as inside only when it's within Reach of the surface and mostly under it, along
+    the normal. Hair hanging past a bust's open rim, or far off to the side of a horn, sits beside
+    the nearest surface, not under it, and is left alone (version 1 snapped such points onto it)."""
     ng = bpy.data.node_groups.get(KEEP_OUT)
-    if ng is not None:
+    if ng is not None and ng.get("hs_version", 1) >= KEEP_OUT_VERSION:
         return ng
+    if ng is not None:  # an older one in this file: keep it for the modifiers that use it, build the new one
+        ng.name = f"{KEEP_OUT} (v{ng.get('hs_version', 1)})"
     ng = bpy.data.node_groups.new(KEEP_OUT, "GeometryNodeTree")
+    ng["hs_version"] = KEEP_OUT_VERSION
     ng.is_modifier = True
     io = ng.interface
     io.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
@@ -1088,7 +1095,7 @@ def keep_out_group():
         return info.outputs["Geometry"]
 
     def nearest(geo):
-        """(nearest position, its normal, signed height of the point above it) on a mesh."""
+        """(nearest position, its normal, signed height of the point above it, distance to it) on a mesh."""
         pos = N.new("GeometryNodeInputPosition").outputs[0]
         prox = N.new("GeometryNodeProximity")
         prox.target_element = "FACES"
@@ -1107,7 +1114,30 @@ def keep_out_group():
         dot.operation = "DOT_PRODUCT"
         L.new(d.outputs["Vector"], dot.inputs[0])
         L.new(sn.outputs["Value"], dot.inputs[1])
-        return prox.outputs["Position"], sn.outputs["Value"], dot.outputs["Value"]
+        return prox.outputs["Position"], sn.outputs["Value"], dot.outputs["Value"], prox.outputs["Distance"]
+
+    def under_it(height, dist):
+        """True where a point is really under the surface: within Reach of it, and its offset from the
+        nearest point mostly against the normal (height <= -dist / 2, give or take Margin). A point off
+        to the side of an open rim or a horn's base has a small height but a large distance."""
+        within = N.new("FunctionNodeCompare")
+        within.data_type, within.operation = "FLOAT", "LESS_THAN"
+        L.new(dist, within.inputs["A"])
+        L.new(gi.outputs["Reach"], within.inputs["B"])
+        half = N.new("ShaderNodeMath")
+        half.operation = "MULTIPLY_ADD"  # dist * 0.5 + height
+        L.new(dist, half.inputs[0])
+        half.inputs[1].default_value = 0.5
+        L.new(height, half.inputs[2])
+        along = N.new("FunctionNodeCompare")
+        along.data_type, along.operation = "FLOAT", "LESS_EQUAL"
+        L.new(half.outputs[0], along.inputs["A"])
+        L.new(gi.outputs["Margin"], along.inputs["B"])
+        both = N.new("FunctionNodeBooleanMath")
+        both.operation = "AND"
+        L.new(within.outputs[0], both.inputs[0])
+        L.new(along.outputs[0], both.inputs[1])
+        return both.outputs[0]
 
     def lifted(near, nor):
         sc = N.new("ShaderNodeVectorMath")
@@ -1122,23 +1152,15 @@ def keep_out_group():
 
     def push(geo_in, solid):
         """Points of geo_in inside `solid` (by up to Reach) set back out to Margin over it."""
-        near, nor, height = nearest(solid)
+        near, nor, height, dist = nearest(solid)
         under = N.new("FunctionNodeCompare")
         under.data_type, under.operation = "FLOAT", "LESS_THAN"
         L.new(height, under.inputs["A"])
         L.new(gi.outputs["Margin"], under.inputs["B"])
-        neg = N.new("ShaderNodeMath")
-        neg.operation = "MULTIPLY"
-        L.new(gi.outputs["Reach"], neg.inputs[0])
-        neg.inputs[1].default_value = -1.0
-        near_enough = N.new("FunctionNodeCompare")
-        near_enough.data_type, near_enough.operation = "FLOAT", "GREATER_THAN"
-        L.new(height, near_enough.inputs["A"])
-        L.new(neg.outputs[0], near_enough.inputs["B"])
         both = N.new("FunctionNodeBooleanMath")
         both.operation = "AND"
         L.new(under.outputs[0], both.inputs[0])
-        L.new(near_enough.outputs[0], both.inputs[1])
+        L.new(under_it(height, dist), both.inputs[1])
         # not by an open edge (a bust's cut-off rim, an eye hole, a horn's buried base): there "under
         # the surface" means nothing, and a braid hanging past the rim would be pulled onto it
         en = N.new("GeometryNodeInputMeshEdgeNeighbors")
@@ -1209,16 +1231,14 @@ def keep_out_group():
     L.new(has_cap.outputs[0], pick.inputs["Switch"])
     L.new(head_only, pick.inputs["False"])
     L.new(cap, pick.inputs["True"])
-    rnear, rnor, rh = nearest(pick.outputs[0])
+    rnear, rnor, _rh, rdist = nearest(pick.outputs[0])
     ends = N.new("GeometryNodeCurveEndpointSelection")
     ends.inputs["Start Size"].default_value = 1
     ends.inputs["End Size"].default_value = 0
-    absh = N.new("ShaderNodeMath")  # only roots near it: one far off (a braid started at its tie) is a blockout to fix
-    absh.operation = "ABSOLUTE"
-    L.new(rh, absh.inputs[0])
+    # only roots near it, by real distance: one far off (a braid started at its tie) is a blockout to fix
     close = N.new("FunctionNodeCompare")
     close.data_type, close.operation = "FLOAT", "LESS_THAN"
-    L.new(absh.outputs[0], close.inputs["A"])
+    L.new(rdist, close.inputs["A"])
     L.new(gi.outputs["Reach"], close.inputs["B"])
     root_sel = N.new("FunctionNodeBooleanMath")
     root_sel.operation = "AND"

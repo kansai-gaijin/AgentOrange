@@ -164,6 +164,10 @@ From the references, list the sections and the big shapes each one needs:
     the same centre, radii one braid width apart) or `hs.scalp_spiral` (one braid wound outwards),
     and they lie edge to edge on the scalp with nothing between them.
   - A braid that comes out of the crown's centre lies over the rings. It doesn't split them.
+  - Under a crown there's only scalp. Plain hair from the front and sides tucks under its outer edge
+    for a centimetre or two and stops there. Hair running on under the rings lifts them (and `stack`
+    lifts them further) into a bun that bulges off the head, where the reference's crown hugs the
+    skull: its silhouette is the head's own shape plus one braid's thickness.
 - **A bun:** a few thick tubes wound round it.
 
 A whole head is typically 15–40 tubes, not hundreds. Fix the part line, the bang cut line and the
