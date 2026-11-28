@@ -151,6 +151,11 @@ From the references, list the sections and the big shapes each one needs:
     scalp reaching 6–9 cm back from the hairline; wispy ones only 2–3 cm.
   - Look at their ends in the reference: a blunt cut, points, or gaps between clumps, and how long
     the corners are next to the face.
+  - A blunt fringe is one sheet: every bang ends on the same line, the outer ones included, and every
+    bang sits at the same height off the scalp, so their faces make one smooth surface from the
+    parting to the hem. Each one fans out from the parting like a wedge. Neighbours may lap, one
+    tucked under the other's edge, but their faces sit flush. A bang that stands proud of its
+    neighbours, or sinks below them, splits the strands into separate clumps with lines between.
 - **Side locks:** one or two tubes each side, rooted with the bangs (see above).
 - **The top and back:** for a centre part, 4–8 tubes per side, 2–5 cm wide, fanned from the part line
   to where they're gathered.
